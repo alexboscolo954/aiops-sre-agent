@@ -293,8 +293,9 @@ def build_server(
 
     @mcp.tool(annotations=READ)
     def describe_deployment(namespace: str, name: str) -> dict[str, Any]:
-        """Deployment spec plus rollout history (ReplicaSets by revision, with age and
-        images). Use it to answer "what changed recently?"."""
+        """Deployment spec plus rollout history: ReplicaSets by revision, with age,
+        images and env var names per revision. Compare revisions to answer
+        "what changed recently?"."""
         check_ns(namespace)
         d = call(apps.read_namespaced_deployment, name, namespace)
         selector = ",".join(f"{k}={v}" for k, v in (d.spec.selector.match_labels or {}).items())
@@ -325,6 +326,8 @@ def build_server(
                     "created": _age(rs.metadata.creation_timestamp),
                     "replicas": rs.status.replicas or 0,
                     "images": [c.image for c in rs.spec.template.spec.containers],
+                    # Names only, so a dropped or added variable shows up as a diff.
+                    "config": {c.name: _env_names(c) for c in rs.spec.template.spec.containers},
                 }
                 for rs in owned[:5]
             ],

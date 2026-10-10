@@ -45,15 +45,21 @@ def build_server(settings: Settings) -> FastMCP:
 
     @mcp.tool(annotations=READ)
     def runbook_for_alert(alertname: str) -> dict[str, Any]:
-        """The runbook mapped to an alert name, if there is one. Check this first."""
-        for name, book in books.items():
-            if alertname in book["alerts"]:
-                return {"name": name, "title": book["title"], "content": book["body"]}
-        return {
-            "name": None,
-            "content": f"No runbook mapped to {alertname}.",
-            "available": sorted(books),
-        }
+        """Every runbook mapped to an alert name (one alert can map to several,
+        e.g. a crash loop caused by OOM). Check this first, then pick the one
+        that matches what you find."""
+        matches = [
+            {"name": name, "title": book["title"], "content": book["body"]}
+            for name, book in books.items()
+            if alertname in book["alerts"]
+        ]
+        if not matches:
+            return {
+                "runbooks": [],
+                "note": f"No runbook mapped to {alertname}.",
+                "available": sorted(books),
+            }
+        return {"runbooks": matches}
 
     @mcp.tool(annotations=READ)
     def search_runbooks(keywords: str) -> list[dict[str, Any]]:

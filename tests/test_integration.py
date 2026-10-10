@@ -58,6 +58,8 @@ async def test_finds_all_three_failures(live: Settings) -> None:
         history = await tool(c, "describe_deployment", namespace="demo", name="checkout")
         revisions = [r["revision"] for r in history["rollout_history"]]
         assert revisions[:2] == ["2", "1"], history
+        env = [r["config"]["app"]["env"] for r in history["rollout_history"][:2]]
+        assert env == [[], ["DATABASE_URL"]], env  # the bad rollout is visible as a diff
 
         events = (await tool(c, "get_events", namespace="demo"))["result"]
         assert any(e["reason"] in {"Failed", "BackOff"} for e in events)

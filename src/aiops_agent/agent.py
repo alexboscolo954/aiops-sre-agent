@@ -19,7 +19,6 @@ from langchain.agents.middleware import (
     ToolCallLimitMiddleware,
     wrap_tool_call,
 )
-from langchain.agents.structured_output import ToolStrategy
 from langchain.chat_models import init_chat_model
 from langchain.mcp import MCPAdapter
 from langchain.messages import ToolMessage
@@ -135,7 +134,9 @@ async def open_agent(
             model or build_model(settings),
             tools,
             system_prompt=SYSTEM_PROMPT,
-            response_format=ToolStrategy(TriageReport),
+            # Schema, not ToolStrategy: native structured output where the model
+            # supports it (some models reject the forced tool_choice ToolStrategy needs).
+            response_format=TriageReport,
             middleware=[
                 HumanInTheLoopMiddleware(
                     approval_policy(tools), description_prefix="The agent wants to run"

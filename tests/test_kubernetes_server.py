@@ -133,3 +133,47 @@ async def test_pod_logs_retries_restart_race(
         core.read_namespaced_pod_log.return_value = gone
         with pytest.raises(ToolError, match="being replaced"):
             await c.call_tool("pod_logs", {"namespace": "shop", "name": "p"})
+
+
+@pytest.mark.anyio
+async def test_rollout_history_shows_config_diff(settings: Settings, fake_cluster: Any) -> None:
+    from kubernetes import client as k
+
+    def rs(rev: str, env: list[str]) -> Any:
+        return k.V1ReplicaSet(
+            metadata=k.V1ObjectMeta(
+                name=f"checkout-{rev}",
+                annotations={"deployment.kubernetes.io/revision": rev},
+                owner_references=[
+                    k.V1OwnerReference(
+                        api_version="apps/v1", kind="Deployment", name="checkout", uid="dep1"
+                    )
+                ],
+            ),
+            spec=k.V1ReplicaSetSpec(
+                selector=k.V1LabelSelector(),
+                template=k.V1PodTemplateSpec(
+                    spec=k.V1PodSpec(
+                        containers=[
+                            k.V1Container(
+                                name="app",
+                                image="shop/checkout:1.4.0",
+                                env=[k.V1EnvVar(name=n, value="secret-value") for n in env],
+                            )
+                        ]
+                    )
+                ),
+            ),
+            status=k.V1ReplicaSetStatus(replicas=1),
+        )
+
+    fake_cluster[1].list_namespaced_replica_set.return_value = k.V1ReplicaSetList(
+        items=[rs("1", ["DATABASE_URL"]), rs("2", [])]
+    )
+    async with Client(kubernetes.build_server(settings, *fake_cluster)) as c:
+        out = (
+            await c.call_tool("describe_deployment", {"namespace": "shop", "name": "checkout"})
+        ).structured_content
+    history = {h["revision"]: h["config"]["app"]["env"] for h in out["rollout_history"]}
+    assert history == {"2": [], "1": ["DATABASE_URL"]}
+    assert "secret-value" not in str(out)

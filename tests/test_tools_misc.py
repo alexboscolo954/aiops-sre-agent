@@ -82,12 +82,17 @@ async def test_runbooks_match_alert_and_block_paths(tmp_path: Path) -> None:
     (tmp_path / "crashloop.md").write_text(
         "---\ntitle: Crash looping\nalerts: [KubePodCrashLooping]\n---\nRead previous logs.\n"
     )
+    (tmp_path / "oom.md").write_text(
+        "---\ntitle: OOM\nalerts: [KubePodCrashLooping, ContainerOOMKilled]\n---\nCheck limits.\n"
+    )
     settings = Settings(_env_file=None, runbooks_dir=tmp_path)
     async with Client(runbooks.build_server(settings)) as c:
         hit = (
             await c.call_tool("runbook_for_alert", {"alertname": "KubePodCrashLooping"})
         ).structured_content
-        assert hit["name"] == "crashloop" and "previous logs" in hit["content"]
+        names = [b["name"] for b in hit["runbooks"]]
+        assert names == ["crashloop", "oom"], names
+        assert "previous logs" in hit["runbooks"][0]["content"]
         found = (await c.call_tool("search_runbooks", {"keywords": "logs"})).structured_content
         assert found["result"][0]["name"] == "crashloop"
         with pytest.raises(ToolError, match="unknown runbook"):
