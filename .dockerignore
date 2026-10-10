@@ -1,0 +1,10 @@
+.venv
+.git
+.github
+**/__pycache__
+.*_cache
+tests
+evals
+demo
+deploy
+recordings

@@ -1,7 +1,7 @@
 CLUSTER := aiops
 CTX     := kind-$(CLUSTER)
 
-.PHONY: lint test cluster demo integration down
+.PHONY: lint test cluster demo integration image deploy-smoke rbac-check down
 
 lint:
 	uv run ruff check .
@@ -22,6 +22,14 @@ demo: ## broken workloads in namespace demo; checkout breaks via a rollout
 
 integration: ## real MCP tools against the kind demo (never another context)
 	AIOPS_KUBE_CONTEXT=$(CTX) AIOPS_NAMESPACES=demo uv run pytest -m integration -v
+
+image:
+	docker build -t aiops-sre-agent:ci .
+
+deploy-smoke: image ## real image + shipped manifests on kind
+	kind load docker-image aiops-sre-agent:ci --name $(CLUSTER)
+	./demo/deploy-smoke.sh $(CTX)
+	./demo/rbac-check.sh $(CTX)
 
 down:
 	kind delete cluster --name $(CLUSTER)

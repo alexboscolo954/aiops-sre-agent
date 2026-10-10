@@ -1,0 +1,13 @@
+# Opt-in: let the agent restart / scale deployments (each call still needs
+# human approval). Apply with: kubectl apply -k deploy/actions
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../base
+  - rbac-actions.yaml
+patches:
+  - target: {kind: Deployment, name: aiops-agent}
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value: {name: AIOPS_ENABLE_ACTIONS, value: "true"}

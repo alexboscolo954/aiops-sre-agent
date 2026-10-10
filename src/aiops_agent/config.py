@@ -36,6 +36,7 @@ class Settings(BaseSettings):
 
     # Webhook server.
     api_token: SecretStr | None = None
+    max_concurrent_triages: int = 3  # alert storms queue instead of fanning out
     slack_webhook_url: SecretStr | None = None
 
     @field_validator("namespaces", mode="before")

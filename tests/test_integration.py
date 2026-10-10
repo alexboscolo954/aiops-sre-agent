@@ -26,8 +26,8 @@ def live() -> Settings:
     return Settings(_env_file=None, kube_context=ctx, namespaces=["demo"])
 
 
-async def tool(client: Client, name: str, **args: Any) -> Any:  # type: ignore[type-arg]
-    result = await client.call_tool(name, args)
+async def tool(client: Client, tool_name: str, /, **args: Any) -> Any:  # type: ignore[type-arg]
+    result = await client.call_tool(tool_name, args)
     return result.structured_content or result.content[0].text
 
 

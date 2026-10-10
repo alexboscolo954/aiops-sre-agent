@@ -1,0 +1,27 @@
+# Only what restart_deployment and scale_deployment need, per namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aiops-actions
+  namespace: demo
+rules:
+  - apiGroups: ["apps"]
+    resources: [deployments]
+    verbs: [patch]
+  - apiGroups: ["apps"]
+    resources: [deployments/scale]
+    verbs: [patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aiops-actions
+  namespace: demo
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: aiops-actions
+subjects:
+  - kind: ServiceAccount
+    name: aiops-agent
+    namespace: aiops

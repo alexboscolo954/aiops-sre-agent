@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aiops-agent
+  namespace: aiops
+  labels: {app: aiops-agent}
+spec:
+  replicas: 1                 # state is in memory; see api.py
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app: aiops-agent}
+  template:
+    metadata:
+      labels: {app: aiops-agent}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+    spec:
+      serviceAccountName: aiops-agent
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: agent
+          image: ghcr.io/alexboscolo954/aiops-sre-agent:0.1.0
+          args: [serve, --port, "8080"]
+          env:
+            - {name: AIOPS_IN_CLUSTER, value: "true"}
+            - {name: HOME, value: /tmp}   # read-only root fs
+            - {name: AIOPS_NAMESPACES, value: demo}
+            - {name: AIOPS_MODEL, value: "anthropic:claude-sonnet-5-5"}
+            - {name: AIOPS_PROMETHEUS_URL, value: "http://prometheus-operated.monitoring:9090"}
+            - {name: AIOPS_RUNBOOKS_DIR, value: /app/runbooks}
+          envFrom:
+            - secretRef: {name: aiops-secrets}
+          ports:
+            - {name: http, containerPort: 8080}
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 20
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {memory: 512Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aiops-agent
+  namespace: aiops
+spec:
+  selector: {app: aiops-agent}
+  ports:
+    - {name: http, port: 8080, targetPort: http}

@@ -1,0 +1,188 @@
+"""Alertmanager webhook receiver.
+
+POST /alertmanager              Alertmanager webhook (bearer token). Starts a triage.
+GET  /triages[/{id}]            Status, report, and actions waiting for approval.
+POST /triages/{id}/decision     Approve or reject the pending actions.
+GET  /healthz, /metrics
+
+ponytail: triage state, dedup and the LangGraph checkpointer live in memory, so
+run a single replica. For HA, swap InMemorySaver for a Postgres checkpointer
+and the dicts below for that same database.
+"""
+
+import asyncio
+import hashlib
+import logging
+import secrets
+import time
+import uuid
+from contextlib import asynccontextmanager
+from typing import Any, Literal
+
+import httpx
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from langchain_core.language_models import BaseChatModel
+from langgraph.checkpoint.memory import InMemorySaver
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+from pydantic import BaseModel
+
+from aiops_agent import agent
+from aiops_agent.config import Settings
+from aiops_agent.models import AlertGroup, TriageReport
+from aiops_agent.observability import PENDING_APPROVALS, TRIAGE_SECONDS, TRIAGES
+
+log = logging.getLogger("aiops.api")
+DEDUP_SECONDS = 30 * 60
+
+
+class Triage(BaseModel):
+    id: str
+    title: str
+    status: Literal["running", "awaiting_approval", "done", "failed"] = "running"
+    started: float
+    report: TriageReport | None = None
+    pending: list[dict[str, Any]] = []
+    error: str | None = None
+
+
+class Decision(BaseModel):
+    approve: bool
+    message: str = ""
+
+
+def slack_text(t: Triage) -> str:
+    if t.report:
+        body = t.report.to_markdown().replace("**", "*").replace("## ", "*")
+    elif t.pending:
+        body = "Waiting for approval:\n" + "\n".join(f"- {p['description']}" for p in t.pending)
+    else:
+        body = f"Triage failed: {t.error}"
+    return f"*[aiops] {t.title}* (`{t.id}`)\n{body}"
+
+
+def create_app(
+    settings: Settings | None = None,
+    model: BaseChatModel | None = None,
+    mcp_factory: Any = None,
+) -> FastAPI:
+    settings = settings or Settings()
+    if not settings.api_token:
+        raise RuntimeError("AIOPS_API_TOKEN must be set: the webhook and approvals need auth")
+    token = settings.api_token.get_secret_value()
+    model = model or agent.build_model(settings)
+    mcp_factory = mcp_factory or (lambda: agent.build_mcp(settings))
+    checkpointer = InMemorySaver()
+    triages: dict[str, Triage] = {}
+    recent: dict[str, tuple[float, str]] = {}  # dedup key -> (time, triage id)
+    slots = asyncio.Semaphore(settings.max_concurrent_triages)
+    tasks: set[asyncio.Task[None]] = set()
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> Any:
+        yield
+        for task in tasks:
+            task.cancel()
+
+    app = FastAPI(title="aiops-sre-agent", lifespan=lifespan)
+    bearer = HTTPBearer()
+
+    def auth(creds: HTTPAuthorizationCredentials = Depends(bearer)) -> None:  # noqa: B008
+        if not secrets.compare_digest(creds.credentials, token):
+            raise HTTPException(401, "invalid token")
+
+    async def notify(t: Triage) -> None:
+        log.info("triage %s %s", t.id, t.status)
+        if not settings.slack_webhook_url:
+            return
+        try:
+            async with httpx.AsyncClient(timeout=10) as http:
+                await http.post(
+                    settings.slack_webhook_url.get_secret_value(), json={"text": slack_text(t)}
+                )
+        except httpx.HTTPError as e:
+            log.warning("slack notification failed: %s", e)
+
+    def apply(t: Triage, outcome: agent.Outcome) -> None:
+        t.report, t.pending = outcome.report, outcome.pending
+        t.status = "done" if outcome.done else "awaiting_approval"
+
+    async def run(t: Triage, step: Any) -> None:
+        async with slots:
+            try:
+                async with agent.open_agent(settings, model, checkpointer, mcp_factory()) as a:
+                    apply(t, await step(a))
+            except Exception as e:  # report every failure, never lose an alert silently
+                log.exception("triage %s failed", t.id)
+                t.status, t.error = "failed", f"{type(e).__name__}: {e}"
+        PENDING_APPROVALS.set(sum(len(x.pending) for x in triages.values()))
+        if t.status != "awaiting_approval":
+            TRIAGES.labels(t.status).inc()
+            TRIAGE_SECONDS.observe(time.time() - t.started)
+        await notify(t)
+
+    def spawn(coro: Any) -> None:
+        task = asyncio.create_task(coro)
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+
+    @app.post("/alertmanager", status_code=202, dependencies=[Depends(auth)])
+    async def alertmanager(group: AlertGroup) -> dict[str, Any]:
+        if not group.firing:
+            return {"status": "ignored", "reason": "no firing alerts"}
+        fingerprints = ",".join(sorted(a.fingerprint for a in group.firing))
+        key = hashlib.sha256(f"{group.groupKey}|{fingerprints}".encode()).hexdigest()
+        now = time.time()
+        for k, (seen, _) in list(recent.items()):
+            if now - seen > DEDUP_SECONDS:
+                del recent[k]
+        if key in recent:  # Alertmanager re-sends on every repeat_interval
+            return {"status": "duplicate", "triage": recent[key][1]}
+
+        t = Triage(id=str(uuid.uuid4()), title=group.title, started=now)
+        triages[t.id] = t
+        recent[key] = (now, t.id)
+        spawn(run(t, lambda a: agent.start(a, group, t.id)))
+        return {"status": "accepted", "triage": t.id}
+
+    @app.get("/triages", dependencies=[Depends(auth)])
+    async def list_triages() -> list[Triage]:
+        return sorted(triages.values(), key=lambda t: t.started, reverse=True)[:50]
+
+    @app.get("/triages/{triage_id}", dependencies=[Depends(auth)])
+    async def get_triage(triage_id: str) -> Triage:
+        if triage_id not in triages:
+            raise HTTPException(404, "unknown triage")
+        return triages[triage_id]
+
+    @app.post("/triages/{triage_id}/decision", status_code=202, dependencies=[Depends(auth)])
+    async def decide(triage_id: str, decision: Decision) -> dict[str, str]:
+        t = triages.get(triage_id)
+        if t is None:
+            raise HTTPException(404, "unknown triage")
+        if t.status != "awaiting_approval":
+            raise HTTPException(409, f"triage is {t.status}, nothing to decide")
+        if decision.approve:
+            decisions: list[dict[str, Any]] = [{"type": "approve"} for _ in t.pending]
+        else:
+            msg = decision.message or "Rejected by the on-call engineer. Do not retry."
+            decisions = [{"type": "reject", "message": msg} for _ in t.pending]
+        log.info(
+            "triage %s decision approve=%s actions=%s",
+            t.id,
+            decision.approve,
+            [p["name"] for p in t.pending],
+        )
+        t.status, t.pending = "running", []
+        spawn(run(t, lambda a: agent.resume(a, t.id, decisions)))
+        return {"status": "resumed"}
+
+    @app.get("/healthz")
+    async def healthz() -> dict[str, str]:
+        return {"status": "ok"}
+
+    @app.get("/metrics")
+    async def metrics(request: Request) -> Response:
+        return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+    return app
