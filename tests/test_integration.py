@@ -28,7 +28,10 @@ def live() -> Settings:
 
 async def tool(client: Client, tool_name: str, /, **args: Any) -> Any:  # type: ignore[type-arg]
     result = await client.call_tool(tool_name, args)
-    return result.structured_content or result.content[0].text
+    data = result.structured_content
+    if isinstance(data, dict) and set(data) == {"result"} and isinstance(data["result"], str):
+        return data["result"]  # str-returning tools are wrapped by FastMCP
+    return data or result.content[0].text
 
 
 def by_app(pods: list[dict[str, Any]], app: str) -> list[dict[str, Any]]:
