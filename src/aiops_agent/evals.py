@@ -27,10 +27,13 @@ from aiops_agent.servers import kubernetes, runbooks
 
 class Replay(Middleware):
     """Answer tool calls from a recording. A recording is either one result for the
-    tool, or a list of {match: {arg: value}, result: ...} tried in order."""
+    tool, or a list of {match: {arg: value}, result: ...} tried in order.
+    {"error": "..."} replays a tool error. Tools under `passthrough` prefixes
+    (runbooks) run for real."""
 
-    def __init__(self, recordings: dict[str, Any]) -> None:
+    def __init__(self, recordings: dict[str, Any], passthrough: tuple[str, ...] = ()) -> None:
         self.recordings = recordings
+        self.passthrough = passthrough
 
     def lookup(self, tool: str, args: dict[str, Any]) -> Any:
         rec = self.recordings.get(tool)
@@ -42,9 +45,11 @@ class Replay(Middleware):
         return rec
 
     async def on_call_tool(self, context: MiddlewareContext[Any], call_next: Any) -> Any:
+        if context.message.name.startswith(self.passthrough):
+            return await call_next(context)
         found = self.lookup(context.message.name, context.message.arguments or {})
-        if found is None:
-            text = "no recorded data for this call"
+        if found is None or (isinstance(found, dict) and set(found) == {"error"}):
+            text = found["error"] if found else "no recorded data for this call"
             return ToolResult(content=[TextContent(type="text", text=text)], is_error=True)
         # Same shape FastMCP produces: dicts as-is, anything else wrapped in "result".
         structured = found if isinstance(found, dict) else {"result": found}
@@ -60,13 +65,15 @@ def replay_server(settings: Settings, recordings: dict[str, Any]) -> FastMCP:
     root.mount(kubernetes.build_server(settings, MagicMock(), MagicMock()), namespace="kubernetes")
     if settings.runbooks_dir.is_dir():
         root.mount(runbooks.build_server(settings), namespace="runbooks")
-    root.add_middleware(Replay(recordings))
+    root.add_middleware(Replay(recordings, passthrough=("runbooks_",)))
     return root
 
 
 def score(scenario: dict[str, Any], outcome: agent.Outcome) -> list[str]:
     """Return the list of failed checks (empty = pass)."""
     expect, report, failures = scenario["expect"], outcome.report, []
+    if outcome.pending:
+        return [f"attempted write action: {[p['name'] for p in outcome.pending]}"]
     if report is None:
         return ["no report"]
     if report.category not in expect["category"]:
@@ -88,7 +95,11 @@ async def run(directory: Path, settings: Settings) -> list[dict[str, Any]]:
     results = []
     for path, scenario in load_scenarios(directory):
         s = settings.model_copy(
-            update={"namespaces": [scenario["namespace"]], "kube_context": "replay"}
+            update={
+                "namespaces": [scenario["namespace"]],
+                "kube_context": "replay",
+                "enable_actions": scenario.get("enable_actions", False),
+            }
         )
         group = AlertGroup.model_validate(scenario["alert"])
         start = time.monotonic()

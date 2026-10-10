@@ -123,7 +123,13 @@ async def test_pod_logs_retries_restart_race(
     async with Client(kubernetes.build_server(settings, *fake_cluster)) as c:
         result = await c.call_tool("pod_logs", {"namespace": "shop", "name": "p", "previous": True})
         assert "DATABASE_URL" in result.content[0].text
+        # previous gone for good (GC'd while in CrashLoopBackOff): fall back to current
+        gone = "unable to retrieve container logs for x"
+        core.read_namespaced_pod_log.side_effect = [gone, gone, gone, "FATAL: boom"]
+        result = await c.call_tool("pod_logs", {"namespace": "shop", "name": "p", "previous": True})
+        assert "FATAL: boom" in result.content[0].text
+        assert "previous instance's logs are gone" in result.content[0].text
         core.read_namespaced_pod_log.side_effect = None
-        core.read_namespaced_pod_log.return_value = "unable to retrieve container logs for x"
-        with pytest.raises(ToolError, match="restarting right now"):
-            await c.call_tool("pod_logs", {"namespace": "shop", "name": "p", "previous": True})
+        core.read_namespaced_pod_log.return_value = gone
+        with pytest.raises(ToolError, match="being replaced"):
+            await c.call_tool("pod_logs", {"namespace": "shop", "name": "p"})
