@@ -162,7 +162,7 @@ Results from 2026-10-10, model `claude-sonnet-5-5`. Raw JSON and every report ar
 
 The pass/fail checks never changed between runs. What changed was the tool code, because reading the reports showed two real gaps:
 - **Run 1 → 2:** `runbook_for_alert` returned only the first matching runbook. `KubePodCrashLooping` maps to both the crash-loop and the OOM runbook, and the agent pointed out it had been handed the wrong one. The tool now returns every match.
-- **Run 2 → 3:** on the bad rollout, the agent lowered its confidence to *medium* because rollout history showed images but not config, so it "could not see revision 1's spec". Rollout history now includes env var names per revision, and the same scenario now reaches *high* confidence in one fewer call.
+- **Run 2 → 3:** on the bad rollout, the agent lowered its confidence to *medium* because rollout history showed images but not config, so it "could not see revision 1's spec". Rollout history now includes env var names per revision. The cluster was re-recorded in CI to capture the new field, and the same scenario now reaches *high* confidence in one fewer call.
 
 Four scenarios is a smoke test for triage quality, not a benchmark. Add scenarios by recording new failures on kind (`AIOPS_RECORD_DIR=recordings make integration`).
 
