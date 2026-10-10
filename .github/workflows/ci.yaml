@@ -1,0 +1,42 @@
+name: ci
+on:
+  push: {branches: [main]}
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+      - run: uv sync --locked
+      - run: make lint
+      - run: make test
+
+  integration:
+    # Real MCP tools + a scripted agent run against broken workloads on kind.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+      - run: uv sync --locked
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: aiops
+          config: demo/kind.yaml
+      - run: make demo
+      - run: make integration
+        env:
+          AIOPS_RECORD_DIR: recordings
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: recordings
+          path: recordings/
+          if-no-files-found: ignore
+      - if: failure()
+        run: kubectl -n demo get pods -o wide && kubectl -n demo get events

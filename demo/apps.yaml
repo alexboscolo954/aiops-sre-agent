@@ -1,0 +1,87 @@
+# Three workloads that fail in three classic ways. `make demo` applies them,
+# then breaks checkout with a config rollout so its history shows the change.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: demo
+---
+# 1. Crash loop after a bad rollout: revision 2 drops a required env var.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: checkout
+  namespace: demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: checkout}
+  template:
+    metadata:
+      labels: {app: checkout}
+    spec:
+      containers:
+        - name: app
+          image: python:3.12-alpine
+          command: ["python", "-u", "-c"]
+          args:
+            - |
+              import os, sys, time
+              print("checkout starting, version 1.4.0")
+              url = os.environ.get("DATABASE_URL")
+              if not url:
+                  print("FATAL: required env var DATABASE_URL is not set", file=sys.stderr)
+                  sys.exit(1)
+              print("connected to database"); time.sleep(10**6)
+          env:
+            - {name: DATABASE_URL, value: "postgres://checkout@db.demo:5432/shop"}
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {memory: 64Mi}
+---
+# 2. OOM killed: the batch job needs ~200Mi, the limit is 48Mi.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reports
+  namespace: demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: reports}
+  template:
+    metadata:
+      labels: {app: reports}
+    spec:
+      containers:
+        - name: app
+          image: python:3.12-alpine
+          command: ["python", "-u", "-c"]
+          args:
+            - |
+              import time
+              print("building monthly report: loading 200MB of rows")
+              rows = bytearray(200 * 1024 * 1024)
+              print("report done"); time.sleep(10**6)
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {memory: 48Mi}
+---
+# 3. Image pull failure: the tag was never pushed.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: frontend}
+  template:
+    metadata:
+      labels: {app: frontend}
+    spec:
+      containers:
+        - name: web
+          image: nginx:1.99.99-does-not-exist
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
