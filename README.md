@@ -81,6 +81,8 @@ kubectl apply -k deploy/base        # read-only
 kubectl apply -k deploy/actions     # optional: evict / scale, still behind approval
 ```
 
+The image is published to GHCR on version tags. To use your own build, `cd deploy/base && kustomize edit set image ghcr.io/alexboscolo954/aiops-sre-agent=<your-image>`.
+
 Point Alertmanager at it with [`deploy/alertmanager-receiver.yaml`](deploy/alertmanager-receiver.yaml).
 
 | Endpoint | Token | |
@@ -116,7 +118,7 @@ uv run aiops mcp prometheus --transport http --port 8765
 
 | Layer | What it proves | Where |
 |---|---|---|
-| Unit (no cluster, no LLM) | Tool behavior, redaction, allowlist, approval policy. **A rejected action never reaches the API.** Webhook auth, dedup, approval over HTTP. | `make test` |
+| Unit (no cluster, no LLM) | Tool behavior (Prometheus against a mocked API), redaction, allowlist, approval policy. **A rejected action never reaches the API.** Webhook auth, dedup, approval over HTTP. | `make test` |
 | Integration (kind, CI) | Real tools find all three failures. The allowlist holds on a real API server. A scripted agent completes a triage through real tools. | `make integration` |
 | Deploy smoke (kind, CI) | The real image under the shipped manifests: starts hardened, auth rejects bad tokens, RBAC is least privilege for both modes | `make deploy-smoke` |
 | Evals (real LLM, recorded data) | Triage quality on scenarios recorded from the kind demo, replayed through the real MCP tool definitions | `uv run aiops eval` |
