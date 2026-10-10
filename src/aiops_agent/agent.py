@@ -99,6 +99,8 @@ def build_model(settings: Settings) -> BaseChatModel:
         kwargs["base_url"] = settings.model_base_url
     if settings.model_api_key:
         kwargs["api_key"] = settings.model_api_key.get_secret_value()
+    if settings.model_headers:
+        kwargs["default_headers"] = settings.model_headers
     model: BaseChatModel = init_chat_model(settings.model, **kwargs)
     return model
 

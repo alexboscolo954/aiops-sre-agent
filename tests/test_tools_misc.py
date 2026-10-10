@@ -108,3 +108,12 @@ def test_example_alert_parses() -> None:
     path = Path(__file__).parent.parent / "examples" / "alert-crashloop.json"
     group = AlertGroup.model_validate(json.loads(path.read_text()))
     assert group.firing and group.title.startswith("KubePodCrashLooping")
+
+
+def test_model_headers_reach_the_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    from aiops_agent.agent import build_model
+
+    monkeypatch.setenv("AIOPS_MODEL_HEADERS", '{"anthropic-workspace-id": "wrkspc_test"}')
+    s = Settings(_env_file=None, model_api_key="sk-ant-test")  # type: ignore[arg-type]
+    model = build_model(s)
+    assert model.default_headers == {"anthropic-workspace-id": "wrkspc_test"}  # type: ignore[attr-defined]

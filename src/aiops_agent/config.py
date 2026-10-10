@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     model: str = "anthropic:claude-sonnet-5-5"
     model_base_url: str | None = None
     model_api_key: SecretStr | None = None
+    model_headers: dict[str, str] = {}  # JSON, e.g. {"anthropic-workspace-id": "..."}
     max_model_calls: int = 30
     max_tool_calls: int = 25
     tool_output_limit: int = 8000  # max characters per tool result
