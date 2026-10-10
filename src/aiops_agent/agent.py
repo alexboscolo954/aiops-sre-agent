@@ -94,7 +94,7 @@ def build_mcp(settings: Settings) -> FastMCP:
 
 
 def build_model(settings: Settings) -> BaseChatModel:
-    kwargs: dict[str, Any] = {"temperature": 0}
+    kwargs: dict[str, Any] = {}  # provider defaults; some models reject temperature
     if settings.model_base_url:
         kwargs["base_url"] = settings.model_base_url
     if settings.model_api_key:
