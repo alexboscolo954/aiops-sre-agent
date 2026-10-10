@@ -1,16 +1,17 @@
-# Only what restart_deployment and scale_deployment need, per namespace.
+# Only what evict_pod and scale_deployment need, per namespace. Deliberately NOT
+# `patch deployments`: that would let the agent change images and commands.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: aiops-actions
   namespace: demo
 rules:
-  - apiGroups: ["apps"]
-    resources: [deployments]
-    verbs: [patch]
+  - apiGroups: [""]
+    resources: [pods/eviction]
+    verbs: [create]
   - apiGroups: ["apps"]
     resources: [deployments/scale]
-    verbs: [patch]
+    verbs: [get, patch]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

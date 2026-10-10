@@ -73,7 +73,7 @@ async def test_write_tools_absent_unless_enabled(settings: Settings, fake_cluste
     async with Client(kubernetes.build_server(settings, *fake_cluster)) as c:
         names = {t.name for t in await c.list_tools()}
     assert "list_pods" in names
-    assert not names & {"restart_deployment", "scale_deployment"}
+    assert not names & {"evict_pod", "scale_deployment"}
 
 
 @pytest.mark.anyio
@@ -89,6 +89,41 @@ async def test_write_tools_marked_destructive_and_bounded(
             await c.call_tool(
                 "scale_deployment", {"namespace": "shop", "name": "checkout", "replicas": 500}
             )
-        await c.call_tool("restart_deployment", {"namespace": "shop", "name": "checkout"})
-    patch = fake_cluster[1].patch_namespaced_deployment.call_args.args[2]
-    assert "kubectl.kubernetes.io/restartedAt" in str(patch)
+        await c.call_tool("evict_pod", {"namespace": "shop", "name": "checkout-7d9f-abc"})
+    fake_cluster[0].create_namespaced_pod_eviction.assert_called_once()
+
+
+@pytest.mark.anyio
+async def test_evict_refuses_bare_pods_and_reports_pdb(
+    settings: Settings, fake_cluster: Any
+) -> None:
+    from kubernetes.client.exceptions import ApiException
+
+    settings.enable_actions = True
+    core = fake_cluster[0]
+    async with Client(kubernetes.build_server(settings, *fake_cluster)) as c:
+        core.create_namespaced_pod_eviction.side_effect = ApiException(status=429)
+        with pytest.raises(ToolError, match="PodDisruptionBudget"):
+            await c.call_tool("evict_pod", {"namespace": "shop", "name": "checkout-7d9f-abc"})
+        core.read_namespaced_pod.return_value.metadata.owner_references = None
+        with pytest.raises(ToolError, match="no controller"):
+            await c.call_tool("evict_pod", {"namespace": "shop", "name": "checkout-7d9f-abc"})
+
+
+@pytest.mark.anyio
+async def test_pod_logs_retries_restart_race(
+    settings: Settings, fake_cluster: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(kubernetes, "LOG_RETRY_SECONDS", 0)
+    core = fake_cluster[0]
+    core.read_namespaced_pod_log.side_effect = [
+        "unable to retrieve container logs for containerd://abc",
+        "FATAL: DATABASE_URL is not set",
+    ]
+    async with Client(kubernetes.build_server(settings, *fake_cluster)) as c:
+        result = await c.call_tool("pod_logs", {"namespace": "shop", "name": "p", "previous": True})
+        assert "DATABASE_URL" in result.content[0].text
+        core.read_namespaced_pod_log.side_effect = None
+        core.read_namespaced_pod_log.return_value = "unable to retrieve container logs for x"
+        with pytest.raises(ToolError, match="restarting right now"):
+            await c.call_tool("pod_logs", {"namespace": "shop", "name": "p", "previous": True})

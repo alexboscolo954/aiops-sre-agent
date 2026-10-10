@@ -74,6 +74,7 @@ def main(argv: list[str] | None = None) -> int:
     e = sub.add_parser("eval", help="score the agent on recorded scenarios")
     e.add_argument("scenarios", type=Path, nargs="?", default=Path("evals/scenarios"))
     e.add_argument("--json", action="store_true")
+    e.add_argument("--out", type=Path, help="write each report as markdown here")
 
     args = parser.parse_args(argv)
     if args.cmd == "triage":
@@ -88,6 +89,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "eval":
         results = asyncio.run(evals.run(args.scenarios, Settings()))
+        if args.out:
+            args.out.mkdir(parents=True, exist_ok=True)
+            for r in results:
+                calls = "\n".join(f"{i}. `{c}`" for i, c in enumerate(r["calls"], 1))
+                body = f"{r['report']}\n\n**Tool calls**\n{calls}\n"
+                (args.out / f"{r['scenario']}.md").write_text(body)
         print(json.dumps(results, indent=2) if args.json else evals.table(results))
         return 0 if all(r["passed"] for r in results) else 1
     return 2

@@ -30,6 +30,8 @@ deploy-smoke: image ## real image + shipped manifests on kind
 	kind load docker-image aiops-sre-agent:ci --name $(CLUSTER)
 	./demo/deploy-smoke.sh $(CTX)
 	./demo/rbac-check.sh $(CTX)
+	kubectl --context $(CTX) apply -f deploy/actions/rbac-actions.yaml
+	./demo/rbac-check.sh $(CTX) true
 
 down:
 	kind delete cluster --name $(CLUSTER)

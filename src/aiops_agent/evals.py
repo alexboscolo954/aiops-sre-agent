@@ -96,17 +96,19 @@ async def run(directory: Path, settings: Settings) -> list[dict[str, Any]]:
             async with agent.open_agent(s, mcp=replay_server(s, scenario["tools"])) as a:
                 outcome = await agent.start(a, group, f"eval-{path.stem}")
             failures = score(scenario, outcome)
-            calls, category = outcome.tool_calls, outcome.report and outcome.report.category
+            calls, report = outcome.tool_calls, outcome.report
         except agent.TriageError as e:
-            failures, calls, category = [str(e)], [], None
+            failures, calls, report = [str(e)], [], None
         results.append(
             {
                 "scenario": path.stem,
                 "passed": not failures,
                 "failures": failures,
-                "category": category,
+                "category": report.category if report else None,
                 "tool_calls": len(calls),
                 "seconds": round(time.monotonic() - start, 1),
+                "calls": calls,
+                "report": report.to_markdown() if report else None,
             }
         )
     return results

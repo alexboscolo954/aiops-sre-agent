@@ -18,9 +18,10 @@ check no  list configmaps demo
 check no  delete pods demo
 check no  delete deployments.apps demo
 if [[ "$actions" == true ]]; then
-  check yes patch deployments.apps demo
+  check yes create pods/eviction demo
   check yes patch deployments.apps/scale demo
-  check no  patch deployments.apps kube-system
+  check no  patch deployments.apps demo
+  check no  create pods/eviction kube-system
 else
   check no  patch deployments.apps demo
 fi

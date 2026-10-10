@@ -35,7 +35,10 @@ class Settings(BaseSettings):
     runbooks_dir: Path = Path("runbooks")
 
     # Webhook server.
-    api_token: SecretStr | None = None
+    # Two tokens: Alertmanager can only submit alerts; only approvers can read
+    # reports and approve actions.
+    webhook_token: SecretStr | None = None
+    approver_token: SecretStr | None = None
     max_concurrent_triages: int = 3  # alert storms queue instead of fanning out
     slack_webhook_url: SecretStr | None = None
 

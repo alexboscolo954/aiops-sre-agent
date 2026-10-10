@@ -1,8 +1,8 @@
 """Alertmanager webhook receiver.
 
-POST /alertmanager              Alertmanager webhook (bearer token). Starts a triage.
-GET  /triages[/{id}]            Status, report, and actions waiting for approval.
-POST /triages/{id}/decision     Approve or reject the pending actions.
+POST /alertmanager              Alertmanager webhook (webhook token). Starts a triage.
+GET  /triages[/{id}]            Status, report, pending actions (approver token).
+POST /triages/{id}/decision     Approve or reject pending actions (approver token).
 GET  /healthz, /metrics
 
 ponytail: triage state, dedup and the LangGraph checkpointer live in memory, so
@@ -67,9 +67,12 @@ def create_app(
     mcp_factory: Any = None,
 ) -> FastAPI:
     settings = settings or Settings()
-    if not settings.api_token:
-        raise RuntimeError("AIOPS_API_TOKEN must be set: the webhook and approvals need auth")
-    token = settings.api_token.get_secret_value()
+    if not (settings.webhook_token and settings.approver_token):
+        raise RuntimeError("set AIOPS_WEBHOOK_TOKEN and AIOPS_APPROVER_TOKEN")
+    webhook_token = settings.webhook_token.get_secret_value()
+    approver_token = settings.approver_token.get_secret_value()
+    if secrets.compare_digest(webhook_token, approver_token):
+        raise RuntimeError("AIOPS_WEBHOOK_TOKEN and AIOPS_APPROVER_TOKEN must differ")
     model = model or agent.build_model(settings)
     mcp_factory = mcp_factory or (lambda: agent.build_mcp(settings))
     checkpointer = InMemorySaver()
@@ -87,9 +90,15 @@ def create_app(
     app = FastAPI(title="aiops-sre-agent", lifespan=lifespan)
     bearer = HTTPBearer()
 
-    def auth(creds: HTTPAuthorizationCredentials = Depends(bearer)) -> None:  # noqa: B008
-        if not secrets.compare_digest(creds.credentials, token):
+    def check(creds: HTTPAuthorizationCredentials, expected: str) -> None:
+        if not secrets.compare_digest(creds.credentials.encode(), expected.encode()):
             raise HTTPException(401, "invalid token")
+
+    def webhook_auth(creds: HTTPAuthorizationCredentials = Depends(bearer)) -> None:  # noqa: B008
+        check(creds, webhook_token)
+
+    def approver_auth(creds: HTTPAuthorizationCredentials = Depends(bearer)) -> None:  # noqa: B008
+        check(creds, approver_token)
 
     async def notify(t: Triage) -> None:
         log.info("triage %s %s", t.id, t.status)
@@ -126,7 +135,7 @@ def create_app(
         tasks.add(task)
         task.add_done_callback(tasks.discard)
 
-    @app.post("/alertmanager", status_code=202, dependencies=[Depends(auth)])
+    @app.post("/alertmanager", status_code=202, dependencies=[Depends(webhook_auth)])
     async def alertmanager(group: AlertGroup) -> dict[str, Any]:
         if not group.firing:
             return {"status": "ignored", "reason": "no firing alerts"}
@@ -145,17 +154,19 @@ def create_app(
         spawn(run(t, lambda a: agent.start(a, group, t.id)))
         return {"status": "accepted", "triage": t.id}
 
-    @app.get("/triages", dependencies=[Depends(auth)])
+    @app.get("/triages", dependencies=[Depends(approver_auth)])
     async def list_triages() -> list[Triage]:
         return sorted(triages.values(), key=lambda t: t.started, reverse=True)[:50]
 
-    @app.get("/triages/{triage_id}", dependencies=[Depends(auth)])
+    @app.get("/triages/{triage_id}", dependencies=[Depends(approver_auth)])
     async def get_triage(triage_id: str) -> Triage:
         if triage_id not in triages:
             raise HTTPException(404, "unknown triage")
         return triages[triage_id]
 
-    @app.post("/triages/{triage_id}/decision", status_code=202, dependencies=[Depends(auth)])
+    @app.post(
+        "/triages/{triage_id}/decision", status_code=202, dependencies=[Depends(approver_auth)]
+    )
     async def decide(triage_id: str, decision: Decision) -> dict[str, str]:
         t = triages.get(triage_id)
         if t is None:

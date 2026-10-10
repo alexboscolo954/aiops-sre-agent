@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "k8s-triage": {
+      "command": "uv",
+      "args": ["run", "--directory", "/path/to/aiops-sre-agent", "aiops", "mcp", "kubernetes"],
+      "env": {
+        "AIOPS_KUBE_CONTEXT": "kind-aiops",
+        "AIOPS_NAMESPACES": "demo"
+      }
+    },
+    "runbooks": {
+      "command": "uv",
+      "args": ["run", "--directory", "/path/to/aiops-sre-agent", "aiops", "mcp", "runbooks"],
+      "env": {"AIOPS_RUNBOOKS_DIR": "/path/to/aiops-sre-agent/runbooks"}
+    }
+  }
+}

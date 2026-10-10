@@ -6,7 +6,7 @@ ctx=$1
 k() { kubectl --context "$ctx" "$@"; }
 k create namespace aiops --dry-run=client -o yaml | k apply -f -
 k -n aiops create secret generic aiops-secrets \
-  --from-literal=AIOPS_API_TOKEN=smoke-token --from-literal=AIOPS_MODEL_API_KEY=not-a-real-key \
+  --from-literal=AIOPS_WEBHOOK_TOKEN=smoke-token --from-literal=AIOPS_APPROVER_TOKEN=smoke-approver --from-literal=AIOPS_MODEL_API_KEY=not-a-real-key \
   --dry-run=client -o yaml | k apply -f -
 kubectl kustomize deploy/base \
   | sed 's#ghcr.io/alexboscolo954/aiops-sre-agent:0.1.0#aiops-sre-agent:ci#' \
