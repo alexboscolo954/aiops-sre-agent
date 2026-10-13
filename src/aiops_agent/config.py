@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     webhook_token: SecretStr | None = None
     approver_token: SecretStr | None = None
     max_concurrent_triages: int = 3  # alert storms queue instead of fanning out
+    decision_timeout_seconds: int = 1800  # proposed actions go stale after this
     slack_webhook_url: SecretStr | None = None
 
     @field_validator("namespaces", mode="before")

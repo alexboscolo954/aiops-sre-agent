@@ -1,6 +1,7 @@
 """Alertmanager webhook receiver.
 
-POST /alertmanager              Alertmanager webhook (webhook token). Starts a triage.
+POST /alertmanager              Alertmanager webhook (webhook token). Starts a triage,
+                                or makes a resolved group's proposed actions stale.
 GET  /triages[/{id}]            Status, report, pending actions (approver token).
 POST /triages/{id}/decision     Approve or reject pending actions (approver token).
 GET  /healthz, /metrics
@@ -38,6 +39,7 @@ DEDUP_SECONDS = 30 * 60
 class Triage(BaseModel):
     id: str
     title: str
+    group_key: str = ""
     status: Literal["running", "awaiting_approval", "done", "failed"] = "running"
     started: float
     report: TriageReport | None = None
@@ -131,6 +133,26 @@ def create_app(
             TRIAGES.labels(t.status).inc()
             TRIAGE_SECONDS.observe(time.time() - t.started)
         await notify(t)
+        if t.status == "awaiting_approval":
+            spawn(expire(t, t.pending))
+
+    async def expire(t: Triage, pending: list[dict[str, Any]]) -> None:
+        await asyncio.sleep(settings.decision_timeout_seconds)
+        if t.pending is pending:  # still the same pause: nobody decided
+            reject_stale(t, f"No decision within {settings.decision_timeout_seconds}s")
+
+    def resume(t: Triage, decisions: list[dict[str, Any]]) -> None:
+        t.status, t.pending = "running", []
+        spawn(run(t, lambda a: agent.resume(a, t.id, decisions)))
+
+    def reject_stale(t: Triage, reason: str) -> None:
+        """A stale proposed action is rejected automatically; the triage still ends
+        with a report."""
+        if t.status != "awaiting_approval":
+            return
+        log.info("triage %s stale: %s, rejecting %s", t.id, reason, [p["name"] for p in t.pending])
+        msg = f"{reason}. The action was not executed. Do not retry; finish the report."
+        resume(t, [{"type": "reject", "message": msg} for _ in t.pending])
 
     def spawn(coro: Any) -> None:
         task = asyncio.create_task(coro)
@@ -140,6 +162,18 @@ def create_app(
     @app.post("/alertmanager", status_code=202, dependencies=[Depends(webhook_auth)])
     async def alertmanager(group: AlertGroup) -> dict[str, Any]:
         if not group.firing:
+            # ponytail: only triages already paused go stale here. One that pauses after
+            # its group resolved waits for the decision timeout; flag the triage if that
+            # window matters.
+            stale = [
+                t
+                for t in triages.values()
+                if t.group_key == group.groupKey and t.status == "awaiting_approval"
+            ]
+            for t in stale:
+                reject_stale(t, "The alert group resolved before a decision")
+            if stale:
+                return {"status": "stale", "triages": [t.id for t in stale]}
             return {"status": "ignored", "reason": "no firing alerts"}
         firing = {a.fingerprint for a in group.firing}
         now = time.time()
@@ -154,7 +188,7 @@ def create_app(
             if firing <= seen:
                 return {"status": "duplicate", "triage": previous}
 
-        t = Triage(id=str(uuid.uuid4()), title=group.title, started=now)
+        t = Triage(id=str(uuid.uuid4()), title=group.title, group_key=group.groupKey, started=now)
         triages[t.id] = t
         recent[group.groupKey] = (now, t.id, seen | firing)
         spawn(run(t, lambda a: agent.start(a, group, t.id)))
@@ -190,8 +224,7 @@ def create_app(
             decision.approve,
             [p["name"] for p in t.pending],
         )
-        t.status, t.pending = "running", []
-        spawn(run(t, lambda a: agent.resume(a, t.id, decisions)))
+        resume(t, decisions)
         return {"status": "resumed"}
 
     @app.get("/healthz")

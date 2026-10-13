@@ -183,6 +183,7 @@ All settings are `AIOPS_*` environment variables (or `.env`). See [`config.py`](
 | `AIOPS_WEBHOOK_TOKEN` / `AIOPS_APPROVER_TOKEN` | | Required for `serve`, and must differ |
 | `AIOPS_MAX_TOOL_CALLS` / `AIOPS_MAX_MODEL_CALLS` | 25 / 30 | Per run |
 | `AIOPS_MAX_CONCURRENT_TRIAGES` | 3 | Alert storms queue instead of fanning out |
+| `AIOPS_DECISION_TIMEOUT_SECONDS` | 1800 | Proposed actions with no decision by then are rejected as stale. So are those whose alert group resolves, which needs `send_resolved: true` ([`deploy/alertmanager-receiver.yaml`](deploy/alertmanager-receiver.yaml)) |
 
 ## Design notes
 

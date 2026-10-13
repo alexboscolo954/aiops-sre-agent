@@ -3,7 +3,7 @@ receivers:
   - name: aiops-agent
     webhook_configs:
       - url: http://aiops-agent.aiops:8080/alertmanager
-        send_resolved: false
+        send_resolved: true   # a resolved group makes its proposed actions stale
         http_config:
           authorization:
             type: Bearer

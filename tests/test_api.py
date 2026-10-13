@@ -130,3 +130,35 @@ def test_tokens_must_differ(settings: Settings) -> None:
     settings.webhook_token = settings.approver_token = SecretStr("same")
     with pytest.raises(RuntimeError, match="must differ"):
         create_app(settings, scripted())
+
+
+EVICT_THEN_REPORT = [
+    call("kubernetes_evict_pod", "c1", namespace="shop", name="checkout-7d9f-abc"),
+    call("TriageReport", "c2", **REPORT),
+]
+RESOLVED = {**ALERT, "status": "resolved", "alerts": [{**ALERT["alerts"][0], "status": "resolved"}]}
+
+
+def test_resolved_group_makes_proposed_actions_stale(settings: Settings, fake_cluster: Any) -> None:
+    settings.enable_actions = True
+    with client(settings, fake_cluster, *EVICT_THEN_REPORT) as c:
+        tid = c.post("/alertmanager", json=ALERT, headers=HOOK).json()["triage"]
+        wait_for(c, tid, "awaiting_approval")
+        r = c.post("/alertmanager", json=RESOLVED, headers=HOOK).json()
+        assert r == {"status": "stale", "triages": [tid]}
+        assert wait_for(c, tid, "done")["report"] is not None
+        late = c.post(f"/triages/{tid}/decision", json={"approve": True}, headers=AUTH)
+        assert late.status_code == 409
+    fake_cluster[0].create_namespaced_pod_eviction.assert_not_called()
+
+
+def test_proposed_actions_go_stale_without_a_decision(
+    settings: Settings, fake_cluster: Any
+) -> None:
+    settings.enable_actions = True
+    settings.decision_timeout_seconds = 0
+    with client(settings, fake_cluster, *EVICT_THEN_REPORT) as c:
+        tid = c.post("/alertmanager", json=ALERT, headers=HOOK).json()["triage"]
+        t = wait_for(c, tid, "done")
+        assert t["report"] is not None and t["executed_actions"] == []
+    fake_cluster[0].create_namespaced_pod_eviction.assert_not_called()
