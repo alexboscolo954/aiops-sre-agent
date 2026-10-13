@@ -11,7 +11,6 @@ and the dicts below for that same database.
 """
 
 import asyncio
-import hashlib
 import logging
 import secrets
 import time
@@ -78,7 +77,8 @@ def create_app(
     mcp_factory = mcp_factory or (lambda: agent.build_mcp(settings))
     checkpointer = InMemorySaver()
     triages: dict[str, Triage] = {}
-    recent: dict[str, tuple[float, str]] = {}  # dedup key -> (time, triage id)
+    # group key -> (start of its latest triage, that triage's id, every fingerprint seen)
+    recent: dict[str, tuple[float, str, set[str]]] = {}
     slots = asyncio.Semaphore(settings.max_concurrent_triages)
     tasks: set[asyncio.Task[None]] = set()
 
@@ -141,18 +141,22 @@ def create_app(
     async def alertmanager(group: AlertGroup) -> dict[str, Any]:
         if not group.firing:
             return {"status": "ignored", "reason": "no firing alerts"}
-        fingerprints = ",".join(sorted(a.fingerprint for a in group.firing))
-        key = hashlib.sha256(f"{group.groupKey}|{fingerprints}".encode()).hexdigest()
+        firing = {a.fingerprint for a in group.firing}
         now = time.time()
-        for k, (seen, _) in list(recent.items()):
-            if now - seen > DEDUP_SECONDS:
+        for k, (started, _, _) in list(recent.items()):
+            if now - started > DEDUP_SECONDS:
                 del recent[k]
-        if key in recent:  # Alertmanager re-sends on every repeat_interval
-            return {"status": "duplicate", "triage": recent[key][1]}
+        seen: set[str] = set()
+        if group.groupKey in recent:
+            _, previous, seen = recent[group.groupKey]
+            # Alertmanager re-sends on every repeat_interval and when an Alert resolves.
+            # Only an Alert not seen before is new work.
+            if firing <= seen:
+                return {"status": "duplicate", "triage": previous}
 
         t = Triage(id=str(uuid.uuid4()), title=group.title, started=now)
         triages[t.id] = t
-        recent[key] = (now, t.id)
+        recent[group.groupKey] = (now, t.id, seen | firing)
         spawn(run(t, lambda a: agent.start(a, group, t.id)))
         return {"status": "accepted", "triage": t.id}
 

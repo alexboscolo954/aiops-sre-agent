@@ -70,6 +70,22 @@ def test_alert_to_report_and_dedup(settings: Settings, fake_cluster: Any) -> Non
         assert "aiops_tool_calls_total" in c.get("/metrics").text
 
 
+def test_only_a_new_firing_alert_starts_a_new_triage(settings: Settings, fake_cluster: Any) -> None:
+    pod2 = {"status": "firing", "labels": {"pod": "checkout-7d9f-def"}, "fingerprint": "f2"}
+    both = {**ALERT, "alerts": [*ALERT["alerts"], pod2]}
+    only_f2 = {**ALERT, "alerts": [pod2]}
+    steps = [call("TriageReport", "c1", **REPORT), call("TriageReport", "c2", **REPORT)]
+    with client(settings, fake_cluster, *steps) as c:
+        first = c.post("/alertmanager", json=ALERT, headers=HOOK).json()["triage"]
+        wait_for(c, first, "done")
+        grown = c.post("/alertmanager", json=both, headers=HOOK).json()
+        assert grown["status"] == "accepted" and grown["triage"] != first
+        wait_for(c, grown["triage"], "done")
+        for shrunk in (only_f2, ALERT, both):
+            r = c.post("/alertmanager", json=shrunk, headers=HOOK).json()
+            assert r == {"status": "duplicate", "triage": grown["triage"]}
+
+
 def test_resolved_alerts_are_ignored(settings: Settings, fake_cluster: Any) -> None:
     with client(settings, fake_cluster) as c:
         resolved = {
