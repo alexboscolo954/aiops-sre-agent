@@ -64,7 +64,7 @@ def test_alert_to_report_and_dedup(settings: Settings, fake_cluster: Any) -> Non
         r = c.post("/alertmanager", json=ALERT, headers=HOOK).json()
         assert r["status"] == "accepted"
         t = wait_for(c, r["triage"], "done")
-        assert t["report"]["category"] == "oom_killed"
+        assert t["report"]["category"] == "resource_limits"
         again = c.post("/alertmanager", json=ALERT, headers=HOOK).json()
         assert again == {"status": "duplicate", "triage": r["triage"]}
         assert "aiops_tool_calls_total" in c.get("/metrics").text

@@ -16,7 +16,6 @@ alert:
 expect:
   category:
   - bad_rollout
-  - crashloop_bad_config
   keywords:
   - DATABASE_URL
   max_tool_calls: 10

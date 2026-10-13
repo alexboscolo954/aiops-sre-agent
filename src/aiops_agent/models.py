@@ -39,17 +39,16 @@ class AlertGroup(BaseModel):
         return [a for a in self.alerts if a.status == "firing"]
 
 
+# Root cause class, not failure mode (docs/adr/0001-category-is-root-cause-class.md).
 Category = Literal[
-    "crashloop_bad_config",
-    "crashloop_app_error",
-    "oom_killed",
-    "image_pull",
-    "probe_failure",
-    "unschedulable",
-    "resource_saturation",
-    "dependency_failure",
     "bad_rollout",
+    "bad_config",
+    "app_error",
+    "resource_limits",
+    "image_unavailable",
+    "capacity",
     "node_problem",
+    "dependency_failure",
     "unknown",
 ]
 
@@ -63,7 +62,13 @@ class TriageReport(BaseModel):
     """Result of investigating one alert group. Every claim must be backed by evidence."""
 
     summary: str = Field(description="One or two sentences an on-call engineer reads first")
-    category: Category
+    category: Category = Field(
+        description="Why it broke, not how it fails. bad_rollout: a new revision broke a "
+        "workload whose earlier revision worked (wins over the other classes). bad_config: "
+        "wrong or missing config, command or probe. app_error: bug in the code, including "
+        "memory leaks. resource_limits: limits too low for a healthy workload. "
+        "image_unavailable: tag or registry problem. capacity: the cluster can't fit the workload."
+    )
     probable_root_cause: str
     confidence: Literal["high", "medium", "low"] = Field(
         description="high: direct evidence (e.g. the error in logs); low: inferred"

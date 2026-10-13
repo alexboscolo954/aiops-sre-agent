@@ -33,7 +33,7 @@ async def test_replay_server_feeds_the_agent(settings: Settings) -> None:
         settings, model, mcp=evals.replay_server(settings, recordings)
     ) as a:
         outcome = await agent.start(a, group, "e1")
-    scenario: dict[str, Any] = {"expect": {"category": ["oom_killed"], "keywords": ["memory"]}}
+    scenario: dict[str, Any] = {"expect": {"category": ["resource_limits"], "keywords": ["memory"]}}
     assert evals.score(scenario, outcome) == []
     scenario["expect"]["keywords"] = ["DATABASE_URL"]
     assert evals.score(scenario, outcome) == ["root cause misses ['DATABASE_URL']"]

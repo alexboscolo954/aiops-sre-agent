@@ -151,7 +151,7 @@ def call(tool: str, call_id: str, /, **args: Any) -> AIMessage:
 
 REPORT = {
     "summary": "checkout is crash looping: the JVM runs out of memory under a 64Mi limit.",
-    "category": "oom_killed",
+    "category": "resource_limits",
     "probable_root_cause": "Memory limit 64Mi is below the JVM heap requirement.",
     "confidence": "high",
     "severity": "high",

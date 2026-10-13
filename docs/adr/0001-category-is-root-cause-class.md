@@ -1,0 +1,3 @@
+# Category is the root cause class, not the failure mode
+
+A Report's Category says why something broke (`bad_rollout`, `bad_config`, `resource_limits`, ...), not how it fails (`oom_killed`, `image_pull`, crash loop). The alert name already carries the failure mode, and on-call needs the cause class because it maps to a kind of fix: rollback, config change, capacity. When a rollout introduced the fault after an earlier revision that worked, the Category is `bad_rollout`, even if the fault itself is bad config or a bad image. We rejected two alternatives. Classifying by failure mode duplicates the alert name. A two-field failure mode + cause split doubles what every Expectation has to pin down.

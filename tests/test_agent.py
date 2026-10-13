@@ -89,7 +89,7 @@ async def test_triage_produces_report_without_actions(
     async with agent.open_agent(settings, model, mcp=mcp_root(settings, fake_cluster)) as a:
         outcome = await agent.start(a, ALERT, "t1")
     assert outcome.done and outcome.report is not None
-    assert outcome.report.category == "oom_killed"
+    assert outcome.report.category == "resource_limits"
     assert outcome.tool_calls[:2] == ["kubernetes_list_pods", "kubernetes_pod_logs"]
     assert (
         "OOMKilled" in outcome.report.to_markdown() or "OutOfMemory" in outcome.report.to_markdown()
