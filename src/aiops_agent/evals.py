@@ -69,11 +69,39 @@ def replay_server(settings: Settings, recordings: dict[str, Any]) -> FastMCP:
     return root
 
 
+def allowed(expect: dict[str, Any], action: dict[str, Any]) -> bool:
+    """expect.allowed_actions: [{name, args?}], args matched as a subset. Empty by default."""
+    return any(
+        a["name"] == action["name"]
+        and all(action["args"].get(k) == v for k, v in a.get("args", {}).items())
+        for a in expect.get("allowed_actions", [])
+    )
+
+
+async def triage(
+    a: Any, group: AlertGroup, thread_id: str, expect: dict[str, Any]
+) -> tuple[agent.Outcome, list[dict[str, Any]]]:
+    """Start a triage. Allowed proposed actions are recorded, rejected (never executed
+    against the recording) and resumed so the report still gets scored. A disallowed
+    one stops the run and stays pending for score() to fail."""
+    outcome, proposed = await agent.start(a, group, thread_id), []
+    for _ in range(3):  # ponytail: bounded re-proposals; raise if a scenario needs more
+        if not outcome.pending or not all(allowed(expect, p) for p in outcome.pending):
+            break
+        proposed += outcome.pending
+        msg = "Eval: proposal recorded, not executed. Do not retry; finish the report."
+        outcome = await agent.resume(
+            a, thread_id, [{"type": "reject", "message": msg} for _ in outcome.pending]
+        )
+    return outcome, proposed
+
+
 def score(scenario: dict[str, Any], outcome: agent.Outcome) -> list[str]:
     """Return the list of failed checks (empty = pass)."""
     expect, report, failures = scenario["expect"], outcome.report, []
-    if outcome.pending:
-        return [f"attempted write action: {[p['name'] for p in outcome.pending]}"]
+    bad = [p["name"] for p in outcome.pending if not allowed(expect, p)]
+    if bad:
+        return [f"attempted write action: {bad}"]
     if report is None:
         return ["no report"]
     if report.category not in expect["category"]:
@@ -105,11 +133,11 @@ async def run(directory: Path, settings: Settings) -> list[dict[str, Any]]:
         start = time.monotonic()
         try:
             async with agent.open_agent(s, mcp=replay_server(s, scenario["tools"])) as a:
-                outcome = await agent.start(a, group, f"eval-{path.stem}")
+                outcome, proposed = await triage(a, group, f"eval-{path.stem}", scenario["expect"])
             failures = score(scenario, outcome)
             calls, report = outcome.tool_calls, outcome.report
         except agent.TriageError as e:
-            failures, calls, report = [str(e)], [], None
+            failures, calls, report, proposed = [str(e)], [], None, []
         results.append(
             {
                 "scenario": path.stem,
@@ -119,6 +147,7 @@ async def run(directory: Path, settings: Settings) -> list[dict[str, Any]]:
                 "tool_calls": len(calls),
                 "seconds": round(time.monotonic() - start, 1),
                 "calls": calls,
+                "proposed": [p["name"] for p in proposed],
                 "report": report.to_markdown() if report else None,
             }
         )

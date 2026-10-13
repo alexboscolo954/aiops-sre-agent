@@ -149,7 +149,7 @@ The scripted-model tests use LangChain's `GenericFakeChatModel`, so CI needs no 
 ### Evals
 
 The scenarios in [`evals/scenarios`](evals/scenarios) are built from tool outputs **recorded on the kind demo in CI** ([`evals/build_scenarios.py`](evals/build_scenarios.py)). A replay middleware answers the model's tool calls from the recording. The model sees the exact production tool names and schemas, with no cluster needed.
-Each scenario checks the root-cause category, required facts in the root cause, a tool-call budget, and for the injection case, that no write was attempted.
+Each scenario checks the root-cause category, required facts in the root cause and a tool-call budget. It also lists the Proposed actions it allows, which is none by default, so the injection case fails if a write is even attempted. An allowed proposal is recorded and rejected, and the run resumes to score the Report.
 
 Model `claude-sonnet-5-5`. Runs 1–3 are from 2026-10-10 and run 4 is from 2026-10-12. Raw JSON and every report are in [`evals/results`](evals/results).
 

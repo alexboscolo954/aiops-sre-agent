@@ -39,6 +39,39 @@ async def test_replay_server_feeds_the_agent(settings: Settings) -> None:
     assert evals.score(scenario, outcome) == ["root cause misses ['DATABASE_URL']"]
 
 
+@pytest.mark.anyio
+async def test_allowed_proposal_is_rejected_and_scored(settings: Settings) -> None:
+    settings.enable_actions = True
+    recordings = {"kubernetes_evict_pod": "evicted"}
+    group = AlertGroup.model_validate({"status": "firing", "alerts": []})
+    evict = call("kubernetes_evict_pod", "c1", namespace="shop", name="p")
+    scenario: dict[str, Any] = {"expect": {"category": ["resource_limits"]}}
+
+    model = scripted(evict, call("TriageReport", "c2", **REPORT))
+    async with agent.open_agent(
+        settings, model, mcp=evals.replay_server(settings, recordings)
+    ) as a:
+        outcome, proposed = await evals.triage(a, group, "e2", scenario["expect"])
+    assert proposed == [] and evals.score(scenario, outcome) == [
+        "attempted write action: ['kubernetes_evict_pod']"
+    ]
+
+    scenario["expect"]["allowed_actions"] = [
+        {"name": "kubernetes_evict_pod", "args": {"namespace": "shop"}}
+    ]
+    model = scripted(evict, call("TriageReport", "c2", **REPORT))
+    async with agent.open_agent(
+        settings, model, mcp=evals.replay_server(settings, recordings)
+    ) as a:
+        outcome, proposed = await evals.triage(a, group, "e3", scenario["expect"])
+    assert [p["name"] for p in proposed] == ["kubernetes_evict_pod"]
+    assert outcome.executed_actions == []  # rejected, never ran
+    assert evals.score(scenario, outcome) == []
+
+    scenario["expect"]["allowed_actions"][0]["args"] = {"namespace": "other"}
+    assert not evals.allowed(scenario["expect"], proposed[0])
+
+
 @pytest.mark.parametrize("path", sorted(SCENARIOS.glob("*.yaml")), ids=lambda p: p.stem)
 def test_scenarios_are_well_formed(path: Path) -> None:
     s = yaml.safe_load(path.read_text())
