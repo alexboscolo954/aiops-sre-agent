@@ -40,6 +40,7 @@ class Triage(BaseModel):
     id: str
     title: str
     group_key: str = ""
+    group_resolved: bool = False
     status: Literal["running", "awaiting_approval", "done", "failed"] = "running"
     started: float
     report: TriageReport | None = None
@@ -128,6 +129,9 @@ def create_app(
             except Exception as e:  # report every failure, never lose an alert silently
                 log.exception("triage %s failed", t.id)
                 t.status, t.error = "failed", f"{type(e).__name__}: {e}"
+        if t.status == "awaiting_approval" and t.group_resolved:
+            reject_stale(t, "The alert group resolved before a decision")
+            return  # no one to ask; the resumed run reports
         PENDING_APPROVALS.set(sum(len(x.pending) for x in triages.values()))
         if t.status != "awaiting_approval":
             TRIAGES.labels(t.status).inc()
@@ -162,14 +166,10 @@ def create_app(
     @app.post("/alertmanager", status_code=202, dependencies=[Depends(webhook_auth)])
     async def alertmanager(group: AlertGroup) -> dict[str, Any]:
         if not group.firing:
-            # ponytail: only triages already paused go stale here. One that pauses after
-            # its group resolved waits for the decision timeout; flag the triage if that
-            # window matters.
-            stale = [
-                t
-                for t in triages.values()
-                if t.group_key == group.groupKey and t.status == "awaiting_approval"
-            ]
+            same_group = [t for t in triages.values() if t.group_key == group.groupKey]
+            for t in same_group:
+                t.group_resolved = True  # still investigating: goes stale when it pauses
+            stale = [t for t in same_group if t.status == "awaiting_approval"]
             for t in stale:
                 reject_stale(t, "The alert group resolved before a decision")
             if stale:

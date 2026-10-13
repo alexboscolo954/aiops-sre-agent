@@ -1,5 +1,7 @@
+import threading
 import time
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -161,4 +163,27 @@ def test_proposed_actions_go_stale_without_a_decision(
         tid = c.post("/alertmanager", json=ALERT, headers=HOOK).json()["triage"]
         t = wait_for(c, tid, "done")
         assert t["report"] is not None and t["executed_actions"] == []
+    fake_cluster[0].create_namespaced_pod_eviction.assert_not_called()
+
+
+def test_group_resolving_mid_investigation_makes_later_proposal_stale(
+    settings: Settings, fake_cluster: Any
+) -> None:
+    settings.enable_actions = True
+    started, release = threading.Event(), threading.Event()
+
+    def slow_list(*args: Any, **kwargs: Any) -> Any:
+        started.set()
+        release.wait(5)
+        return MagicMock(items=[])
+
+    fake_cluster[0].list_namespaced_pod.side_effect = slow_list
+    steps = [call("kubernetes_list_pods", "c0", namespace="shop"), *EVICT_THEN_REPORT]
+    with client(settings, fake_cluster, *steps) as c:
+        tid = c.post("/alertmanager", json=ALERT, headers=HOOK).json()["triage"]
+        assert started.wait(5)
+        r = c.post("/alertmanager", json=RESOLVED, headers=HOOK).json()
+        assert r["status"] == "ignored"  # nothing paused yet
+        release.set()
+        assert wait_for(c, tid, "done")["report"] is not None
     fake_cluster[0].create_namespaced_pod_eviction.assert_not_called()
