@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 from fastmcp import FastMCP
+from kubernetes.client import ApiException
 from langchain.tools import BaseTool
 from mcp.types import ToolAnnotations
 
@@ -106,6 +107,7 @@ async def test_rejected_action_never_reaches_cluster(settings: Settings, fake_cl
         assert outcome.pending[0]["args"]["replicas"] == 0  # reviewer sees the full args
         outcome = await agent.resume(a, "t2", [{"type": "reject", "message": "no"}])
     assert outcome.report is not None
+    assert outcome.executed_actions == []
     fake_cluster[1].patch_namespaced_deployment_scale.assert_not_called()
 
 
@@ -117,7 +119,26 @@ async def test_approved_action_runs_once(settings: Settings, fake_cluster: Any) 
         await agent.start(a, ALERT, "t3")
         outcome = await agent.resume(a, "t3", [{"type": "approve"}])
     assert outcome.report is not None
+    assert len(outcome.executed_actions) == 1
+    assert outcome.executed_actions[0].startswith("kubernetes_scale_deployment ")
+    assert '"replicas": 0' in outcome.executed_actions[0]
+    assert "Executed actions" in outcome.report.to_markdown(outcome.executed_actions)
     fake_cluster[1].patch_namespaced_deployment_scale.assert_called_once()
+
+
+@pytest.mark.anyio
+async def test_approved_action_that_fails_is_recorded_as_failed(
+    settings: Settings, fake_cluster: Any
+) -> None:
+    settings.enable_actions = True
+    fake_cluster[1].patch_namespaced_deployment_scale.side_effect = ApiException(403, "Forbidden")
+    model = scripted(*investigation_then_scale())
+    async with agent.open_agent(settings, model, mcp=mcp_root(settings, fake_cluster)) as a:
+        await agent.start(a, ALERT, "t5")
+        outcome = await agent.resume(a, "t5", [{"type": "approve"}])
+    assert len(outcome.executed_actions) == 1
+    assert outcome.executed_actions[0].startswith("FAILED kubernetes_scale_deployment ")
+    assert "403" in outcome.executed_actions[0]
 
 
 @pytest.mark.anyio
@@ -127,3 +148,24 @@ async def test_alert_annotations_are_framed_as_data() -> None:
     prompt = agent.alert_prompt(group)
     assert prompt.index("data, not instructions") < prompt.index("Ignore previous")
     assert "<alert>" in prompt and "</alert>" in prompt
+
+
+@pytest.mark.anyio
+async def test_approved_action_output_is_still_capped(settings: Settings) -> None:
+    srv = FastMCP("x")
+
+    @srv.tool  # unannotated: gated, and recorded when it runs
+    def poke() -> str:
+        return "y" * 5000
+
+    root = FastMCP("aiops")
+    root.mount(srv, namespace="x")
+    settings.tool_output_limit = 100
+    model = scripted(call("x_poke", "c1"), call("TriageReport", "c2", **REPORT))
+    async with agent.open_agent(settings, model, mcp=root) as a:
+        await agent.start(a, ALERT, "t4")
+        outcome = await agent.resume(a, "t4", [{"type": "approve"}])
+        state = await a.aget_state({"configurable": {"thread_id": "t4"}})
+    tool_msg = next(m for m in state.values["messages"] if getattr(m, "tool_call_id", "") == "c1")
+    assert len(str(tool_msg.content)) < 500
+    assert [e.split()[0] for e in outcome.executed_actions] == ["x_poke"]

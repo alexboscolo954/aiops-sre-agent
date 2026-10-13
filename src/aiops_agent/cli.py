@@ -33,9 +33,10 @@ async def triage(group: AlertGroup, as_json: bool, auto_reject: bool) -> int:
             outcome = await agent.resume(a, outcome.thread_id, decisions)
     assert outcome.report is not None
     if as_json:
-        print(outcome.report.model_dump_json(indent=2))
+        report = outcome.report.model_dump(mode="json")
+        print(json.dumps({**report, "executed_actions": outcome.executed_actions}, indent=2))
     else:
-        print(outcome.report.to_markdown())
+        print(outcome.report.to_markdown(outcome.executed_actions))
         print(f"\n_tool calls: {', '.join(outcome.tool_calls)}_", file=sys.stderr)
     return 0
 

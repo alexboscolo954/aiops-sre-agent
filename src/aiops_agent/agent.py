@@ -6,14 +6,16 @@ interrupt and resumes (approve / reject) with the same thread_id.
 """
 
 import json
+import operator
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Annotated, Any, NotRequired
 
 from fastmcp import FastMCP
 from langchain.agents import create_agent
 from langchain.agents.middleware import (
+    AgentState,
     HumanInTheLoopMiddleware,
     ModelCallLimitMiddleware,
     ToolCallLimitMiddleware,
@@ -28,11 +30,12 @@ from langchain_core.language_models import BaseChatModel
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
+from pydantic import BaseModel
 
 from aiops_agent.config import Settings
 from aiops_agent.models import AlertGroup, TriageReport
 from aiops_agent.observability import AuditMiddleware
-from aiops_agent.safety import truncate
+from aiops_agent.safety import redact, truncate
 from aiops_agent.servers import kubernetes, prometheus, runbooks
 
 SYSTEM_PROMPT = """\
@@ -63,21 +66,44 @@ Rules:
 """
 
 
+def read_only(tool: BaseTool) -> bool:
+    """Default-deny: a tool with no annotations (e.g. from a third-party MCP server)
+    is treated as a write."""
+    annotations = ((tool.metadata or {}).get("mcp", {}).get("tool", {}).get("annotations")) or {}
+    return annotations.get("read_only_hint") is True
+
+
 def approval_policy(tools: list[BaseTool]) -> dict[str, Any]:
     """Every tool NOT annotated readOnlyHint=True needs human approval.
 
-    Default-deny: a tool with no annotations (e.g. from a third-party MCP server)
-    is treated as a write. Built from the names the adapter actually returns, so
-    server-prefixed names (kubernetes_scale_deployment) match.
+    Built from the names the adapter actually returns, so server-prefixed names
+    (kubernetes_scale_deployment) match.
     """
-    policy: dict[str, Any] = {}
-    for tool in tools:
-        annotations = (
-            (tool.metadata or {}).get("mcp", {}).get("tool", {}).get("annotations")
-        ) or {}
-        if annotations.get("read_only_hint") is not True:
-            policy[tool.name] = {"allowed_decisions": ["approve", "reject"]}
-    return policy
+    allowed = {"allowed_decisions": ["approve", "reject"]}
+    return {tool.name: allowed for tool in tools if not read_only(tool)}
+
+
+class TriageState(AgentState[BaseModel]):
+    executed_actions: NotRequired[Annotated[list[str], operator.add]]
+
+
+@wrap_tool_call(state_schema=TriageState)
+async def record_executed_actions(
+    request: ToolCallRequest, handler: Callable[[ToolCallRequest], Awaitable[Any]]
+) -> Any:
+    """Executed actions are recorded here, where the tool actually ran, never taken
+    from the model's own account. Rejected calls never reach this point, so an
+    error here is an approved action that failed: recorded too, marked FAILED."""
+    result = await handler(request)
+    tool = request.tool
+    if tool is None or read_only(tool) or not isinstance(result, ToolMessage):
+        return result
+    call = request.tool_call
+    args = json.dumps(call["args"], sort_keys=True)
+    failed = "FAILED " if result.status == "error" else ""
+    # Goes to the API and Slack: redact, since third-party tool output isn't.
+    entry = redact(f"{failed}{call['name']} {args}: {truncate(str(result.content), 200)}")
+    return Command(update={"messages": [result], "executed_actions": [entry]})
 
 
 def build_mcp(settings: Settings) -> FastMCP:
@@ -143,6 +169,9 @@ async def open_agent(
                 ),
                 ModelCallLimitMiddleware(run_limit=settings.max_model_calls, exit_behavior="end"),
                 ToolCallLimitMiddleware(run_limit=settings.max_tool_calls),
+                # Outermost first: the recorder must wrap the cap, or the cap would
+                # see the recorder's Command instead of the ToolMessage and skip it.
+                record_executed_actions,
                 cap_tool_output(settings.tool_output_limit),
             ],
             checkpointer=checkpointer or InMemorySaver(),
@@ -153,8 +182,9 @@ async def open_agent(
 class Outcome:
     thread_id: str
     report: TriageReport | None = None
-    pending: list[dict[str, Any]] = field(default_factory=list)  # actions awaiting approval
+    pending: list[dict[str, Any]] = field(default_factory=list)  # proposed actions
     tool_calls: list[str] = field(default_factory=list)
+    executed_actions: list[str] = field(default_factory=list)
 
     @property
     def done(self) -> bool:
@@ -179,13 +209,14 @@ def alert_prompt(group: AlertGroup) -> str:
 def _outcome(thread_id: str, result: Any) -> Outcome:
     messages = result.value.get("messages", [])
     calls = [c["name"] for m in messages for c in getattr(m, "tool_calls", None) or []]
+    executed = result.value.get("executed_actions", [])
     if result.interrupts:
         pending = [a for i in result.interrupts for a in i.value["action_requests"]]
-        return Outcome(thread_id, pending=pending, tool_calls=calls)
+        return Outcome(thread_id, pending=pending, tool_calls=calls, executed_actions=executed)
     report = result.value.get("structured_response")
     if report is None:
         raise TriageError("agent stopped without a report (call limit reached?)")
-    return Outcome(thread_id, report=report, tool_calls=calls)
+    return Outcome(thread_id, report=report, tool_calls=calls, executed_actions=executed)
 
 
 async def start(agent: Any, group: AlertGroup, thread_id: str) -> Outcome:

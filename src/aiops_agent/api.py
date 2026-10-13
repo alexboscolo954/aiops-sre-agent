@@ -43,6 +43,7 @@ class Triage(BaseModel):
     started: float
     report: TriageReport | None = None
     pending: list[dict[str, Any]] = []
+    executed_actions: list[str] = []
     error: str | None = None
 
 
@@ -53,7 +54,7 @@ class Decision(BaseModel):
 
 def slack_text(t: Triage) -> str:
     if t.report:
-        body = t.report.to_markdown().replace("**", "*").replace("## ", "*")
+        body = t.report.to_markdown(t.executed_actions).replace("**", "*").replace("## ", "*")
     elif t.pending:
         body = "Waiting for approval:\n" + "\n".join(f"- {p['description']}" for p in t.pending)
     else:
@@ -114,6 +115,7 @@ def create_app(
 
     def apply(t: Triage, outcome: agent.Outcome) -> None:
         t.report, t.pending = outcome.report, outcome.pending
+        t.executed_actions = outcome.executed_actions
         t.status = "done" if outcome.done else "awaiting_approval"
 
     async def run(t: Triage, step: Any) -> None:

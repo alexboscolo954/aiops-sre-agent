@@ -77,12 +77,10 @@ class TriageReport(BaseModel):
     affected: list[str] = Field(description="Workloads affected, as namespace/kind/name")
     evidence: list[Evidence] = Field(min_length=1)
     recommended_actions: list[str] = Field(description="Ordered, concrete next steps")
-    actions_taken: list[str] = Field(
-        default_factory=list, description="Approved actions the agent executed, if any"
-    )
     runbook: str | None = Field(None, description="Runbook name used, if one matched")
 
-    def to_markdown(self) -> str:
+    def to_markdown(self, executed_actions: list[str] | None = None) -> str:
+        """executed_actions come from the system's record, never from the model."""
         lines = [
             f"## {self.summary}",
             "",
@@ -96,8 +94,8 @@ class TriageReport(BaseModel):
             "**Recommended actions**",
             *[f"{i}. {a}" for i, a in enumerate(self.recommended_actions, 1)],
         ]
-        if self.actions_taken:
-            lines += ["", "**Actions taken**", *[f"- {a}" for a in self.actions_taken]]
+        if executed_actions:
+            lines += ["", "**Executed actions**", *[f"- `{a}`" for a in executed_actions]]
         if self.runbook:
             lines += ["", f"Runbook: `{self.runbook}`"]
         return "\n".join(lines)

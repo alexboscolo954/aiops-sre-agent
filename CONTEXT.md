@@ -63,7 +63,7 @@ A Proposed action is Stale once its Alert group resolves, or when no Approval de
 A human's approve or reject, covering every Proposed action in one pause together. A rejection can carry a reason, and the agent can propose a narrower action in the next Run.
 
 **Executed action**:
-A Proposed action that a human approved and that ran against the cluster. The system records it from the tool calls that actually ran. The agent never reports it.
+A Proposed action that a human approved and that the system then ran against the cluster. The system records it from the tool calls that actually ran, marked as failed when the call errored. The agent never reports it.
 _Avoid_: Action taken
 
 ### Evaluation
