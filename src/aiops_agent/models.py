@@ -91,7 +91,7 @@ class TriageReport(BaseModel):
             "**Evidence**",
             *[f"- `{e.source}`: {e.finding}" for e in self.evidence],
             "",
-            "**Recommended actions**",
+            "**Recommendations**",
             *[f"{i}. {a}" for i, a in enumerate(self.recommended_actions, 1)],
         ]
         if executed_actions:

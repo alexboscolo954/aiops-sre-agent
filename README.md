@@ -2,8 +2,8 @@
 
 [![ci](https://github.com/alexboscolo954/aiops-sre-agent/actions/workflows/ci.yaml/badge.svg)](https://github.com/alexboscolo954/aiops-sre-agent/actions/workflows/ci.yaml)
 
-An alert triage agent for Kubernetes. Alertmanager sends it an alert. The agent investigates with read-only tools (pods, events, logs, rollout history, Prometheus, runbooks) and returns a structured report: root cause, evidence, confidence, next steps.
-If a fix is warranted, it can propose an action. The action **does not run until a human approves it.**
+An alert triage agent for Kubernetes. Alertmanager sends it an alert group (one notification holding one or more alerts). The agent investigates with read-only tools (pods, events, logs, rollout history, Prometheus, runbooks) and returns a structured report: root cause, evidence, confidence and recommendations for the on-call engineer.
+If a fix is warranted, it can also propose an action that changes the cluster. A proposed action **does not run until a human approves it.** It is rejected automatically if nobody decides in time or the alert group resolves first. The terms are defined in [`CONTEXT.md`](CONTEXT.md).
 
 Built with LangChain 1.x (`create_agent` + middleware) and **MCP servers** for every tool. The same servers plug into Claude Code or any MCP client.
 
@@ -35,7 +35,7 @@ It took 4 tool calls in about 11 s: `runbooks_runbook_for_alert`, then `kubernet
 > - `kubernetes_list_pods`: checkout-7c856f898c-bjtfx is 0/1 ready with 2 restarts and last terminated Error, exit code 1. The revision 1 pod checkout-7784c7f885-pwjtr is 1/1 Running with 0 restarts.
 > - `kubernetes_describe_deployment`: Revision 2 (created 36s ago) has env [] and env_from []. Revision 1 had env [DATABASE_URL]. The image is python:3.12-alpine in both revisions.
 >
-> **Recommended actions**
+> **Recommendations**
 > 1. Roll back the checkout deployment to revision 1 (kubectl rollout undo deployment/checkout -n demo), or re-add DATABASE_URL to the pod template (from a Secret or ConfigMap).
 > 2. Find out why the env var was removed in the latest change to the manifest or Helm values, and fix it at the source so it is not re-applied.
 > 3. Add a CI check or startup validation so a rollout that lacks required config fails before it replaces healthy pods.
@@ -53,14 +53,14 @@ An agent that reads logs and can change a cluster is a prompt-injection target. 
 |---|---|
 | Cluster access | The Kubernetes server refuses to start without `AIOPS_IN_CLUSTER=true` or an explicitly named `AIOPS_KUBE_CONTEXT`. It never falls back to your current kubectl context. |
 | RBAC | Read-only ClusterRole, bound **per namespace** with RoleBindings. No Secrets, no ConfigMaps. CI checks this by impersonating the ServiceAccount ([`demo/rbac-check.sh`](demo/rbac-check.sh)). |
-| Write scope | Actions are opt-in (`AIOPS_ENABLE_ACTIONS`). When off, the write tools aren't registered at all. When on, they cover only `pods/eviction` (respects PodDisruptionBudgets) and `deployments/scale`. There's deliberately no `patch deployments`, which would allow changing images and commands. |
+| Write scope | Write tools are opt-in (`AIOPS_ENABLE_ACTIONS`). When off, the write tools aren't registered at all. When on, they cover only `pods/eviction` (respects PodDisruptionBudgets) and `deployments/scale`. There's deliberately no `patch deployments`, which would allow changing images and commands. |
 | Namespace allowlist | Every tool checks `AIOPS_NAMESPACES` server-side, on top of RBAC. |
 | Human approval | `HumanInTheLoopMiddleware` interrupts before **every tool not annotated `readOnlyHint`**. This is default-deny, so an unannotated tool from a third-party MCP server also needs approval. The reviewer sees the full arguments. |
 | Secrets in context | Env var *values* are never returned, only names. Logs and events are redacted (tokens, JWTs, keys, `password=`). |
 | Prompt injection | Alerts and tool output are framed as data. An eval scenario plants an instruction in pod logs, and it fails if the agent even *attempts* a write. |
 | Blast radius | Per-run tool-call and model-call limits. Every tool result is capped in size. The receiver runs a bounded number of triages at once. |
-| Auth | Two tokens: Alertmanager's token can only submit alerts. Reading reports and approving actions needs the approver token. |
-| Audit | Every tool call is logged as one JSON line and counted in `aiops_tool_calls_total{tool,status}`. |
+| Auth | Two tokens: Alertmanager's token can only submit alerts. Reading reports and deciding on proposed actions needs the approver token. |
+| Audit | Every tool call is logged as one JSON line and counted in `aiops_tool_calls_total{tool,status}`. A triage's executed actions are recorded where the tool ran, never taken from the model's own account, and an approved call that failed is marked `FAILED`. |
 
 MCP tool annotations are *hints* for the client. The security boundary is RBAC, the allowlist and the tool registration done on the server side.
 
@@ -108,8 +108,8 @@ Point Alertmanager at it with [`deploy/alertmanager-receiver.yaml`](deploy/alert
 
 | Endpoint | Token | |
 |---|---|---|
-| `POST /alertmanager` | webhook | Starts a triage. Resolved alerts are ignored. Repeats are deduplicated for 30 min. |
-| `GET /triages`, `GET /triages/{id}` | approver | Status, report, pending actions |
+| `POST /alertmanager` | webhook | Starts a triage when an alert not seen before is firing in the group. Anything else within 30 min (a repeat, or a group that shrank) returns the existing triage. A resolved group makes its proposed actions stale. |
+| `GET /triages`, `GET /triages/{id}` | approver | Status, report, proposed and executed actions |
 | `POST /triages/{id}/decision` | approver | `{"approve": true}` or `{"approve": false, "message": "..."}` |
 | `GET /metrics`, `GET /healthz` | none | `aiops_triages_total`, `aiops_triage_seconds`, `aiops_tool_calls_total`, `aiops_pending_approvals` |
 
@@ -139,7 +139,7 @@ uv run aiops mcp prometheus --transport http --port 8765
 
 | Layer | What it proves | Where |
 |---|---|---|
-| Unit (no cluster, no LLM) | Tool behavior (Prometheus against a mocked API), redaction, allowlist, approval policy. **A rejected action never reaches the API.** Webhook auth, dedup, approval over HTTP. | `make test` |
+| Unit (no cluster, no LLM) | Tool behavior (Prometheus against a mocked API), redaction, allowlist, approval policy. **A rejected proposed action never reaches the Kubernetes API.** Webhook auth, dedup, approval over HTTP. | `make test` |
 | Integration (kind, CI) | Real tools find all three failures. The allowlist holds on a real API server. A scripted agent completes a triage through real tools. | `make integration` |
 | Deploy smoke (kind, CI) | The real image under the shipped manifests: starts hardened, auth rejects bad tokens, RBAC is least privilege for both modes | `make deploy-smoke` |
 | Evals (real LLM, recorded data) | Triage quality on scenarios recorded from the kind demo, replayed through the real MCP tool definitions | `uv run aiops eval` |
