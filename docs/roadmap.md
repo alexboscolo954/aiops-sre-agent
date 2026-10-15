@@ -110,7 +110,7 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
 - Tables: Investigations (with a kind column), Proposed and Executed actions, the dedup seen-set, and the audit log. Use the LangGraph Postgres checkpointer.
 - Store every tool call's args and the raw result (before the cap, after redaction) so slice 2.6 can turn it into a Scenario.
 - Stale deadlines are stored in the database, and timers are re-armed at startup instead of sleeping in memory.
-- Rename `Triage` in code to `Investigation` with a kind.
+- Rename `Triage` in code to `Investigation` with a kind. Done (part a): the API is now `/investigations`, and each record has `kind: triage`.
 - *Done when:*
   - a pending approval survives a Hub restart and can still be approved;
   - a deadline that passes while the Hub is down is made Stale at startup;

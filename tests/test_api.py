@@ -45,9 +45,9 @@ def client(
     return TestClient(create_app(settings, scripted(*steps), mcp, by_id))
 
 
-def wait_for(c: TestClient, triage_id: str, status: str) -> dict[str, Any]:
+def wait_for(c: TestClient, investigation_id: str, status: str) -> dict[str, Any]:
     for _ in range(100):
-        t: dict[str, Any] = c.get(f"/triages/{triage_id}", headers=AUTH).json()
+        t: dict[str, Any] = c.get(f"/investigations/{investigation_id}", headers=AUTH).json()
         if t["status"] == status:
             return t
         time.sleep(0.02)
@@ -82,10 +82,10 @@ def test_alert_to_report_and_dedup(settings: Settings, fake_cluster: Any) -> Non
     with client(settings, fake_cluster, *steps) as c:
         r = c.post(URL, json=ALERT, headers=HOOK).json()
         assert r["status"] == "accepted"
-        t = wait_for(c, r["triage"], "done")
+        t = wait_for(c, r["investigation"], "done")
         assert t["report"]["category"] == "resource_limits"
         again = c.post(URL, json=ALERT, headers=HOOK).json()
-        assert again == {"status": "duplicate", "triage": r["triage"]}
+        assert again == {"status": "duplicate", "investigation": r["investigation"]}
         assert "aiops_tool_calls_total" in c.get("/metrics").text
 
 
@@ -95,14 +95,14 @@ def test_only_a_new_firing_alert_starts_a_new_triage(settings: Settings, fake_cl
     only_f2 = {**ALERT, "alerts": [pod2]}
     steps = [call("TriageReport", "c1", **REPORT), call("TriageReport", "c2", **REPORT)]
     with client(settings, fake_cluster, *steps) as c:
-        first = c.post(URL, json=ALERT, headers=HOOK).json()["triage"]
+        first = c.post(URL, json=ALERT, headers=HOOK).json()["investigation"]
         wait_for(c, first, "done")
         grown = c.post(URL, json=both, headers=HOOK).json()
-        assert grown["status"] == "accepted" and grown["triage"] != first
-        wait_for(c, grown["triage"], "done")
+        assert grown["status"] == "accepted" and grown["investigation"] != first
+        wait_for(c, grown["investigation"], "done")
         for shrunk in (only_f2, ALERT, both):
             r = c.post(URL, json=shrunk, headers=HOOK).json()
-            assert r == {"status": "duplicate", "triage": grown["triage"]}
+            assert r == {"status": "duplicate", "investigation": grown["investigation"]}
 
 
 def test_resolved_alerts_are_ignored(settings: Settings, fake_cluster: Any) -> None:
@@ -123,25 +123,25 @@ def test_approval_flow_over_http(settings: Settings, fake_cluster: Any) -> None:
         call("TriageReport", "c2", **REPORT),
     ]
     with client(settings, fake_cluster, *steps, actions=True) as c:
-        tid = c.post(URL, json=ALERT, headers=HOOK).json()["triage"]
+        tid = c.post(URL, json=ALERT, headers=HOOK).json()["investigation"]
         t = wait_for(c, tid, "awaiting_approval")
         assert t["pending"][0]["name"] == "kubernetes_evict_pod"
         fake_cluster[0].create_namespaced_pod_eviction.assert_not_called()
 
-        r = c.post(f"/triages/{tid}/decision", json={"approve": False}, headers=AUTH)
+        r = c.post(f"/investigations/{tid}/decision", json={"approve": False}, headers=AUTH)
         assert r.status_code == 202
         wait_for(c, tid, "done")
         fake_cluster[0].create_namespaced_pod_eviction.assert_not_called()
-        again = c.post(f"/triages/{tid}/decision", json={"approve": True}, headers=AUTH)
+        again = c.post(f"/investigations/{tid}/decision", json={"approve": True}, headers=AUTH)
         assert again.status_code == 409
 
 
 def test_webhook_token_cannot_read_or_approve(settings: Settings, fake_cluster: Any) -> None:
     steps = [call("TriageReport", "c1", **REPORT)]
     with client(settings, fake_cluster, *steps) as c:
-        tid = c.post(URL, json=ALERT, headers=HOOK).json()["triage"]
-        assert c.get(f"/triages/{tid}", headers=HOOK).status_code == 401
-        decision = c.post(f"/triages/{tid}/decision", json={"approve": True}, headers=HOOK)
+        tid = c.post(URL, json=ALERT, headers=HOOK).json()["investigation"]
+        assert c.get(f"/investigations/{tid}", headers=HOOK).status_code == 401
+        decision = c.post(f"/investigations/{tid}/decision", json={"approve": True}, headers=HOOK)
         assert decision.status_code == 401
         assert c.post(URL, json=ALERT, headers=AUTH).status_code == 401
 
@@ -162,12 +162,12 @@ RESOLVED = {**ALERT, "status": "resolved", "alerts": [{**ALERT["alerts"][0], "st
 
 def test_resolved_group_makes_proposed_actions_stale(settings: Settings, fake_cluster: Any) -> None:
     with client(settings, fake_cluster, *EVICT_THEN_REPORT, actions=True) as c:
-        tid = c.post(URL, json=ALERT, headers=HOOK).json()["triage"]
+        tid = c.post(URL, json=ALERT, headers=HOOK).json()["investigation"]
         wait_for(c, tid, "awaiting_approval")
         r = c.post(URL, json=RESOLVED, headers=HOOK).json()
-        assert r == {"status": "stale", "triages": [tid]}
+        assert r == {"status": "stale", "investigations": [tid]}
         assert wait_for(c, tid, "done")["report"] is not None
-        late = c.post(f"/triages/{tid}/decision", json={"approve": True}, headers=AUTH)
+        late = c.post(f"/investigations/{tid}/decision", json={"approve": True}, headers=AUTH)
         assert late.status_code == 409
     fake_cluster[0].create_namespaced_pod_eviction.assert_not_called()
 
@@ -177,7 +177,7 @@ def test_proposed_actions_go_stale_without_a_decision(
 ) -> None:
     settings.decision_timeout_seconds = 0
     with client(settings, fake_cluster, *EVICT_THEN_REPORT, actions=True) as c:
-        tid = c.post(URL, json=ALERT, headers=HOOK).json()["triage"]
+        tid = c.post(URL, json=ALERT, headers=HOOK).json()["investigation"]
         t = wait_for(c, tid, "done")
         assert t["report"] is not None and t["executed_actions"] == []
     fake_cluster[0].create_namespaced_pod_eviction.assert_not_called()
@@ -199,7 +199,7 @@ def test_group_resolving_mid_investigation_makes_later_proposal_stale(
         *EVICT_THEN_REPORT,
     ]
     with client(settings, fake_cluster, *steps, actions=True) as c:
-        tid = c.post(URL, json=ALERT, headers=HOOK).json()["triage"]
+        tid = c.post(URL, json=ALERT, headers=HOOK).json()["investigation"]
         assert started.wait(5)
         r = c.post(URL, json=RESOLVED, headers=HOOK).json()
         assert r["status"] == "ignored"  # nothing paused yet
@@ -230,12 +230,12 @@ def test_same_group_key_in_two_contracts_starts_two_triages(
     steps = [call("TriageReport", "c1", **REPORT), call("TriageReport", "c2", **REPORT)]
     with client(settings, fake_cluster, *steps, more=bank()) as c:
         a = c.post(URL, json=ALERT, headers=HOOK).json()
-        wait_for(c, a["triage"], "done")
+        wait_for(c, a["investigation"], "done")
         b = c.post(BANK_URL, json=ALERT, headers=BANK_HOOK).json()
-        assert a["status"] == b["status"] == "accepted" and a["triage"] != b["triage"]
-        assert wait_for(c, b["triage"], "done")["contract_id"] == "bank"
-        listed = {t["id"]: t["contract_id"] for t in c.get("/triages", headers=AUTH).json()}
-        assert listed == {a["triage"]: "acme", b["triage"]: "bank"}
+        assert a["status"] == b["status"] == "accepted" and a["investigation"] != b["investigation"]
+        assert wait_for(c, b["investigation"], "done")["contract_id"] == "bank"
+        listed = {t["id"]: t["contract_id"] for t in c.get("/investigations", headers=AUTH).json()}
+        assert listed == {a["investigation"]: "acme", b["investigation"]: "bank"}
 
 
 def test_one_contract_resolving_leaves_anothers_actions_pending(
@@ -245,14 +245,14 @@ def test_one_contract_resolving_leaves_anothers_actions_pending(
     evict, report = EVICT_THEN_REPORT
     steps = [evict, evict, report, report]
     with client(settings, fake_cluster, *steps, actions=True, more=bank(actions=True)) as c:
-        a = c.post(URL, json=ALERT, headers=HOOK).json()["triage"]
+        a = c.post(URL, json=ALERT, headers=HOOK).json()["investigation"]
         wait_for(c, a, "awaiting_approval")
-        b = c.post(BANK_URL, json=ALERT, headers=BANK_HOOK).json()["triage"]
+        b = c.post(BANK_URL, json=ALERT, headers=BANK_HOOK).json()["investigation"]
         wait_for(c, b, "awaiting_approval")
         r = c.post(URL, json=RESOLVED, headers=HOOK).json()
-        assert r == {"status": "stale", "triages": [a]}
+        assert r == {"status": "stale", "investigations": [a]}
         wait_for(c, a, "done")
-        assert c.get(f"/triages/{b}", headers=AUTH).json()["status"] == "awaiting_approval"
+        assert c.get(f"/investigations/{b}", headers=AUTH).json()["status"] == "awaiting_approval"
 
 
 def test_approved_action_runs_on_the_triages_own_contract(
@@ -260,9 +260,9 @@ def test_approved_action_runs_on_the_triages_own_contract(
 ) -> None:
     other = bank(actions=True)
     with client(settings, fake_cluster, *EVICT_THEN_REPORT, actions=True, more=other) as c:
-        tid = c.post(BANK_URL, json=ALERT, headers=BANK_HOOK).json()["triage"]
+        tid = c.post(BANK_URL, json=ALERT, headers=BANK_HOOK).json()["investigation"]
         wait_for(c, tid, "awaiting_approval")
-        c.post(f"/triages/{tid}/decision", json={"approve": True}, headers=AUTH)
+        c.post(f"/investigations/{tid}/decision", json={"approve": True}, headers=AUTH)
         assert len(wait_for(c, tid, "done")["executed_actions"]) == 1
     other["bank"][1][0].create_namespaced_pod_eviction.assert_called_once()
     fake_cluster[0].create_namespaced_pod_eviction.assert_not_called()

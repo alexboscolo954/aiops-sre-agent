@@ -3,11 +3,11 @@
 POST /contracts/{id}/alertmanager  That Contract's Alertmanager (its own webhook token).
                                 Starts a triage, or makes a resolved group's
                                 proposed actions stale. Unknown id = wrong token = 401.
-GET  /triages[/{id}]            Status, report, pending actions (approver token).
-POST /triages/{id}/decision     Approve or reject pending actions (approver token).
+GET  /investigations[/{id}]     Status, report, pending actions (approver token).
+POST /investigations/{id}/decisionApprove or reject pending actions (approver token).
 GET  /healthz, /metrics
 
-ponytail: triage state, dedup and the LangGraph checkpointer live in memory, so
+ponytail: investigation state, dedup and the LangGraph checkpointer live in memory, so
 run a single replica. For HA, swap InMemorySaver for a Postgres checkpointer
 and the dicts below for that same database.
 """
@@ -37,8 +37,9 @@ log = logging.getLogger("aiops.api")
 DEDUP_SECONDS = 30 * 60
 
 
-class Triage(BaseModel):
+class Investigation(BaseModel):
     id: str
+    kind: Literal["triage", "question", "check"] = "triage"
     contract_id: str
     title: str
     group_key: str = ""
@@ -56,13 +57,13 @@ class Decision(BaseModel):
     message: str = ""
 
 
-def slack_text(t: Triage) -> str:
+def slack_text(t: Investigation) -> str:
     if t.report:
         body = t.report.to_markdown(t.executed_actions).replace("**", "*").replace("## ", "*")
     elif t.pending:
         body = "Waiting for approval:\n" + "\n".join(f"- {p['description']}" for p in t.pending)
     else:
-        body = f"Triage failed: {t.error}"
+        body = f"Investigation failed: {t.error}"
     return f"*[aiops] [{t.contract_id}] {t.title}* (`{t.id}`)\n{body}"
 
 
@@ -88,7 +89,7 @@ def create_app(
     if mcp_factory is None:
         mcp_factory = lambda c: agent.build_mcp(c, settings)  # noqa: E731
     checkpointer = InMemorySaver()
-    triages: dict[str, Triage] = {}
+    investigations: dict[str, Investigation] = {}
     # (contract, group key) -> (start of its latest triage, that triage's id, every
     # fingerprint seen). Two Contracts can send the same group key.
     recent: dict[tuple[str, str], tuple[float, str, set[str]]] = {}
@@ -111,8 +112,8 @@ def create_app(
     def approver_auth(creds: HTTPAuthorizationCredentials = Depends(bearer)) -> None:  # noqa: B008
         check(creds, approver_token)
 
-    async def notify(t: Triage) -> None:
-        log.info("triage %s %s", t.id, t.status)
+    async def notify(t: Investigation) -> None:
+        log.info("investigation %s %s", t.id, t.status)
         if not settings.slack_webhook_url:
             return
         try:
@@ -123,25 +124,25 @@ def create_app(
         except httpx.HTTPError as e:
             log.warning("slack notification failed: %s", e)
 
-    def apply(t: Triage, outcome: agent.Outcome) -> None:
+    def apply(t: Investigation, outcome: agent.Outcome) -> None:
         t.report, t.pending = outcome.report, outcome.pending
         t.executed_actions = outcome.executed_actions
         t.status = "done" if outcome.done else "awaiting_approval"
 
-    async def run(t: Triage, step: Any) -> None:
+    async def run(t: Investigation, step: Any) -> None:
         async with slots:
             try:
-                # Always the Triage's own Contract, on start and on every resume.
+                # Always the Investigation's own Contract, on start and on every resume.
                 toolbox = mcp_factory(by_id[t.contract_id])
                 async with agent.open_agent(settings, toolbox, model, checkpointer) as a:
                     apply(t, await step(a))
             except Exception as e:  # report every failure, never lose an alert silently
-                log.exception("triage %s failed", t.id)
+                log.exception("investigation %s failed", t.id)
                 t.status, t.error = "failed", f"{type(e).__name__}: {e}"
         if t.status == "awaiting_approval" and t.group_resolved:
             reject_stale(t, "The alert group resolved before a decision")
             return  # no one to ask; the resumed run reports
-        PENDING_APPROVALS.set(sum(len(x.pending) for x in triages.values()))
+        PENDING_APPROVALS.set(sum(len(x.pending) for x in investigations.values()))
         if t.status != "awaiting_approval":
             TRIAGES.labels(t.status).inc()
             TRIAGE_SECONDS.observe(time.time() - t.started)
@@ -149,21 +150,23 @@ def create_app(
         if t.status == "awaiting_approval":
             spawn(expire(t, t.pending))
 
-    async def expire(t: Triage, pending: list[dict[str, Any]]) -> None:
+    async def expire(t: Investigation, pending: list[dict[str, Any]]) -> None:
         await asyncio.sleep(settings.decision_timeout_seconds)
         if t.pending is pending:  # still the same pause: nobody decided
             reject_stale(t, f"No decision within {settings.decision_timeout_seconds}s")
 
-    def resume(t: Triage, decisions: list[dict[str, Any]]) -> None:
+    def resume(t: Investigation, decisions: list[dict[str, Any]]) -> None:
         t.status, t.pending = "running", []
         spawn(run(t, lambda a: agent.resume(a, t.id, decisions)))
 
-    def reject_stale(t: Triage, reason: str) -> None:
-        """A stale proposed action is rejected automatically; the triage still ends
-        with a report."""
+    def reject_stale(t: Investigation, reason: str) -> None:
+        """A stale proposed action is rejected automatically; the investigation still
+        ends with a report."""
         if t.status != "awaiting_approval":
             return
-        log.info("triage %s stale: %s, rejecting %s", t.id, reason, [p["name"] for p in t.pending])
+        log.info(
+            "investigation %s stale: %s, rejecting %s", t.id, reason, [p["name"] for p in t.pending]
+        )
         msg = f"{reason}. The action was not executed. Do not retry; finish the report."
         resume(t, [{"type": "reject", "message": msg} for _ in t.pending])
 
@@ -182,14 +185,14 @@ def create_app(
             raise HTTPException(401, "invalid token")  # also for an unknown Contract
         key = (contract_id, group.groupKey)
         if not group.firing:
-            same_group = [t for t in triages.values() if (t.contract_id, t.group_key) == key]
+            same_group = [t for t in investigations.values() if (t.contract_id, t.group_key) == key]
             for t in same_group:
                 t.group_resolved = True  # still investigating: goes stale when it pauses
             stale = [t for t in same_group if t.status == "awaiting_approval"]
             for t in stale:
                 reject_stale(t, "The alert group resolved before a decision")
             if stale:
-                return {"status": "stale", "triages": [t.id for t in stale]}
+                return {"status": "stale", "investigations": [t.id for t in stale]}
             return {"status": "ignored", "reason": "no firing alerts"}
         firing = {a.fingerprint for a in group.firing}
         now = time.time()
@@ -202,46 +205,48 @@ def create_app(
             # Alertmanager re-sends on every repeat_interval and when an Alert resolves.
             # Only an Alert not seen before is new work.
             if firing <= seen:
-                return {"status": "duplicate", "triage": previous}
+                return {"status": "duplicate", "investigation": previous}
 
-        t = Triage(
+        t = Investigation(
             id=str(uuid.uuid4()),
             contract_id=contract_id,
             title=group.title,
             group_key=group.groupKey,
             started=now,
         )
-        triages[t.id] = t
+        investigations[t.id] = t
         recent[key] = (now, t.id, seen | firing)
         spawn(run(t, lambda a: agent.start(a, group, t.id)))
-        return {"status": "accepted", "triage": t.id}
+        return {"status": "accepted", "investigation": t.id}
 
-    @app.get("/triages", dependencies=[Depends(approver_auth)])
-    async def list_triages() -> list[Triage]:
-        return sorted(triages.values(), key=lambda t: t.started, reverse=True)[:50]
+    @app.get("/investigations", dependencies=[Depends(approver_auth)])
+    async def list_investigations() -> list[Investigation]:
+        return sorted(investigations.values(), key=lambda t: t.started, reverse=True)[:50]
 
-    @app.get("/triages/{triage_id}", dependencies=[Depends(approver_auth)])
-    async def get_triage(triage_id: str) -> Triage:
-        if triage_id not in triages:
-            raise HTTPException(404, "unknown triage")
-        return triages[triage_id]
+    @app.get("/investigations/{investigation_id}", dependencies=[Depends(approver_auth)])
+    async def get_investigation(investigation_id: str) -> Investigation:
+        if investigation_id not in investigations:
+            raise HTTPException(404, "unknown investigation")
+        return investigations[investigation_id]
 
     @app.post(
-        "/triages/{triage_id}/decision", status_code=202, dependencies=[Depends(approver_auth)]
+        "/investigations/{investigation_id}/decision",
+        status_code=202,
+        dependencies=[Depends(approver_auth)],
     )
-    async def decide(triage_id: str, decision: Decision) -> dict[str, str]:
-        t = triages.get(triage_id)
+    async def decide(investigation_id: str, decision: Decision) -> dict[str, str]:
+        t = investigations.get(investigation_id)
         if t is None:
-            raise HTTPException(404, "unknown triage")
+            raise HTTPException(404, "unknown investigation")
         if t.status != "awaiting_approval":
-            raise HTTPException(409, f"triage is {t.status}, nothing to decide")
+            raise HTTPException(409, f"investigation is {t.status}, nothing to decide")
         if decision.approve:
             decisions: list[dict[str, Any]] = [{"type": "approve"} for _ in t.pending]
         else:
             msg = decision.message or "Rejected by the on-call engineer. Do not retry."
             decisions = [{"type": "reject", "message": msg} for _ in t.pending]
         log.info(
-            "triage %s decision approve=%s actions=%s",
+            "investigation %s decision approve=%s actions=%s",
             t.id,
             decision.approve,
             [p["name"] for p in t.pending],

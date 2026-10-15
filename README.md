@@ -111,8 +111,8 @@ Point Alertmanager at it with [`deploy/alertmanager-receiver.yaml`](deploy/alert
 | Endpoint | Token | |
 |---|---|---|
 | `POST /contracts/{id}/alertmanager` | that Contract's webhook token | Starts a triage when an alert not seen before is firing in the group. An unknown Contract gets the same 401 as a wrong token. Duplicates are checked per Contract, so two Contracts can send the same group key. Anything else within 30 min (a repeat, or a group that shrank) returns the existing triage. A resolved group makes its proposed actions stale. |
-| `GET /triages`, `GET /triages/{id}` | approver | Status, report, proposed and executed actions |
-| `POST /triages/{id}/decision` | approver | `{"approve": true}` or `{"approve": false, "message": "..."}` |
+| `GET /investigations`, `GET /investigations/{id}` | approver | Status, kind (`triage` for now), Contract, report, proposed and executed actions |
+| `POST /investigations/{id}/decision` | approver | `{"approve": true}` or `{"approve": false, "message": "..."}` |
 | `GET /metrics`, `GET /healthz` | none | `aiops_triages_total`, `aiops_triage_seconds`, `aiops_tool_calls_total`, `aiops_pending_approvals` |
 
 The container runs as non-root on a read-only root filesystem, with all capabilities dropped and the RuntimeDefault seccomp profile.
