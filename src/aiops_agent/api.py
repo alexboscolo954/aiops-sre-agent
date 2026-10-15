@@ -27,7 +27,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel
 
-from aiops_agent import agent
+from aiops_agent import agent, contracts
 from aiops_agent.config import Settings
 from aiops_agent.models import AlertGroup, TriageReport
 from aiops_agent.observability import PENDING_APPROVALS, TRIAGE_SECONDS, TRIAGES
@@ -77,7 +77,9 @@ def create_app(
     if secrets.compare_digest(webhook_token, approver_token):
         raise RuntimeError("AIOPS_WEBHOOK_TOKEN and AIOPS_APPROVER_TOKEN must differ")
     model = model or agent.build_model(settings)
-    mcp_factory = mcp_factory or (lambda: agent.build_mcp(settings))
+    if mcp_factory is None:
+        contract = contracts.from_settings(settings)  # fails at startup, not per alert
+        mcp_factory = lambda: agent.build_mcp(contract, settings)  # noqa: E731
     checkpointer = InMemorySaver()
     triages: dict[str, Triage] = {}
     # group key -> (start of its latest triage, that triage's id, every fingerprint seen)

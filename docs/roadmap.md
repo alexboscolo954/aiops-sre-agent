@@ -87,7 +87,7 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
   - fails when two Contracts share an age recipient. It reads recipients from sops metadata, so it needs no key.
 - Two synthetic demo Contracts live in `demo/contracts/`, each with its own test-only age key. The `two_contracts` fixture loads them for every later isolation test.
 
-**0.2 Contract-scoped tools.**
+**0.2 Contract-scoped tools.** Done, except one open item: a Scenario where the Contract has two clusters and the alert's `cluster` label must pick one.
 - Each Contract gets its own MCP server set. The kubernetes server takes a `cluster` argument limited to the Contract's clusters, with a namespace allowlist per cluster. Runbooks come from the Contract's directory plus Shared knowledge.
 - **Part 1, done: the allowlist decides read or write.** Each builtin server declares its list in code (`ACCESS`), and `open_agent` requires it. A tool not on the list is hidden, and a server's annotation can only make a tool stricter. This closed a gap: before, a server that wrongly marked a write tool as read-only skipped approval. A server that leaves the marker out was already safe, because those tools are gated.
 - *Done when:*
@@ -95,7 +95,7 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
   - a tool annotated read-only but allowlisted as `write` is gated;
   - a tool annotated as a write but allowlisted as `read` is still gated;
   - a tool not on the list is invisible.
-- The demo Contracts use different cluster names (`kind`, `bank-kind`) on the same kind cluster. Kind-backed isolation tests also need the `bank` namespace added to `demo/apps.yaml`.
+- **Part 2, done.** `build_mcp(contract, settings)` builds one Contract's tools. Isolation tests live in `tests/test_isolation.py`. The kind demo has the `bank` namespace, and a kind-backed test shows demo-bank can't read demo-shop's namespace. Until 0.3, the API, `aiops triage` and `aiops mcp` turn the `AIOPS_*` variables into one Contract named `default`.
 
 **0.3 Contract-scoped intake.**
 - `POST /contracts/{id}/alertmanager` with a webhook token per Contract. Dedup is keyed by (Contract, `groupKey`). This replaces `/alertmanager` and the global token.
@@ -271,4 +271,4 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
 
 ## Next
 
-Slice 0.2: Contract-scoped tools, with the Hub's allowlist deciding read or write.
+Slice 0.3: Contract-scoped intake, with one alert URL and token per Contract.

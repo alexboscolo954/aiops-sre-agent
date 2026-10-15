@@ -34,6 +34,7 @@ from langgraph.types import Command
 from pydantic import BaseModel
 
 from aiops_agent.config import Settings
+from aiops_agent.contracts import Contract, Integration, Kubernetes, Prometheus
 from aiops_agent.models import AlertGroup, TriageReport
 from aiops_agent.observability import AuditMiddleware
 from aiops_agent.safety import redact, truncate
@@ -46,8 +47,9 @@ You are an on-call SRE triaging a Kubernetes alert. Find the most likely root
 cause, back it with evidence, and recommend concrete next steps.
 
 How to investigate:
-1. Scope: which namespace and workload does the alert point to? If a runbook
-   matches the alert, read it first and follow it.
+1. Scope: which namespace and workload does the alert point to? If the tools
+   offer several clusters, the alert's cluster label says which one. If a
+   runbook matches the alert, read it first and follow it.
 2. Current state: list pods / deployments. Look for restarts, CrashLoopBackOff,
    OOMKilled, Pending, ImagePullBackOff, failing probes.
 3. Why: describe the unhealthy pod, read warning events, and read logs. For a
@@ -140,23 +142,33 @@ def mount(
     access.update({f"{namespace}_{name}": a for name, a in own.items()})
 
 
-def build_mcp(settings: Settings, k8s_api: tuple[Any, Any] | None = None) -> Toolbox:
-    """All MCP servers mounted in-process under one namespace-prefixed root.
-    k8s_api: (CoreV1Api, AppsV1Api) instead of connecting, for tests."""
-    root, access = FastMCP("aiops"), dict[str, Access]()
-    mount(
-        root,
-        access,
-        "kubernetes",
-        kubernetes.build_server(settings, *(k8s_api or ())),
-        kubernetes.ACCESS,
-    )
-    if settings.prometheus_url:
-        mount(root, access, "prometheus", prometheus.build_server(settings), prometheus.ACCESS)
-    if settings.runbooks_dir.is_dir():
-        mount(root, access, "runbooks", runbooks.build_server(settings), runbooks.ACCESS)
-    root.add_middleware(AuditMiddleware())
+def build_mcp(
+    contract: Contract, settings: Settings, k8s_apis: dict[str, tuple[Any, Any]] | None = None
+) -> Toolbox:
+    """One Contract's integrations, mounted in-process under one namespace-prefixed
+    root. Nothing of another Contract is reachable from it.
+    k8s_apis: cluster name -> (CoreV1Api, AppsV1Api) instead of connecting, for tests."""
+    root, access = FastMCP(f"aiops-{contract.id}"), dict[str, Access]()
+    for i in contract.integrations:
+        mount(root, access, i.name, *integration_server(contract, i, settings, k8s_apis))
+    root.add_middleware(AuditMiddleware(contract.id))
     return Toolbox(root, access)
+
+
+def integration_server(
+    contract: Contract,
+    integration: Integration,
+    settings: Settings,
+    k8s_apis: dict[str, tuple[Any, Any]] | None = None,
+) -> tuple[FastMCP, dict[str, Access]]:
+    """One builtin integration's MCP server and the Hub's list for its tools."""
+    if isinstance(integration, Kubernetes):
+        limit = settings.tool_output_limit
+        return kubernetes.build_server(contract, integration, limit, k8s_apis), kubernetes.ACCESS
+    if isinstance(integration, Prometheus):
+        token = contract.secret(integration.token_secret) if integration.token_secret else None
+        return prometheus.build_server(integration.url, token), prometheus.ACCESS
+    return runbooks.build_server(contract.runbook_dirs), runbooks.ACCESS
 
 
 def build_model(settings: Settings) -> BaseChatModel:

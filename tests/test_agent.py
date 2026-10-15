@@ -15,8 +15,7 @@ from mcp.types import ToolAnnotations
 from aiops_agent import agent
 from aiops_agent.config import Settings
 from aiops_agent.models import AlertGroup
-from aiops_agent.servers import kubernetes
-from tests.conftest import REPORT, call, scripted
+from tests.conftest import REPORT, call, scripted, toolbox
 
 ALERT = AlertGroup.model_validate(
     {
@@ -37,17 +36,24 @@ ALERT = AlertGroup.model_validate(
 )
 
 
-def mcp_root(settings: Settings, fake_cluster: Any) -> agent.Toolbox:
-    return agent.build_mcp(settings, fake_cluster)
+def mcp_root(settings: Settings, fake_cluster: Any, actions: bool = False) -> agent.Toolbox:
+    return toolbox(settings, fake_cluster, enable_actions=actions)
 
 
 def investigation_then_scale() -> list[Any]:
     return [
-        call("kubernetes_list_pods", "c1", namespace="shop"),
+        call("kubernetes_list_pods", "c1", cluster="test", namespace="shop"),
         call(
             "kubernetes_pod_logs", "c2", namespace="shop", name="checkout-7d9f-abc", previous=True
         ),
-        call("kubernetes_scale_deployment", "c3", namespace="shop", name="checkout", replicas=0),
+        call(
+            "kubernetes_scale_deployment",
+            "c3",
+            cluster="test",
+            namespace="shop",
+            name="checkout",
+            replicas=0,
+        ),
         call("TriageReport", "c4", **REPORT),
     ]
 
@@ -109,23 +115,34 @@ async def test_mislabelled_write_waits_for_approval_and_is_recorded(settings: Se
     assert [e.split()[0] for e in outcome.executed_actions] == ["x_sneaky"]
 
 
+def full_contract() -> Any:
+    """Every builtin integration on, write tools included."""
+    from aiops_agent import contracts
+
+    data = {
+        "id": "acme",
+        "name": "Acme",
+        "clusters": [{"name": "test", "context": "test", "namespaces": ["shop"]}],
+        "integrations": [
+            {"name": "kubernetes", "enable_actions": True},
+            {"name": "prometheus", "url": "http://prom"},
+            {"name": "runbooks"},
+        ],
+    }
+    return contracts.build(data, runbook_dirs=[Path("runbooks")])
+
+
 @pytest.mark.anyio
 async def test_builtin_lists_match_their_servers(settings: Settings, fake_cluster: Any) -> None:
     """Every tool a builtin registers is on its list, and the list agrees with the
     tool's own annotation, so our servers never rely on the stricter-wins rule."""
-    import httpx
     from fastmcp import Client
 
-    from aiops_agent.servers import prometheus, runbooks
-
-    settings.enable_actions = True
-    settings.runbooks_dir = Path("runbooks")
-    servers = [
-        (kubernetes.build_server(settings, *fake_cluster), kubernetes.ACCESS),
-        (prometheus.build_server(settings, httpx.Client()), prometheus.ACCESS),
-        (runbooks.build_server(settings), runbooks.ACCESS),
-    ]
-    for server, access in servers:
+    contract = full_contract()
+    for integration in contract.integrations:
+        server, access = agent.integration_server(
+            contract, integration, settings, {"test": fake_cluster}
+        )
         async with Client(server) as c:
             tools = await c.list_tools()
         assert {t.name for t in tools} == set(access)
@@ -139,15 +156,12 @@ async def test_real_toolbox_shows_every_builtin_tool(settings: Settings, fake_cl
     """The list's keys must match the mounted names, or every tool would be hidden."""
     from langchain.mcp import MCPAdapter
 
-    settings.enable_actions = True
-    settings.prometheus_url = "http://prom"
-    settings.runbooks_dir = Path("runbooks")
-    toolbox = agent.build_mcp(settings, fake_cluster)
-    async with MCPAdapter(toolbox.mcp) as adapter:
-        tools = await agent.load_tools(adapter, toolbox.access)
-    assert sorted(t.name for t in tools) == sorted(toolbox.access)
+    tb = agent.build_mcp(full_contract(), settings, {"test": fake_cluster})
+    async with MCPAdapter(tb.mcp) as adapter:
+        tools = await agent.load_tools(adapter, tb.access)
+    assert sorted(t.name for t in tools) == sorted(tb.access)
     assert len(tools) == 14
-    assert agent.gated(tools, toolbox.access) == {
+    assert agent.gated(tools, tb.access) == {
         "kubernetes_evict_pod",
         "kubernetes_scale_deployment",
     }
@@ -158,7 +172,7 @@ async def test_triage_produces_report_without_actions(
     settings: Settings, fake_cluster: Any
 ) -> None:
     model = scripted(
-        call("kubernetes_list_pods", "c1", namespace="shop"),
+        call("kubernetes_list_pods", "c1", cluster="test", namespace="shop"),
         call(
             "kubernetes_pod_logs", "c2", namespace="shop", name="checkout-7d9f-abc", previous=True
         ),
@@ -176,9 +190,10 @@ async def test_triage_produces_report_without_actions(
 
 @pytest.mark.anyio
 async def test_rejected_action_never_reaches_cluster(settings: Settings, fake_cluster: Any) -> None:
-    settings.enable_actions = True
     model = scripted(*investigation_then_scale())
-    async with agent.open_agent(settings, mcp_root(settings, fake_cluster), model) as a:
+    async with agent.open_agent(
+        settings, mcp_root(settings, fake_cluster, actions=True), model
+    ) as a:
         outcome = await agent.start(a, ALERT, "t2")
         assert [p["name"] for p in outcome.pending] == ["kubernetes_scale_deployment"]
         assert outcome.pending[0]["args"]["replicas"] == 0  # reviewer sees the full args
@@ -190,9 +205,10 @@ async def test_rejected_action_never_reaches_cluster(settings: Settings, fake_cl
 
 @pytest.mark.anyio
 async def test_approved_action_runs_once(settings: Settings, fake_cluster: Any) -> None:
-    settings.enable_actions = True
     model = scripted(*investigation_then_scale())
-    async with agent.open_agent(settings, mcp_root(settings, fake_cluster), model) as a:
+    async with agent.open_agent(
+        settings, mcp_root(settings, fake_cluster, actions=True), model
+    ) as a:
         await agent.start(a, ALERT, "t3")
         outcome = await agent.resume(a, "t3", [{"type": "approve"}])
     assert outcome.report is not None
@@ -207,10 +223,11 @@ async def test_approved_action_runs_once(settings: Settings, fake_cluster: Any) 
 async def test_approved_action_that_fails_is_recorded_as_failed(
     settings: Settings, fake_cluster: Any
 ) -> None:
-    settings.enable_actions = True
     fake_cluster[1].patch_namespaced_deployment_scale.side_effect = ApiException(403, "Forbidden")
     model = scripted(*investigation_then_scale())
-    async with agent.open_agent(settings, mcp_root(settings, fake_cluster), model) as a:
+    async with agent.open_agent(
+        settings, mcp_root(settings, fake_cluster, actions=True), model
+    ) as a:
         await agent.start(a, ALERT, "t5")
         outcome = await agent.resume(a, "t5", [{"type": "approve"}])
     assert len(outcome.executed_actions) == 1

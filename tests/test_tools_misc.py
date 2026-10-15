@@ -41,8 +41,7 @@ def test_truncate_keeps_tail_for_logs() -> None:
 
 def prom(handler: Any) -> Client:  # type: ignore[type-arg]
     http = httpx.Client(transport=httpx.MockTransport(handler), base_url="http://prom")
-    settings = Settings(_env_file=None, prometheus_url="http://prom")
-    return Client(prometheus.build_server(settings, http))
+    return Client(prometheus.build_server("http://prom", http=http))
 
 
 @pytest.mark.anyio
@@ -85,8 +84,7 @@ async def test_runbooks_match_alert_and_block_paths(tmp_path: Path) -> None:
     (tmp_path / "oom.md").write_text(
         "---\ntitle: OOM\nalerts: [KubePodCrashLooping, ContainerOOMKilled]\n---\nCheck limits.\n"
     )
-    settings = Settings(_env_file=None, runbooks_dir=tmp_path)
-    async with Client(runbooks.build_server(settings)) as c:
+    async with Client(runbooks.build_server([tmp_path])) as c:
         hit = (
             await c.call_tool("runbook_for_alert", {"alertname": "KubePodCrashLooping"})
         ).structured_content

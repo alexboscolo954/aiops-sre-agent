@@ -5,6 +5,12 @@ kind: Namespace
 metadata:
   name: demo
 ---
+# demo-bank's namespace on the same cluster, so isolation tests run against a real API.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: bank
+---
 # 1. Crash loop after a bad rollout: revision 2 drops a required env var.
 apiVersion: apps/v1
 kind: Deployment

@@ -2,6 +2,8 @@
 
     <contracts-dir>/<id>/contract.yaml       what the Contract runs; secret *names* only
     <contracts-dir>/<id>/secrets.sops.yaml   SOPS-encrypted map: secret name -> value
+    <contracts-dir>/<id>/runbooks/*.md       this Contract's Runbooks
+    <contracts-dir>/shared/runbooks/*.md     Shared knowledge, for every Contract
 
 `load()` reads every Contract, decrypts its secrets with the `sops` binary and
 reports every problem at once as `path: field: message`. Secret values never
@@ -12,6 +14,7 @@ import json
 import shutil
 import subprocess
 from collections import defaultdict
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -26,7 +29,10 @@ from pydantic import (
     model_validator,
 )
 
+from aiops_agent.config import Settings
+
 SECRETS_FILE = "secrets.sops.yaml"
+SHARED = "shared"
 
 # Becomes a URL path segment (/contracts/{id}/...), so a lowercase slug.
 Slug = Annotated[str, Field(pattern=r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$", max_length=63)]
@@ -86,6 +92,7 @@ class Contract(Strict):
 
     _dir: Path = PrivateAttr(default=Path())
     _secrets: dict[str, SecretStr] = PrivateAttr(default_factory=dict)
+    _runbook_dirs: list[Path] = PrivateAttr(default_factory=list)
 
     @model_validator(mode="after")
     def _consistent(self) -> "Contract":
@@ -105,6 +112,11 @@ class Contract(Strict):
     @property
     def dir(self) -> Path:
         return self._dir
+
+    @property
+    def runbook_dirs(self) -> list[Path]:
+        """Shared knowledge first, then the Contract's own: its Runbook wins on a name clash."""
+        return self._runbook_dirs
 
     def secret(self, name: str) -> SecretStr:
         return self._secrets[name]
@@ -164,13 +176,7 @@ def _load_one(path: Path) -> tuple[Contract, set[str]]:
     try:
         contract = Contract.model_validate(raw)
     except ValidationError as e:
-        # loc and msg only: pydantic's `input` could echo a value.
-        raise ContractError(
-            [
-                f"{path}: {'.'.join(map(str, err['loc'])) or '<root>'}: {err['msg']}"
-                for err in e.errors()
-            ]
-        ) from None
+        raise ContractError(_lines(str(path), e)) from None
     problems = []
     if contract.id != path.parent.name:
         problems.append(
@@ -191,7 +197,67 @@ def _load_one(path: Path) -> tuple[Contract, set[str]]:
         raise ContractError(problems)
     contract._dir = path.parent
     contract._secrets = {k: SecretStr(v) for k, v in secrets.items()}
+    contract._runbook_dirs = [path.parent.parent / SHARED / "runbooks", path.parent / "runbooks"]
     return contract, recipients
+
+
+def _lines(where: str, e: ValidationError) -> list[str]:
+    # loc and msg only: pydantic's `input` could echo a value.
+    return [
+        f"{where}: {'.'.join(map(str, err['loc'])) or '<root>'}: {err['msg']}" for err in e.errors()
+    ]
+
+
+def build(
+    data: dict[str, Any],
+    *,
+    secrets: dict[str, SecretStr] | None = None,
+    runbook_dirs: Sequence[Path] = (),
+) -> Contract:
+    """A Contract from data already in memory (tests, evals, the env settings)."""
+    contract = Contract.model_validate(data)
+    contract._secrets = dict(secrets or {})
+    contract._runbook_dirs = list(runbook_dirs)
+    return contract
+
+
+def from_settings(settings: Settings) -> Contract:
+    """ponytail: the AIOPS_* variables as one Contract, until slice 0.3 loads a
+    contracts directory. Never calls sops, which the image doesn't ship yet."""
+    cluster = {
+        "name": "default",
+        "namespaces": settings.namespaces,
+        "in_cluster": settings.in_cluster,
+        "context": settings.kube_context,
+        "kubeconfig_file": settings.kubeconfig,
+    }
+    integrations: list[dict[str, Any]] = [
+        {
+            "name": "kubernetes",
+            "enable_actions": settings.enable_actions,
+            "max_replicas": settings.max_replicas,
+        }
+    ]
+    secrets = {}
+    if settings.prometheus_url:
+        prom = {"name": "prometheus", "url": settings.prometheus_url}
+        if settings.prometheus_token:
+            prom["token_secret"] = "prometheus-token"  # noqa: S105 - a name, not a value
+            secrets["prometheus-token"] = settings.prometheus_token
+        integrations.append(prom)
+    if settings.runbooks_dir.is_dir():
+        integrations.append({"name": "runbooks"})
+    data = {
+        "id": "default",
+        "name": "AIOPS_* settings",
+        "clusters": [cluster],
+        "integrations": integrations,
+    }
+    try:
+        return build(data, secrets=secrets, runbook_dirs=[settings.runbooks_dir])
+    except ValidationError as e:
+        hint = "set AIOPS_NAMESPACES, and AIOPS_KUBE_CONTEXT or AIOPS_IN_CLUSTER"
+        raise RuntimeError("; ".join(_lines("AIOPS_* settings", e)) + f" ({hint})") from None
 
 
 def _recipients(path: Path) -> set[str]:

@@ -18,7 +18,6 @@ from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
-from aiops_agent.config import Settings
 from aiops_agent.servers import Access
 
 READ = ToolAnnotations(read_only_hint=True, open_world_hint=False)
@@ -45,8 +44,12 @@ def load(directory: Path) -> dict[str, dict[str, Any]]:
     return books
 
 
-def build_server(settings: Settings) -> FastMCP:
-    books = load(settings.runbooks_dir)
+def build_server(directories: list[Path]) -> FastMCP:
+    """Later directories win on a name clash: a Contract's own Runbook overrides
+    a shared one with the same name."""
+    books: dict[str, dict[str, Any]] = {}
+    for directory in directories:
+        books |= load(directory)
     mcp = FastMCP("runbooks", instructions="Team runbooks for known alerts.")
 
     @mcp.tool(annotations=READ)

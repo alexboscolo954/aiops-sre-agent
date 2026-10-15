@@ -10,7 +10,7 @@ from pydantic import SecretStr
 from aiops_agent import agent
 from aiops_agent.api import create_app
 from aiops_agent.config import Settings
-from tests.conftest import REPORT, call, scripted
+from tests.conftest import REPORT, call, scripted, toolbox
 
 HOOK = {"Authorization": "Bearer hook-token"}
 AUTH = {"Authorization": "Bearer approver-token"}
@@ -22,12 +22,12 @@ ALERT = {
 }
 
 
-def client(settings: Settings, fake_cluster: Any, *steps: Any) -> TestClient:
+def client(settings: Settings, fake_cluster: Any, *steps: Any, actions: bool = False) -> TestClient:
     settings.webhook_token = SecretStr("hook-token")
     settings.approver_token = SecretStr("approver-token")
 
     def mcp() -> agent.Toolbox:
-        return agent.build_mcp(settings, fake_cluster)
+        return toolbox(settings, fake_cluster, enable_actions=actions)
 
     return TestClient(create_app(settings, scripted(*steps), mcp))
 
@@ -56,7 +56,7 @@ def test_webhook_requires_auth(settings: Settings, fake_cluster: Any) -> None:
 
 def test_alert_to_report_and_dedup(settings: Settings, fake_cluster: Any) -> None:
     steps = [
-        call("kubernetes_list_pods", "c1", namespace="shop"),
+        call("kubernetes_list_pods", "c1", cluster="test", namespace="shop"),
         call("TriageReport", "c2", **REPORT),
     ]
     with client(settings, fake_cluster, *steps) as c:
@@ -96,12 +96,13 @@ def test_resolved_alerts_are_ignored(settings: Settings, fake_cluster: Any) -> N
 
 
 def test_approval_flow_over_http(settings: Settings, fake_cluster: Any) -> None:
-    settings.enable_actions = True
     steps = [
-        call("kubernetes_evict_pod", "c1", namespace="shop", name="checkout-7d9f-abc"),
+        call(
+            "kubernetes_evict_pod", "c1", cluster="test", namespace="shop", name="checkout-7d9f-abc"
+        ),
         call("TriageReport", "c2", **REPORT),
     ]
-    with client(settings, fake_cluster, *steps) as c:
+    with client(settings, fake_cluster, *steps, actions=True) as c:
         tid = c.post("/alertmanager", json=ALERT, headers=HOOK).json()["triage"]
         t = wait_for(c, tid, "awaiting_approval")
         assert t["pending"][0]["name"] == "kubernetes_evict_pod"
@@ -132,15 +133,14 @@ def test_tokens_must_differ(settings: Settings) -> None:
 
 
 EVICT_THEN_REPORT = [
-    call("kubernetes_evict_pod", "c1", namespace="shop", name="checkout-7d9f-abc"),
+    call("kubernetes_evict_pod", "c1", cluster="test", namespace="shop", name="checkout-7d9f-abc"),
     call("TriageReport", "c2", **REPORT),
 ]
 RESOLVED = {**ALERT, "status": "resolved", "alerts": [{**ALERT["alerts"][0], "status": "resolved"}]}
 
 
 def test_resolved_group_makes_proposed_actions_stale(settings: Settings, fake_cluster: Any) -> None:
-    settings.enable_actions = True
-    with client(settings, fake_cluster, *EVICT_THEN_REPORT) as c:
+    with client(settings, fake_cluster, *EVICT_THEN_REPORT, actions=True) as c:
         tid = c.post("/alertmanager", json=ALERT, headers=HOOK).json()["triage"]
         wait_for(c, tid, "awaiting_approval")
         r = c.post("/alertmanager", json=RESOLVED, headers=HOOK).json()
@@ -154,9 +154,8 @@ def test_resolved_group_makes_proposed_actions_stale(settings: Settings, fake_cl
 def test_proposed_actions_go_stale_without_a_decision(
     settings: Settings, fake_cluster: Any
 ) -> None:
-    settings.enable_actions = True
     settings.decision_timeout_seconds = 0
-    with client(settings, fake_cluster, *EVICT_THEN_REPORT) as c:
+    with client(settings, fake_cluster, *EVICT_THEN_REPORT, actions=True) as c:
         tid = c.post("/alertmanager", json=ALERT, headers=HOOK).json()["triage"]
         t = wait_for(c, tid, "done")
         assert t["report"] is not None and t["executed_actions"] == []
@@ -166,7 +165,6 @@ def test_proposed_actions_go_stale_without_a_decision(
 def test_group_resolving_mid_investigation_makes_later_proposal_stale(
     settings: Settings, fake_cluster: Any
 ) -> None:
-    settings.enable_actions = True
     started, release = threading.Event(), threading.Event()
 
     def slow_list(*args: Any, **kwargs: Any) -> Any:
@@ -175,8 +173,11 @@ def test_group_resolving_mid_investigation_makes_later_proposal_stale(
         return MagicMock(items=[])
 
     fake_cluster[0].list_namespaced_pod.side_effect = slow_list
-    steps = [call("kubernetes_list_pods", "c0", namespace="shop"), *EVICT_THEN_REPORT]
-    with client(settings, fake_cluster, *steps) as c:
+    steps = [
+        call("kubernetes_list_pods", "c0", cluster="test", namespace="shop"),
+        *EVICT_THEN_REPORT,
+    ]
+    with client(settings, fake_cluster, *steps, actions=True) as c:
         tid = c.post("/alertmanager", json=ALERT, headers=HOOK).json()["triage"]
         assert started.wait(5)
         r = c.post("/alertmanager", json=RESOLVED, headers=HOOK).json()

@@ -13,16 +13,16 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
+import jsonschema
 import yaml
-from fastmcp import FastMCP
 from fastmcp.server.middleware import Middleware, MiddlewareContext
 from fastmcp.tools import ToolResult
 from mcp.types import TextContent
 
-from aiops_agent import agent
+from aiops_agent import agent, contracts
 from aiops_agent.config import Settings
+from aiops_agent.contracts import Contract
 from aiops_agent.models import AlertGroup
-from aiops_agent.servers import Access, kubernetes, runbooks
 
 
 class Replay(Middleware):
@@ -47,7 +47,17 @@ class Replay(Middleware):
     async def on_call_tool(self, context: MiddlewareContext[Any], call_next: Any) -> Any:
         if context.message.name.startswith(self.passthrough):
             return await call_next(context)
-        found = self.lookup(context.message.name, context.message.arguments or {})
+        args = context.message.arguments or {}
+        # Validate as the real call would, so a missing or wrong argument (a cluster
+        # outside the Contract) costs the model a turn here too.
+        assert context.fastmcp_context is not None
+        tool = await context.fastmcp_context.fastmcp.get_tool(context.message.name)
+        try:
+            jsonschema.validate(args, tool.parameters if tool else {})
+        except jsonschema.ValidationError as e:
+            text = f"Input validation error: {e.message}"
+            return ToolResult(content=[TextContent(type="text", text=text)], is_error=True)
+        found = self.lookup(context.message.name, args)
         if found is None or (isinstance(found, dict) and set(found) == {"error"}):
             text = found["error"] if found else "no recorded data for this call"
             return ToolResult(content=[TextContent(type="text", text=text)], is_error=True)
@@ -59,15 +69,27 @@ class Replay(Middleware):
         )
 
 
-def replay_server(settings: Settings, recordings: dict[str, Any]) -> agent.Toolbox:
-    root, access = FastMCP("aiops-replay"), dict[str, Access]()
-    # Real tool definitions and the Hub's real list; the API clients are never reached.
-    kube = kubernetes.build_server(settings, MagicMock(), MagicMock())
-    agent.mount(root, access, "kubernetes", kube, kubernetes.ACCESS)
-    if settings.runbooks_dir.is_dir():
-        agent.mount(root, access, "runbooks", runbooks.build_server(settings), runbooks.ACCESS)
-    root.add_middleware(Replay(recordings, passthrough=("runbooks_",)))
-    return agent.Toolbox(root, access)
+EVAL_CLUSTER = "kind"  # the Scenarios were recorded on the kind demo
+
+
+def scenario_contract(namespace: str, enable_actions: bool, runbooks_dir: Path) -> Contract:
+    """The Contract a Scenario runs in: one cluster, its namespace, the repo's Runbooks."""
+    integrations: list[dict[str, Any]] = [{"name": "kubernetes", "enable_actions": enable_actions}]
+    if runbooks_dir.is_dir():
+        integrations.append({"name": "runbooks"})
+    cluster = {"name": EVAL_CLUSTER, "context": "replay", "namespaces": [namespace]}
+    data = {"id": "eval", "name": "Eval", "clusters": [cluster], "integrations": integrations}
+    return contracts.build(data, runbook_dirs=[runbooks_dir])
+
+
+def replay_server(
+    contract: Contract, settings: Settings, recordings: dict[str, Any]
+) -> agent.Toolbox:
+    """Real tool definitions and the Hub's real list; the API clients are never reached."""
+    apis = {c.name: (MagicMock(), MagicMock()) for c in contract.clusters}
+    toolbox = agent.build_mcp(contract, settings, apis)
+    toolbox.mcp.add_middleware(Replay(recordings, passthrough=("runbooks_",)))
+    return toolbox
 
 
 def allowed(expect: dict[str, Any], action: dict[str, Any]) -> bool:
@@ -123,17 +145,15 @@ def load_scenarios(directory: Path) -> list[tuple[Path, dict[str, Any]]]:
 async def run(directory: Path, settings: Settings) -> list[dict[str, Any]]:
     results = []
     for path, scenario in load_scenarios(directory):
-        s = settings.model_copy(
-            update={
-                "namespaces": [scenario["namespace"]],
-                "kube_context": "replay",
-                "enable_actions": scenario.get("enable_actions", False),
-            }
+        contract = scenario_contract(
+            scenario["namespace"], scenario.get("enable_actions", False), settings.runbooks_dir
         )
         group = AlertGroup.model_validate(scenario["alert"])
         start = time.monotonic()
         try:
-            async with agent.open_agent(s, replay_server(s, scenario["tools"])) as a:
+            async with agent.open_agent(
+                settings, replay_server(contract, settings, scenario["tools"])
+            ) as a:
                 outcome, proposed = await triage(a, group, f"eval-{path.stem}", scenario["expect"])
             failures = score(scenario, outcome)
             calls, report = outcome.tool_calls, outcome.report

@@ -24,6 +24,9 @@ PENDING_APPROVALS = Gauge("aiops_pending_approvals", "Actions waiting for a huma
 
 
 class AuditMiddleware(Middleware):
+    def __init__(self, contract_id: str) -> None:
+        self.contract_id = contract_id
+
     async def on_call_tool(self, context: MiddlewareContext[Any], call_next: Any) -> Any:
         tool = context.message.name
         start = time.monotonic()
@@ -41,6 +44,7 @@ class AuditMiddleware(Middleware):
                 json.dumps(
                     {
                         "event": "tool_call",
+                        "contract": self.contract_id,
                         "tool": tool,
                         "args": context.message.arguments,
                         "status": status,

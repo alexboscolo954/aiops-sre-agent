@@ -26,7 +26,8 @@ def ask(action: dict[str, Any], auto_reject: bool) -> dict[str, Any]:
 
 async def triage(group: AlertGroup, as_json: bool, auto_reject: bool) -> int:
     settings = Settings()
-    async with agent.open_agent(settings, agent.build_mcp(settings)) as a:
+    toolbox = agent.build_mcp(contracts.from_settings(settings), settings)
+    async with agent.open_agent(settings, toolbox) as a:
         outcome = await agent.start(a, group, thread_id=str(uuid.uuid4()))
         while outcome.pending:
             decisions = [ask(action, auto_reject) for action in outcome.pending]
@@ -42,10 +43,13 @@ async def triage(group: AlertGroup, as_json: bool, auto_reject: bool) -> int:
 
 
 def run_mcp(name: str, transport: str, host: str, port: int) -> int:
-    from aiops_agent.servers import kubernetes, prometheus, runbooks
-
-    builders = {"kubernetes": kubernetes, "prometheus": prometheus, "runbooks": runbooks}
-    server = builders[name].build_server(Settings())
+    settings = Settings()
+    contract = contracts.from_settings(settings)
+    by_name = {i.name: i for i in contract.integrations}
+    if name not in by_name:
+        print(f"{name} is not configured (see the AIOPS_* variables)", file=sys.stderr)
+        return 1
+    server, _ = agent.integration_server(contract, by_name[name], settings)
     if transport == "stdio":
         server.run(transport="stdio", show_banner=False)
     else:

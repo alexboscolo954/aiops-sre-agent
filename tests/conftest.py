@@ -11,7 +11,7 @@ from kubernetes import client as k
 from langchain.messages import AIMessage, ToolCall
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 
-from aiops_agent import contracts
+from aiops_agent import agent, contracts
 from aiops_agent.config import Settings
 
 NOW = datetime.now(UTC)
@@ -40,6 +40,36 @@ def two_contracts(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, 
     """The two synthetic demo Contracts, for isolation tests: A's data must never reach B."""
     use_age_keys(monkeypatch, tmp_path, "demo-shop", "demo-bank")
     return contracts.load(DEMO_CONTRACTS)
+
+
+CLUSTER = "test"
+
+
+def make_contract(
+    *,
+    enable_actions: bool = False,
+    clusters: dict[str, list[str]] | None = None,
+    runbook_dirs: tuple[Path, ...] = (),
+    contract_id: str = "acme",
+) -> contracts.Contract:
+    """A Contract in memory: by default one cluster "test" allowing namespace "shop"."""
+    clusters = clusters or {CLUSTER: ["shop"]}
+    integrations: list[dict[str, Any]] = [{"name": "kubernetes", "enable_actions": enable_actions}]
+    if runbook_dirs:
+        integrations.append({"name": "runbooks"})
+    data = {
+        "id": contract_id,
+        "name": contract_id,
+        "clusters": [{"name": n, "context": n, "namespaces": ns} for n, ns in clusters.items()],
+        "integrations": integrations,
+    }
+    return contracts.build(data, runbook_dirs=runbook_dirs)
+
+
+def toolbox(settings: Settings, fake_cluster: Any, **contract: Any) -> agent.Toolbox:
+    """make_contract(**contract)'s tools, every cluster answered by fake_cluster."""
+    c = make_contract(**contract)
+    return agent.build_mcp(c, settings, {cl.name: fake_cluster for cl in c.clusters})
 
 
 @pytest.fixture

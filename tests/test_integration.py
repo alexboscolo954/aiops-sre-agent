@@ -7,9 +7,9 @@ import os
 from typing import Any
 
 import pytest
-from fastmcp import Client
+from fastmcp import Client, FastMCP
 
-from aiops_agent import agent
+from aiops_agent import agent, contracts
 from aiops_agent.config import Settings
 from aiops_agent.models import AlertGroup
 from aiops_agent.servers import kubernetes
@@ -19,11 +19,18 @@ pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
 
 @pytest.fixture
-def live() -> Settings:
-    ctx = os.environ.get("AIOPS_KUBE_CONTEXT", "")
-    if not ctx.startswith("kind-"):
-        pytest.fail(f"integration tests only run against kind clusters, got {ctx!r}")
-    return Settings(_env_file=None, kube_context=ctx, namespaces=["demo"])
+def live(two_contracts: dict[str, contracts.Contract]) -> contracts.Contract:
+    """demo-shop, on the kind demo cluster. Refuses any context that is not kind."""
+    for c in two_contracts.values():
+        for cluster in c.clusters:
+            if not (cluster.context or "").startswith("kind-"):
+                pytest.fail(f"integration tests only run against kind, got {cluster.context!r}")
+    return two_contracts["demo-shop"]
+
+
+def k8s(contract: contracts.Contract) -> FastMCP:
+    k = next(i for i in contract.integrations if isinstance(i, contracts.Kubernetes))
+    return kubernetes.build_server(contract, k, Settings(_env_file=None).tool_output_limit)
 
 
 async def tool(client: Client, tool_name: str, /, **args: Any) -> Any:  # type: ignore[type-arg]
@@ -38,9 +45,9 @@ def by_app(pods: list[dict[str, Any]], app: str) -> list[dict[str, Any]]:
     return [p for p in pods if p["name"].startswith(app)]
 
 
-async def test_finds_all_three_failures(live: Settings) -> None:
-    async with Client(kubernetes.build_server(live)) as c:
-        pods = (await tool(c, "list_pods", namespace="demo"))["result"]
+async def test_finds_all_three_failures(live: contracts.Contract) -> None:
+    async with Client(k8s(live)) as c:
+        pods = (await tool(c, "list_pods", cluster="kind", namespace="demo"))["result"]
 
         crashing = [p for p in by_app(pods, "checkout") if p["restarts"] >= 2]
         assert crashing, pods
@@ -52,29 +59,48 @@ async def test_finds_all_three_failures(live: Settings) -> None:
         frontend = by_app(pods, "frontend")[0]
         assert frontend["containers"]["web"]["waiting"] in {"ImagePullBackOff", "ErrImagePull"}
 
-        logs = await tool(c, "pod_logs", namespace="demo", name=crashing[0]["name"], previous=True)
+        logs = await tool(
+            c, "pod_logs", cluster="kind", namespace="demo", name=crashing[0]["name"], previous=True
+        )
         assert "DATABASE_URL is not set" in logs
 
-        history = await tool(c, "describe_deployment", namespace="demo", name="checkout")
+        history = await tool(
+            c, "describe_deployment", cluster="kind", namespace="demo", name="checkout"
+        )
         revisions = [r["revision"] for r in history["rollout_history"]]
         assert revisions[:2] == ["2", "1"], history
         env = [r["config"]["app"]["env"] for r in history["rollout_history"][:2]]
         assert env == [[], ["DATABASE_URL"]], env  # the bad rollout is visible as a diff
 
-        events = (await tool(c, "get_events", namespace="demo"))["result"]
+        events = (await tool(c, "get_events", cluster="kind", namespace="demo"))["result"]
         assert any(e["reason"] in {"Failed", "BackOff"} for e in events)
 
 
-async def test_namespace_allowlist_holds_on_a_real_cluster(live: Settings) -> None:
-    async with Client(kubernetes.build_server(live)) as c:
-        result = await c.call_tool("list_pods", {"namespace": "kube-system"}, raise_on_error=False)
+async def test_demo_bank_cannot_read_demo_shops_namespace(
+    two_contracts: dict[str, contracts.Contract],
+) -> None:
+    """Same kind cluster, two Contracts: each reads only its own namespace."""
+    async with Client(k8s(two_contracts["demo-bank"])) as c:
+        own = await c.call_tool("list_pods", {"cluster": "bank-kind", "namespace": "bank"})
+        other = await c.call_tool(
+            "list_pods", {"cluster": "bank-kind", "namespace": "demo"}, raise_on_error=False
+        )
+    assert not own.is_error
+    assert other.is_error and "not allowed in cluster 'bank-kind'" in other.content[0].text
+
+
+async def test_namespace_allowlist_holds_on_a_real_cluster(live: contracts.Contract) -> None:
+    async with Client(k8s(live)) as c:
+        result = await c.call_tool(
+            "list_pods", {"cluster": "kind", "namespace": "kube-system"}, raise_on_error=False
+        )
     assert result.is_error and "not allowed" in result.content[0].text
 
 
-async def test_agent_triage_through_real_tools(live: Settings) -> None:
+async def test_agent_triage_through_real_tools(live: contracts.Contract) -> None:
     """Scripted model, real tools: proves the whole loop works against a cluster."""
-    async with Client(kubernetes.build_server(live)) as c:
-        pods = (await tool(c, "list_pods", namespace="demo"))["result"]
+    async with Client(k8s(live)) as c:
+        pods = (await tool(c, "list_pods", cluster="kind", namespace="demo"))["result"]
     pod = next(p["name"] for p in by_app(pods, "checkout") if p["restarts"] >= 2)
 
     report = {
@@ -88,9 +114,17 @@ async def test_agent_triage_through_real_tools(live: Settings) -> None:
         "recommended_actions": ["Roll back checkout to revision 1"],
     }
     model = scripted(
-        call("kubernetes_list_pods", "c1", namespace="demo"),
-        call("kubernetes_pod_logs", "c2", namespace="demo", name=pod, previous=True),
-        call("kubernetes_describe_deployment", "c3", namespace="demo", name="checkout"),
+        call("kubernetes_list_pods", "c1", cluster="kind", namespace="demo"),
+        call(
+            "kubernetes_pod_logs", "c2", cluster="kind", namespace="demo", name=pod, previous=True
+        ),
+        call(
+            "kubernetes_describe_deployment",
+            "c3",
+            cluster="kind",
+            namespace="demo",
+            name="checkout",
+        ),
         call("TriageReport", "c4", **report),
     )
     alert = AlertGroup.model_validate(
@@ -100,13 +134,14 @@ async def test_agent_triage_through_real_tools(live: Settings) -> None:
             "alerts": [{"status": "firing", "labels": {"pod": pod}}],
         }
     )
-    async with agent.open_agent(live, agent.build_mcp(live), model) as a:
+    hub = Settings(_env_file=None)
+    async with agent.open_agent(hub, agent.build_mcp(live, hub), model) as a:
         outcome = await agent.start(a, alert, "it-1")
     assert outcome.report is not None and outcome.report.category == "bad_rollout"
     assert len(outcome.tool_calls) == 4
 
 
-async def test_record_eval_fixtures(live: Settings) -> None:
+async def test_record_eval_fixtures(live: contracts.Contract) -> None:
     """With AIOPS_RECORD_DIR set, save real tool outputs for the eval scenarios."""
     out = os.environ.get("AIOPS_RECORD_DIR")
     if not out:
@@ -115,23 +150,30 @@ async def test_record_eval_fixtures(live: Settings) -> None:
     from pathlib import Path
 
     rec: dict[str, Any] = {}
-    async with Client(kubernetes.build_server(live)) as c:
-        pods = (await tool(c, "list_pods", namespace="demo"))["result"]
+    async with Client(k8s(live)) as c:
+        pods = (await tool(c, "list_pods", cluster="kind", namespace="demo"))["result"]
         rec["kubernetes_list_pods"] = pods
-        rec["kubernetes_list_deployments"] = await tool(c, "list_deployments", namespace="demo")
-        rec["kubernetes_get_events"] = await tool(c, "get_events", namespace="demo")
+        rec["kubernetes_list_deployments"] = await tool(
+            c, "list_deployments", cluster="kind", namespace="demo"
+        )
+        rec["kubernetes_get_events"] = await tool(c, "get_events", cluster="kind", namespace="demo")
         for name in ("checkout", "reports", "frontend"):
             rec[f"deploy:{name}"] = await tool(
-                c, "describe_deployment", namespace="demo", name=name
+                c, "describe_deployment", cluster="kind", namespace="demo", name=name
             )
         for p in pods:
             rec[f"pod:{p['name']}"] = await tool(
-                c, "describe_pod", namespace="demo", name=p["name"]
+                c, "describe_pod", cluster="kind", namespace="demo", name=p["name"]
             )
             for previous in (False, True):
                 r = await c.call_tool(
                     "pod_logs",
-                    {"namespace": "demo", "name": p["name"], "previous": previous},
+                    {
+                        "cluster": "kind",
+                        "namespace": "demo",
+                        "name": p["name"],
+                        "previous": previous,
+                    },
                     raise_on_error=False,
                 )
                 rec[f"logs:{p['name']}:{previous}"] = r.content[0].text

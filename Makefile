@@ -20,8 +20,8 @@ demo: ## broken workloads in namespace demo; checkout breaks via a rollout
 	kubectl --context $(CTX) -n demo set env deploy/checkout DATABASE_URL-
 	./demo/wait-broken.sh $(CTX)
 
-integration: ## real MCP tools against the kind demo (never another context)
-	AIOPS_KUBE_CONTEXT=$(CTX) AIOPS_NAMESPACES=demo uv run pytest -m integration -v
+integration: ## real MCP tools on the kind demo, as the demo Contracts (kind contexts only)
+	uv run pytest -m integration -v
 
 image:
 	docker build -t aiops-sre-agent:ci .

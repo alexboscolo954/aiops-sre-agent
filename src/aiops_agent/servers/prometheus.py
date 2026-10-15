@@ -11,8 +11,8 @@ import httpx
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
+from pydantic import SecretStr
 
-from aiops_agent.config import Settings
 from aiops_agent.servers import Access
 
 READ = ToolAnnotations(read_only_hint=True, open_world_hint=False)
@@ -31,14 +31,12 @@ def _num(v: str) -> float | str:
         return v
 
 
-def build_server(settings: Settings, http: httpx.Client | None = None) -> FastMCP:
+def build_server(
+    url: str, token: SecretStr | None = None, http: httpx.Client | None = None
+) -> FastMCP:
     if http is None:
-        if not settings.prometheus_url:
-            raise RuntimeError("AIOPS_PROMETHEUS_URL is not set")
-        headers = {}
-        if settings.prometheus_token:
-            headers["Authorization"] = f"Bearer {settings.prometheus_token.get_secret_value()}"
-        http = httpx.Client(base_url=settings.prometheus_url, headers=headers, timeout=15)
+        headers = {"Authorization": f"Bearer {token.get_secret_value()}"} if token else {}
+        http = httpx.Client(base_url=url, headers=headers, timeout=15)
     mcp = FastMCP("prometheus", instructions="Query metrics and alerts with PromQL.")
 
     def api(path: str, params: dict[str, Any]) -> Any:
