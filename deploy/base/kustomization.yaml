@@ -5,7 +5,11 @@ resources:
   - namespace.yaml
   - rbac.yaml
   - deployment.yaml
+configMapGenerator:
+  - name: aiops-contract
+    namespace: aiops
+    files: [contract.yaml]
 # Create the secret out of band (External Secrets, sealed-secrets, Vault):
 #   kubectl -n aiops create secret generic aiops-secrets \
-#     --from-literal=AIOPS_WEBHOOK_TOKEN=... --from-literal=AIOPS_APPROVER_TOKEN=... --from-literal=AIOPS_MODEL_API_KEY=... \
+#     --from-literal=AIOPS_APPROVER_TOKEN=... --from-literal=AIOPS_MODEL_API_KEY=... \
 #     [--from-literal=AIOPS_SLACK_WEBHOOK_URL=...]

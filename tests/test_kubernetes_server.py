@@ -21,34 +21,6 @@ def k8s(settings: Settings, fake_cluster: Any, actions: bool = False, **contract
     return kubernetes.build_server(c, k, settings.tool_output_limit, apis)
 
 
-def test_env_settings_refuse_to_guess_a_cluster() -> None:
-    s = Settings(_env_file=None, namespaces=["shop"])  # no context, not in-cluster
-    with pytest.raises(RuntimeError, match="context is required unless in_cluster"):
-        contracts.from_settings(s)
-
-
-def test_env_settings_refuse_empty_namespace_allowlist() -> None:
-    s = Settings(_env_file=None, kube_context="kind-test")
-    with pytest.raises(RuntimeError, match=r"clusters\.0\.namespaces.*AIOPS_NAMESPACES"):
-        contracts.from_settings(s)
-
-
-def test_env_settings_become_one_contract_without_sops(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(contracts, "_decrypt", lambda _: pytest.fail("sops must not run"))
-    s = Settings(
-        _env_file=None,
-        kube_context="kind-test",
-        namespaces=["shop"],
-        enable_actions=True,
-        prometheus_url="http://prom",
-        prometheus_token=SecretStr("tok"),
-    )
-    c = contracts.from_settings(s)
-    assert [i.name for i in c.integrations] == ["kubernetes", "prometheus", "runbooks"]
-    assert c.secret("prometheus-token").get_secret_value() == "tok"
-    assert c.runbook_dirs == [s.runbooks_dir]
-
-
 def test_kubeconfig_secret_is_parsed_in_memory(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: dict[str, Any] = {}
     monkeypatch.setattr(
@@ -99,11 +71,6 @@ async def test_cluster_and_namespace_are_checked_together(
         ):
             await c.call_tool("list_pods", {"cluster": "bank-kind", "namespace": "shop"})
     assert fake_cluster[0].list_namespaced_pod.call_count == 1
-
-
-def test_namespaces_parse_from_csv(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("AIOPS_NAMESPACES", "shop, payments ,")
-    assert Settings(_env_file=None).namespaces == ["shop", "payments"]
 
 
 @pytest.mark.anyio

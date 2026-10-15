@@ -1,10 +1,11 @@
 """Runtime settings, read from AIOPS_* environment variables (or a .env file)."""
 
+import os
 from pathlib import Path
-from typing import Annotated
 
-from pydantic import Field, SecretStr, field_validator
-from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+from dotenv import dotenv_values
+from pydantic import SecretStr
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -20,33 +21,43 @@ class Settings(BaseSettings):
     max_tool_calls: int = 25
     tool_output_limit: int = 8000  # max characters per tool result
 
-    # Kubernetes. No silent fallback to the default kubeconfig context:
-    # either run in-cluster or name the context explicitly.
-    in_cluster: bool = False
-    kubeconfig: Path | None = None
-    kube_context: str | None = None
-    namespaces: Annotated[list[str], NoDecode] = Field(default_factory=list)
-    enable_actions: bool = False
-    max_replicas: int = 10
+    # Every Contract: one directory each (see contracts.py). Required for serve,
+    # triage and mcp.
+    contracts_dir: Path | None = None
 
-    # Prometheus (optional: the server is skipped when unset).
-    prometheus_url: str | None = None
-    prometheus_token: SecretStr | None = None
-
-    runbooks_dir: Path = Path("runbooks")
-
-    # Webhook server.
-    # Two tokens: Alertmanager can only submit alerts; only approvers can read
-    # reports and approve actions.
-    webhook_token: SecretStr | None = None
+    # Webhook server. Each Contract's Alertmanager has its own token (a hash in its
+    # contract.yaml) and can only submit alerts; only the Operator's approver token
+    # reads reports and approves actions.
     approver_token: SecretStr | None = None
     max_concurrent_triages: int = 3  # alert storms queue instead of fanning out
     decision_timeout_seconds: int = 1800  # proposed actions go stale after this
     slack_webhook_url: SecretStr | None = None
 
-    @field_validator("namespaces", mode="before")
-    @classmethod
-    def _split_csv(cls, v: object) -> object:
-        if isinstance(v, str):
-            return [ns.strip() for ns in v.split(",") if ns.strip()]
-        return v
+
+# Settings that moved into a Contract's contract.yaml in slice 0.3.
+MOVED = {
+    "AIOPS_IN_CLUSTER": "clusters[].in_cluster",
+    "AIOPS_KUBECONFIG": "clusters[].kubeconfig_file",
+    "AIOPS_KUBE_CONTEXT": "clusters[].context",
+    "AIOPS_NAMESPACES": "clusters[].namespaces",
+    "AIOPS_ENABLE_ACTIONS": "the kubernetes integration's enable_actions",
+    "AIOPS_MAX_REPLICAS": "the kubernetes integration's max_replicas",
+    "AIOPS_PROMETHEUS_URL": "the prometheus integration's url",
+    "AIOPS_PROMETHEUS_TOKEN": "the prometheus integration's token_secret",
+    "AIOPS_RUNBOOKS_DIR": "<contract>/runbooks and shared/runbooks",
+    "AIOPS_WEBHOOK_TOKEN": "webhook_token_sha256 (aiops contracts new-token)",
+}
+
+
+def refuse_moved(env_file: Path | None = Path(".env")) -> None:
+    """Settings ignores unknown variables, so a deploy still setting these would
+    lose them silently. Fail and say where each one went."""
+    names = set(os.environ)
+    if env_file and env_file.is_file():
+        names |= set(dotenv_values(env_file))
+    found = sorted(set(MOVED) & names)
+    if found:
+        where = "; ".join(f"{n} -> {MOVED[n]}" for n in found)
+        raise RuntimeError(
+            f"these settings moved into contract.yaml (AIOPS_CONTRACTS_DIR): {where}"
+        )

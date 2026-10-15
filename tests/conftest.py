@@ -51,6 +51,7 @@ def make_contract(
     clusters: dict[str, list[str]] | None = None,
     runbook_dirs: tuple[Path, ...] = (),
     contract_id: str = "acme",
+    webhook_token: str | None = None,
 ) -> contracts.Contract:
     """A Contract in memory: by default one cluster "test" allowing namespace "shop"."""
     clusters = clusters or {CLUSTER: ["shop"]}
@@ -63,6 +64,8 @@ def make_contract(
         "clusters": [{"name": n, "context": n, "namespaces": ns} for n, ns in clusters.items()],
         "integrations": integrations,
     }
+    if webhook_token:
+        data["webhook_token_sha256"] = contracts.token_hash(webhook_token)
     return contracts.build(data, runbook_dirs=runbook_dirs)
 
 
@@ -74,13 +77,7 @@ def toolbox(settings: Settings, fake_cluster: Any, **contract: Any) -> agent.Too
 
 @pytest.fixture
 def settings(tmp_path: Any) -> Settings:
-    return Settings(
-        _env_file=None,
-        kube_context="kind-test",
-        namespaces=["shop"],
-        runbooks_dir=tmp_path / "none",
-        model="fake",
-    )
+    return Settings(_env_file=None, model="fake")
 
 
 def crashlooping_pod() -> k.V1Pod:
@@ -160,6 +157,11 @@ def deployment() -> k.V1Deployment:
 
 @pytest.fixture
 def fake_cluster() -> tuple[MagicMock, MagicMock]:
+    return make_fake_cluster()
+
+
+def make_fake_cluster() -> tuple[MagicMock, MagicMock]:
+    """(CoreV1Api, AppsV1Api) mocks answering with one crash-looping pod."""
     core, apps = MagicMock(), MagicMock()
     core.list_namespaced_pod.return_value = k.V1PodList(items=[crashlooping_pod()])
     core.read_namespaced_pod.return_value = crashlooping_pod()

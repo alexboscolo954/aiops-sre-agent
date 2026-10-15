@@ -97,8 +97,10 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
   - a tool not on the list is invisible.
 - **Part 2, done.** `build_mcp(contract, settings)` builds one Contract's tools. Isolation tests live in `tests/test_isolation.py`. The kind demo has the `bank` namespace, and a kind-backed test shows demo-bank can't read demo-shop's namespace. Until 0.3, the API, `aiops triage` and `aiops mcp` turn the `AIOPS_*` variables into one Contract named `default`.
 
-**0.3 Contract-scoped intake.**
+**0.3 Contract-scoped intake.** Done.
 - `POST /contracts/{id}/alertmanager` with a webhook token per Contract. Dedup is keyed by (Contract, `groupKey`). This replaces `/alertmanager` and the global token.
+- The token is stored as its SHA-256 in `contract.yaml` (`aiops contracts new-token`), so the in-cluster deploy needs no sops yet: the image gains sops in 0.5. The `AIOPS_*` cluster settings are gone; `serve`, `triage` and `mcp` refuse to start if one is still set.
+- Known limit: `AIOPS_MAX_CONCURRENT_TRIAGES` is shared, so one Contract's alert storm can hold every slot. Revisit with per-Contract queues when it bites.
 - *Done when:*
   - A's token can't post to B;
   - the same `groupKey` in A and B starts two Triages;
@@ -271,4 +273,4 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
 
 ## Next
 
-Slice 0.3: Contract-scoped intake, with one alert URL and token per Contract.
+Slice 0.4: Postgres state, so pending approvals survive a Hub restart.

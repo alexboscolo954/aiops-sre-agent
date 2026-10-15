@@ -27,12 +27,9 @@ spec:
           image: ghcr.io/alexboscolo954/aiops-sre-agent:0.1.0
           args: [serve, --port, "8080"]
           env:
-            - {name: AIOPS_IN_CLUSTER, value: "true"}
             - {name: HOME, value: /tmp}   # read-only root fs
-            - {name: AIOPS_NAMESPACES, value: demo}
+            - {name: AIOPS_CONTRACTS_DIR, value: /contracts}
             - {name: AIOPS_MODEL, value: "anthropic:claude-sonnet-5-5"}
-            - {name: AIOPS_PROMETHEUS_URL, value: "http://prometheus-operated.monitoring:9090"}
-            - {name: AIOPS_RUNBOOKS_DIR, value: /app/runbooks}
           envFrom:
             - secretRef: {name: aiops-secrets}
           ports:
@@ -51,9 +48,12 @@ spec:
             capabilities: {drop: [ALL]}
           volumeMounts:
             - {name: tmp, mountPath: /tmp}
+            - {name: contract, mountPath: /contracts/in-cluster, readOnly: true}
       volumes:
         - name: tmp
           emptyDir: {}
+        - name: contract
+          configMap: {name: aiops-contract}
 ---
 apiVersion: v1
 kind: Service

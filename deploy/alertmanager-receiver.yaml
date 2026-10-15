@@ -2,12 +2,12 @@
 receivers:
   - name: aiops-agent
     webhook_configs:
-      - url: http://aiops-agent.aiops:8080/alertmanager
+      - url: http://aiops-agent.aiops:8080/contracts/in-cluster/alertmanager
         send_resolved: true   # a resolved group makes its proposed actions stale
         http_config:
           authorization:
             type: Bearer
-            credentials_file: /etc/alertmanager/secrets/aiops-token
+            credentials_file: /etc/alertmanager/secrets/aiops-token   # this Contract's webhook token
 route:
   routes:
     - receiver: aiops-agent

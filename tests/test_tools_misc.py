@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -120,3 +121,21 @@ def test_model_headers_reach_the_client(monkeypatch: pytest.MonkeyPatch) -> None
     s = Settings(_env_file=None, model_api_key="sk-ant-test")  # type: ignore[arg-type]
     model = build_model(s)
     assert model.default_headers == {"anthropic-workspace-id": "wrkspc_test"}  # type: ignore[attr-defined]
+
+
+def test_settings_that_moved_into_a_contract_refuse_to_start(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from aiops_agent.config import refuse_moved
+
+    for name in list(os.environ):
+        if name.startswith("AIOPS_"):
+            monkeypatch.delenv(name)
+    refuse_moved(None)
+    env = tmp_path / ".env"
+    env.write_text("AIOPS_MODEL=x\nAIOPS_NAMESPACES=demo\n")
+    monkeypatch.setenv("AIOPS_KUBE_CONTEXT", "kind-aiops")
+    with pytest.raises(RuntimeError) as e:
+        refuse_moved(env)
+    assert "AIOPS_KUBE_CONTEXT -> clusters[].context" in str(e.value)
+    assert "AIOPS_NAMESPACES -> clusters[].namespaces" in str(e.value)

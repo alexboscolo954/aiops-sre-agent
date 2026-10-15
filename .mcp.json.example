@@ -2,16 +2,19 @@
   "mcpServers": {
     "k8s-triage": {
       "command": "uv",
-      "args": ["run", "--directory", "/path/to/aiops-sre-agent", "aiops", "mcp", "kubernetes"],
+      "args": ["run", "--directory", "/path/to/aiops-sre-agent", "aiops", "mcp", "kubernetes", "--contract", "demo-shop"],
       "env": {
-        "AIOPS_KUBE_CONTEXT": "kind-aiops",
-        "AIOPS_NAMESPACES": "demo"
+        "AIOPS_CONTRACTS_DIR": "/path/to/contracts",
+        "SOPS_AGE_KEY_FILE": "/path/to/age/keys.txt"
       }
     },
     "runbooks": {
       "command": "uv",
-      "args": ["run", "--directory", "/path/to/aiops-sre-agent", "aiops", "mcp", "runbooks"],
-      "env": {"AIOPS_RUNBOOKS_DIR": "/path/to/aiops-sre-agent/runbooks"}
+      "args": ["run", "--directory", "/path/to/aiops-sre-agent", "aiops", "mcp", "runbooks", "--contract", "demo-shop"],
+      "env": {
+        "AIOPS_CONTRACTS_DIR": "/path/to/contracts",
+        "SOPS_AGE_KEY_FILE": "/path/to/age/keys.txt"
+      }
     }
   }
 }

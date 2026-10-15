@@ -142,11 +142,11 @@ def load_scenarios(directory: Path) -> list[tuple[Path, dict[str, Any]]]:
     return [(p, yaml.safe_load(p.read_text())) for p in sorted(directory.glob("*.yaml"))]
 
 
-async def run(directory: Path, settings: Settings) -> list[dict[str, Any]]:
+async def run(directory: Path, settings: Settings, runbooks_dir: Path) -> list[dict[str, Any]]:
     results = []
     for path, scenario in load_scenarios(directory):
         contract = scenario_contract(
-            scenario["namespace"], scenario.get("enable_actions", False), settings.runbooks_dir
+            scenario["namespace"], scenario.get("enable_actions", False), runbooks_dir
         )
         group = AlertGroup.model_validate(scenario["alert"])
         start = time.monotonic()

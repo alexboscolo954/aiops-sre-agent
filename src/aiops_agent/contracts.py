@@ -10,8 +10,11 @@ reports every problem at once as `path: field: message`. Secret values never
 appear in errors, logs or repr.
 """
 
+import hashlib
+import hmac
 import json
 import os
+import secrets
 import shutil
 import subprocess
 from collections import defaultdict
@@ -29,8 +32,6 @@ from pydantic import (
     ValidationError,
     model_validator,
 )
-
-from aiops_agent.config import Settings
 
 SECRETS_FILE = "secrets.sops.yaml"
 SHARED = "shared"
@@ -91,6 +92,9 @@ Integration = Annotated[Kubernetes | Prometheus | Runbooks, Field(discriminator=
 class Contract(Strict):
     id: Slug
     name: str
+    # SHA-256 of the bearer token this Contract's Alertmanager sends. A hash, not a
+    # credential, so it lives in plain YAML (`aiops contracts new-token` makes one).
+    webhook_token_sha256: str | None = Field(None, pattern=r"^[0-9a-f]{64}$")
     clusters: list[Cluster] = []
     integrations: list[Integration] = Field(min_length=1)
 
@@ -159,6 +163,16 @@ def load(directory: Path) -> dict[str, Contract]:
         contracts[contract.id] = contract
         for r in recipients:
             owners[r].append(contract.id)
+    by_token: dict[str, list[str]] = defaultdict(list)
+    for c in contracts.values():
+        if c.webhook_token_sha256:
+            by_token[c.webhook_token_sha256].append(c.id)
+    for ids in by_token.values():
+        if len(ids) > 1:
+            problems.append(
+                f"{directory}: {', '.join(ids)} share a webhook token; "
+                "one Contract's Alertmanager could post as another"
+            )
     for recipient, ids in owners.items():
         if len(ids) > 1:
             problems.append(
@@ -295,45 +309,6 @@ def build(
     return contract
 
 
-def from_settings(settings: Settings) -> Contract:
-    """ponytail: the AIOPS_* variables as one Contract, until slice 0.3 loads a
-    contracts directory. Never calls sops, which the image doesn't ship yet."""
-    cluster = {
-        "name": "default",
-        "namespaces": settings.namespaces,
-        "in_cluster": settings.in_cluster,
-        "context": settings.kube_context,
-        "kubeconfig_file": settings.kubeconfig,
-    }
-    integrations: list[dict[str, Any]] = [
-        {
-            "name": "kubernetes",
-            "enable_actions": settings.enable_actions,
-            "max_replicas": settings.max_replicas,
-        }
-    ]
-    secrets = {}
-    if settings.prometheus_url:
-        prom = {"name": "prometheus", "url": settings.prometheus_url}
-        if settings.prometheus_token:
-            prom["token_secret"] = "prometheus-token"  # noqa: S105 - a name, not a value
-            secrets["prometheus-token"] = settings.prometheus_token
-        integrations.append(prom)
-    if settings.runbooks_dir.is_dir():
-        integrations.append({"name": "runbooks"})
-    data = {
-        "id": "default",
-        "name": "AIOPS_* settings",
-        "clusters": [cluster],
-        "integrations": integrations,
-    }
-    try:
-        return build(data, secrets=secrets, runbook_dirs=[settings.runbooks_dir])
-    except ValidationError as e:
-        hint = "set AIOPS_NAMESPACES, and AIOPS_KUBE_CONTEXT or AIOPS_IN_CLUSTER"
-        raise RuntimeError("; ".join(_lines("AIOPS_* settings", e)) + f" ({hint})") from None
-
-
 def _recipients(path: Path) -> set[str]:
     """Read from the file's sops metadata: no key needed. Refuses unencrypted files."""
     try:
@@ -367,3 +342,22 @@ def _decrypt(path: Path) -> dict[str, str]:
         # Name the keys, never the values.
         raise ContractError([f"{path}: {k}: value must be a string" for k in bad])
     return data
+
+
+def token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def new_token() -> tuple[str, str]:
+    """A fresh webhook token and the hash that goes in contract.yaml."""
+    token = secrets.token_urlsafe(32)
+    return token, token_hash(token)
+
+
+# Compared when the Contract is unknown, so a wrong id costs the same as a wrong token.
+_NO_MATCH = token_hash(secrets.token_urlsafe(32))
+
+
+def token_matches(contract: Contract | None, token: str) -> bool:
+    expected = (contract and contract.webhook_token_sha256) or _NO_MATCH
+    return hmac.compare_digest(token_hash(token), expected)

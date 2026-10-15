@@ -30,6 +30,7 @@ deploy-smoke: image ## real image + shipped manifests on kind
 	kind load docker-image aiops-sre-agent:ci --name $(CLUSTER)
 	./demo/deploy-smoke.sh $(CTX)
 	./demo/rbac-check.sh $(CTX)
+	kubectl kustomize deploy/actions | grep -q 'enable_actions: true'  # the overlay turns actions on
 	kubectl --context $(CTX) apply -f deploy/actions/rbac-actions.yaml
 	./demo/rbac-check.sh $(CTX) true
 

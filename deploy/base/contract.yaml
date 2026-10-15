@@ -1,0 +1,14 @@
+# The Contract for the cluster this Hub runs in, mounted at
+# /contracts/in-cluster/contract.yaml. Add its webhook token's hash before you
+# deploy (`aiops contracts new-token`); without it every alert gets a 401.
+id: in-cluster
+name: The cluster the Hub runs in
+clusters:
+  - name: local
+    in_cluster: true
+    namespaces: [demo]        # bind the read Role in each (rbac.yaml)
+integrations:
+  - name: kubernetes
+    enable_actions: false     # deploy/actions turns this on, with its RBAC
+  - name: prometheus
+    url: http://prometheus-operated.monitoring:9090

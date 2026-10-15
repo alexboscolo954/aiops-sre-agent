@@ -5,9 +5,8 @@ kind: Kustomization
 resources:
   - ../base
   - rbac-actions.yaml
-patches:
-  - target: {kind: Deployment, name: aiops-agent}
-    patch: |-
-      - op: add
-        path: /spec/template/spec/containers/0/env/-
-        value: {name: AIOPS_ENABLE_ACTIONS, value: "true"}
+configMapGenerator:
+  - name: aiops-contract       # the same Contract with enable_actions: true
+    namespace: aiops
+    behavior: replace
+    files: [contract.yaml]

@@ -1,5 +1,5 @@
 # Read-only, and bound per namespace with RoleBindings, so RBAC enforces the
-# same allowlist as AIOPS_NAMESPACES. Secrets and ConfigMaps are not readable.
+# same allowlist as the Contract's namespaces. Secrets and ConfigMaps are not readable.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -18,7 +18,7 @@ rules:
     resources: [deployments, replicasets]
     verbs: [get, list, watch]
 ---
-# One RoleBinding per namespace in AIOPS_NAMESPACES. Copy for each.
+# One RoleBinding per namespace in the Contract's clusters[].namespaces. Copy for each.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from aiops_agent import agent, contracts, evals
-from aiops_agent.config import Settings
+from aiops_agent.config import Settings, refuse_moved
 from aiops_agent.models import AlertGroup
 
 
@@ -24,9 +24,20 @@ def ask(action: dict[str, Any], auto_reject: bool) -> dict[str, Any]:
     return {"type": "reject", "message": "Rejected by the on-call engineer. Do not retry."}
 
 
-async def triage(group: AlertGroup, as_json: bool, auto_reject: bool) -> int:
+def contract(settings: Settings, contract_id: str) -> contracts.Contract:
+    """One Contract from AIOPS_CONTRACTS_DIR, with its secrets decrypted."""
+    refuse_moved()
+    if not settings.contracts_dir:
+        raise SystemExit("set AIOPS_CONTRACTS_DIR")
+    loaded = contracts.load(settings.contracts_dir)
+    if contract_id not in loaded:
+        raise SystemExit(f"no Contract {contract_id!r}; have: {', '.join(sorted(loaded))}")
+    return loaded[contract_id]
+
+
+async def triage(group: AlertGroup, contract_id: str, as_json: bool, auto_reject: bool) -> int:
     settings = Settings()
-    toolbox = agent.build_mcp(contracts.from_settings(settings), settings)
+    toolbox = agent.build_mcp(contract(settings, contract_id), settings)
     async with agent.open_agent(settings, toolbox) as a:
         outcome = await agent.start(a, group, thread_id=str(uuid.uuid4()))
         while outcome.pending:
@@ -42,14 +53,14 @@ async def triage(group: AlertGroup, as_json: bool, auto_reject: bool) -> int:
     return 0
 
 
-def run_mcp(name: str, transport: str, host: str, port: int) -> int:
+def run_mcp(name: str, contract_id: str, transport: str, host: str, port: int) -> int:
     settings = Settings()
-    contract = contracts.from_settings(settings)
-    by_name = {i.name: i for i in contract.integrations}
+    c = contract(settings, contract_id)
+    by_name = {i.name: i for i in c.integrations}
     if name not in by_name:
-        print(f"{name} is not configured (see the AIOPS_* variables)", file=sys.stderr)
+        print(f"Contract {contract_id!r} has no {name} integration", file=sys.stderr)
         return 1
-    server, _ = agent.integration_server(contract, by_name[name], settings)
+    server, _ = agent.integration_server(c, by_name[name], settings)
     if transport == "stdio":
         server.run(transport="stdio", show_banner=False)
     else:
@@ -77,6 +88,7 @@ def main(argv: list[str] | None = None) -> int:
 
     t = sub.add_parser("triage", help="triage one Alertmanager webhook payload (JSON file)")
     t.add_argument("alert", type=Path)
+    t.add_argument("--contract", required=True, help="which Contract the alert belongs to")
     t.add_argument("--json", action="store_true", help="print the report as JSON")
     t.add_argument("--auto-reject", action="store_true", help="reject every action, report only")
 
@@ -86,6 +98,7 @@ def main(argv: list[str] | None = None) -> int:
 
     m = sub.add_parser("mcp", help="run one MCP server standalone (e.g. for Claude Code)")
     m.add_argument("server", choices=["kubernetes", "prometheus", "runbooks"])
+    m.add_argument("--contract", required=True, help="serve this Contract's integration")
     m.add_argument("--transport", choices=["stdio", "http"], default="stdio")
     m.add_argument("--host", default="127.0.0.1")
     m.add_argument("--port", type=int, default=8765)
@@ -94,27 +107,35 @@ def main(argv: list[str] | None = None) -> int:
     e.add_argument("scenarios", type=Path, nargs="?", default=Path("evals/scenarios"))
     e.add_argument("--json", action="store_true")
     e.add_argument("--out", type=Path, help="write each report as markdown here")
+    e.add_argument("--runbooks", type=Path, default=Path("runbooks"), help="runbooks to replay")
 
     c = sub.add_parser("contracts", help="manage the contracts directory")
     csub = c.add_subparsers(dest="contracts_cmd", required=True)
     v = csub.add_parser("validate", help="check every Contract and decrypt its secrets")
     v.add_argument("directory", type=Path)
+    csub.add_parser("new-token", help="a webhook token for a Contract's Alertmanager")
 
     args = parser.parse_args(argv)
+    if args.cmd == "contracts" and args.contracts_cmd == "new-token":
+        token, digest = contracts.new_token()
+        print(f"token (give it to the Contract's Alertmanager, shown once): {token}")
+        print(f"contract.yaml:  webhook_token_sha256: {digest}")
+        return 0
     if args.cmd == "contracts":
         return validate_contracts(args.directory)
     if args.cmd == "triage":
         group = AlertGroup.model_validate_json(args.alert.read_text())
-        return asyncio.run(triage(group, args.json, args.auto_reject))
+        return asyncio.run(triage(group, args.contract, args.json, args.auto_reject))
     if args.cmd == "mcp":
-        return run_mcp(args.server, args.transport, args.host, args.port)
+        return run_mcp(args.server, args.contract, args.transport, args.host, args.port)
     if args.cmd == "serve":
         import uvicorn
 
+        refuse_moved()
         uvicorn.run("aiops_agent.api:create_app", factory=True, host=args.host, port=args.port)
         return 0
     if args.cmd == "eval":
-        results = asyncio.run(evals.run(args.scenarios, Settings()))
+        results = asyncio.run(evals.run(args.scenarios, Settings(), args.runbooks))
         if args.out:
             args.out.mkdir(parents=True, exist_ok=True)
             for r in results:

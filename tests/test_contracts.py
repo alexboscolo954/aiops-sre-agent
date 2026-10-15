@@ -249,3 +249,27 @@ def test_unparseable_kubeconfig_secret_is_not_echoed(
     found = problems(root)
     assert any("kubeconfig is not valid YAML" in p for p in found)
     assert "TOPSECRET" not in "\n".join(found)
+
+
+def test_two_contracts_must_not_share_a_webhook_token(tmp_path: Path) -> None:
+    digest = contracts.token_hash("shared-token")
+    write(tmp_path, {**BASE, "id": "one", "webhook_token_sha256": digest})
+    write(tmp_path, {**BASE, "id": "two", "webhook_token_sha256": digest})
+    assert any("one, two share a webhook token" in p for p in problems(tmp_path))
+
+
+def test_webhook_token_hash_must_look_like_sha256(tmp_path: Path) -> None:
+    write(tmp_path, {**BASE, "webhook_token_sha256": "the-token-itself"})
+    assert any("webhook_token_sha256: String should match" in p for p in problems(tmp_path))
+
+
+def test_new_token_prints_a_token_and_its_hash(capsys: pytest.CaptureFixture[str]) -> None:
+    assert cli.main(["contracts", "new-token"]) == 0
+    out = capsys.readouterr().out.splitlines()
+    token = out[0].rsplit(" ", 1)[1]
+    digest = out[1].rsplit(" ", 1)[1]
+    c = contracts.build({**BASE, "webhook_token_sha256": digest})
+    assert contracts.token_matches(c, token)
+    assert not contracts.token_matches(c, token + "x")
+    assert not contracts.token_matches(None, token)
+    assert not contracts.token_matches(contracts.build(BASE), token)  # no hash, no entry

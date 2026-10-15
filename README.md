@@ -51,10 +51,10 @@ An agent that reads logs and can change a cluster is a prompt-injection target. 
 
 | Layer | Control |
 |---|---|
-| Cluster access | The Kubernetes server refuses to start without `AIOPS_IN_CLUSTER=true` or an explicitly named `AIOPS_KUBE_CONTEXT`. It never falls back to your current kubectl context. |
+| Cluster access | Each cluster in a Contract is either `in_cluster: true` or names its `context` explicitly. The agent never falls back to your current kubectl context. A kubeconfig credential plugin is refused unless the cluster sets `allow_exec`. |
 | RBAC | Read-only ClusterRole, bound **per namespace** with RoleBindings. No Secrets, no ConfigMaps. CI checks this by impersonating the ServiceAccount ([`demo/rbac-check.sh`](demo/rbac-check.sh)). |
-| Write scope | Write tools are opt-in (`AIOPS_ENABLE_ACTIONS`). When off, the write tools aren't registered at all. When on, they cover only `pods/eviction` (respects PodDisruptionBudgets) and `deployments/scale`. There's deliberately no `patch deployments`, which would allow changing images and commands. |
-| Namespace allowlist | Every tool checks `AIOPS_NAMESPACES` server-side, on top of RBAC. |
+| Write scope | Write tools are opt-in per Contract (the kubernetes integration's `enable_actions`). When off, the write tools aren't registered at all. When on, they cover only `pods/eviction` (respects PodDisruptionBudgets) and `deployments/scale`. There's deliberately no `patch deployments`, which would allow changing images and commands. |
+| Contract scope | Every tool checks its `cluster` and `namespace` against its own Contract server-side, on top of RBAC. Each Contract's alerts arrive on their own URL with their own token ([Contracts](#contracts)). |
 | Human approval | The Hub keeps its own list of what each tool does ([ADR 0002](docs/adr/0002-hub-and-relay.md)). A tool not on the list is hidden from the agent. `HumanInTheLoopMiddleware` interrupts before every tool the list marks as a write, **and** before every tool whose server doesn't claim `readOnlyHint`. A server's annotation can only make a tool stricter, so a server that mislabels a write as read-only still waits for approval. The reviewer sees the full arguments. |
 | Secrets in context | Env var *values* are never returned, only names. Logs and events are redacted (tokens, JWTs, keys, `password=`). |
 | Prompt injection | Alerts and tool output are framed as data. An eval scenario plants an instruction in pod logs, and it fails if the agent even *attempts* a write. |
@@ -71,9 +71,9 @@ Requirements: Python 3.12+, [uv](https://docs.astral.sh/uv/), Docker, kind.
 ```bash
 uv sync
 make cluster demo          # kind cluster + three broken workloads in namespace "demo"
-cp .env.example .env       # set AIOPS_MODEL_API_KEY
-AIOPS_KUBE_CONTEXT=kind-aiops AIOPS_NAMESPACES=demo \
-  uv run aiops triage examples/alert-crashloop.json
+cp .env.example .env       # set AIOPS_MODEL_API_KEY; AIOPS_CONTRACTS_DIR=demo/contracts
+export SOPS_AGE_KEY="$(cat demo/contracts/test-keys/*.agekey)"   # the demo's public test keys
+uv run aiops triage examples/alert-crashloop.json --contract demo-shop
 ```
 
 The demo breaks three workloads in three classic ways:
@@ -95,20 +95,22 @@ AIOPS_MODEL=openai:<model-name> AIOPS_MODEL_BASE_URL=http://litellm:4000/v1 AIOP
 ## Running as a service
 
 ```bash
+uv run aiops contracts new-token    # give the token to Alertmanager; the hash goes in
+                                    # deploy/base/contract.yaml (webhook_token_sha256)
 kubectl -n aiops create secret generic aiops-secrets \
-  --from-literal=AIOPS_WEBHOOK_TOKEN=... --from-literal=AIOPS_APPROVER_TOKEN=... \
-  --from-literal=AIOPS_MODEL_API_KEY=...
+  --from-literal=AIOPS_APPROVER_TOKEN=... --from-literal=AIOPS_MODEL_API_KEY=...
 kubectl apply -k deploy/base        # read-only
 kubectl apply -k deploy/actions     # optional: evict / scale, still behind approval
 ```
 
 The image is published to GHCR on version tags. To use your own build, `cd deploy/base && kustomize edit set image ghcr.io/alexboscolo954/aiops-sre-agent=<your-image>`.
 
+This in-cluster deploy serves one Contract, `in-cluster` ([`deploy/base/contract.yaml`](deploy/base/contract.yaml)), mounted from a ConfigMap. It has no secrets file, so the image needs no sops; the Hub with many Contracts and SOPS secrets is roadmap slice 0.5.
 Point Alertmanager at it with [`deploy/alertmanager-receiver.yaml`](deploy/alertmanager-receiver.yaml).
 
 | Endpoint | Token | |
 |---|---|---|
-| `POST /alertmanager` | webhook | Starts a triage when an alert not seen before is firing in the group. Anything else within 30 min (a repeat, or a group that shrank) returns the existing triage. A resolved group makes its proposed actions stale. |
+| `POST /contracts/{id}/alertmanager` | that Contract's webhook token | Starts a triage when an alert not seen before is firing in the group. An unknown Contract gets the same 401 as a wrong token. Duplicates are checked per Contract, so two Contracts can send the same group key. Anything else within 30 min (a repeat, or a group that shrank) returns the existing triage. A resolved group makes its proposed actions stale. |
 | `GET /triages`, `GET /triages/{id}` | approver | Status, report, proposed and executed actions |
 | `POST /triages/{id}/decision` | approver | `{"approve": true}` or `{"approve": false, "message": "..."}` |
 | `GET /metrics`, `GET /healthz` | none | `aiops_triages_total`, `aiops_triage_seconds`, `aiops_tool_calls_total`, `aiops_pending_approvals` |
@@ -116,22 +118,22 @@ Point Alertmanager at it with [`deploy/alertmanager-receiver.yaml`](deploy/alert
 The container runs as non-root on a read-only root filesystem, with all capabilities dropped and the RuntimeDefault seccomp profile.
 CI deploys the real image with these manifests on kind and checks health, auth and metrics ([`demo/deploy-smoke.sh`](demo/deploy-smoke.sh)).
 
-State (triages, dedup, the LangGraph checkpointer) lives in memory, so run one replica. For HA, move it to Postgres (`AsyncPostgresSaver`).
+State (triages, dedup, the LangGraph checkpointer) lives in memory, so run one replica. `AIOPS_MAX_CONCURRENT_TRIAGES` is shared by every Contract, so one Contract's alert storm can hold every slot. For HA, move it to Postgres (`AsyncPostgresSaver`).
 
 ## MCP servers on their own
 
 Each server runs standalone over stdio or HTTP:
 
 ```bash
-AIOPS_KUBE_CONTEXT=kind-aiops AIOPS_NAMESPACES=demo uv run aiops mcp kubernetes
-uv run aiops mcp prometheus --transport http --port 8765
+uv run aiops mcp kubernetes --contract demo-shop      # AIOPS_CONTRACTS_DIR and age keys as above
+uv run aiops mcp prometheus --contract demo-shop --transport http --port 8765
 ```
 
 [`.mcp.json.example`](.mcp.json.example) wires them into Claude Code, giving it the same safe, namespace-scoped cluster tools the agent uses.
 
 | Server | Tools |
 |---|---|
-| kubernetes | `list_pods`, `describe_pod`, `get_events`, `pod_logs`, `list_deployments`, `describe_deployment` (with rollout history); opt-in: `evict_pod`, `scale_deployment`. Each takes a `cluster`; standalone, the only cluster is `default` |
+| kubernetes | `list_pods`, `describe_pod`, `get_events`, `pod_logs`, `list_deployments`, `describe_deployment` (with rollout history); opt-in: `evict_pod`, `scale_deployment`. Each takes a `cluster` from the Contract's clusters |
 | prometheus | `query`, `query_range` (summarized per series), `active_alerts` |
 | runbooks | `runbook_for_alert`, `search_runbooks`, `read_runbook` |
 
@@ -188,22 +190,19 @@ cat ~/.config/sops/age/*.agekey > ~/.config/sops/age/keys.txt
 SOPS_AGE_KEY_FILE=~/.config/sops/age/keys.txt aiops contracts validate .
 ```
 
-`validate` reports every problem as `path: field: message`. It never prints a secret value. Until slice 0.3 the service still reads the `AIOPS_*` variables below.
+`validate` reports every problem as `path: field: message`. It never prints a secret value.
+Each Contract's Alertmanager posts to `/contracts/<id>/alertmanager` with its own token. `contract.yaml` holds only the token's SHA-256 (`webhook_token_sha256`); `aiops contracts new-token` prints a token and its hash line. Two Contracts can't share a token, and none can equal the approver token.
 
 ## Configuration
 
-All settings are `AIOPS_*` environment variables (or `.env`). See [`config.py`](src/aiops_agent/config.py).
+Hub settings are `AIOPS_*` environment variables (or `.env`). See [`config.py`](src/aiops_agent/config.py). Everything about a cluster, an integration or a webhook token lives in the Contract. `serve`, `triage` and `mcp` refuse to start if one of the old variables (`AIOPS_KUBE_CONTEXT`, `AIOPS_NAMESPACES`, ...) is still set, and say where it moved.
 
 | Variable | Default | |
 |---|---|---|
 | `AIOPS_MODEL` | `anthropic:claude-sonnet-5-5` | Any `init_chat_model` id |
 | `AIOPS_MODEL_BASE_URL` / `_API_KEY` | | OpenAI-compatible gateways |
-| `AIOPS_KUBE_CONTEXT` / `AIOPS_IN_CLUSTER` | | One of the two is required |
-| `AIOPS_NAMESPACES` | | Comma-separated allowlist (required) |
-| `AIOPS_ENABLE_ACTIONS` | `false` | Register `evict_pod` / `scale_deployment` |
-| `AIOPS_PROMETHEUS_URL` | | The Prometheus server is skipped when unset |
-| `AIOPS_RUNBOOKS_DIR` | `runbooks` | Markdown with `alerts:` front matter |
-| `AIOPS_WEBHOOK_TOKEN` / `AIOPS_APPROVER_TOKEN` | | Required for `serve`, and must differ |
+| `AIOPS_CONTRACTS_DIR` | | One directory per Contract (required for `serve`, `triage`, `mcp`) |
+| `AIOPS_APPROVER_TOKEN` | | The Operator's token, required for `serve` |
 | `AIOPS_MAX_TOOL_CALLS` / `AIOPS_MAX_MODEL_CALLS` | 25 / 30 | Per run |
 | `AIOPS_MAX_CONCURRENT_TRIAGES` | 3 | Alert storms queue instead of fanning out |
 | `AIOPS_DECISION_TIMEOUT_SECONDS` | 1800 | Proposed actions with no decision by then are rejected as stale. So are those whose alert group resolves, which needs `send_resolved: true` ([`deploy/alertmanager-receiver.yaml`](deploy/alertmanager-receiver.yaml)) |
