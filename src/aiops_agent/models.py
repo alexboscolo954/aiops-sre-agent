@@ -1,7 +1,8 @@
-"""Alert input (Alertmanager webhook v4) and the triage report the agent returns."""
+"""Alert input (Alertmanager webhook v4), the triage report the agent returns, and the
+Investigation record the Hub keeps."""
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -99,3 +100,21 @@ class TriageReport(BaseModel):
         if self.runbook:
             lines += ["", f"Runbook: `{self.runbook}`"]
         return "\n".join(lines)
+
+
+class Investigation(BaseModel):
+    id: str
+    kind: Literal["triage", "question", "check"] = "triage"
+    contract_id: str
+    title: str
+    group_key: str = ""
+    group_resolved: bool = False
+    status: Literal["running", "awaiting_approval", "done", "failed"] = "running"
+    started: float  # epoch seconds, Python's clock
+    report: TriageReport | None = None
+    pending: list[dict[str, Any]] = []
+    executed_actions: list[str] = []
+    error: str | None = None
+    # When this pause's Proposed actions go Stale. Also identifies the pause: a
+    # decision claims it only while it is still the same pause.
+    deadline: float | None = None

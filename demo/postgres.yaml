@@ -1,0 +1,34 @@
+# Throwaway Postgres for the deploy smoke test only: no volume, data is lost on
+# restart. A real Hub needs a Postgres you run (or slice 0.5's compose stack).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aiops-postgres
+  namespace: aiops
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: aiops-postgres}
+  template:
+    metadata:
+      labels: {app: aiops-postgres}
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:17.10
+          env:
+            - {name: POSTGRES_PASSWORD, value: smoke}
+          ports:
+            - {containerPort: 5432}
+          readinessProbe:
+            exec: {command: [pg_isready, -h, 127.0.0.1, -U, postgres]}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aiops-postgres
+  namespace: aiops
+spec:
+  selector: {app: aiops-postgres}
+  ports:
+    - {port: 5432}

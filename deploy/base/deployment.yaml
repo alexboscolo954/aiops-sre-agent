@@ -5,7 +5,7 @@ metadata:
   namespace: aiops
   labels: {app: aiops-agent}
 spec:
-  replicas: 1                 # state is in memory; see api.py
+  replicas: 1                 # timers and the concurrency limit are per process; see api.py
   strategy: {type: Recreate}
   selector:
     matchLabels: {app: aiops-agent}

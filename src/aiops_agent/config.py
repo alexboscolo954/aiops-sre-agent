@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     # contract.yaml) and can only submit alerts; only the Operator's approver token
     # reads reports and approves actions.
     approver_token: SecretStr | None = None
+    database_url: SecretStr | None = None  # Postgres; required for serve
     max_concurrent_triages: int = 3  # alert storms queue instead of fanning out
     decision_timeout_seconds: int = 1800  # proposed actions go stale after this
     slack_webhook_url: SecretStr | None = None

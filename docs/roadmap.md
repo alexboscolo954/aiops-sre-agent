@@ -106,7 +106,7 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
   - the same `groupKey` in A and B starts two Triages;
   - A's group resolving doesn't make B's Proposed actions Stale.
 
-**0.4 Postgres state.**
+**0.4 Postgres state.** Done, except recording raw tool results (part c, next).
 - Tables: Investigations (with a kind column), Proposed and Executed actions, the dedup seen-set, and the audit log. Use the LangGraph Postgres checkpointer.
 - Store every tool call's args and the raw result (before the cap, after redaction) so slice 2.6 can turn it into a Scenario.
 - Stale deadlines are stored in the database, and timers are re-armed at startup instead of sleeping in memory.

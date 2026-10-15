@@ -98,7 +98,8 @@ AIOPS_MODEL=openai:<model-name> AIOPS_MODEL_BASE_URL=http://litellm:4000/v1 AIOP
 uv run aiops contracts new-token    # give the token to Alertmanager; the hash goes in
                                     # deploy/base/contract.yaml (webhook_token_sha256)
 kubectl -n aiops create secret generic aiops-secrets \
-  --from-literal=AIOPS_APPROVER_TOKEN=... --from-literal=AIOPS_MODEL_API_KEY=...
+  --from-literal=AIOPS_APPROVER_TOKEN=... --from-literal=AIOPS_MODEL_API_KEY=... \
+  --from-literal=AIOPS_DATABASE_URL=postgresql://user:pass@host:5432/aiops   # a Postgres you run
 kubectl apply -k deploy/base        # read-only
 kubectl apply -k deploy/actions     # optional: evict / scale, still behind approval
 ```
@@ -118,7 +119,7 @@ Point Alertmanager at it with [`deploy/alertmanager-receiver.yaml`](deploy/alert
 The container runs as non-root on a read-only root filesystem, with all capabilities dropped and the RuntimeDefault seccomp profile.
 CI deploys the real image with these manifests on kind and checks health, auth and metrics ([`demo/deploy-smoke.sh`](demo/deploy-smoke.sh)).
 
-State (triages, dedup, the LangGraph checkpointer) lives in memory, so run one replica. `AIOPS_MAX_CONCURRENT_TRIAGES` is shared by every Contract, so one Contract's alert storm can hold every slot. For HA, move it to Postgres (`AsyncPostgresSaver`).
+State lives in Postgres: Investigations, the duplicate memory, every Approval decision (who, what, when) and the LangGraph checkpoints. A pending approval survives a restart. After a restart, a deadline that passed while the Hub was down goes Stale, and a Run that was cut off becomes a Failed investigation. It is never replayed, so an approved write can't run twice. The in-cluster deploy needs a Postgres you provide (the smoke test brings a throwaway one, [`demo/postgres.yaml`](demo/postgres.yaml)); slice 0.5 ships a compose stack with one. Timers and the concurrency limit are per process, so run one replica. `AIOPS_MAX_CONCURRENT_TRIAGES` is shared by every Contract, so one Contract's alert storm can hold every slot.
 
 ## MCP servers on their own
 
@@ -146,7 +147,7 @@ uv run aiops mcp prometheus --contract demo-shop --transport http --port 8765
 | Deploy smoke (kind, CI) | The real image under the shipped manifests: starts hardened, auth rejects bad tokens, RBAC is least privilege for both modes | `make deploy-smoke` |
 | Evals (real LLM, recorded data) | Triage quality on scenarios recorded from the kind demo, replayed through the real MCP tool definitions | `uv run aiops eval` |
 
-The scripted-model tests use LangChain's `GenericFakeChatModel`, so CI needs no API key.
+The scripted-model tests use LangChain's `GenericFakeChatModel`, so CI needs no API key. `make test` starts a throwaway Postgres in Docker (`make db`), and each test gets its own fresh database.
 
 ### Evals
 
@@ -203,6 +204,7 @@ Hub settings are `AIOPS_*` environment variables (or `.env`). See [`config.py`](
 | `AIOPS_MODEL_BASE_URL` / `_API_KEY` | | OpenAI-compatible gateways |
 | `AIOPS_CONTRACTS_DIR` | | One directory per Contract (required for `serve`, `triage`, `mcp`) |
 | `AIOPS_APPROVER_TOKEN` | | The Operator's token, required for `serve` |
+| `AIOPS_DATABASE_URL` | | Postgres, required for `serve`. Migrations run at startup |
 | `AIOPS_MAX_TOOL_CALLS` / `AIOPS_MAX_MODEL_CALLS` | 25 / 30 | Per run |
 | `AIOPS_MAX_CONCURRENT_TRIAGES` | 3 | Alert storms queue instead of fanning out |
 | `AIOPS_DECISION_TIMEOUT_SECONDS` | 1800 | Proposed actions with no decision by then are rejected as stale. So are those whose alert group resolves, which needs `send_resolved: true` ([`deploy/alertmanager-receiver.yaml`](deploy/alertmanager-receiver.yaml)) |

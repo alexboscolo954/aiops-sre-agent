@@ -5,8 +5,11 @@ set -euo pipefail
 ctx=$1
 k() { kubectl --context "$ctx" "$@"; }
 k create namespace aiops --dry-run=client -o yaml | k apply -f -
+k apply -f demo/postgres.yaml
+k -n aiops rollout status deploy/aiops-postgres --timeout=3m
 k -n aiops create secret generic aiops-secrets \
   --from-literal=AIOPS_APPROVER_TOKEN=smoke-approver --from-literal=AIOPS_MODEL_API_KEY=not-a-real-key \
+  --from-literal=AIOPS_DATABASE_URL=postgresql://postgres:smoke@aiops-postgres.aiops:5432/postgres \
   --dry-run=client -o yaml | k apply -f -
 # The shipped Contract has no webhook token: add one, as an Operator would.
 new=$(uv run aiops contracts new-token 2>/dev/null)

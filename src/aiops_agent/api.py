@@ -7,49 +7,36 @@ GET  /investigations[/{id}]     Status, report, pending actions (approver token)
 POST /investigations/{id}/decisionApprove or reject pending actions (approver token).
 GET  /healthz, /metrics
 
-ponytail: investigation state, dedup and the LangGraph checkpointer live in memory, so
-run a single replica. For HA, swap InMemorySaver for a Postgres checkpointer
-and the dicts below for that same database.
+State lives in Postgres (store.py): Investigations, the dedup memory, every
+Approval decision and the LangGraph checkpoints, so a pending approval survives a
+restart. ponytail: timers and the concurrency limit are per process, so run one
+replica; several would each re-arm the same deadlines (harmless: claims are
+atomic) but share no limit.
 """
 
 import asyncio
 import logging
 import secrets
-import time
 import uuid
 from contextlib import asynccontextmanager
-from typing import Any, Literal
+from typing import Any
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from langchain_core.language_models import BaseChatModel
-from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel
 
 from aiops_agent import agent, contracts
 from aiops_agent.config import Settings
-from aiops_agent.models import AlertGroup, TriageReport
+from aiops_agent.models import AlertGroup, Investigation
 from aiops_agent.observability import PENDING_APPROVALS, TRIAGE_SECONDS, TRIAGES
+from aiops_agent.store import Store, connect, now
 
 log = logging.getLogger("aiops.api")
 DEDUP_SECONDS = 30 * 60
-
-
-class Investigation(BaseModel):
-    id: str
-    kind: Literal["triage", "question", "check"] = "triage"
-    contract_id: str
-    title: str
-    group_key: str = ""
-    group_resolved: bool = False
-    status: Literal["running", "awaiting_approval", "done", "failed"] = "running"
-    started: float
-    report: TriageReport | None = None
-    pending: list[dict[str, Any]] = []
-    executed_actions: list[str] = []
-    error: str | None = None
 
 
 class Decision(BaseModel):
@@ -85,22 +72,34 @@ def create_app(
     for c in by_id.values():
         if contracts.token_matches(c, approver_token):
             raise RuntimeError(f"Contract {c.id!r}'s webhook token is the approver token")
+    if not settings.database_url:
+        raise RuntimeError("set AIOPS_DATABASE_URL")
+    database_url = settings.database_url.get_secret_value()
     model = model or agent.build_model(settings)
     if mcp_factory is None:
         mcp_factory = lambda c: agent.build_mcp(c, settings)  # noqa: E731
-    checkpointer = InMemorySaver()
-    investigations: dict[str, Investigation] = {}
-    # (contract, group key) -> (start of its latest triage, that triage's id, every
-    # fingerprint seen). Two Contracts can send the same group key.
-    recent: dict[tuple[str, str], tuple[float, str, set[str]]] = {}
+    db: dict[str, Any] = {}  # store and checkpointer, opened in the lifespan
     slots = asyncio.Semaphore(settings.max_concurrent_triages)
     tasks: set[asyncio.Task[None]] = set()
 
+    def store() -> Store:
+        st: Store = db["store"]
+        return st
+
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> Any:
-        yield
-        for task in tasks:
-            task.cancel()
+        async with connect(database_url) as pool:
+            db["store"] = Store(pool)
+            await store().migrate()
+            db["checkpointer"] = AsyncPostgresSaver(pool)
+            await db["checkpointer"].setup()
+            await recover()
+            try:
+                yield
+            finally:
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
 
     app = FastAPI(title="aiops-sre-agent", lifespan=lifespan)
     bearer = HTTPBearer()
@@ -114,6 +113,10 @@ def create_app(
 
     async def notify(t: Investigation) -> None:
         log.info("investigation %s %s", t.id, t.status)
+        PENDING_APPROVALS.set(await store().pending_count())
+        if t.status in ("done", "failed"):
+            TRIAGES.labels(t.status).inc()
+            TRIAGE_SECONDS.observe(now() - t.started)
         if not settings.slack_webhook_url:
             return
         try:
@@ -124,51 +127,89 @@ def create_app(
         except httpx.HTTPError as e:
             log.warning("slack notification failed: %s", e)
 
+    async def fail(t: Investigation, error: str) -> None:
+        t.status, t.error, t.pending, t.deadline = "failed", error, [], None
+        await store().save(t)
+        await notify(t)
+
+    async def recover() -> None:
+        """After a restart. A Run that was cut off is never replayed: if it was resuming
+        an approval, the write may already have run, and replaying could run it twice."""
+        for t in await store().unfinished():
+            if t.contract_id not in by_id:
+                await fail(t, f"Contract {t.contract_id!r} is no longer configured")
+            elif t.status == "running":
+                error = (
+                    "The Hub restarted during this run. It was not resumed, so nothing runs twice."
+                )
+                last = await store().last_decision(t.id)
+                if last and last["approve"]:
+                    names = ", ".join(a["name"] for a in last["actions"])
+                    error += (
+                        f" The approved actions ({names}) may or may not have run:"
+                        " check the cluster."
+                    )
+                await fail(t, error)
+            elif t.group_resolved:
+                await reject_stale(t.id, t.deadline, "The alert group resolved before a decision")
+            else:
+                spawn(expire(t.id, t.deadline))  # a deadline already past fires at once
+
     def apply(t: Investigation, outcome: agent.Outcome) -> None:
         t.report, t.pending = outcome.report, outcome.pending
         t.executed_actions = outcome.executed_actions
         t.status = "done" if outcome.done else "awaiting_approval"
+        t.deadline = now() + settings.decision_timeout_seconds if t.pending else None
 
     async def run(t: Investigation, step: Any) -> None:
         async with slots:
             try:
                 # Always the Investigation's own Contract, on start and on every resume.
                 toolbox = mcp_factory(by_id[t.contract_id])
-                async with agent.open_agent(settings, toolbox, model, checkpointer) as a:
+                async with agent.open_agent(settings, toolbox, model, db["checkpointer"]) as a:
                     apply(t, await step(a))
             except Exception as e:  # report every failure, never lose an alert silently
                 log.exception("investigation %s failed", t.id)
-                t.status, t.error = "failed", f"{type(e).__name__}: {e}"
-        if t.status == "awaiting_approval" and t.group_resolved:
-            reject_stale(t, "The alert group resolved before a decision")
-            return  # no one to ask; the resumed run reports
-        PENDING_APPROVALS.set(sum(len(x.pending) for x in investigations.values()))
-        if t.status != "awaiting_approval":
-            TRIAGES.labels(t.status).inc()
-            TRIAGE_SECONDS.observe(time.time() - t.started)
+                t.status, t.error, t.pending, t.deadline = (
+                    "failed",
+                    f"{type(e).__name__}: {e}",
+                    [],
+                    None,
+                )
+        await store().save(t)
+        if t.status == "awaiting_approval":
+            fresh = await store().get(t.id)  # the group may have resolved during the Run
+            if fresh and fresh.group_resolved:
+                await reject_stale(t.id, t.deadline, "The alert group resolved before a decision")
+                return  # no one to ask; the resumed run reports
         await notify(t)
         if t.status == "awaiting_approval":
-            spawn(expire(t, t.pending))
+            spawn(expire(t.id, t.deadline))
 
-    async def expire(t: Investigation, pending: list[dict[str, Any]]) -> None:
-        await asyncio.sleep(settings.decision_timeout_seconds)
-        if t.pending is pending:  # still the same pause: nobody decided
-            reject_stale(t, f"No decision within {settings.decision_timeout_seconds}s")
+    async def expire(investigation_id: str, deadline: float | None) -> None:
+        await asyncio.sleep(max(0.0, (deadline or 0) - now()))
+        await reject_stale(
+            investigation_id, deadline, f"No decision within {settings.decision_timeout_seconds}s"
+        )
 
-    def resume(t: Investigation, decisions: list[dict[str, Any]]) -> None:
-        t.status, t.pending = "running", []
+    async def resume(t: Investigation, decisions: list[dict[str, Any]]) -> None:
+        t.status, t.pending, t.deadline = "running", [], None
         spawn(run(t, lambda a: agent.resume(a, t.id, decisions)))
 
-    def reject_stale(t: Investigation, reason: str) -> None:
+    async def reject_stale(investigation_id: str, deadline: float | None, reason: str) -> bool:
         """A stale proposed action is rejected automatically; the investigation still
-        ends with a report."""
-        if t.status != "awaiting_approval":
-            return
+        ends with a report. False when someone else already decided this pause."""
+        pending = await store().claim(investigation_id, deadline)
+        t = await store().get(investigation_id)
+        if pending is None or t is None:
+            return False
         log.info(
-            "investigation %s stale: %s, rejecting %s", t.id, reason, [p["name"] for p in t.pending]
+            "investigation %s stale: %s, rejecting %s", t.id, reason, [p["name"] for p in pending]
         )
         msg = f"{reason}. The action was not executed. Do not retry; finish the report."
-        resume(t, [{"type": "reject", "message": msg} for _ in t.pending])
+        await store().record_decision(t.id, False, pending, msg, "stale")
+        await resume(t, [{"type": "reject", "message": msg} for _ in pending])
+        return True
 
     def spawn(coro: Any) -> None:
         task = asyncio.create_task(coro)
@@ -183,25 +224,27 @@ def create_app(
     ) -> dict[str, Any]:
         if not contracts.token_matches(by_id.get(contract_id), creds.credentials):
             raise HTTPException(401, "invalid token")  # also for an unknown Contract
-        key = (contract_id, group.groupKey)
         if not group.firing:
-            same_group = [t for t in investigations.values() if (t.contract_id, t.group_key) == key]
-            for t in same_group:
-                t.group_resolved = True  # still investigating: goes stale when it pauses
-            stale = [t for t in same_group if t.status == "awaiting_approval"]
-            for t in stale:
-                reject_stale(t, "The alert group resolved before a decision")
+            # Still investigating ones go stale when they pause (see run()).
+            same_group = await store().mark_group_resolved(contract_id, group.groupKey)
+            stale = [
+                t.id
+                for t in same_group
+                if t.status == "awaiting_approval"
+                and await reject_stale(
+                    t.id, t.deadline, "The alert group resolved before a decision"
+                )
+            ]
             if stale:
-                return {"status": "stale", "investigations": [t.id for t in stale]}
+                return {"status": "stale", "investigations": stale}
             return {"status": "ignored", "reason": "no firing alerts"}
         firing = {a.fingerprint for a in group.firing}
-        now = time.time()
-        for k, (started, _, _) in list(recent.items()):
-            if now - started > DEDUP_SECONDS:
-                del recent[k]
+        started = now()
         seen: set[str] = set()
-        if key in recent:
-            _, previous, seen = recent[key]
+        # Two Contracts can send the same group key: the memory is per Contract.
+        remembered = await store().alert_group(contract_id, group.groupKey)
+        if remembered and started - remembered[0] <= DEDUP_SECONDS:
+            _, previous, seen = remembered
             # Alertmanager re-sends on every repeat_interval and when an Alert resolves.
             # Only an Alert not seen before is new work.
             if firing <= seen:
@@ -212,22 +255,23 @@ def create_app(
             contract_id=contract_id,
             title=group.title,
             group_key=group.groupKey,
-            started=now,
+            started=started,
         )
-        investigations[t.id] = t
-        recent[key] = (now, t.id, seen | firing)
+        await store().insert(t)
+        await store().remember_group(contract_id, group.groupKey, started, t.id, seen | firing)
         spawn(run(t, lambda a: agent.start(a, group, t.id)))
         return {"status": "accepted", "investigation": t.id}
 
     @app.get("/investigations", dependencies=[Depends(approver_auth)])
     async def list_investigations() -> list[Investigation]:
-        return sorted(investigations.values(), key=lambda t: t.started, reverse=True)[:50]
+        return await store().recent(50)
 
     @app.get("/investigations/{investigation_id}", dependencies=[Depends(approver_auth)])
     async def get_investigation(investigation_id: str) -> Investigation:
-        if investigation_id not in investigations:
+        t = await store().get(investigation_id)
+        if t is None:
             raise HTTPException(404, "unknown investigation")
-        return investigations[investigation_id]
+        return t
 
     @app.post(
         "/investigations/{investigation_id}/decision",
@@ -235,23 +279,28 @@ def create_app(
         dependencies=[Depends(approver_auth)],
     )
     async def decide(investigation_id: str, decision: Decision) -> dict[str, str]:
-        t = investigations.get(investigation_id)
+        t = await store().get(investigation_id)
         if t is None:
             raise HTTPException(404, "unknown investigation")
-        if t.status != "awaiting_approval":
-            raise HTTPException(409, f"investigation is {t.status}, nothing to decide")
+        pending = await store().claim(t.id, t.deadline) if t.status == "awaiting_approval" else None
+        if pending is None:  # already decided, stale, or never paused
+            current = await store().get(t.id)
+            status = current.status if current else t.status
+            raise HTTPException(409, f"investigation is {status}, nothing to decide")
         if decision.approve:
-            decisions: list[dict[str, Any]] = [{"type": "approve"} for _ in t.pending]
+            decisions: list[dict[str, Any]] = [{"type": "approve"} for _ in pending]
+            message = ""
         else:
-            msg = decision.message or "Rejected by the on-call engineer. Do not retry."
-            decisions = [{"type": "reject", "message": msg} for _ in t.pending]
+            message = decision.message or "Rejected by the Operator. Do not retry."
+            decisions = [{"type": "reject", "message": message} for _ in pending]
         log.info(
             "investigation %s decision approve=%s actions=%s",
             t.id,
             decision.approve,
-            [p["name"] for p in t.pending],
+            [p["name"] for p in pending],
         )
-        resume(t, decisions)
+        await store().record_decision(t.id, decision.approve, pending, message, "operator")
+        await resume(t, decisions)
         return {"status": "resumed"}
 
     @app.get("/healthz")

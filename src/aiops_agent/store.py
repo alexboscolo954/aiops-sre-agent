@@ -1,0 +1,223 @@
+"""Postgres state for the Hub: Investigations, the dedup memory, Approval decisions.
+
+One pool serves this store and the LangGraph checkpointer, with the connection
+settings the checkpointer needs (autocommit, no prepared statements, dict rows).
+Migrations are numbered .sql files in migrations/, applied once each at startup.
+"""
+
+import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Any
+
+from psycopg import AsyncConnection
+from psycopg.rows import DictRow, dict_row
+from psycopg.types.json import Jsonb
+from psycopg_pool import AsyncConnectionPool
+
+from aiops_agent.models import Investigation
+
+Pool = AsyncConnectionPool[AsyncConnection[DictRow]]
+MIGRATIONS = Path(__file__).parent / "migrations"
+MIGRATION_LOCK = 4_242_001  # pg_advisory_xact_lock key: one Hub migrates at a time
+COLUMNS = (
+    "id, kind, contract_id, title, group_key, group_resolved, status, started, report, "
+    "pending, executed_actions, error, deadline"
+)
+
+
+def now() -> float:
+    """The one clock for stored times and comparisons."""
+    return time.time()
+
+
+@asynccontextmanager
+async def connect(url: str) -> AsyncIterator[Pool]:
+    pool: Pool = AsyncConnectionPool(
+        url,
+        connection_class=AsyncConnection[DictRow],
+        kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row},
+        open=False,
+    )
+    await pool.open()
+    try:
+        yield pool
+    finally:
+        await pool.close()
+
+
+def _investigation(row: dict[str, Any]) -> Investigation:
+    return Investigation.model_validate(row)
+
+
+class Store:
+    def __init__(self, pool: Pool) -> None:
+        self.pool = pool
+
+    async def migrate(self) -> None:
+        async with self.pool.connection() as conn, conn.transaction():
+            await conn.execute("select pg_advisory_xact_lock(%s)", (MIGRATION_LOCK,))
+            await conn.execute(
+                "create table if not exists schema_migrations "
+                "(version text primary key, applied double precision not null)"
+            )
+            rows = await (await conn.execute("select version from schema_migrations")).fetchall()
+            done = {r["version"] for r in rows}
+            for path in sorted(MIGRATIONS.glob("*.sql")):
+                if path.stem in done:
+                    continue
+                # Unprepared: a migration file holds several statements.
+                await conn.execute(path.read_text().encode(), prepare=False)
+                await conn.execute(
+                    "insert into schema_migrations values (%s, %s)", (path.stem, now())
+                )
+
+    async def _one(self, sql: str, args: tuple[Any, ...]) -> dict[str, Any] | None:
+        async with self.pool.connection() as conn:
+            row: dict[str, Any] | None = await (await conn.execute(sql, args)).fetchone()
+            return row
+
+    async def _exec(self, sql: str, args: tuple[Any, ...]) -> None:
+        async with self.pool.connection() as conn:
+            await conn.execute(sql, args)
+
+    async def _all(self, sql: str, args: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
+        async with self.pool.connection() as conn:
+            rows: list[dict[str, Any]] = await (await conn.execute(sql, args)).fetchall()
+            return rows
+
+    async def insert(self, t: Investigation) -> None:
+        await self._exec(
+            f"insert into investigations ({COLUMNS}) values "  # noqa: S608 - fixed columns
+            "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (
+                t.id,
+                t.kind,
+                t.contract_id,
+                t.title,
+                t.group_key,
+                t.group_resolved,
+                t.status,
+                t.started,
+                Jsonb(t.report.model_dump(mode="json")) if t.report else None,
+                Jsonb(t.pending),
+                Jsonb(t.executed_actions),
+                t.error,
+                t.deadline,
+            ),
+        )
+
+    async def save(self, t: Investigation) -> None:
+        """Everything a Run changes. Never group_resolved: only the resolve path sets
+        it, so a Run that finishes after a resolve can't clear it."""
+        await self._exec(
+            "update investigations set status = %s, report = %s, pending = %s, "
+            "executed_actions = %s, error = %s, deadline = %s where id = %s",
+            (
+                t.status,
+                Jsonb(t.report.model_dump(mode="json")) if t.report else None,
+                Jsonb(t.pending),
+                Jsonb(t.executed_actions),
+                t.error,
+                t.deadline,
+                t.id,
+            ),
+        )
+
+    async def get(self, investigation_id: str) -> Investigation | None:
+        row = await self._one(
+            f"select {COLUMNS} from investigations where id = %s",  # noqa: S608
+            (investigation_id,),
+        )
+        return _investigation(row) if row else None
+
+    async def recent(self, limit: int = 50) -> list[Investigation]:
+        rows = await self._all(
+            f"select {COLUMNS} from investigations order by started desc limit %s",  # noqa: S608
+            (limit,),
+        )
+        return [_investigation(r) for r in rows]
+
+    async def unfinished(self) -> list[Investigation]:
+        rows = await self._all(
+            f"select {COLUMNS} from investigations "  # noqa: S608
+            "where status in ('running', 'awaiting_approval') order by started"
+        )
+        return [_investigation(r) for r in rows]
+
+    async def pending_count(self) -> int:
+        row = await self._one(
+            "select coalesce(sum(jsonb_array_length(pending)), 0) as n from investigations "
+            "where status = 'awaiting_approval'",
+            (),
+        )
+        return int(row["n"]) if row else 0
+
+    async def mark_group_resolved(self, contract_id: str, group_key: str) -> list[Investigation]:
+        rows = await self._all(
+            "update investigations set group_resolved = true "  # noqa: S608 - fixed columns
+            f"where contract_id = %s and group_key = %s returning {COLUMNS}",
+            (contract_id, group_key),
+        )
+        return [_investigation(r) for r in rows]
+
+    async def claim(
+        self, investigation_id: str, deadline: float | None
+    ) -> list[dict[str, Any]] | None:
+        """Take a pause's Proposed actions for one decision. Atomic: of an approval, a
+        rejection, a timeout and a resolve racing for the same pause, exactly one
+        gets the actions; the others get None."""
+        row = await self._one(
+            "update investigations set status = 'running', pending = '[]', deadline = null "
+            "where id = %s and status = 'awaiting_approval' and deadline = %s "
+            "returning (select pending from investigations where id = %s) as pending",
+            (investigation_id, deadline, investigation_id),
+        )
+        return row["pending"] if row else None
+
+    async def record_decision(
+        self,
+        investigation_id: str,
+        approve: bool,
+        actions: list[dict[str, Any]],
+        message: str,
+        decided_by: str,
+    ) -> None:
+        await self._exec(
+            "insert into decisions (investigation_id, approve, actions, message, decided_by, at) "
+            "values (%s, %s, %s, %s, %s, %s)",
+            (investigation_id, approve, Jsonb(actions), message, decided_by, now()),
+        )
+
+    async def last_decision(self, investigation_id: str) -> dict[str, Any] | None:
+        return await self._one(
+            "select approve, actions, message, decided_by, at from decisions "
+            "where investigation_id = %s order by id desc limit 1",
+            (investigation_id,),
+        )
+
+    async def alert_group(
+        self, contract_id: str, group_key: str
+    ) -> tuple[float, str, set[str]] | None:
+        row = await self._one(
+            "select started, investigation_id, seen from alert_groups "
+            "where contract_id = %s and group_key = %s",
+            (contract_id, group_key),
+        )
+        return (row["started"], row["investigation_id"], set(row["seen"])) if row else None
+
+    async def remember_group(
+        self,
+        contract_id: str,
+        group_key: str,
+        started: float,
+        investigation_id: str,
+        seen: set[str],
+    ) -> None:
+        await self._exec(
+            "insert into alert_groups values (%s, %s, %s, %s, %s) "
+            "on conflict (contract_id, group_key) do update set started = excluded.started, "
+            "investigation_id = excluded.investigation_id, seen = excluded.seen",
+            (contract_id, group_key, started, investigation_id, sorted(seen)),
+        )

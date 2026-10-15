@@ -1,15 +1,21 @@
 CLUSTER := aiops
 CTX     := kind-$(CLUSTER)
+PG      := postgres:17.10
 
-.PHONY: lint test cluster demo integration image deploy-smoke rbac-check down
+.PHONY: lint test db cluster demo integration image deploy-smoke rbac-check down
 
 lint:
 	uv run ruff check .
 	uv run ruff format --check .
 	uv run mypy src
 
-test:
+test: db
 	uv run pytest --cov=aiops_agent --cov-report=term-missing
+
+db: ## throwaway Postgres for the tests; each test gets its own database in it
+	docker ps --format '{{.Names}}' | grep -qx aiops-pg || docker run -d --rm --name aiops-pg \
+	  -e POSTGRES_PASSWORD=postgres -p 55432:5432 $(PG) >/dev/null
+	until docker exec aiops-pg pg_isready -h 127.0.0.1 -U postgres -q; do sleep 0.5; done
 
 cluster:
 	kind get clusters | grep -qx $(CLUSTER) || kind create cluster --config demo/kind.yaml
@@ -36,3 +42,4 @@ deploy-smoke: image ## real image + shipped manifests on kind
 
 down:
 	kind delete cluster --name $(CLUSTER)
+	docker rm -f aiops-pg >/dev/null 2>&1 || true

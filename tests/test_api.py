@@ -24,6 +24,11 @@ ALERT = {
 }
 
 
+@pytest.fixture(autouse=True)
+def _database(settings: Settings, database_url: str) -> None:
+    settings.database_url = SecretStr(database_url)
+
+
 def client(
     settings: Settings,
     fake_cluster: Any,
@@ -54,12 +59,15 @@ def wait_for(c: TestClient, investigation_id: str, status: str) -> dict[str, Any
     raise AssertionError(f"triage stuck in {t['status']}: {t}")
 
 
-def test_refuses_to_start_without_token_or_contracts(settings: Settings) -> None:
+def test_refuses_to_start_without_token_contracts_or_database(settings: Settings) -> None:
     with pytest.raises(RuntimeError, match="AIOPS_APPROVER_TOKEN"):
         create_app(settings, scripted(), by_id={})
     settings.approver_token = SecretStr("approver-token")
     with pytest.raises(RuntimeError, match="AIOPS_CONTRACTS_DIR"):
         create_app(settings, scripted())
+    settings.database_url = None
+    with pytest.raises(RuntimeError, match="AIOPS_DATABASE_URL"):
+        create_app(settings, scripted(), by_id={})
 
 
 def test_webhook_requires_auth(settings: Settings, fake_cluster: Any) -> None:
@@ -266,3 +274,18 @@ def test_approved_action_runs_on_the_triages_own_contract(
         assert len(wait_for(c, tid, "done")["executed_actions"]) == 1
     other["bank"][1][0].create_namespaced_pod_eviction.assert_called_once()
     fake_cluster[0].create_namespaced_pod_eviction.assert_not_called()
+
+
+def test_dedup_memory_expires_after_the_window(
+    settings: Settings, fake_cluster: Any, database_url: str
+) -> None:
+    import psycopg
+
+    steps = [call("TriageReport", "c1", **REPORT), call("TriageReport", "c2", **REPORT)]
+    with client(settings, fake_cluster, *steps) as c:
+        first = c.post(URL, json=ALERT, headers=HOOK).json()["investigation"]
+        wait_for(c, first, "done")
+        with psycopg.connect(database_url) as conn:
+            conn.execute("update alert_groups set started = started - 31 * 60")
+        again = c.post(URL, json=ALERT, headers=HOOK).json()
+        assert again["status"] == "accepted" and again["investigation"] != first

@@ -1,11 +1,15 @@
 """Shared fixtures: a fake cluster built from real kubernetes client models, and a
 scripted chat model, so the agent runs end-to-end without a cluster or an LLM."""
 
+import os
+import uuid
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
+import psycopg
 import pytest
 from kubernetes import client as k
 from langchain.messages import AIMessage, ToolCall
@@ -73,6 +77,27 @@ def toolbox(settings: Settings, fake_cluster: Any, **contract: Any) -> agent.Too
     """make_contract(**contract)'s tools, every cluster answered by fake_cluster."""
     c = make_contract(**contract)
     return agent.build_mcp(c, settings, {cl.name: fake_cluster for cl in c.clusters})
+
+
+TEST_DATABASE = os.environ.get(
+    "AIOPS_TEST_DATABASE_URL", "postgresql://postgres:postgres@localhost:55432/postgres"
+)
+
+
+@pytest.fixture
+def database_url() -> Iterator[str]:
+    """A fresh, empty database for one test, dropped after. Never skipped: without
+    Postgres this fails (start it with `make db`)."""
+    name = f"t_{uuid.uuid4().hex[:12]}"
+    try:
+        admin = psycopg.connect(TEST_DATABASE, autocommit=True)
+    except psycopg.OperationalError as e:
+        pytest.fail(f"no test Postgres at {TEST_DATABASE}: run `make db` ({e})")
+    with admin:
+        admin.execute(f'create database "{name}"')
+    yield TEST_DATABASE.rsplit("/", 1)[0] + "/" + name
+    with psycopg.connect(TEST_DATABASE, autocommit=True) as admin:
+        admin.execute(f'drop database "{name}" with (force)')
 
 
 @pytest.fixture
