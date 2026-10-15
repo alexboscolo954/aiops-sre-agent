@@ -11,7 +11,7 @@ Terms are defined in [`CONTEXT.md`](../CONTEXT.md). The decisions behind the sha
 | `Settings` is global: one kube context, one namespace list, one Runbooks dir, one Slack webhook, one pair of tokens | Everything except Hub settings is set per Contract |
 | `triages` and `recent` live in memory. Dedup is keyed by `groupKey` alone | Postgres, keyed by Contract. Two Contracts can send the same `groupKey` |
 | `InMemorySaver` checkpointer. A restart loses pending approvals | Postgres checkpointer. Pending approvals survive a restart |
-| `read_only(tool)` trusts the server's `readOnlyHint` | The Hub's allowlist decides read or write (slice 0.2). A server can only make a tool stricter |
+| `read_only(tool)` trusted the server's `readOnlyHint` | Done in 0.2: the Hub's own list decides read or write, and a server can only make a tool stricter |
 | `replay_server` builds tools from our in-process servers | Replay also builds them from saved schema snapshots of vendor servers |
 | Alerts only, Slack webhook only, API for approvals | Triage, Question and Check, with Slack and a web console |
 
@@ -74,7 +74,7 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
   - its clusters: name, namespaces, and a context with an optional kubeconfig file or secret, or `in_cluster`;
   - its integrations, as a list of entries. `kubernetes` (`enable_actions`, `max_replicas`), `prometheus` (`url`, `token_secret`) and `runbooks` are builtin entries, so Phase 4 needs no migration.
 - These fields mirror today's `Settings`. Unknown keys fail, so each later field arrives in the slice that gives it behaviour, and existing files stay valid:
-  - tool allowlist: 0.2;
+  - tool allowlist in YAML: 4.1, when vendor tools need it. Builtins keep their list in code;
   - notification targets: 1.1;
   - Data policy: 1.3, 6.4;
   - model and budget: 2.4;
@@ -89,7 +89,7 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
 
 **0.2 Contract-scoped tools.**
 - Each Contract gets its own MCP server set. The kubernetes server takes a `cluster` argument limited to the Contract's clusters, with a namespace allowlist per cluster. Runbooks come from the Contract's directory plus Shared knowledge.
-- **The allowlist decides read or write** from this slice on. A tool not on the list is hidden, and a server's annotation can only make a tool stricter. This closes a gap: today a server that wrongly marks a write tool as read-only would skip approval. A server that leaves the marker out is already safe, because those tools are gated.
+- **Part 1, done: the allowlist decides read or write.** Each builtin server declares its list in code (`ACCESS`), and `open_agent` requires it. A tool not on the list is hidden, and a server's annotation can only make a tool stricter. This closed a gap: before, a server that wrongly marked a write tool as read-only skipped approval. A server that leaves the marker out was already safe, because those tools are gated.
 - *Done when:*
   - the isolation tests pass: A's agent sees only A's tools, naming B's cluster errors, and Runbook search never returns B's Runbooks;
   - a tool annotated read-only but allowlisted as `write` is gated;

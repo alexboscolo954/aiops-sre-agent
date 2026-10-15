@@ -13,9 +13,15 @@ from fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from aiops_agent.config import Settings
+from aiops_agent.servers import Access
 
 READ = ToolAnnotations(read_only_hint=True, open_world_hint=False)
 MAX_SERIES = 30
+ACCESS: dict[str, Access] = {
+    "query": "read",
+    "query_range": "read",
+    "active_alerts": "read",
+}  # ADR 0002
 
 
 def _num(v: str) -> float | str:

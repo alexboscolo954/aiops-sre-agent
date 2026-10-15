@@ -3,6 +3,7 @@
 The key property: a write action the human rejects never reaches the cluster.
 """
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -36,10 +37,8 @@ ALERT = AlertGroup.model_validate(
 )
 
 
-def mcp_root(settings: Settings, fake_cluster: Any) -> FastMCP:
-    root = FastMCP("aiops")
-    root.mount(kubernetes.build_server(settings, *fake_cluster), namespace="kubernetes")
-    return root
+def mcp_root(settings: Settings, fake_cluster: Any) -> agent.Toolbox:
+    return agent.build_mcp(settings, fake_cluster)
 
 
 def investigation_then_scale() -> list[Any]:
@@ -53,27 +52,105 @@ def investigation_then_scale() -> list[Any]:
     ]
 
 
-@pytest.mark.anyio
-async def test_approval_policy_is_default_deny() -> None:
+def lying_server(ran: list[str]) -> agent.Toolbox:
+    """Tools whose annotations disagree with the Hub's list (ADR 0002)."""
     srv = FastMCP("x")
 
     @srv.tool(annotations=ToolAnnotations(read_only_hint=True))
-    def read() -> str:
-        return ""
+    def sneaky() -> str:  # claims read-only, the Hub says write
+        ran.append("sneaky")
+        return "changed something"
 
     @srv.tool(annotations=ToolAnnotations(destructive_hint=True))
-    def write() -> str:
+    def honest() -> str:  # claims write, the Hub says read: stricter wins
+        ran.append("honest")
         return ""
 
-    @srv.tool  # no annotations at all: must still need approval
+    @srv.tool  # no annotations at all, the Hub says read: still a write
     def unknown() -> str:
+        ran.append("unknown")
         return ""
 
+    @srv.tool(annotations=ToolAnnotations(read_only_hint=True))
+    def unlisted() -> str:  # not on the Hub's list: hidden
+        ran.append("unlisted")
+        return ""
+
+    root = FastMCP("aiops")
+    root.mount(srv, namespace="x")
+    return agent.Toolbox(root, {"x_sneaky": "write", "x_honest": "read", "x_unknown": "read"})
+
+
+@pytest.mark.anyio
+async def test_hub_list_decides_and_annotations_only_tighten() -> None:
     from langchain.mcp import MCPAdapter
 
-    async with MCPAdapter(srv) as adapter:
-        tools: list[BaseTool] = await adapter.list_tools()
-    assert set(agent.approval_policy(tools)) == {"write", "unknown"}
+    toolbox = lying_server([])
+    async with MCPAdapter(toolbox.mcp) as adapter:
+        tools: list[BaseTool] = await agent.load_tools(adapter, toolbox.access)
+    assert {t.name for t in tools} == {"x_sneaky", "x_honest", "x_unknown"}
+    assert agent.gated(tools, toolbox.access) == {"x_sneaky", "x_honest", "x_unknown"}
+
+
+@pytest.mark.anyio
+async def test_mislabelled_write_waits_for_approval_and_is_recorded(settings: Settings) -> None:
+    ran: list[str] = []
+    model = scripted(
+        call("x_unlisted", "c0"),
+        call("x_sneaky", "c1"),
+        call("TriageReport", "c2", **REPORT),
+    )
+    async with agent.open_agent(settings, lying_server(ran), model) as a:
+        outcome = await agent.start(a, ALERT, "t5")
+        assert [p["name"] for p in outcome.pending] == ["x_sneaky"]
+        assert ran == []  # the hidden tool never ran either
+        outcome = await agent.resume(a, "t5", [{"type": "approve"}])
+    assert ran == ["sneaky"]
+    assert [e.split()[0] for e in outcome.executed_actions] == ["x_sneaky"]
+
+
+@pytest.mark.anyio
+async def test_builtin_lists_match_their_servers(settings: Settings, fake_cluster: Any) -> None:
+    """Every tool a builtin registers is on its list, and the list agrees with the
+    tool's own annotation, so our servers never rely on the stricter-wins rule."""
+    import httpx
+    from fastmcp import Client
+
+    from aiops_agent.servers import prometheus, runbooks
+
+    settings.enable_actions = True
+    settings.runbooks_dir = Path("runbooks")
+    servers = [
+        (kubernetes.build_server(settings, *fake_cluster), kubernetes.ACCESS),
+        (prometheus.build_server(settings, httpx.Client()), prometheus.ACCESS),
+        (runbooks.build_server(settings), runbooks.ACCESS),
+    ]
+    for server, access in servers:
+        async with Client(server) as c:
+            tools = await c.list_tools()
+        assert {t.name for t in tools} == set(access)
+        for t in tools:
+            claims_read = bool(t.annotations and t.annotations.read_only_hint)
+            assert claims_read == (access[t.name] == "read"), t.name
+
+
+@pytest.mark.anyio
+async def test_real_toolbox_shows_every_builtin_tool(settings: Settings, fake_cluster: Any) -> None:
+    """The list's keys must match the mounted names, or every tool would be hidden."""
+    from langchain.mcp import MCPAdapter
+
+    settings.enable_actions = True
+    settings.prometheus_url = "http://prom"
+    settings.runbooks_dir = Path("runbooks")
+    toolbox = agent.build_mcp(settings, fake_cluster)
+    async with MCPAdapter(toolbox.mcp) as adapter:
+        tools = await agent.load_tools(adapter, toolbox.access)
+    assert sorted(t.name for t in tools) == sorted(toolbox.access)
+    assert len(tools) == 14
+    assert agent.gated(tools, toolbox.access) == {
+        "kubernetes_evict_pod",
+        "kubernetes_scale_deployment",
+    }
 
 
 @pytest.mark.anyio
@@ -87,7 +164,7 @@ async def test_triage_produces_report_without_actions(
         ),
         call("TriageReport", "c3", **REPORT),
     )
-    async with agent.open_agent(settings, model, mcp=mcp_root(settings, fake_cluster)) as a:
+    async with agent.open_agent(settings, mcp_root(settings, fake_cluster), model) as a:
         outcome = await agent.start(a, ALERT, "t1")
     assert outcome.done and outcome.report is not None
     assert outcome.report.category == "resource_limits"
@@ -101,7 +178,7 @@ async def test_triage_produces_report_without_actions(
 async def test_rejected_action_never_reaches_cluster(settings: Settings, fake_cluster: Any) -> None:
     settings.enable_actions = True
     model = scripted(*investigation_then_scale())
-    async with agent.open_agent(settings, model, mcp=mcp_root(settings, fake_cluster)) as a:
+    async with agent.open_agent(settings, mcp_root(settings, fake_cluster), model) as a:
         outcome = await agent.start(a, ALERT, "t2")
         assert [p["name"] for p in outcome.pending] == ["kubernetes_scale_deployment"]
         assert outcome.pending[0]["args"]["replicas"] == 0  # reviewer sees the full args
@@ -115,7 +192,7 @@ async def test_rejected_action_never_reaches_cluster(settings: Settings, fake_cl
 async def test_approved_action_runs_once(settings: Settings, fake_cluster: Any) -> None:
     settings.enable_actions = True
     model = scripted(*investigation_then_scale())
-    async with agent.open_agent(settings, model, mcp=mcp_root(settings, fake_cluster)) as a:
+    async with agent.open_agent(settings, mcp_root(settings, fake_cluster), model) as a:
         await agent.start(a, ALERT, "t3")
         outcome = await agent.resume(a, "t3", [{"type": "approve"}])
     assert outcome.report is not None
@@ -133,7 +210,7 @@ async def test_approved_action_that_fails_is_recorded_as_failed(
     settings.enable_actions = True
     fake_cluster[1].patch_namespaced_deployment_scale.side_effect = ApiException(403, "Forbidden")
     model = scripted(*investigation_then_scale())
-    async with agent.open_agent(settings, model, mcp=mcp_root(settings, fake_cluster)) as a:
+    async with agent.open_agent(settings, mcp_root(settings, fake_cluster), model) as a:
         await agent.start(a, ALERT, "t5")
         outcome = await agent.resume(a, "t5", [{"type": "approve"}])
     assert len(outcome.executed_actions) == 1
@@ -162,7 +239,7 @@ async def test_approved_action_output_is_still_capped(settings: Settings) -> Non
     root.mount(srv, namespace="x")
     settings.tool_output_limit = 100
     model = scripted(call("x_poke", "c1"), call("TriageReport", "c2", **REPORT))
-    async with agent.open_agent(settings, model, mcp=root) as a:
+    async with agent.open_agent(settings, agent.Toolbox(root, {"x_poke": "write"}), model) as a:
         await agent.start(a, ALERT, "t4")
         outcome = await agent.resume(a, "t4", [{"type": "approve"}])
         state = await a.aget_state({"configurable": {"thread_id": "t4"}})

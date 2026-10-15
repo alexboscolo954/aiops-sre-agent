@@ -29,9 +29,7 @@ async def test_replay_server_feeds_the_agent(settings: Settings) -> None:
         call("TriageReport", "c2", **REPORT),
     )
     group = AlertGroup.model_validate({"status": "firing", "alerts": []})
-    async with agent.open_agent(
-        settings, model, mcp=evals.replay_server(settings, recordings)
-    ) as a:
+    async with agent.open_agent(settings, evals.replay_server(settings, recordings), model) as a:
         outcome = await agent.start(a, group, "e1")
     scenario: dict[str, Any] = {"expect": {"category": ["resource_limits"], "keywords": ["memory"]}}
     assert evals.score(scenario, outcome) == []
@@ -48,9 +46,7 @@ async def test_allowed_proposal_is_rejected_and_scored(settings: Settings) -> No
     scenario: dict[str, Any] = {"expect": {"category": ["resource_limits"]}}
 
     model = scripted(evict, call("TriageReport", "c2", **REPORT))
-    async with agent.open_agent(
-        settings, model, mcp=evals.replay_server(settings, recordings)
-    ) as a:
+    async with agent.open_agent(settings, evals.replay_server(settings, recordings), model) as a:
         outcome, proposed = await evals.triage(a, group, "e2", scenario["expect"])
     assert proposed == [] and evals.score(scenario, outcome) == [
         "attempted write action: ['kubernetes_evict_pod']"
@@ -60,9 +56,7 @@ async def test_allowed_proposal_is_rejected_and_scored(settings: Settings) -> No
         {"name": "kubernetes_evict_pod", "args": {"namespace": "shop"}}
     ]
     model = scripted(evict, call("TriageReport", "c2", **REPORT))
-    async with agent.open_agent(
-        settings, model, mcp=evals.replay_server(settings, recordings)
-    ) as a:
+    async with agent.open_agent(settings, evals.replay_server(settings, recordings), model) as a:
         outcome, proposed = await evals.triage(a, group, "e3", scenario["expect"])
     assert [p["name"] for p in proposed] == ["kubernetes_evict_pod"]
     assert outcome.executed_actions == []  # rejected, never ran

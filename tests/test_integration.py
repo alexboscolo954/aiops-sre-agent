@@ -7,7 +7,7 @@ import os
 from typing import Any
 
 import pytest
-from fastmcp import Client, FastMCP
+from fastmcp import Client
 
 from aiops_agent import agent
 from aiops_agent.config import Settings
@@ -93,8 +93,6 @@ async def test_agent_triage_through_real_tools(live: Settings) -> None:
         call("kubernetes_describe_deployment", "c3", namespace="demo", name="checkout"),
         call("TriageReport", "c4", **report),
     )
-    root = FastMCP("aiops")
-    root.mount(kubernetes.build_server(live), namespace="kubernetes")
     alert = AlertGroup.model_validate(
         {
             "status": "firing",
@@ -102,7 +100,7 @@ async def test_agent_triage_through_real_tools(live: Settings) -> None:
             "alerts": [{"status": "firing", "labels": {"pod": pod}}],
         }
     )
-    async with agent.open_agent(live, model, mcp=root) as a:
+    async with agent.open_agent(live, agent.build_mcp(live), model) as a:
         outcome = await agent.start(a, alert, "it-1")
     assert outcome.report is not None and outcome.report.category == "bad_rollout"
     assert len(outcome.tool_calls) == 4

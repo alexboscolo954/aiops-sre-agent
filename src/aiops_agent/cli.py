@@ -26,7 +26,7 @@ def ask(action: dict[str, Any], auto_reject: bool) -> dict[str, Any]:
 
 async def triage(group: AlertGroup, as_json: bool, auto_reject: bool) -> int:
     settings = Settings()
-    async with agent.open_agent(settings) as a:
+    async with agent.open_agent(settings, agent.build_mcp(settings)) as a:
         outcome = await agent.start(a, group, thread_id=str(uuid.uuid4()))
         while outcome.pending:
             decisions = [ask(action, auto_reject) for action in outcome.pending]

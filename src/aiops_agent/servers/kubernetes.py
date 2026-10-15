@@ -21,11 +21,23 @@ from mcp.types import ToolAnnotations
 
 from aiops_agent.config import Settings
 from aiops_agent.safety import redact, truncate
+from aiops_agent.servers import Access
 
 LOG_RACE = "unable to retrieve container logs"
 LOG_RETRY_SECONDS = 2.0
 READ = ToolAnnotations(read_only_hint=True, open_world_hint=False)
 WRITE = ToolAnnotations(read_only_hint=False, destructive_hint=True, open_world_hint=False)
+# The Hub's own list (ADR 0002): what each tool does, decided here, not by the annotation.
+ACCESS: dict[str, Access] = {
+    "list_pods": "read",
+    "describe_pod": "read",
+    "get_events": "read",
+    "pod_logs": "read",
+    "list_deployments": "read",
+    "describe_deployment": "read",
+    "evict_pod": "write",
+    "scale_deployment": "write",
+}
 
 
 def api_client(settings: Settings) -> client.ApiClient:

@@ -55,14 +55,14 @@ An agent that reads logs and can change a cluster is a prompt-injection target. 
 | RBAC | Read-only ClusterRole, bound **per namespace** with RoleBindings. No Secrets, no ConfigMaps. CI checks this by impersonating the ServiceAccount ([`demo/rbac-check.sh`](demo/rbac-check.sh)). |
 | Write scope | Write tools are opt-in (`AIOPS_ENABLE_ACTIONS`). When off, the write tools aren't registered at all. When on, they cover only `pods/eviction` (respects PodDisruptionBudgets) and `deployments/scale`. There's deliberately no `patch deployments`, which would allow changing images and commands. |
 | Namespace allowlist | Every tool checks `AIOPS_NAMESPACES` server-side, on top of RBAC. |
-| Human approval | `HumanInTheLoopMiddleware` interrupts before **every tool not annotated `readOnlyHint`**. This is default-deny, so an unannotated tool from a third-party MCP server also needs approval. The reviewer sees the full arguments. |
+| Human approval | The Hub keeps its own list of what each tool does ([ADR 0002](docs/adr/0002-hub-and-relay.md)). A tool not on the list is hidden from the agent. `HumanInTheLoopMiddleware` interrupts before every tool the list marks as a write, **and** before every tool whose server doesn't claim `readOnlyHint`. A server's annotation can only make a tool stricter, so a server that mislabels a write as read-only still waits for approval. The reviewer sees the full arguments. |
 | Secrets in context | Env var *values* are never returned, only names. Logs and events are redacted (tokens, JWTs, keys, `password=`). |
 | Prompt injection | Alerts and tool output are framed as data. An eval scenario plants an instruction in pod logs, and it fails if the agent even *attempts* a write. |
 | Blast radius | Per-run tool-call and model-call limits. Every tool result is capped in size. The receiver runs a bounded number of triages at once. |
 | Auth | Two tokens: Alertmanager's token can only submit alerts. Reading reports and deciding on proposed actions needs the approver token. |
 | Audit | Every tool call is logged as one JSON line and counted in `aiops_tool_calls_total{tool,status}`. A triage's executed actions are recorded where the tool ran, never taken from the model's own account, and an approved call that failed is marked `FAILED`. |
 
-MCP tool annotations are *hints* for the client. The security boundary is RBAC, the allowlist and the tool registration done on the server side.
+MCP tool annotations are *hints* from the server. The security boundary is RBAC, the namespace allowlist, the tool registration done on the server side, and the Hub's own read/write list.
 
 ## Quick start
 

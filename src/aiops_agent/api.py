@@ -124,7 +124,7 @@ def create_app(
     async def run(t: Triage, step: Any) -> None:
         async with slots:
             try:
-                async with agent.open_agent(settings, model, checkpointer, mcp_factory()) as a:
+                async with agent.open_agent(settings, mcp_factory(), model, checkpointer) as a:
                     apply(t, await step(a))
             except Exception as e:  # report every failure, never lose an alert silently
                 log.exception("triage %s failed", t.id)

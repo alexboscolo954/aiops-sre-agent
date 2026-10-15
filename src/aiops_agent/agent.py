@@ -6,6 +6,7 @@ interrupt and resumes (approve / reject) with the same thread_id.
 """
 
 import json
+import logging
 import operator
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -36,7 +37,9 @@ from aiops_agent.config import Settings
 from aiops_agent.models import AlertGroup, TriageReport
 from aiops_agent.observability import AuditMiddleware
 from aiops_agent.safety import redact, truncate
-from aiops_agent.servers import kubernetes, prometheus, runbooks
+from aiops_agent.servers import Access, kubernetes, prometheus, runbooks
+
+log = logging.getLogger("aiops.agent")
 
 SYSTEM_PROMPT = """\
 You are an on-call SRE triaging a Kubernetes alert. Find the most likely root
@@ -66,56 +69,94 @@ Rules:
 """
 
 
+@dataclass
+class Toolbox:
+    """MCP tools plus the Hub's own list of what each one does (ADR 0002). A tool
+    missing from `access` is hidden from the agent."""
+
+    mcp: FastMCP
+    access: dict[str, Access]
+
+
 def read_only(tool: BaseTool) -> bool:
-    """Default-deny: a tool with no annotations (e.g. from a third-party MCP server)
-    is treated as a write."""
+    """What the server claims. A tool with no annotations (e.g. from a third-party
+    MCP server) claims nothing, so it counts as a write."""
     annotations = ((tool.metadata or {}).get("mcp", {}).get("tool", {}).get("annotations")) or {}
     return annotations.get("read_only_hint") is True
 
 
-def approval_policy(tools: list[BaseTool]) -> dict[str, Any]:
-    """Every tool NOT annotated readOnlyHint=True needs human approval.
+def gated(tools: list[BaseTool], access: dict[str, Access]) -> set[str]:
+    """The one approval decision: the Hub's list says write, or the server doesn't
+    claim read-only. A server's annotation can only make a tool stricter."""
+    return {t.name for t in tools if access[t.name] == "write" or not read_only(t)}
 
-    Built from the names the adapter actually returns, so server-prefixed names
-    (kubernetes_scale_deployment) match.
-    """
+
+def approval_policy(names: set[str]) -> dict[str, Any]:
     allowed = {"allowed_decisions": ["approve", "reject"]}
-    return {tool.name: allowed for tool in tools if not read_only(tool)}
+    return {name: allowed for name in names}
+
+
+async def load_tools(adapter: MCPAdapter, access: dict[str, Access]) -> list[BaseTool]:
+    """Only the tools on the Hub's list. Names are as mounted (kubernetes_list_pods)."""
+    tools: list[BaseTool] = await adapter.list_tools()
+    hidden = sorted(t.name for t in tools if t.name not in access)
+    if hidden:
+        log.info("hiding tools not on the Hub's list: %s", hidden)
+    return [t for t in tools if t.name in access]
 
 
 class TriageState(AgentState[BaseModel]):
     executed_actions: NotRequired[Annotated[list[str], operator.add]]
 
 
-@wrap_tool_call(state_schema=TriageState)
-async def record_executed_actions(
-    request: ToolCallRequest, handler: Callable[[ToolCallRequest], Awaitable[Any]]
-) -> Any:
+def record_executed_actions(gated_names: set[str]) -> Any:
     """Executed actions are recorded here, where the tool actually ran, never taken
-    from the model's own account. Rejected calls never reach this point, so an
-    error here is an approved action that failed: recorded too, marked FAILED."""
-    result = await handler(request)
-    tool = request.tool
-    if tool is None or read_only(tool) or not isinstance(result, ToolMessage):
-        return result
-    call = request.tool_call
-    args = json.dumps(call["args"], sort_keys=True)
-    failed = "FAILED " if result.status == "error" else ""
-    # Goes to the API and Slack: redact, since third-party tool output isn't.
-    entry = redact(f"{failed}{call['name']} {args}: {truncate(str(result.content), 200)}")
-    return Command(update={"messages": [result], "executed_actions": [entry]})
+    from the model's own account. Same decision as the approval gate, so every
+    approved call is recorded. Rejected calls never reach this point, so an error
+    here is an approved action that failed: recorded too, marked FAILED."""
+
+    @wrap_tool_call(state_schema=TriageState)
+    async def record(
+        request: ToolCallRequest, handler: Callable[[ToolCallRequest], Awaitable[Any]]
+    ) -> Any:
+        result = await handler(request)
+        call = request.tool_call
+        if call["name"] not in gated_names or not isinstance(result, ToolMessage):
+            return result
+        args = json.dumps(call["args"], sort_keys=True)
+        failed = "FAILED " if result.status == "error" else ""
+        # Goes to the API and Slack: redact, since third-party tool output isn't.
+        entry = redact(f"{failed}{call['name']} {args}: {truncate(str(result.content), 200)}")
+        return Command(update={"messages": [result], "executed_actions": [entry]})
+
+    return record
 
 
-def build_mcp(settings: Settings) -> FastMCP:
-    """All MCP servers mounted in-process under one namespace-prefixed root."""
-    root = FastMCP("aiops")
-    root.mount(kubernetes.build_server(settings), namespace="kubernetes")
+def mount(
+    root: FastMCP, access: dict[str, Access], namespace: str, server: Any, own: dict[str, Access]
+) -> None:
+    """Mount a server and add its tools to the Hub's list under the mounted names."""
+    root.mount(server, namespace=namespace)
+    access.update({f"{namespace}_{name}": a for name, a in own.items()})
+
+
+def build_mcp(settings: Settings, k8s_api: tuple[Any, Any] | None = None) -> Toolbox:
+    """All MCP servers mounted in-process under one namespace-prefixed root.
+    k8s_api: (CoreV1Api, AppsV1Api) instead of connecting, for tests."""
+    root, access = FastMCP("aiops"), dict[str, Access]()
+    mount(
+        root,
+        access,
+        "kubernetes",
+        kubernetes.build_server(settings, *(k8s_api or ())),
+        kubernetes.ACCESS,
+    )
     if settings.prometheus_url:
-        root.mount(prometheus.build_server(settings), namespace="prometheus")
+        mount(root, access, "prometheus", prometheus.build_server(settings), prometheus.ACCESS)
     if settings.runbooks_dir.is_dir():
-        root.mount(runbooks.build_server(settings), namespace="runbooks")
+        mount(root, access, "runbooks", runbooks.build_server(settings), runbooks.ACCESS)
     root.add_middleware(AuditMiddleware())
-    return root
+    return Toolbox(root, access)
 
 
 def build_model(settings: Settings) -> BaseChatModel:
@@ -150,12 +191,14 @@ def cap_tool_output(limit: int) -> Any:
 @asynccontextmanager
 async def open_agent(
     settings: Settings,
+    toolbox: Toolbox,
     model: BaseChatModel | None = None,
     checkpointer: BaseCheckpointSaver[Any] | None = None,
-    mcp: FastMCP | None = None,
 ) -> AsyncIterator[Any]:
-    async with MCPAdapter(mcp or build_mcp(settings)) as adapter:
-        tools = await adapter.list_tools()
+    """The only way to build the agent, so every caller gets the Hub's list."""
+    async with MCPAdapter(toolbox.mcp) as adapter:
+        tools = await load_tools(adapter, toolbox.access)
+        needs_approval = gated(tools, toolbox.access)
         yield create_agent(
             model or build_model(settings),
             tools,
@@ -165,13 +208,13 @@ async def open_agent(
             response_format=TriageReport,
             middleware=[
                 HumanInTheLoopMiddleware(
-                    approval_policy(tools), description_prefix="The agent wants to run"
+                    approval_policy(needs_approval), description_prefix="The agent wants to run"
                 ),
                 ModelCallLimitMiddleware(run_limit=settings.max_model_calls, exit_behavior="end"),
                 ToolCallLimitMiddleware(run_limit=settings.max_tool_calls),
                 # Outermost first: the recorder must wrap the cap, or the cap would
                 # see the recorder's Command instead of the ToolMessage and skip it.
-                record_executed_actions,
+                record_executed_actions(needs_approval),
                 cap_tool_output(settings.tool_output_limit),
             ],
             checkpointer=checkpointer or InMemorySaver(),

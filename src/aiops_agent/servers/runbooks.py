@@ -19,8 +19,14 @@ from fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from aiops_agent.config import Settings
+from aiops_agent.servers import Access
 
 READ = ToolAnnotations(read_only_hint=True, open_world_hint=False)
+ACCESS: dict[str, Access] = {
+    "runbook_for_alert": "read",
+    "search_runbooks": "read",
+    "read_runbook": "read",
+}  # ADR 0002
 
 
 def load(directory: Path) -> dict[str, dict[str, Any]]:

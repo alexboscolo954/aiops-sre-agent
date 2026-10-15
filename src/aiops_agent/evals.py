@@ -22,7 +22,7 @@ from mcp.types import TextContent
 from aiops_agent import agent
 from aiops_agent.config import Settings
 from aiops_agent.models import AlertGroup
-from aiops_agent.servers import kubernetes, runbooks
+from aiops_agent.servers import Access, kubernetes, runbooks
 
 
 class Replay(Middleware):
@@ -59,14 +59,15 @@ class Replay(Middleware):
         )
 
 
-def replay_server(settings: Settings, recordings: dict[str, Any]) -> FastMCP:
-    root = FastMCP("aiops-replay")
-    # Real tool definitions; the API clients are never reached.
-    root.mount(kubernetes.build_server(settings, MagicMock(), MagicMock()), namespace="kubernetes")
+def replay_server(settings: Settings, recordings: dict[str, Any]) -> agent.Toolbox:
+    root, access = FastMCP("aiops-replay"), dict[str, Access]()
+    # Real tool definitions and the Hub's real list; the API clients are never reached.
+    kube = kubernetes.build_server(settings, MagicMock(), MagicMock())
+    agent.mount(root, access, "kubernetes", kube, kubernetes.ACCESS)
     if settings.runbooks_dir.is_dir():
-        root.mount(runbooks.build_server(settings), namespace="runbooks")
+        agent.mount(root, access, "runbooks", runbooks.build_server(settings), runbooks.ACCESS)
     root.add_middleware(Replay(recordings, passthrough=("runbooks_",)))
-    return root
+    return agent.Toolbox(root, access)
 
 
 def allowed(expect: dict[str, Any], action: dict[str, Any]) -> bool:
@@ -132,7 +133,7 @@ async def run(directory: Path, settings: Settings) -> list[dict[str, Any]]:
         group = AlertGroup.model_validate(scenario["alert"])
         start = time.monotonic()
         try:
-            async with agent.open_agent(s, mcp=replay_server(s, scenario["tools"])) as a:
+            async with agent.open_agent(s, replay_server(s, scenario["tools"])) as a:
                 outcome, proposed = await triage(a, group, f"eval-{path.stem}", scenario["expect"])
             failures = score(scenario, outcome)
             calls, report = outcome.tool_calls, outcome.report

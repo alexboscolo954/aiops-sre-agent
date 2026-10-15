@@ -5,12 +5,11 @@ from unittest.mock import MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
-from fastmcp import FastMCP
 from pydantic import SecretStr
 
+from aiops_agent import agent
 from aiops_agent.api import create_app
 from aiops_agent.config import Settings
-from aiops_agent.servers import kubernetes
 from tests.conftest import REPORT, call, scripted
 
 HOOK = {"Authorization": "Bearer hook-token"}
@@ -27,10 +26,8 @@ def client(settings: Settings, fake_cluster: Any, *steps: Any) -> TestClient:
     settings.webhook_token = SecretStr("hook-token")
     settings.approver_token = SecretStr("approver-token")
 
-    def mcp() -> FastMCP:
-        root = FastMCP("aiops")
-        root.mount(kubernetes.build_server(settings, *fake_cluster), namespace="kubernetes")
-        return root
+    def mcp() -> agent.Toolbox:
+        return agent.build_mcp(settings, fake_cluster)
 
     return TestClient(create_app(settings, scripted(*steps), mcp))
 
