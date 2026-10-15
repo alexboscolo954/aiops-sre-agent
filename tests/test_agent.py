@@ -307,3 +307,34 @@ async def test_raw_tool_results_are_recorded_uncapped_and_redacted(
     async with agent.open_agent(settings, tb, model, record=sink) as a:
         await agent.start(a, ALERT, "t7")
     assert "[truncated" in seen[0][2] and len(seen[0][2]) < 1100
+
+
+@pytest.mark.anyio
+async def test_raw_recording_redacts_only_bounded_text_and_never_fails_the_run(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    srv = FastMCP("x")
+
+    @srv.tool(annotations=ToolAnnotations(read_only_hint=True))
+    def huge() -> str:
+        return "z" * 50_000
+
+    root = FastMCP("aiops")
+    root.mount(srv, namespace="x")
+    tb = agent.Toolbox(root, {"x_huge": "read"})
+    monkeypatch.setattr(agent, "RAW_RESULT_LIMIT", 1000)
+    redacted: list[int] = []
+    real_redact = agent.redact
+    monkeypatch.setattr(
+        agent, "redact", lambda text: redacted.append(len(text)) or real_redact(text)
+    )
+
+    async def broken_sink(tool: str, args: dict[str, Any], result: str, error: bool) -> None:
+        raise ConnectionError("database down")
+
+    model = scripted(call("x_huge", "c1"), call("TriageReport", "c2", **REPORT))
+    async with agent.open_agent(settings, tb, model, record=broken_sink) as a:
+        outcome = await agent.start(a, ALERT, "t8")
+    assert outcome.report is not None  # the Run finished despite the failed record
+    assert redacted and max(redacted) < 1100  # never the 50,000-char result
+    assert "could not record the result of x_huge" in caplog.text

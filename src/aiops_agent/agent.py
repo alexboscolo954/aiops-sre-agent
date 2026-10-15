@@ -209,8 +209,10 @@ ToolSink = Callable[[str, dict[str, Any], str, bool], Awaitable[None]]
 
 def record_tool_results(sink: ToolSink) -> Any:
     """Innermost wrapper: sees each result before the cap, as the tool returned it.
-    Redacted first, since third-party tool output isn't. Kept for audit and for
-    turning an Investigation into a Scenario (slice 2.6)."""
+    Redacted, since third-party tool output isn't. Kept for audit and for turning an
+    Investigation into a Scenario (slice 2.6). Best effort: the tool already ran, so
+    a failed write here is logged and never fails the Run (an approved action must
+    still reach Executed actions)."""
 
     @wrap_tool_call
     async def record_raw(
@@ -220,8 +222,12 @@ def record_tool_results(sink: ToolSink) -> Any:
         if isinstance(result, ToolMessage):
             raw = result.content if isinstance(result.content, str) else json.dumps(result.content)
             call = request.tool_call
-            text = truncate(redact(raw), RAW_RESULT_LIMIT)
-            await sink(call["name"], call["args"], text, result.status == "error")
+            # Cut before redacting: the patterns never run over an unbounded result.
+            text = redact(truncate(raw, RAW_RESULT_LIMIT))
+            try:
+                await sink(call["name"], call["args"], text, result.status == "error")
+            except Exception:
+                log.exception("could not record the result of %s", call["name"])
         return result
 
     return record_raw
