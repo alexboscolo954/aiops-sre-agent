@@ -7,3 +7,9 @@ __pycache__/
 .env
 recordings/
 .DS_Store
+
+# The Hub stack run from a checkout: secrets and data never committed.
+deploy/hub/hub.env
+deploy/hub/age-keys.txt
+deploy/hub/contracts/
+deploy/hub/backups/

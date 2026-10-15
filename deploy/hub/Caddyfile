@@ -1,0 +1,19 @@
+# The Hub's only public route: each Contract's Alertmanager posting alerts.
+# Investigations, decisions, metrics and the API docs stay on 127.0.0.1, reached
+# through `tailscale serve`. Anything else gets a 404 here and never reaches the Hub.
+{$AIOPS_DOMAIN:localhost} {
+	# The Hub parses the whole body before it checks the token: cap it here.
+	request_body {
+		max_size 1MB
+	}
+	@alerts {
+		method POST
+		path_regexp ^/contracts/[a-z0-9-]+/alertmanager$
+	}
+	handle @alerts {
+		reverse_proxy hub:8080
+	}
+	handle {
+		respond 404
+	}
+}

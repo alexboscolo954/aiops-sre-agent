@@ -48,10 +48,19 @@ jobs:
           kubectl get pods -A -o wide
           kubectl -n aiops logs deploy/aiops-agent --tail=100 || true
 
+  hub-smoke:
+    # The Hub's compose stack (deploy/hub): health, the public boundary through
+    # Caddy, backups that restore, and a bad contracts update that never restarts it.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - run: make hub-smoke
+
   publish:
     # Image for deploy/: ghcr.io/alexboscolo954/aiops-sre-agent:<version>, on tags only.
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [lint-test, integration]
+    needs: [lint-test, integration, hub-smoke]
     runs-on: ubuntu-latest
     permissions:
       contents: read

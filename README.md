@@ -92,7 +92,35 @@ Any `init_chat_model` string works. For an OpenAI-compatible gateway (LiteLLM, v
 AIOPS_MODEL=openai:<model-name> AIOPS_MODEL_BASE_URL=http://litellm:4000/v1 AIOPS_MODEL_API_KEY=...
 ```
 
-## Running as a service
+## Running the Hub
+
+The Hub runs every Contract from one VM you own: [`deploy/hub`](deploy/hub) is a compose stack with the Hub, Postgres, Caddy and nightly backups.
+
+1. **VM:** Docker with compose, a DNS name pointing at it, and ports 80 and 443 open. Copy `deploy/hub` there.
+2. **Contracts:** clone your private contracts repo into `deploy/hub/contracts` with a read-only deploy key:
+   ```bash
+   ssh-keygen -t ed25519 -N '' -f ~/.ssh/aiops-contracts      # add the .pub as a read-only deploy key
+   GIT_SSH_COMMAND='ssh -i ~/.ssh/aiops-contracts' git clone git@github.com:<you>/contracts.git contracts
+   git -C contracts config core.sshCommand 'ssh -i ~/.ssh/aiops-contracts'
+   ```
+3. **Age keys:** put every Contract's age key in one file that only the Hub's user (uid 10001) can read:
+   ```bash
+   cat acme.agekey globex.agekey > age-keys.txt && chmod 0400 age-keys.txt && sudo chown 10001 age-keys.txt
+   ```
+4. **Settings:** copy `env.example` to `.env` (Postgres password, domain) and `hub.env.example` to `hub.env` (approver token, model key).
+5. **Start:** `docker compose up -d --wait`. Caddy gets a certificate for your domain.
+6. **Operator access:** `tailscale serve --bg 8080` publishes the API, which listens only on `127.0.0.1:8080`, to your tailnet over HTTPS. Never publish port 8080 another way: ports Docker publishes bypass host firewalls.
+7. **Alertmanagers:** each Contract's Alertmanager posts to `https://<domain>/contracts/<id>/alertmanager` with that Contract's token.
+
+**What is public:** only `POST /contracts/<id>/alertmanager`, with bodies up to 1 MB ([`Caddyfile`](deploy/hub/Caddyfile)). Investigations, decisions, metrics and the API docs answer only on `127.0.0.1`.
+
+**Updating Contracts:** `./update-contracts.sh` pulls the contracts repo and validates every Contract inside the image before restarting the Hub. If any Contract is invalid, it rolls the clone back and leaves the running Hub alone, because one bad Contract would otherwise stop alerts for all of them.
+
+**Backups:** a `pg_dump` at start and every 24 hours, kept 14 days, in `deploy/hub/backups`. Dumps are owner-only because they hold Contract data (Reports, raw tool results). A dump on the VM is lost with the VM: copy `backups/` somewhere else.
+
+`make hub-smoke` runs the stack locally and in CI with the demo Contracts. It checks that the stack comes up healthy, that every path except the alert route returns 404 through Caddy (including `../` and `%2F` tricks and oversized bodies), that an alert is stored, that a backup restores, and that a bad contracts update is refused. CI does not cover `tailscale serve`, real Let's Encrypt certificates, the deploy-key clone or the arm64 image.
+
+## Running as a service in one cluster
 
 ```bash
 uv run aiops contracts new-token    # give the token to Alertmanager; the hash goes in
@@ -106,7 +134,7 @@ kubectl apply -k deploy/actions     # optional: evict / scale, still behind appr
 
 The image is published to GHCR on version tags. To use your own build, `cd deploy/base && kustomize edit set image ghcr.io/alexboscolo954/aiops-sre-agent=<your-image>`.
 
-This in-cluster deploy serves one Contract, `in-cluster` ([`deploy/base/contract.yaml`](deploy/base/contract.yaml)), mounted from a ConfigMap. It has no secrets file, so the image needs no sops; the Hub with many Contracts and SOPS secrets is roadmap slice 0.5.
+This in-cluster deploy serves one Contract, `in-cluster` ([`deploy/base/contract.yaml`](deploy/base/contract.yaml)), mounted from a ConfigMap. For several Contracts, run the Hub on a VM instead ([Running the Hub](#running-the-hub)).
 Point Alertmanager at it with [`deploy/alertmanager-receiver.yaml`](deploy/alertmanager-receiver.yaml).
 
 | Endpoint | Token | |
@@ -119,7 +147,7 @@ Point Alertmanager at it with [`deploy/alertmanager-receiver.yaml`](deploy/alert
 The container runs as non-root on a read-only root filesystem, with all capabilities dropped and the RuntimeDefault seccomp profile.
 CI deploys the real image with these manifests on kind and checks health, auth and metrics ([`demo/deploy-smoke.sh`](demo/deploy-smoke.sh)).
 
-State lives in Postgres: Investigations, the duplicate memory, every Approval decision (who, what, when), every tool call with its raw result (redacted, before the size cap, kept for turning an Investigation into an eval Scenario) and the LangGraph checkpoints. A pending approval survives a restart. After a restart, a deadline that passed while the Hub was down goes Stale, and a Run that was cut off becomes a Failed investigation. It is never replayed, so an approved write can't run twice. The in-cluster deploy needs a Postgres you provide (the smoke test brings a throwaway one, [`demo/postgres.yaml`](demo/postgres.yaml)); slice 0.5 ships a compose stack with one. Timers and the concurrency limit are per process, so run one replica. `AIOPS_MAX_CONCURRENT_TRIAGES` is shared by every Contract, so one Contract's alert storm can hold every slot.
+State lives in Postgres: Investigations, the duplicate memory, every Approval decision (who, what, when), every tool call with its raw result (redacted, before the size cap, kept for turning an Investigation into an eval Scenario) and the LangGraph checkpoints. A pending approval survives a restart. After a restart, a deadline that passed while the Hub was down goes Stale, and a Run that was cut off becomes a Failed investigation. It is never replayed, so an approved write can't run twice. The in-cluster deploy needs a Postgres you provide (the smoke test brings a throwaway one, [`demo/postgres.yaml`](demo/postgres.yaml)); the Hub's compose stack ships one. Timers and the concurrency limit are per process, so run one replica. `AIOPS_MAX_CONCURRENT_TRIAGES` is shared by every Contract, so one Contract's alert storm can hold every slot.
 
 ## MCP servers on their own
 

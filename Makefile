@@ -2,7 +2,7 @@ CLUSTER := aiops
 CTX     := kind-$(CLUSTER)
 PG      := postgres:17.10
 
-.PHONY: lint test db cluster demo integration image deploy-smoke rbac-check down
+.PHONY: lint test db cluster demo integration image deploy-smoke hub-smoke rbac-check down
 
 lint:
 	uv run ruff check .
@@ -39,6 +39,9 @@ deploy-smoke: image ## real image + shipped manifests on kind
 	kubectl kustomize deploy/actions | grep -q 'enable_actions: true'  # the overlay turns actions on
 	kubectl --context $(CTX) apply -f deploy/actions/rbac-actions.yaml
 	./demo/rbac-check.sh $(CTX) true
+
+hub-smoke: image ## the Hub's compose stack: health, public boundary, backups, contracts updates
+	./demo/hub-smoke.sh aiops-sre-agent:ci
 
 down:
 	kind delete cluster --name $(CLUSTER)

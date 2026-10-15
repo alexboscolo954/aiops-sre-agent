@@ -116,12 +116,13 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
   - a deadline that passes while the Hub is down is made Stale at startup;
   - storage tests run against Postgres in CI.
 
-**0.5 Hub deployment.**
-- docker compose with the Hub, Postgres and Caddy. Caddy serves TLS for the public alert endpoint, and `pg_dump` runs nightly.
-- The console and API listen on `127.0.0.1` only, with `tailscale serve` in front. Never bind them to the Tailscale interface: any tailnet device could then connect directly and forge the identity header.
-- The contracts repo reaches the VM through a read-only deploy key. Config is reloaded on restart.
-- The Hub image ships the pinned `sops` binary, the same version CI verifies by checksum.
-- *Done when:* `make hub-smoke` starts the stack with the demo Contracts, sends an alert and gets a Report, in CI.
+**0.5 Hub deployment.** Done.
+- `deploy/hub`: docker compose with the Hub, Postgres, Caddy and a backup job. Caddy serves TLS and passes only `POST /contracts/<id>/alertmanager` (bodies up to 1 MB); everything else is a 404 there.
+- The API listens on `127.0.0.1` only, with `tailscale serve` in front. Never bind it to the Tailscale interface: any tailnet device could then connect directly and forge the identity header.
+- The contracts repo reaches the VM through a read-only deploy key. `update-contracts.sh` validates every Contract in the image before restarting, and rolls the clone back if one is invalid.
+- The image ships pinned `sops`, checksum-verified for amd64 and arm64.
+- `make hub-smoke` in CI. CI has no model key, so instead of a Report it proves: the stack is healthy, both Contracts decrypt in the image, only the alert route is public, an alert is stored and fails the way it should without a cluster, a backup restores, and a bad update is refused.
+- Not covered by CI: `tailscale serve`, real certificates, the deploy-key clone, the arm64 image.
 
 ### Phase 1: Slack (4 slices)
 
@@ -273,4 +274,4 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
 
 ## Next
 
-Slice 0.5: Hub deployment, docker compose with the Hub, Postgres and Caddy.
+Phase 1, slice 1.1: the Slack app in Socket Mode, one channel per Contract.
