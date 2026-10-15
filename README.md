@@ -173,6 +173,7 @@ Four scenarios is a smoke test for triage quality, not a benchmark. Add scenario
 
 The agent is moving from one global config to several Contracts, one per client engagement. The plan is in [`docs/roadmap.md`](docs/roadmap.md).
 A Contract is a directory in your **private** contracts repo, never in this one ([ADR 0003](docs/adr/0003-contract-data-in-private-git.md)). It holds `contract.yaml`, a SOPS-encrypted `secrets.sops.yaml` with one age key per Contract, and its own `runbooks/`. Runbooks in `shared/runbooks/` are Shared knowledge for every Contract; a Contract's own Runbook wins on a name clash.
+A kubeconfig whose user runs a credential plugin (`exec`, as EKS, AKS kubelogin and GKE use, or an `auth-provider`) is refused unless that cluster sets `allow_exec: true`. The plugin would run on the Hub next to every other Contract's secrets ([ADR 0002](docs/adr/0002-hub-and-relay.md)).
 Name each cluster as your alerts' `cluster` label does: the agent passes that label as the tools' `cluster` argument, and a tool refuses any cluster or namespace outside its Contract. [`demo/contracts`](demo/contracts) shows the layout with two synthetic Contracts and their test-only keys.
 
 Run these from the contracts repo root, since sops looks for `.sops.yaml` in the current directory:

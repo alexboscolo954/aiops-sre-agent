@@ -22,7 +22,13 @@ from kubernetes.client.exceptions import ApiException
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from aiops_agent.contracts import Cluster, Contract, Kubernetes
+from aiops_agent.contracts import (
+    Cluster,
+    Contract,
+    Kubernetes,
+    read_kubeconfig,
+    refuse_plugin,
+)
 from aiops_agent.safety import redact, truncate
 from aiops_agent.servers import Access
 
@@ -44,13 +50,20 @@ ACCESS: dict[str, Access] = {
 
 
 def api_client(cluster: Cluster, contract: Contract) -> client.ApiClient:
-    """The Contract schema already refuses a cluster with no context unless in_cluster."""
+    """The Contract schema already refuses a cluster with no context unless in_cluster.
+    A kubeconfig that would run a credential plugin is refused before the client
+    loads it, unless the cluster sets allow_exec."""
     if cluster.in_cluster:
         config.load_incluster_config()  # type: ignore[no-untyped-call]
         return client.ApiClient()
     if cluster.kubeconfig_secret:
         # Parsed in memory: the kubeconfig never touches disk.
         kubeconfig = yaml.safe_load(contract.secret(cluster.kubeconfig_secret).get_secret_value())
+    else:
+        kubeconfig = read_kubeconfig(cluster.kubeconfig_file)
+    if refusal := refuse_plugin(cluster, kubeconfig):
+        raise RuntimeError(f"Contract {contract.id!r}, {refusal}")
+    if cluster.kubeconfig_secret:
         return config.new_client_from_config_dict(  # type: ignore[no-any-return,no-untyped-call]
             kubeconfig, context=cluster.context
         )

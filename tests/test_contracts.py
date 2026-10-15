@@ -9,7 +9,7 @@ import pytest
 import yaml
 
 from aiops_agent import cli, contracts
-from tests.conftest import DEMO_CONTRACTS, use_age_keys
+from tests.conftest import DEMO_CONTRACTS, EXEC_USER, GCP_USER, kubeconfig, use_age_keys
 
 BASE: dict[str, Any] = {
     "id": "acme",
@@ -191,3 +191,61 @@ def test_missing_sops_is_explained(two_contracts: Any, monkeypatch: pytest.Monke
 def test_empty_or_missing_directory(tmp_path: Path) -> None:
     assert problems(tmp_path) == [f"{tmp_path}: no */contract.yaml found"]
     assert problems(tmp_path / "nope") == [f"{tmp_path / 'nope'}: not a directory"]
+
+
+def plugin_contract(root: Path, kc: Any, allow_exec: bool = False) -> None:
+    data = copy.deepcopy(BASE)
+    data["clusters"][0] |= {"context": "p", "kubeconfig_secret": "kc", "allow_exec": allow_exec}
+    write(root, data)
+    text = kc if isinstance(kc, str) else yaml.safe_dump(kc)
+    encrypt(root / "acme" / "secrets.sops.yaml", {"kc": text})
+
+
+@pytest.mark.parametrize(
+    ("user", "named"), [(EXEC_USER, "exec plugin 'aws'"), (GCP_USER, "auth-provider 'gcp'")]
+)
+def test_kubeconfig_credential_plugins_need_allow_exec(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, user: dict[str, Any], named: str
+) -> None:
+    use_age_keys(monkeypatch, tmp_path, "demo-shop")
+    root = tmp_path / "contracts"
+    plugin_contract(root, kubeconfig(user))
+    assert problems(root) == [
+        f"{root / 'acme' / 'contract.yaml'}: clusters.0: cluster 'prod': its kubeconfig "
+        f"runs {named} on the Hub; set allow_exec: true on the cluster to permit it"
+    ]
+    plugin_contract(root, kubeconfig(user), allow_exec=True)
+    assert contracts.load(root)["acme"].clusters[0].allow_exec
+
+
+def test_only_the_clusters_own_context_is_checked(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    use_age_keys(monkeypatch, tmp_path, "demo-shop")
+    root = tmp_path / "contracts"
+    kc = kubeconfig({"token": "t"})
+    other = kubeconfig(EXEC_USER, context="other", user_name="eks")
+    kc["contexts"] += other["contexts"]
+    kc["users"] += other["users"]
+    plugin_contract(root, kc)
+    assert "acme" in contracts.load(root)
+
+
+def test_kubeconfig_file_with_a_plugin_is_refused(tmp_path: Path) -> None:
+    kc = tmp_path / "kc.yaml"
+    kc.write_text(yaml.safe_dump(kubeconfig(EXEC_USER)))
+    data = copy.deepcopy(BASE)
+    data["clusters"][0] |= {"context": "p", "kubeconfig_file": str(kc)}
+    write(tmp_path / "contracts", data)
+    assert any("runs exec plugin 'aws'" in p for p in problems(tmp_path / "contracts"))
+
+
+def test_unparseable_kubeconfig_secret_is_not_echoed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    use_age_keys(monkeypatch, tmp_path, "demo-shop")
+    root = tmp_path / "contracts"
+    plugin_contract(root, "token: TOPSECRET-2\n  bad: [indent")
+    found = problems(root)
+    assert any("kubeconfig is not valid YAML" in p for p in found)
+    assert "TOPSECRET" not in "\n".join(found)

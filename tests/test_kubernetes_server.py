@@ -1,6 +1,8 @@
+import os
 from typing import Any
 
 import pytest
+import yaml
 from fastmcp import Client, FastMCP
 from fastmcp.exceptions import ToolError
 from pydantic import SecretStr
@@ -8,7 +10,7 @@ from pydantic import SecretStr
 from aiops_agent import contracts
 from aiops_agent.config import Settings
 from aiops_agent.servers import kubernetes
-from tests.conftest import make_contract
+from tests.conftest import EXEC_USER, kubeconfig, make_contract
 
 
 def k8s(settings: Settings, fake_cluster: Any, actions: bool = False, **contract: Any) -> FastMCP:
@@ -271,3 +273,52 @@ async def test_rollout_history_shows_config_diff(settings: Settings, fake_cluste
     history = {h["revision"]: h["config"]["app"]["env"] for h in out["rollout_history"]}
     assert history == {"2": [], "1": ["DATABASE_URL"]}
     assert "secret-value" not in str(out)
+
+
+def plugin_cluster(**cluster: Any) -> contracts.Contract:
+    data = {
+        "id": "acme",
+        "name": "Acme",
+        "clusters": [{"name": "prod", "context": "p", "namespaces": ["shop"], **cluster}],
+        "integrations": [{"name": "kubernetes"}],
+    }
+    kc = SecretStr(yaml.safe_dump(kubeconfig(EXEC_USER)))
+    return contracts.build(data, secrets={"kc": kc})
+
+
+def test_plugin_in_a_kubeconfig_secret_never_reaches_the_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loaded: list[Any] = []
+    monkeypatch.setattr(
+        kubernetes.config, "new_client_from_config_dict", lambda d, context: loaded.append(d)
+    )
+    c = plugin_cluster(kubeconfig_secret="kc")
+    with pytest.raises(RuntimeError, match=r"Contract 'acme', cluster 'prod'.*exec plugin 'aws'"):
+        kubernetes.api_client(c.clusters[0], c)
+    assert loaded == []
+    c = plugin_cluster(kubeconfig_secret="kc", allow_exec=True)
+    kubernetes.api_client(c.clusters[0], c)
+    assert len(loaded) == 1
+
+
+@pytest.mark.parametrize("plugin_first", [True, False])
+def test_default_kubeconfig_is_checked_as_kubectl_merges_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any, plugin_first: bool
+) -> None:
+    """KUBECONFIG lists files; the first to define a user wins, as in kubectl."""
+    plugin, token = tmp_path / "plugin.yaml", tmp_path / "token.yaml"
+    plugin.write_text(yaml.safe_dump(kubeconfig(EXEC_USER)))
+    token.write_text(yaml.safe_dump(kubeconfig({"token": "t"})))
+    order = [plugin, token] if plugin_first else [token, plugin]
+    monkeypatch.setenv("KUBECONFIG", os.pathsep.join(map(str, order)))
+    loaded: list[Any] = []
+    monkeypatch.setattr(kubernetes.config, "new_client_from_config", lambda **kw: loaded.append(kw))
+    c = plugin_cluster()
+    if plugin_first:
+        with pytest.raises(RuntimeError, match="exec plugin 'aws'"):
+            kubernetes.api_client(c.clusters[0], c)
+        assert loaded == []
+    else:
+        kubernetes.api_client(c.clusters[0], c)
+        assert loaded == [{"config_file": None, "context": "p"}]

@@ -11,6 +11,7 @@ appear in errors, logs or repr.
 """
 
 import json
+import os
 import shutil
 import subprocess
 from collections import defaultdict
@@ -50,6 +51,9 @@ class Cluster(Strict):
     context: str | None = None
     kubeconfig_file: Path | None = None  # default: ~/.kube/config
     kubeconfig_secret: str | None = None
+    # A kubeconfig credential plugin runs as a command on the Hub, next to every other
+    # Contract's secrets. Refused unless set here, where review of the contracts repo sees it.
+    allow_exec: bool = False
 
     @model_validator(mode="after")
     def _one_source(self) -> "Cluster":
@@ -193,12 +197,82 @@ def _load_one(path: Path) -> tuple[Contract, set[str]]:
         secrets = _decrypt(secrets_path)
     for name in sorted(contract.secret_refs() - secrets.keys()):
         problems.append(f"{path}: secret {name!r} is not in {SECRETS_FILE}")
+    for i, cluster in enumerate(contract.clusters):
+        if cluster.kubeconfig_secret in secrets:
+            kubeconfig = _yaml_or_none(secrets[cluster.kubeconfig_secret])
+        elif cluster.kubeconfig_file and cluster.kubeconfig_file.expanduser().is_file():
+            kubeconfig = read_kubeconfig(cluster.kubeconfig_file)
+        else:
+            continue  # the default kubeconfig is the Hub's, checked when it connects
+        if kubeconfig is None:
+            problems.append(f"{path}: clusters.{i}: kubeconfig is not valid YAML")
+        elif refusal := refuse_plugin(cluster, kubeconfig):
+            problems.append(f"{path}: clusters.{i}: {refusal}")
     if problems:
         raise ContractError(problems)
     contract._dir = path.parent
     contract._secrets = {k: SecretStr(v) for k, v in secrets.items()}
     contract._runbook_dirs = [path.parent.parent / SHARED / "runbooks", path.parent / "runbooks"]
     return contract, recipients
+
+
+def _yaml_or_none(text: str) -> Any:
+    try:
+        return yaml.safe_load(text)
+    except yaml.YAMLError:
+        return None  # never echo the text: it is a credential
+
+
+def read_kubeconfig(path: Path | None) -> dict[str, Any]:
+    """The contexts and users the kubernetes client would see: `path`, or else
+    KUBECONFIG / ~/.kube/config, merged first-wins like kubectl."""
+    env = os.environ.get("KUBECONFIG", "~/.kube/config")
+    paths = [path] if path else [Path(p) for p in env.split(os.pathsep) if p]
+    merged: dict[str, Any] = {"contexts": [], "users": []}
+    seen = set()
+    for p in paths:
+        p = p.expanduser()
+        if not p.is_file():
+            continue
+        data = yaml.safe_load(p.read_text()) or {}
+        for key in ("contexts", "users"):
+            for entry in data.get(key) or []:
+                if isinstance(entry, dict) and (key, entry.get("name")) not in seen:
+                    seen.add((key, entry.get("name")))
+                    merged[key].append(entry)
+    return merged
+
+
+def credential_plugin(kubeconfig: Any, context: str | None) -> str | None:
+    """The command `context`'s user would run on the Hub to get credentials, if any:
+    an exec plugin, or an auth-provider (gcp's can run a cmd-path)."""
+    if not isinstance(kubeconfig, dict):
+        return None
+
+    def named(key: str, name: Any) -> dict[str, Any]:
+        for entry in kubeconfig.get(key) or []:
+            if isinstance(entry, dict) and entry.get("name") == name:
+                inner = entry.get(key[:-1])  # contexts[].context, users[].user
+                return inner if isinstance(inner, dict) else {}
+        return {}
+
+    user = named("users", named("contexts", context).get("user"))
+    if "exec" in user:
+        return f"exec plugin {(user['exec'] or {}).get('command')!r}"
+    if "auth-provider" in user:
+        return f"auth-provider {(user['auth-provider'] or {}).get('name')!r}"
+    return None
+
+
+def refuse_plugin(cluster: Cluster, kubeconfig: Any) -> str | None:
+    """Why this cluster's kubeconfig may not be used, or None."""
+    plugin = None if cluster.allow_exec else credential_plugin(kubeconfig, cluster.context)
+    if plugin is None:
+        return None
+    return (
+        f"cluster {cluster.name!r}: its kubeconfig runs {plugin} on the Hub; "
+        "set allow_exec: true on the cluster to permit it"
+    )
 
 
 def _lines(where: str, e: ValidationError) -> list[str]:

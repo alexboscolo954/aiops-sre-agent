@@ -213,3 +213,18 @@ REPORT = {
     ],
     "recommended_actions": ["Raise the memory limit to 512Mi", "Set -XX:MaxRAMPercentage=75"],
 }
+
+
+EXEC_USER = {"exec": {"command": "aws", "args": ["eks", "get-token"], "apiVersion": "v1beta1"}}
+GCP_USER = {"auth-provider": {"name": "gcp", "config": {"cmd-path": "gcloud"}}}
+
+
+def kubeconfig(user: dict[str, Any], context: str = "p", user_name: str = "u") -> dict[str, Any]:
+    """A minimal kubeconfig whose `context` authenticates as `user`."""
+    return {
+        "apiVersion": "v1",
+        "kind": "Config",
+        "clusters": [{"name": "c", "cluster": {"server": "https://k8s.example"}}],
+        "contexts": [{"name": context, "context": {"cluster": "c", "user": user_name}}],
+        "users": [{"name": user_name, "user": user}],
+    }
