@@ -37,7 +37,7 @@ from aiops_agent.config import Settings
 from aiops_agent.contracts import Contract, Integration, Kubernetes, Prometheus
 from aiops_agent.models import AlertGroup, TriageReport
 from aiops_agent.observability import AuditMiddleware
-from aiops_agent.safety import redact, truncate
+from aiops_agent.safety import redact, redact_capped, truncate
 from aiops_agent.servers import Access, kubernetes, prometheus, runbooks
 
 log = logging.getLogger("aiops.agent")
@@ -128,7 +128,7 @@ def record_executed_actions(gated_names: set[str]) -> Any:
         args = json.dumps(call["args"], sort_keys=True)
         failed = "FAILED " if result.status == "error" else ""
         # Goes to the API and Slack: redact, since third-party tool output isn't.
-        entry = redact(f"{failed}{call['name']} {args}: {truncate(str(result.content), 200)}")
+        entry = f"{failed}{call['name']} {redact(args)}: {redact_capped(str(result.content), 200)}"
         return Command(update={"messages": [result], "executed_actions": [entry]})
 
     return record
@@ -222,8 +222,7 @@ def record_tool_results(sink: ToolSink) -> Any:
         if isinstance(result, ToolMessage):
             raw = result.content if isinstance(result.content, str) else json.dumps(result.content)
             call = request.tool_call
-            # Cut before redacting: the patterns never run over an unbounded result.
-            text = redact(truncate(raw, RAW_RESULT_LIMIT))
+            text = redact_capped(raw, RAW_RESULT_LIMIT)
             try:
                 await sink(call["name"], call["args"], text, result.status == "error")
             except Exception:

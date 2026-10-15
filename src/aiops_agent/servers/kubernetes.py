@@ -29,7 +29,7 @@ from aiops_agent.contracts import (
     read_kubeconfig,
     refuse_plugin,
 )
-from aiops_agent.safety import redact, truncate
+from aiops_agent.safety import redact, redact_capped
 from aiops_agent.servers import Access
 
 LOG_RACE = "unable to retrieve container logs"
@@ -329,7 +329,7 @@ def build_server(
                 )
         if text is None:
             raise ToolError("logs unavailable: the container is being replaced; try again")
-        return truncate(redact(text), limit, keep="tail")
+        return redact_capped(text, limit, keep="tail")
 
     @mcp.tool(annotations=READ)
     def list_deployments(

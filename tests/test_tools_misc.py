@@ -139,3 +139,24 @@ def test_settings_that_moved_into_a_contract_refuse_to_start(
         refuse_moved(env)
     assert "AIOPS_KUBE_CONTEXT -> clusters[].context" in str(e.value)
     assert "AIOPS_NAMESPACES -> clusters[].namespaces" in str(e.value)
+
+
+@pytest.mark.parametrize("keep", ["head", "tail"])
+def test_a_secret_cut_at_the_limit_is_still_redacted(keep: str) -> None:
+    from aiops_agent.safety import redact_capped
+
+    # 90 chars, then the secret, then 90: a cut at 100 from either end splits it.
+    text = "x" * 90 + "Authorization: Bearer abcdefghijklmnopqrstuvwxyz123456" + "y" * 90
+    out = redact_capped(text, 100, keep)
+    assert "abcdefg" not in out and "123456" not in out
+
+
+def test_redaction_reads_a_bounded_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    from aiops_agent import safety
+
+    seen: list[int] = []
+    real = safety.redact
+    monkeypatch.setattr(safety, "redact", lambda t: seen.append(len(t)) or real(t))
+    out = safety.redact_capped("z" * 1_000_000, 100)
+    assert seen == [100 + safety.REDACT_MARGIN]
+    assert out.startswith("z" * 100) and out.endswith("[truncated, 1000000 chars in all]...\n")

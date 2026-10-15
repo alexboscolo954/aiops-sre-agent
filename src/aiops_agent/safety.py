@@ -44,3 +44,21 @@ def truncate(text: str, limit: int, keep: str = "head") -> str:
     if keep == "tail":
         return marker + text[-limit:]
     return text[:limit] + marker
+
+
+# Redaction reads this far past the cut, so a secret straddling it is matched whole.
+REDACT_MARGIN = 16_384
+
+
+def redact_capped(text: str, limit: int, keep: str = "head") -> str:
+    """Redact, then cap at `limit` chars. Redacting first means a secret cut in half
+    can't slip past the patterns as a too-short fragment; reading only a bounded
+    window means the patterns never run over unbounded text.
+    ponytail: a secret longer than REDACT_MARGIN that straddles the window's far
+    edge can be missed; widen the margin if real output has such secrets."""
+    span = limit + REDACT_MARGIN
+    if len(text) <= span:
+        return truncate(redact(text), limit, keep)
+    window = redact(text[:span] if keep == "head" else text[-span:])
+    marker = f"\n...[truncated, {len(text)} chars in all]...\n"
+    return window[:limit] + marker if keep == "head" else marker + window[-limit:]

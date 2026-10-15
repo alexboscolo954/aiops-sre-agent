@@ -323,10 +323,12 @@ async def test_raw_recording_redacts_only_bounded_text_and_never_fails_the_run(
     root.mount(srv, namespace="x")
     tb = agent.Toolbox(root, {"x_huge": "read"})
     monkeypatch.setattr(agent, "RAW_RESULT_LIMIT", 1000)
+    from aiops_agent import safety
+
     redacted: list[int] = []
-    real_redact = agent.redact
+    real_redact = safety.redact
     monkeypatch.setattr(
-        agent, "redact", lambda text: redacted.append(len(text)) or real_redact(text)
+        safety, "redact", lambda text: redacted.append(len(text)) or real_redact(text)
     )
 
     async def broken_sink(tool: str, args: dict[str, Any], result: str, error: bool) -> None:
@@ -336,5 +338,27 @@ async def test_raw_recording_redacts_only_bounded_text_and_never_fails_the_run(
     async with agent.open_agent(settings, tb, model, record=broken_sink) as a:
         outcome = await agent.start(a, ALERT, "t8")
     assert outcome.report is not None  # the Run finished despite the failed record
-    assert redacted and max(redacted) < 1100  # never the 50,000-char result
+    assert redacted and max(redacted) <= 1000 + safety.REDACT_MARGIN  # never all 50,000
     assert "could not record the result of x_huge" in caplog.text
+
+
+@pytest.mark.anyio
+async def test_executed_action_entry_redacts_a_secret_cut_at_its_limit(
+    settings: Settings,
+) -> None:
+    srv = FastMCP("x")
+
+    @srv.tool  # unannotated: a write, gated
+    def rotate() -> str:
+        # The entry reads str(content), which adds 27 chars of content-block wrapping, so
+        # a cut at 200 keeps "Bearer abcdefg": too short for the token pattern alone.
+        return "x" * 144 + "Authorization: Bearer abcdefghijklmnopqrstuvwxyz123456"
+
+    root = FastMCP("aiops")
+    root.mount(srv, namespace="x")
+    model = scripted(call("x_rotate", "c1"), call("TriageReport", "c2", **REPORT))
+    async with agent.open_agent(settings, agent.Toolbox(root, {"x_rotate": "write"}), model) as a:
+        await agent.start(a, ALERT, "t9")
+        outcome = await agent.resume(a, "t9", [{"type": "approve"}])
+    (entry,) = outcome.executed_actions
+    assert entry.startswith("x_rotate {}: ") and "abcdefg" not in entry
