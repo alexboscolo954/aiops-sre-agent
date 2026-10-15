@@ -18,10 +18,12 @@ _PATTERNS = [
     re.compile(r"\b(?:sk|pk|rk)-[A-Za-z0-9_-]{16,}"),  # sk-... style API keys
     re.compile(r"\bgh[pousr]_[A-Za-z0-9]{30,}"),  # GitHub tokens
     re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,}"),  # Slack tokens
-    re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._~+/-]{12,}=*"),
+    re.compile(r"(?i)((?:bearer|basic)\s+)[A-Za-z0-9._~+/-]{12,}=*"),
+    # key=value, key: value, and the JSON / Python-dict forms "key": "value",
+    # 'key': 'value', which is how tool results are stored.
     re.compile(
-        r"(?i)((?:password|passwd|secret|token|api[_-]?key|access[_-]?key)\s*[=:]\s*)"
-        r"[\"']?[^\s\"',;]{4,}"
+        r"(?i)((?:password|passwd|secret|token|api[_-]?key|access[_-]?key)[\"']?\s*[=:]\s*[\"']?)"
+        r"[^\s\"',;]{4,}"
     ),
 ]
 

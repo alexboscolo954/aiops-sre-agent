@@ -14,20 +14,28 @@ from aiops_agent.servers import prometheus, runbooks
 
 
 @pytest.mark.parametrize(
-    "secret",
+    ("text", "value"),
     [
-        "Authorization: Bearer abcdefghijklmnopqrstuvwxyz",
-        "password=hunter2hunter2",
-        'api_key: "abcd1234efgh"',
-        "AKIAABCDEFGHIJKLMNOP",
-        "sk-proj-abcdefghijklmnopqrstuv",
-        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
+        ("Authorization: Bearer abcdefghijklmnopqrstuvwxyz", "abcdefghijklmnop"),
+        ("Authorization: Basic dXNlcjpwYXNzd29yZDEyMw==", "dXNlcjpwYXNz"),
+        ("password=hunter2hunter2", "hunter2"),
+        ('api_key: "abcd1234efgh"', "abcd1234"),
+        # JSON and Python-dict forms: how tool results are stored.
+        ('{"api_key": "abcd1234efgh"}', "abcd1234"),
+        ("{'password': 'hunter22x'}", "hunter22x"),
+        ('"client_secret": "s3cr3tv4lue"', "s3cr3tv4lue"),
+        ("AKIAABCDEFGHIJKLMNOP", "AKIAABCDEFGHIJKLMNOP"),
+        ("sk-proj-abcdefghijklmnopqrstuv", "abcdefghijklmnop"),
+        (
+            "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
+            "dozjgNryP4J3",
+        ),
     ],
 )
-def test_redact(secret: str) -> None:
-    out = redact(f"log line {secret} end")
-    assert "[REDACTED]" in out
-    assert "log line" in out and "end" in out
+def test_redact(text: str, value: str) -> None:
+    out = redact(f"log line {text} end")
+    assert value not in out and "[REDACTED]" in out
+    assert out.startswith("log line ") and out.endswith(" end")
 
 
 def test_redact_keeps_normal_text() -> None:
