@@ -1,0 +1,266 @@
+# Roadmap
+
+The goal is one Hub that lets the Operator run SRE for several Contracts at once. It answers alerts, answers questions and runs checks, and it never lets one Contract's data reach another. HolmesGPT, OpenSRE and IncidentFox inspire the features. We take their ideas, not their code.
+
+Terms are defined in [`CONTEXT.md`](../CONTEXT.md). The decisions behind the shape are in [ADR 0002](adr/0002-hub-and-relay.md) (Hub and Relay) and [ADR 0003](adr/0003-contract-data-in-private-git.md) (Contract data in a private repo).
+
+## Where we start
+
+| Today | Needed |
+|---|---|
+| `Settings` is global: one kube context, one namespace list, one Runbooks dir, one Slack webhook, one pair of tokens | Everything except Hub settings is set per Contract |
+| `triages` and `recent` live in memory. Dedup is keyed by `groupKey` alone | Postgres, keyed by Contract. Two Contracts can send the same `groupKey` |
+| `InMemorySaver` checkpointer. A restart loses pending approvals | Postgres checkpointer. Pending approvals survive a restart |
+| `read_only(tool)` trusts the server's `readOnlyHint` | The Hub's allowlist decides read or write (slice 0.2). A server can only make a tool stricter |
+| `replay_server` builds tools from our in-process servers | Replay also builds them from saved schema snapshots of vendor servers |
+| Alerts only, Slack webhook only, API for approvals | Triage, Question and Check, with Slack and a web console |
+
+## How every slice ships
+
+A slice is one commit-sized change, about one working session (1 to 3 hours).
+
+1. **Glossary first.** New terms go in `CONTEXT.md` before code. Add an ADR only when the decision is hard to reverse, would surprise a reader, and came from a real trade-off.
+2. **Tests for every branch of new logic.** Mutation-check each new test: remove the logic, and the test must fail.
+3. **An isolation test** for anything that stores, reads or sends Contract data. It uses the two demo Contracts and proves Contract A's data never reaches Contract B, whether in prompts, tools, storage or notifications.
+4. **Rerun the real eval suite** when anything the model sees changes: the prompt, tool names, descriptions or schemas, or the Report schema. Commit the results under `evals/results/`. No Scenario may regress.
+5. **Keep lint and the full suite green.** Update the README and config table.
+6. **Write a one-line commit subject.** CI must be green before moving on.
+
+**Where checks run.**
+- **CI**, in the public repo: lint, unit and isolation tests, the kind demo integration and the deploy smoke test. These run on the two synthetic demo Contracts only.
+- **Locally:** the real-LLM evals (they need the API key), and Contract Scenarios from the private contracts repo.
+
+## Decisions
+
+| Topic | Decision |
+|---|---|
+| Who works | One Operator. The Operator receives every Report and makes every Approval decision |
+| Reaching a Contract | **Direct** (the Hub holds the credentials) or **Relay** (dials out from the client network) |
+| Hub | A cloud VM you own: docker compose with the Hub and Postgres |
+| Operator interfaces | Your own Slack workspace, one channel per Contract, with approve buttons. Also a web console |
+| Client delivery | Optional per Contract. Reports only, never approval controls |
+| Data policy | Set per Contract. Default: no restrictions |
+| Integrations | Hybrid: vendor MCP servers where they're good, our own where they're missing |
+| Contract config | YAML per Contract in one private repo, with SOPS secrets and an age key per Contract |
+| Console | View and act. It shows config read-only and is reachable only over Tailscale |
+| Investigations | Triage, then Question, then Check |
+| Knowledge | Similar incidents and Teachings stay in their own Contract. Teachings need review. Shared knowledge is written by the Operator |
+
+## Defaults you can veto
+
+| Choice | Default | Why |
+|---|---|---|
+| Persistence | Postgres 17, `langgraph-checkpoint-postgres`, psycopg 3, numbered `.sql` migrations | One database for state, checkpoints and knowledge |
+| Secrets | `sops -d` at load. The Hub holds age keys for Direct Contracts only | No new library. A Relay Contract's credentials never reach the Hub |
+| Many clusters | One kubernetes server per Contract, with a `cluster` argument limited to that Contract's clusters | A Contract can have dozens of clusters, and one server per cluster would multiply the tool count |
+| Slack | `slack-bolt` in Socket Mode | No public Slack endpoint |
+| Console stack | FastAPI + Jinja + HTMX, with no JS build | One language, one process |
+| Console login | Tailscale identity headers from `tailscale serve`, with the console on `127.0.0.1`, plus an Operator allowlist | No passwords to manage, and no way to forge the header |
+| Jira | An issue is created only when the Operator clicks | Never write to a client's tracker unasked |
+| Budget | Monthly per Contract. Warn at 80%. At 100%, refuse new Investigations but still notify | An alert is never silently dropped |
+| Model | One Hub default, overridable per Contract | |
+| Similar incidents | Postgres full-text search first. Add pgvector only if evals show misses | No embedding calls until they pay off |
+
+## Phases
+
+There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 stays where it is. **It moves to right after Phase 0 if a new Contract can be reached only through a Relay.**
+
+### Phase 0: Foundation: many Contracts, durable state (5 slices)
+
+**0.1 Contract config.**
+- Add a pydantic schema and a loader for a contracts directory, with `aiops contracts validate <dir>`. Each Contract file covers:
+  - id, Data policy, reach (`direct` or `relay`);
+  - clusters (name, kubeconfig ref, namespaces);
+  - integrations;
+  - notification targets, model override and budget.
+- An integration entry has:
+  - a source: `builtin`, or a vendor command with a pinned version;
+  - a tool allowlist, each tool marked `read` or `write`;
+  - credential refs and a health probe.
+- `kubernetes`, `prometheus` and `runbooks` are builtin entries from the start, so Phase 4 needs no migration.
+- Ship **two synthetic demo Contracts** in this repo, built on the kind demo. Their secret file is encrypted with a clearly labelled test-only age key, so CI exercises the SOPS path. Add a `two_contracts` test fixture that every later isolation test reuses.
+- *Done when:* a bad file fails with its path and field, secrets never show in logs or `repr`, and both demo Contracts load in CI.
+
+**0.2 Contract-scoped tools.**
+- Each Contract gets its own MCP server set. The kubernetes server takes a `cluster` argument limited to the Contract's clusters, with a namespace allowlist per cluster. Runbooks come from the Contract's directory plus Shared knowledge.
+- **The allowlist decides read or write** from this slice on. A tool not on the list is hidden, and a server's annotation can only make a tool stricter. This closes a gap: today a server that wrongly marks a write tool as read-only would skip approval. A server that leaves the marker out is already safe, because those tools are gated.
+- *Done when:*
+  - the isolation tests pass: A's agent sees only A's tools, naming B's cluster errors, and Runbook search never returns B's Runbooks;
+  - a tool annotated read-only but allowlisted as `write` is gated;
+  - a tool annotated as a write but allowlisted as `read` is still gated;
+  - a tool not on the list is invisible.
+
+**0.3 Contract-scoped intake.**
+- `POST /contracts/{id}/alertmanager` with a webhook token per Contract. Dedup is keyed by (Contract, `groupKey`). This replaces `/alertmanager` and the global token.
+- *Done when:*
+  - A's token can't post to B;
+  - the same `groupKey` in A and B starts two Triages;
+  - A's group resolving doesn't make B's Proposed actions Stale.
+
+**0.4 Postgres state.**
+- Tables: Investigations (with a kind column), Proposed and Executed actions, the dedup seen-set, and the audit log. Use the LangGraph Postgres checkpointer.
+- Store every tool call's args and the raw result (before the cap, after redaction) so slice 2.6 can turn it into a Scenario.
+- Stale deadlines are stored in the database, and timers are re-armed at startup instead of sleeping in memory.
+- Rename `Triage` in code to `Investigation` with a kind.
+- *Done when:*
+  - a pending approval survives a Hub restart and can still be approved;
+  - a deadline that passes while the Hub is down is made Stale at startup;
+  - storage tests run against Postgres in CI.
+
+**0.5 Hub deployment.**
+- docker compose with the Hub, Postgres and Caddy. Caddy serves TLS for the public alert endpoint, and `pg_dump` runs nightly.
+- The console and API listen on `127.0.0.1` only, with `tailscale serve` in front. Never bind them to the Tailscale interface: any tailnet device could then connect directly and forge the identity header.
+- The contracts repo reaches the VM through a read-only deploy key. Config is reloaded on restart.
+- *Done when:* `make hub-smoke` starts the stack with the demo Contracts, sends an alert and gets a Report, in CI.
+
+### Phase 1: Slack (4 slices)
+
+**1.1 Socket Mode app.**
+- Each Contract has its own channel. Each Investigation is one thread that shows its status, then the Report. This replaces `slack_webhook_url`.
+- *Done when:* a fake Slack client shows A's Investigations never post to B's channel.
+
+**1.2 Approve and reject buttons.**
+- The buttons use the same `resume` path as the API. A reject reason is entered in a modal. Only the Operator's Slack user id is accepted. Buttons are disabled once the actions are decided or Stale.
+- *Done when:*
+  - a click from anyone but the Operator is refused;
+  - a second click is refused;
+  - going Stale updates the message.
+
+**1.3 Optional client delivery.**
+- Per Contract, the Report goes to the client's channel. It never includes approval controls, and it respects the Data policy.
+- *Done when:* delivery is off by default, and the client message never contains buttons.
+
+**1.4 Questions.**
+- An @mention in a Contract channel starts a Question, and the Answer goes in the thread. Replies in the thread continue the same Investigation.
+- Widen Scenario and Expectation in the glossary and in the eval runner. A Scenario can start from a Question, and its Expectation checks the Answer's keywords and Evidence instead of a Category.
+- *Done when:*
+  - two Question Scenarios pass;
+  - a Question in A's channel can't reach B's clusters.
+
+### Phase 2: Web console, Tailscale only (6 slices)
+
+**2.1 Skeleton and login.**
+- Login trusts the identity headers that `tailscale serve` sets. That is safe only because the console listens on `127.0.0.1` (slice 0.5).
+- *Done when:* a request without the Operator's Tailscale identity is refused.
+
+**2.2 Investigations.**
+- Filter by Contract. Show the Report or Answer with its Evidence and tool calls. Approve and reject through the same `resume` path.
+
+**2.3 Ask a Question** from a form.
+
+**2.4 Cost.**
+- Token usage per Run gives a cost per Investigation and per Contract. Apply budgets with the vetoable default above.
+- *Done when:* at 100% budget, a new alert still notifies the Operator, and its Failed investigation names the budget as the reason.
+
+**2.5 Health.**
+- Shows Relay connections, integration health probes, and the last successful Investigation per Contract. Also shows the effective config read-only, with secrets masked.
+
+**2.6 Save as Scenario.**
+- Turns a finished Investigation into a Scenario YAML for the Operator to download: the alert or Question, the recorded tool results, and a draft Expectation to edit. The Operator commits it to the contracts repo. The Hub never gets push access to a repo holding every Contract's secrets. The eval runner takes `--scenarios <contracts-repo>/<contract>/scenarios`.
+- *Done when:* a saved Scenario replays to the same tool calls.
+
+### Phase 3: Relay (4 slices)
+
+**3.1 Reversed MCP connection.**
+- The Relay dials the Hub over WSS and runs the MCP server over that socket. The Hub runs a `ClientSession` on its end. Both SDK sides take raw streams, so this is an adapter, not a new protocol. Each Relay token is bound to one Contract.
+- *Done when:*
+  - it works over in-memory streams and over a real websocket;
+  - A's Relay token can't serve B.
+
+**3.2 Relay process.**
+- `aiops relay` ships in the same image, with manifests for the client cluster. Credentials come from a Secret in the client cluster. The Hub hides any tool the Relay offers that isn't on the Contract's allowlist.
+
+**3.3 Hub side.**
+- A registry of connected Relays, reconnect with backoff, and a timeout per call.
+- *Done when:* killing the Relay mid-Run ends in a Failed investigation ("Relay offline") within the timeout, not a hang.
+
+**3.4 Alert forwarding.**
+- The Relay accepts the in-cluster Alertmanager webhook and forwards it over the same connection.
+- *Done when:* on a kind cluster with no inbound route from the Hub, a full Triage through the Relay passes the demo eval.
+
+### Phase 4: Integration framework and first integrations (4 slices)
+
+**4.1 Vendor sources.**
+- Vendor servers run as pinned stdio subprocesses or remote HTTP servers, behind the same allowlist enforcement as slice 0.2.
+- *Done when:* the slice 0.2 allowlist tests also pass against a vendor subprocess.
+
+**4.2 Schema snapshots.**
+- `aiops integrations snapshot <name>` saves a pinned vendor server's tool schemas into this repo. They hold schemas only, no data. Replay builds tools from the snapshot.
+- *Done when:* a test diffs the snapshot against the real pinned server, so a vendor renaming a tool fails a test instead of silently breaking an eval.
+
+**4.3 Grafana stack** through `mcp-grafana`.
+- Covers Prometheus/Mimir and Loki (stats and patterns before raw logs, an IncidentFox idea), plus Tempo traces, Pyroscope and dashboard deep links in Reports. Grafana Alerting becomes a second alert source, normalized into an Alert group.
+- The kind demo gains a Grafana LGTM stack.
+- *Done when:* two new recorded Scenarios pass, one with the root cause in log patterns and one in traces.
+
+**4.4 Jira.**
+- A "Create Jira issue" button in Slack and the console puts the Report into the Contract's project. Searching past issues becomes an Evidence source.
+- *Decide at slice time:* Atlassian's remote MCP (OAuth) or a small builtin server (API token).
+
+### Phase 5: Clouds, read-only (3 slices)
+
+**5.1 Azure, 5.2 AWS, 5.3 GCP**, each through its official MCP server.
+- Each integration gets a documented read-only role (Reader, ReadOnlyAccess, Viewer), an allowlist, a schema snapshot, and one Scenario recorded from a sandbox account. Examples: a node pool at max, database storage full, a quota hit.
+- Recording needs a sandbox account per cloud, which costs a little money.
+
+### Phase 6: Investigation quality (4 slices)
+
+**6.1 What changed.**
+- One timeline of rollouts, Helm releases, ArgoCD/Flux syncs and cloud activity logs before the alert.
+- *Done when:* Scenarios pass where the cause is a change to a different resource.
+
+**6.2 Large output.**
+- Select fields and filter JSON at the server. Oversized results go to storage behind a `read_more` tool instead of being cut (a HolmesGPT idea).
+
+**6.3 Alert correlation within a Contract.**
+- A new Alert group that overlaps an open Investigation in time and topology joins it instead of starting a Triage. This needs a new glossary term, decided in a grilling round at slice time.
+
+**6.4 Masking.**
+- Identifiers are replaced with stable placeholders before the LLM call and restored in the Report (an OpenSRE idea). Built when the first Contract's Data policy requires it.
+
+### Phase 7: Knowledge (4 slices)
+
+**7.1 Similar incidents.**
+- Full-text search over the same Contract's past Reports.
+- *Done when:*
+  - a Scenario passes where a past Report holds the decisive hint;
+  - the isolation test passes.
+
+**7.2 Shared knowledge.**
+- `shared/` in the contracts repo, mounted read-only for every Contract.
+- *Done when:* tests show the agent has no write path to it.
+
+**7.3 Teachings.**
+- The agent proposes Teachings after an Investigation, or from the Operator's thumbs up/down and correction. Each is checked against existing Teachings for duplicates and contradictions, then goes to a review queue in Slack and the console.
+- *Done when:*
+  - an unapproved Teaching never reaches a prompt;
+  - A's Teachings never reach B.
+
+**7.4 Embeddings** (pgvector), only if 7.1's evals show misses.
+
+### Phase 8: Checks (2 slices)
+
+**8.1 Scheduled Checks.**
+- Per Contract, a cron schedule and a check prompt in YAML. A passing Check is recorded quietly. A failing one produces a Report and notifies the Operator. The schedule lives in Postgres, so a restart never fires a Check twice.
+
+**8.2 Deploy verification.**
+- A rollout or ArgoCD sync starts a Check of the new revision after a set delay.
+
+## Deferred
+
+| Item | Why not now | Trigger to revisit |
+|---|---|---|
+| Full agent inside a client network | A Relay keeps credentials there already | A Contract forbids tool output leaving its network |
+| Specialist sub-agents (IncidentFox) | Allowlists and good tools come first | Evals fail on cross-domain Scenarios |
+| Anomaly detection (Prophet) | Needs history and tuning. Alerts already cover it | Repeated misses that no alert catches |
+| Hierarchical retrieval (RAPTOR) | Full-text search over a small corpus is enough | Runbooks outgrow search plus embeddings |
+| Teams, Google Chat | No Contract uses them | A Contract asks |
+| Multi-user RBAC, SSO | One Operator | A second person joins |
+| Sandbox and credential proxy (IncidentFox, BSL) | A Relay keeps credentials out of the Hub | A Direct Contract's threat model demands it |
+| Actions that run without approval | Not without months of evidence | Never by default |
+| Fix PRs on GitHub/GitLab (HolmesGPT) | Needs code access per Contract | After Jira, when a Contract grants repo access |
+| Other integrations (Datadog, Splunk, PagerDuty, Opsgenie, ServiceNow, ...) | Added through the Phase 4 framework, each with a Scenario | A Contract uses it |
+
+## Next
+
+Slice 0.1: the Contract schema, the loader and the two demo Contracts.
