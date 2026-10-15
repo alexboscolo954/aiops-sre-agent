@@ -263,3 +263,47 @@ async def test_approved_action_output_is_still_capped(settings: Settings) -> Non
     tool_msg = next(m for m in state.values["messages"] if getattr(m, "tool_call_id", "") == "c1")
     assert len(str(tool_msg.content)) < 500
     assert [e.split()[0] for e in outcome.executed_actions] == ["x_poke"]
+
+
+@pytest.mark.anyio
+async def test_raw_tool_results_are_recorded_uncapped_and_redacted(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    srv = FastMCP("x")
+
+    @srv.tool(annotations=ToolAnnotations(read_only_hint=True))
+    def dump() -> str:
+        return "Authorization: Bearer abcdefghijklmnopqrstuvwxyz123456\n" + "y" * 5000
+
+    @srv.tool(annotations=ToolAnnotations(read_only_hint=True))
+    def broken() -> str:
+        raise ValueError("boom")
+
+    root = FastMCP("aiops")
+    root.mount(srv, namespace="x")
+    tb = agent.Toolbox(root, {"x_dump": "read", "x_broken": "read"})
+    settings.tool_output_limit = 100
+    seen: list[tuple[str, dict[str, Any], str, bool]] = []
+
+    async def sink(tool: str, args: dict[str, Any], result: str, error: bool) -> None:
+        seen.append((tool, args, result, error))
+
+    model = scripted(
+        call("x_dump", "c1"), call("x_broken", "c2"), call("TriageReport", "c3", **REPORT)
+    )
+    async with agent.open_agent(settings, tb, model, record=sink) as a:
+        await agent.start(a, ALERT, "t6")
+        state = await a.aget_state({"configurable": {"thread_id": "t6"}})
+    (tool, args, raw, error), broken_call = seen
+    assert (tool, args, error) == ("x_dump", {}, False)
+    assert len(raw) > 5000 and "abcdefghijklmnop" not in raw and "[REDACTED]" in raw
+    assert broken_call[0] == "x_broken" and broken_call[3] is True
+    capped = next(m for m in state.values["messages"] if getattr(m, "tool_call_id", "") == "c1")
+    assert len(str(capped.content)) < 500  # the model still sees the capped result
+
+    monkeypatch.setattr(agent, "RAW_RESULT_LIMIT", 1000)
+    seen.clear()
+    model = scripted(call("x_dump", "c1"), call("TriageReport", "c2", **REPORT))
+    async with agent.open_agent(settings, tb, model, record=sink) as a:
+        await agent.start(a, ALERT, "t7")
+    assert "[truncated" in seen[0][2] and len(seen[0][2]) < 1100

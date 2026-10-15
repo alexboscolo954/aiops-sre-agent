@@ -200,14 +200,43 @@ def cap_tool_output(limit: int) -> Any:
     return cap
 
 
+# ponytail: a raw result is kept up to this size, then cut. Generous so a Scenario can
+# replay what the model saw; raise it if Scenarios need more, or move results to a blob store.
+RAW_RESULT_LIMIT = 200_000
+
+ToolSink = Callable[[str, dict[str, Any], str, bool], Awaitable[None]]
+
+
+def record_tool_results(sink: ToolSink) -> Any:
+    """Innermost wrapper: sees each result before the cap, as the tool returned it.
+    Redacted first, since third-party tool output isn't. Kept for audit and for
+    turning an Investigation into a Scenario (slice 2.6)."""
+
+    @wrap_tool_call
+    async def record_raw(
+        request: ToolCallRequest, handler: Callable[[ToolCallRequest], Awaitable[Any]]
+    ) -> Any:
+        result = await handler(request)
+        if isinstance(result, ToolMessage):
+            raw = result.content if isinstance(result.content, str) else json.dumps(result.content)
+            call = request.tool_call
+            text = truncate(redact(raw), RAW_RESULT_LIMIT)
+            await sink(call["name"], call["args"], text, result.status == "error")
+        return result
+
+    return record_raw
+
+
 @asynccontextmanager
 async def open_agent(
     settings: Settings,
     toolbox: Toolbox,
     model: BaseChatModel | None = None,
     checkpointer: BaseCheckpointSaver[Any] | None = None,
+    record: ToolSink | None = None,
 ) -> AsyncIterator[Any]:
-    """The only way to build the agent, so every caller gets the Hub's list."""
+    """The only way to build the agent, so every caller gets the Hub's list.
+    record(tool, args, raw result, is_error) gets every tool result, uncapped."""
     async with MCPAdapter(toolbox.mcp) as adapter:
         tools = await load_tools(adapter, toolbox.access)
         needs_approval = gated(tools, toolbox.access)
@@ -228,6 +257,7 @@ async def open_agent(
                 # see the recorder's Command instead of the ToolMessage and skip it.
                 record_executed_actions(needs_approval),
                 cap_tool_output(settings.tool_output_limit),
+                *([record_tool_results(record)] if record else []),
             ],
             checkpointer=checkpointer or InMemorySaver(),
         )

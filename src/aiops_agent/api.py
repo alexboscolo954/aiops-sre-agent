@@ -166,7 +166,12 @@ def create_app(
             try:
                 # Always the Investigation's own Contract, on start and on every resume.
                 toolbox = mcp_factory(by_id[t.contract_id])
-                async with agent.open_agent(settings, toolbox, model, db["checkpointer"]) as a:
+
+                async def record(tool: str, args: dict[str, Any], result: str, error: bool) -> None:
+                    await store().record_tool_call(t.id, t.contract_id, tool, args, result, error)
+
+                checkpointer = db["checkpointer"]
+                async with agent.open_agent(settings, toolbox, model, checkpointer, record) as a:
                     apply(t, await step(a))
             except Exception as e:  # report every failure, never lose an alert silently
                 log.exception("investigation %s failed", t.id)

@@ -289,3 +289,25 @@ def test_dedup_memory_expires_after_the_window(
             conn.execute("update alert_groups set started = started - 31 * 60")
         again = c.post(URL, json=ALERT, headers=HOOK).json()
         assert again["status"] == "accepted" and again["investigation"] != first
+
+
+def test_tool_calls_are_stored_per_investigation_and_contract(
+    settings: Settings, fake_cluster: Any, database_url: str
+) -> None:
+    import psycopg
+
+    steps = [
+        call("kubernetes_list_pods", "c1", cluster="test", namespace="shop"),
+        call("TriageReport", "c2", **REPORT),
+    ]
+    with client(settings, fake_cluster, *steps) as c:
+        tid = c.post(URL, json=ALERT, headers=HOOK).json()["investigation"]
+        wait_for(c, tid, "done")
+    with psycopg.connect(database_url) as conn:
+        rows = conn.execute(
+            "select investigation_id, contract_id, tool, args, is_error, result from tool_calls"
+        ).fetchall()
+    assert [r[:5] for r in rows] == [
+        (tid, "acme", "kubernetes_list_pods", {"cluster": "test", "namespace": "shop"}, False)
+    ]
+    assert "CrashLoopBackOff" in rows[0][5]

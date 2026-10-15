@@ -197,6 +197,21 @@ class Store:
             (investigation_id,),
         )
 
+    async def record_tool_call(
+        self,
+        investigation_id: str,
+        contract_id: str,
+        tool: str,
+        args: dict[str, Any],
+        result: str,
+        is_error: bool,
+    ) -> None:
+        await self._exec(
+            "insert into tool_calls (investigation_id, contract_id, tool, args, result, "
+            "is_error, at) values (%s, %s, %s, %s, %s, %s, %s)",
+            (investigation_id, contract_id, tool, Jsonb(args), result, is_error, now()),
+        )
+
     async def alert_group(
         self, contract_id: str, group_key: str
     ) -> tuple[float, str, set[str]] | None:
