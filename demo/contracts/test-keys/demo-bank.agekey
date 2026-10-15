@@ -1,0 +1,5 @@
+# TEST ONLY. This key is public: it decrypts the fake secrets of the synthetic demo-bank Contract.
+# Never encrypt a real secret with it.
+# created: 2026-10-14T23:03:15-03:00
+# public key: age127kjtmkl3k2yh9sq2487svdpgr52rumflszfnehc7ln5qjmg89qszzll4t
+AGE-SECRET-KEY-19RKSJRVLKEWV29EQ2AL6VF8MZNZDQTNNL2NWYCL24370U8J8LFCSJGEXTS

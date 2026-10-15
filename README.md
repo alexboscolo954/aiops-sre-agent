@@ -139,7 +139,7 @@ uv run aiops mcp prometheus --transport http --port 8765
 
 | Layer | What it proves | Where |
 |---|---|---|
-| Unit (no cluster, no LLM) | Tool behavior (Prometheus against a mocked API), redaction, allowlist, approval policy. **A rejected proposed action never reaches the Kubernetes API.** Webhook auth, dedup, approval over HTTP. | `make test` |
+| Unit (no cluster, no LLM) | Tool behavior (Prometheus against a mocked API), redaction, allowlist, approval policy. **A rejected proposed action never reaches the Kubernetes API.** Webhook auth, dedup, approval over HTTP. Contract config: every validation rule, SOPS secrets that never print, one Contract's key never decrypting another's. | `make test` (needs `sops`) |
 | Integration (kind, CI) | Real tools find all three failures. The allowlist holds on a real API server. A scripted agent completes a triage through real tools. | `make integration` |
 | Deploy smoke (kind, CI) | The real image under the shipped manifests: starts hardened, auth rejects bad tokens, RBAC is least privilege for both modes | `make deploy-smoke` |
 | Evals (real LLM, recorded data) | Triage quality on scenarios recorded from the kind demo, replayed through the real MCP tool definitions | `uv run aiops eval` |
@@ -166,6 +166,25 @@ Between runs 1 and 3 the pass/fail checks never changed. What changed was the to
 - **Run 3 → 4:** Category now classifies the root cause, not the failure mode ([ADR 0001](docs/adr/0001-category-is-root-cause-class.md)), so the expectations are stricter. The bad rollout must be `bad_rollout` only, where `crashloop_bad_config` used to pass too. The OOM cases expect `resource_limits`, and the image pull expects `image_unavailable`. The reports apply the precedence rule explicitly, for example "this is revision 1, so it is not a rollout regression".
 
 Four scenarios is a smoke test for triage quality, not a benchmark. Add scenarios by recording new failures on kind (`AIOPS_RECORD_DIR=recordings make integration`).
+
+## Contracts
+
+The agent is moving from one global config to several Contracts, one per client engagement. The plan is in [`docs/roadmap.md`](docs/roadmap.md).
+A Contract is a directory in your **private** contracts repo, never in this one ([ADR 0003](docs/adr/0003-contract-data-in-private-git.md)). It holds `contract.yaml` and a SOPS-encrypted `secrets.sops.yaml`, with one age key per Contract. [`demo/contracts`](demo/contracts) shows the layout with two synthetic Contracts and their test-only keys.
+
+Run these from the contracts repo root, since sops looks for `.sops.yaml` in the current directory:
+
+```bash
+brew install sops age
+age-keygen -o ~/.config/sops/age/acme.agekey   # one key per Contract, kept outside the repo
+# add a creation rule for acme/secrets.sops.yaml with its public key to .sops.yaml
+sops edit acme/secrets.sops.yaml               # create or edit the secrets
+sops updatekeys acme/secrets.sops.yaml         # after changing acme's key in .sops.yaml
+cat ~/.config/sops/age/*.agekey > ~/.config/sops/age/keys.txt
+SOPS_AGE_KEY_FILE=~/.config/sops/age/keys.txt aiops contracts validate .
+```
+
+`validate` reports every problem as `path: field: message`. It never prints a secret value. Until slice 0.3 the service still reads the `AIOPS_*` variables below.
 
 ## Configuration
 

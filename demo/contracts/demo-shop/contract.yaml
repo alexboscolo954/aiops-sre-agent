@@ -1,0 +1,14 @@
+# Synthetic demo Contract for tests and the kind demo. Real Contracts live in the
+# private contracts repo (docs/adr/0003-contract-data-in-private-git.md).
+id: demo-shop
+name: Demo shop
+clusters:
+  - name: kind
+    context: kind-aiops
+    namespaces: [demo]
+integrations:
+  - name: kubernetes
+  - name: prometheus
+    url: http://localhost:9090
+    token_secret: prometheus-token
+  - name: runbooks

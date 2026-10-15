@@ -1,0 +1,15 @@
+# Synthetic demo Contract for tests and the kind demo. Real Contracts live in the
+# private contracts repo (docs/adr/0003-contract-data-in-private-git.md).
+id: demo-bank
+name: Demo bank
+clusters:
+  - name: bank-kind
+    context: kind-aiops
+    namespaces: [bank]
+integrations:
+  - name: kubernetes
+    enable_actions: true
+    max_replicas: 4
+  - name: prometheus
+    url: http://localhost:9091
+    token_secret: prometheus-token

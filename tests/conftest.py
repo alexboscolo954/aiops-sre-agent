@@ -2,6 +2,7 @@
 scripted chat model, so the agent runs end-to-end without a cluster or an LLM."""
 
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -10,6 +11,7 @@ from kubernetes import client as k
 from langchain.messages import AIMessage, ToolCall
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 
+from aiops_agent import contracts
 from aiops_agent.config import Settings
 
 NOW = datetime.now(UTC)
@@ -18,6 +20,26 @@ NOW = datetime.now(UTC)
 @pytest.fixture
 def anyio_backend() -> str:
     return "asyncio"
+
+
+DEMO_CONTRACTS = Path(__file__).parent.parent / "demo" / "contracts"
+
+
+def use_age_keys(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *contract_ids: str) -> None:
+    """Give sops only these demo Contracts' test keys."""
+    keys = tmp_path / "keys.txt"
+    keys.write_text(
+        "".join((DEMO_CONTRACTS / "test-keys" / f"{c}.agekey").read_text() for c in contract_ids)
+    )
+    monkeypatch.delenv("SOPS_AGE_KEY", raising=False)
+    monkeypatch.setenv("SOPS_AGE_KEY_FILE", str(keys))
+
+
+@pytest.fixture
+def two_contracts(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, contracts.Contract]:
+    """The two synthetic demo Contracts, for isolation tests: A's data must never reach B."""
+    use_age_keys(monkeypatch, tmp_path, "demo-shop", "demo-bank")
+    return contracts.load(DEMO_CONTRACTS)
 
 
 @pytest.fixture

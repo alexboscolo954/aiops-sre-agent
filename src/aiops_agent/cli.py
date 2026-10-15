@@ -1,4 +1,4 @@
-"""Command line: `aiops triage`, `aiops serve`, `aiops mcp`, `aiops eval`."""
+"""Command line: `aiops triage`, `aiops serve`, `aiops mcp`, `aiops eval`, `aiops contracts`."""
 
 import argparse
 import asyncio
@@ -8,7 +8,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from aiops_agent import agent, evals
+from aiops_agent import agent, contracts, evals
 from aiops_agent.config import Settings
 from aiops_agent.models import AlertGroup
 
@@ -53,6 +53,20 @@ def run_mcp(name: str, transport: str, host: str, port: int) -> int:
     return 0
 
 
+def validate_contracts(directory: Path) -> int:
+    try:
+        loaded = contracts.load(directory)
+    except contracts.ContractError as e:
+        print("\n".join(e.problems), file=sys.stderr)
+        return 1
+    for c in loaded.values():
+        integrations = ", ".join(i.name for i in c.integrations)
+        clusters = ", ".join(cl.name for cl in c.clusters) or "-"
+        secrets = len(c.secret_refs())
+        print(f"{c.id}: clusters {clusters}; integrations {integrations}; secrets {secrets}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="aiops", description=__doc__)
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -77,7 +91,14 @@ def main(argv: list[str] | None = None) -> int:
     e.add_argument("--json", action="store_true")
     e.add_argument("--out", type=Path, help="write each report as markdown here")
 
+    c = sub.add_parser("contracts", help="manage the contracts directory")
+    csub = c.add_subparsers(dest="contracts_cmd", required=True)
+    v = csub.add_parser("validate", help="check every Contract and decrypt its secrets")
+    v.add_argument("directory", type=Path)
+
     args = parser.parse_args(argv)
+    if args.cmd == "contracts":
+        return validate_contracts(args.directory)
     if args.cmd == "triage":
         group = AlertGroup.model_validate_json(args.alert.read_text())
         return asyncio.run(triage(group, args.json, args.auto_reject))

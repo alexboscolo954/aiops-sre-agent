@@ -67,19 +67,25 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
 
 ### Phase 0: Foundation: many Contracts, durable state (5 slices)
 
-**0.1 Contract config.**
-- Add a pydantic schema and a loader for a contracts directory, with `aiops contracts validate <dir>`. Each Contract file covers:
-  - id, Data policy, reach (`direct` or `relay`);
-  - clusters (name, kubeconfig ref, namespaces);
-  - integrations;
-  - notification targets, model override and budget.
-- An integration entry has:
-  - a source: `builtin`, or a vendor command with a pinned version;
-  - a tool allowlist, each tool marked `read` or `write`;
-  - credential refs and a health probe.
-- `kubernetes`, `prometheus` and `runbooks` are builtin entries from the start, so Phase 4 needs no migration.
-- Ship **two synthetic demo Contracts** in this repo, built on the kind demo. Their secret file is encrypted with a clearly labelled test-only age key, so CI exercises the SOPS path. Add a `two_contracts` test fixture that every later isolation test reuses.
-- *Done when:* a bad file fails with its path and field, secrets never show in logs or `repr`, and both demo Contracts load in CI.
+**0.1 Contract config.** Done.
+- A pydantic schema and a loader for a contracts directory (`src/aiops_agent/contracts.py`), with `aiops contracts validate <dir>`.
+- A Contract file holds:
+  - its id and name;
+  - its clusters: name, namespaces, and a context with an optional kubeconfig file or secret, or `in_cluster`;
+  - its integrations, as a list of entries. `kubernetes` (`enable_actions`, `max_replicas`), `prometheus` (`url`, `token_secret`) and `runbooks` are builtin entries, so Phase 4 needs no migration.
+- These fields mirror today's `Settings`. Unknown keys fail, so each later field arrives in the slice that gives it behaviour, and existing files stay valid:
+  - tool allowlist: 0.2;
+  - notification targets: 1.1;
+  - Data policy: 1.3, 6.4;
+  - model and budget: 2.4;
+  - health probe: 2.5;
+  - reach: 3.2;
+  - vendor source: 4.1.
+- Secrets sit in `secrets.sops.yaml` and are decrypted with the `sops` binary. The checker:
+  - refuses plaintext files;
+  - names a bad key without ever printing its value;
+  - fails when two Contracts share an age recipient. It reads recipients from sops metadata, so it needs no key.
+- Two synthetic demo Contracts live in `demo/contracts/`, each with its own test-only age key. The `two_contracts` fixture loads them for every later isolation test.
 
 **0.2 Contract-scoped tools.**
 - Each Contract gets its own MCP server set. The kubernetes server takes a `cluster` argument limited to the Contract's clusters, with a namespace allowlist per cluster. Runbooks come from the Contract's directory plus Shared knowledge.
@@ -89,6 +95,7 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
   - a tool annotated read-only but allowlisted as `write` is gated;
   - a tool annotated as a write but allowlisted as `read` is still gated;
   - a tool not on the list is invisible.
+- The demo Contracts use different cluster names (`kind`, `bank-kind`) on the same kind cluster. Kind-backed isolation tests also need the `bank` namespace added to `demo/apps.yaml`.
 
 **0.3 Contract-scoped intake.**
 - `POST /contracts/{id}/alertmanager` with a webhook token per Contract. Dedup is keyed by (Contract, `groupKey`). This replaces `/alertmanager` and the global token.
@@ -111,6 +118,7 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
 - docker compose with the Hub, Postgres and Caddy. Caddy serves TLS for the public alert endpoint, and `pg_dump` runs nightly.
 - The console and API listen on `127.0.0.1` only, with `tailscale serve` in front. Never bind them to the Tailscale interface: any tailnet device could then connect directly and forge the identity header.
 - The contracts repo reaches the VM through a read-only deploy key. Config is reloaded on restart.
+- The Hub image ships the pinned `sops` binary, the same version CI verifies by checksum.
 - *Done when:* `make hub-smoke` starts the stack with the demo Contracts, sends an alert and gets a Report, in CI.
 
 ### Phase 1: Slack (4 slices)
@@ -263,4 +271,4 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
 
 ## Next
 
-Slice 0.1: the Contract schema, the loader and the two demo Contracts.
+Slice 0.2: Contract-scoped tools, with the Hub's allowlist deciding read or write.

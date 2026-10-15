@@ -1,0 +1,229 @@
+"""Contracts: one directory per Contract in the private contracts repo (ADR 0003).
+
+    <contracts-dir>/<id>/contract.yaml       what the Contract runs; secret *names* only
+    <contracts-dir>/<id>/secrets.sops.yaml   SOPS-encrypted map: secret name -> value
+
+`load()` reads every Contract, decrypts its secrets with the `sops` binary and
+reports every problem at once as `path: field: message`. Secret values never
+appear in errors, logs or repr.
+"""
+
+import json
+import shutil
+import subprocess
+from collections import defaultdict
+from pathlib import Path
+from typing import Annotated, Any, Literal
+
+import yaml
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    SecretStr,
+    ValidationError,
+    model_validator,
+)
+
+SECRETS_FILE = "secrets.sops.yaml"
+
+# Becomes a URL path segment (/contracts/{id}/...), so a lowercase slug.
+Slug = Annotated[str, Field(pattern=r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$", max_length=63)]
+
+
+class Strict(BaseModel):
+    # A typo must fail, not be ignored. Fields are added when a slice gives them behaviour.
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+
+
+class Cluster(Strict):
+    name: Slug
+    namespaces: list[str] = Field(min_length=1)
+    in_cluster: bool = False
+    context: str | None = None
+    kubeconfig_file: Path | None = None  # default: ~/.kube/config
+    kubeconfig_secret: str | None = None
+
+    @model_validator(mode="after")
+    def _one_source(self) -> "Cluster":
+        if (
+            self.in_cluster
+            + (self.kubeconfig_file is not None)
+            + (self.kubeconfig_secret is not None)
+            > 1
+        ):
+            raise ValueError("set only one of in_cluster, kubeconfig_file, kubeconfig_secret")
+        if not self.in_cluster and not self.context:
+            raise ValueError("context is required unless in_cluster (no silent default context)")
+        return self
+
+
+class Kubernetes(Strict):
+    name: Literal["kubernetes"]
+    enable_actions: bool = False
+    max_replicas: int = Field(10, ge=1)
+
+
+class Prometheus(Strict):
+    name: Literal["prometheus"]
+    url: str
+    token_secret: str | None = None
+
+
+class Runbooks(Strict):
+    name: Literal["runbooks"]  # reads <contract dir>/runbooks
+
+
+Integration = Annotated[Kubernetes | Prometheus | Runbooks, Field(discriminator="name")]
+
+
+class Contract(Strict):
+    id: Slug
+    name: str
+    clusters: list[Cluster] = []
+    integrations: list[Integration] = Field(min_length=1)
+
+    _dir: Path = PrivateAttr(default=Path())
+    _secrets: dict[str, SecretStr] = PrivateAttr(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _consistent(self) -> "Contract":
+        groups: dict[str, list[str]] = {
+            "cluster": [c.name for c in self.clusters],
+            "integration": [i.name for i in self.integrations],
+        }
+        for kind, names in groups.items():
+            dupes = sorted({n for n in names if names.count(n) > 1})
+            if dupes:
+                raise ValueError(f"duplicate {kind} names: {dupes}")
+        has_k8s = any(i.name == "kubernetes" for i in self.integrations)
+        if has_k8s != bool(self.clusters):
+            raise ValueError("the kubernetes integration and clusters go together")
+        return self
+
+    @property
+    def dir(self) -> Path:
+        return self._dir
+
+    def secret(self, name: str) -> SecretStr:
+        return self._secrets[name]
+
+    def secret_refs(self) -> set[str]:
+        """Every `*_secret` field, so a new integration's credentials are checked
+        without being listed here."""
+        return {
+            value
+            for item in (*self.clusters, *self.integrations)
+            for field in type(item).model_fields
+            if field.endswith("_secret") and (value := getattr(item, field)) is not None
+        }
+
+
+class ContractError(Exception):
+    """Every problem found, one `path: field: message` line each."""
+
+    def __init__(self, problems: list[str]) -> None:
+        super().__init__("\n".join(problems))
+        self.problems = problems
+
+
+def load(directory: Path) -> dict[str, Contract]:
+    if not directory.is_dir():
+        raise ContractError([f"{directory}: not a directory"])
+    contracts: dict[str, Contract] = {}
+    owners: dict[str, list[str]] = defaultdict(list)  # age recipient -> Contract ids
+    problems: list[str] = []
+    for path in sorted(directory.glob("*/contract.yaml")):
+        try:
+            contract, recipients = _load_one(path)
+        except ContractError as e:
+            problems += e.problems
+            continue
+        contracts[contract.id] = contract
+        for r in recipients:
+            owners[r].append(contract.id)
+    for recipient, ids in owners.items():
+        if len(ids) > 1:
+            problems.append(
+                f"{directory}: {', '.join(ids)} share age recipient {recipient}; "
+                "each Contract needs its own key"
+            )
+    if not contracts and not problems:
+        problems.append(f"{directory}: no */contract.yaml found")
+    if problems:
+        raise ContractError(problems)
+    return contracts
+
+
+def _load_one(path: Path) -> tuple[Contract, set[str]]:
+    try:
+        raw = yaml.safe_load(path.read_text())
+    except yaml.YAMLError as e:
+        raise ContractError([f"{path}: invalid YAML: {e}"]) from None
+    try:
+        contract = Contract.model_validate(raw)
+    except ValidationError as e:
+        # loc and msg only: pydantic's `input` could echo a value.
+        raise ContractError(
+            [
+                f"{path}: {'.'.join(map(str, err['loc'])) or '<root>'}: {err['msg']}"
+                for err in e.errors()
+            ]
+        ) from None
+    problems = []
+    if contract.id != path.parent.name:
+        problems.append(
+            f"{path}: id: {contract.id!r} must match its directory {path.parent.name!r}"
+        )
+    if (path.parent / "secrets.yaml").exists():
+        problems.append(
+            f"{path.parent / 'secrets.yaml'}: plaintext secrets; encrypt as {SECRETS_FILE}"
+        )
+    secrets, recipients = {}, set()
+    secrets_path = path.parent / SECRETS_FILE
+    if secrets_path.exists():
+        recipients = _recipients(secrets_path)
+        secrets = _decrypt(secrets_path)
+    for name in sorted(contract.secret_refs() - secrets.keys()):
+        problems.append(f"{path}: secret {name!r} is not in {SECRETS_FILE}")
+    if problems:
+        raise ContractError(problems)
+    contract._dir = path.parent
+    contract._secrets = {k: SecretStr(v) for k, v in secrets.items()}
+    return contract, recipients
+
+
+def _recipients(path: Path) -> set[str]:
+    """Read from the file's sops metadata: no key needed. Refuses unencrypted files."""
+    try:
+        meta = (yaml.safe_load(path.read_text()) or {}).get("sops")
+    except (yaml.YAMLError, AttributeError):
+        meta = None
+    if not isinstance(meta, dict):
+        raise ContractError([f"{path}: not encrypted with sops; refusing to read it"])
+    return {a["recipient"] for a in meta.get("age") or [] if "recipient" in a}
+
+
+def _decrypt(path: Path) -> dict[str, str]:
+    sops = shutil.which("sops")
+    if sops is None:
+        raise ContractError([f"{path}: sops is not on PATH (brew install sops)"])
+    proc = subprocess.run(  # noqa: S603 - fixed binary and arguments, no shell
+        [sops, "--decrypt", "--output-type", "json", str(path)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    if proc.returncode != 0:
+        reason = (proc.stderr.strip().splitlines() or ["unknown error"])[0]
+        raise ContractError([f"{path}: sops could not decrypt: {reason}"])
+    data: Any = json.loads(proc.stdout)
+    if not isinstance(data, dict):
+        raise ContractError([f"{path}: must be a map of secret name to value"])
+    bad = sorted(str(k) for k, v in data.items() if not isinstance(v, str))
+    if bad:
+        # Name the keys, never the values.
+        raise ContractError([f"{path}: {k}: value must be a string" for k in bad])
+    return data

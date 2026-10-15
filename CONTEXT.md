@@ -17,6 +17,10 @@ _Avoid_: User, admin
 **Data policy**:
 A Contract's rules on what may be sent to the LLM. A Contract has no restrictions unless its Data policy says otherwise.
 
+**Integration**:
+One outside system a Contract turns on, such as its clusters, Prometheus or Runbooks. Its tools are what the agent can use while working for that Contract.
+_Avoid_: Toolset, plugin
+
 **Hub**:
 The one always-on service that runs every Investigation for every Contract. It receives alerts and serves the Operator in Slack and the web console.
 _Avoid_: Server, backend

@@ -1,0 +1,10 @@
+# One age key per Contract (docs/adr/0003-contract-data-in-private-git.md), so one
+# Contract's key never decrypts another's. Run sops from this directory, where it
+# finds this file:
+#   sops edit <id>/secrets.sops.yaml          create or edit a Contract's secrets
+#   sops updatekeys <id>/secrets.sops.yaml    after changing that Contract's key below
+creation_rules:
+  - path_regex: ^demo-shop/secrets\.sops\.yaml$
+    age: age18nr46jyw4y6k26pwdy7hfmna7tany5dj9tcmhps7t6tzhjss7pzsj3nje6
+  - path_regex: ^demo-bank/secrets\.sops\.yaml$
+    age: age127kjtmkl3k2yh9sq2487svdpgr52rumflszfnehc7ln5qjmg89qszzll4t

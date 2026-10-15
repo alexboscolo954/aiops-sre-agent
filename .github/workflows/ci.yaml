@@ -15,6 +15,12 @@ jobs:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.3.0
       - run: uv sync --locked
+      - name: Install sops (decrypts the demo Contracts' secrets)
+        run: |
+          v=3.13.3
+          curl -fsSLO "https://github.com/getsops/sops/releases/download/v$v/sops-v$v.linux.amd64"
+          echo "e5bec3346a873ae91d871550f3e698c1aad962aff462a080e40f25fde17fef6b  sops-v$v.linux.amd64" | sha256sum -c -
+          sudo install -m 755 "sops-v$v.linux.amd64" /usr/local/bin/sops
       - run: make lint
       - run: make test
 

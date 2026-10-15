@@ -1,0 +1,5 @@
+# TEST ONLY. This key is public: it decrypts the fake secrets of the synthetic demo-shop Contract.
+# Never encrypt a real secret with it.
+# created: 2026-10-14T23:03:15-03:00
+# public key: age18nr46jyw4y6k26pwdy7hfmna7tany5dj9tcmhps7t6tzhjss7pzsj3nje6
+AGE-SECRET-KEY-1TZWFEKKTAXDX7VQ6W0DS5QDV6V53E48MV0Y5ETKYGDWCXLSH9GQQC33PMG
