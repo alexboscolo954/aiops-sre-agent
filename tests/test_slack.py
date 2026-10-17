@@ -72,7 +72,9 @@ def test_one_thread_per_investigation(settings: Settings, fake_cluster: Any) -> 
     assert "thread_ts" not in parent and "investigating" in parent["text"] and tid in parent["text"]
     assert update["ts"] == reply["thread_ts"] == "1700000000.000001"
     assert "done" in update["text"]
-    assert "JVM runs out of memory" in reply["text"]
+    first, *rest = reply["text"].splitlines()
+    assert first.startswith("*checkout") and first.endswith("limit.*")  # bold, balanced
+    assert "*Evidence*" in rest and any(line.startswith("• `kubernetes_pod_logs`") for line in rest)
     assert slack.channels() == {ACME}
 
 

@@ -8,6 +8,7 @@ a failed post is logged and never fails an Investigation.
 
 import asyncio
 import logging
+import re
 from typing import Any
 
 import httpx
@@ -35,6 +36,13 @@ def clean(text: str, limit: int = TEXT_LIMIT) -> str:
     return redact_capped(escaped, limit)
 
 
+def mrkdwn(markdown: str) -> str:
+    """The Report's markdown as Slack mrkdwn: headings and **bold** become *bold*,
+    and list dashes become bullets."""
+    text = re.sub(r"(?m)^#{1,6}\s+(.+)$", r"*\1*", markdown)
+    return re.sub(r"(?m)^- ", "• ", text.replace("**", "*"))
+
+
 def parent_text(t: Investigation) -> str:
     return f"*[{clean(t.contract_id)}] {clean(t.title, 300)}*\n{STATUS[t.status]} · `{t.id}`"
 
@@ -45,8 +53,7 @@ def reply_text(t: Investigation) -> str | None:
         decide = f"Decide with `POST /investigations/{t.id}/decision`."
         return f"Waiting for your approval:\n{actions}\n{decide}"
     if t.status == "done" and t.report:
-        body = t.report.to_markdown(t.executed_actions).replace("**", "*").replace("## ", "*")
-        return clean(body)
+        return clean(mrkdwn(t.report.to_markdown(t.executed_actions)))
     if t.status == "failed":
         return f"Investigation failed: {clean(t.error or 'unknown error', 2000)}"
     return None
