@@ -135,7 +135,10 @@ async def test_a_question_for_one_contract_cannot_reach_anothers_cluster(
 
 @pytest.mark.anyio
 async def test_a_vendor_process_sees_only_its_own_contracts_secrets(
-    two_contracts: Contracts, settings: Settings, monkeypatch: pytest.MonkeyPatch
+    two_contracts: Contracts,
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_cluster: Any,
 ) -> None:
     """Each Contract's vendor subprocess gets its own secrets, and none of the Hub's
     environment (model key, approver token, database URL, other Contracts)."""
@@ -161,7 +164,7 @@ async def test_a_vendor_process_sees_only_its_own_contracts_secrets(
             tools={"environment": "read"},
         )
         mine = c.model_copy(update={"integrations": [*c.integrations, vendor]})
-        async with Client(agent.build_mcp(mine, settings).mcp) as client:
+        async with Client(tools_for(mine, settings, fake_cluster).mcp) as client:
             result = await client.call_tool("x_environment", {})
         seen[cid] = json.loads(result.content[0].text)
     for cid, env in seen.items():
