@@ -45,6 +45,15 @@ class FakeSlack:
     def transport(self) -> httpx.MockTransport:
         return httpx.MockTransport(self)
 
+    def until(self, n: int) -> None:
+        """Wait for n calls in all. The Hub saves a status before it posts it, so a
+        test that stops the Hub right after seeing the status would cancel posts
+        still in flight."""
+        end = time.monotonic() + 5
+        while len(self.calls) < n and time.monotonic() < end:
+            time.sleep(0.02)
+        assert len(self.calls) >= n, self.calls
+
     def channels(self) -> set[str]:
         return {payload["channel"] for _, payload, _ in self.calls}
 
@@ -55,11 +64,15 @@ def _slack(settings: Settings, database_url: str) -> None:
     settings.slack_bot_token = SecretStr(TOKEN)
 
 
-def done_once(settings: Settings, fake_cluster: Any, slack: FakeSlack) -> str:
+def done_once(settings: Settings, fake_cluster: Any, slack: FakeSlack, calls: int = 3) -> str:
+    """One Investigation to done, then wait for its `calls` Slack calls (normally the
+    parent, its update to done, and the Report reply)."""
     steps = [call("TriageReport", "c1", **REPORT)]
+    calls_before = len(slack.calls)
     with client(settings, fake_cluster, *steps, slack=slack.transport(), acme_channel=ACME) as c:
         tid: str = c.post(URL, json=ALERT, headers=HOOK).json()["investigation"]
         wait_for(c, tid, "done")
+        slack.until(calls_before + calls)
     return tid
 
 
@@ -88,10 +101,12 @@ def test_each_contract_posts_only_to_its_own_channel(settings: Settings, fake_cl
     ) as c:
         a = c.post(URL, json=ALERT, headers=HOOK).json()["investigation"]
         wait_for(c, a, "done")
+        slack.until(3)
         assert slack.channels() == {ACME}
         seen = len(slack.calls)
         b = c.post(BANK_URL, json=ALERT, headers=BANK_HOOK).json()["investigation"]
         wait_for(c, b, "done")
+        slack.until(seen + 3)
     assert {p["channel"] for _, p, _ in slack.calls[seen:]} == {BANK}
     assert all("[bank]" not in p.get("text", "") for _, p, _ in slack.calls[:seen])
 
@@ -102,7 +117,7 @@ def test_slack_failures_are_logged_never_fatal(
     slack = FakeSlack()
     slack.answers = [httpx.Response(200, json={"ok": False, "error": "not_in_channel"})] * 5
     caplog.set_level(logging.WARNING, logger="aiops.slack")
-    done_once(settings, fake_cluster, slack)
+    done_once(settings, fake_cluster, slack, calls=2)  # both parent attempts refused
     assert f"chat.postMessage to {ACME} failed: not_in_channel" in caplog.text
     assert TOKEN not in caplog.text
 
@@ -120,7 +135,7 @@ def test_a_failed_first_post_starts_the_thread_later(settings: Settings, fake_cl
 def test_a_429_is_retried_once_after_retry_after(settings: Settings, fake_cluster: Any) -> None:
     slack = FakeSlack()
     slack.answers = [httpx.Response(429, headers={"Retry-After": "0"})]
-    done_once(settings, fake_cluster, slack)
+    done_once(settings, fake_cluster, slack, calls=4)
     assert [m for m, _, _ in slack.calls[:2]] == ["chat.postMessage", "chat.postMessage"]
     assert "investigating" in slack.calls[1][1]["text"]  # the same parent, retried at once
     assert slack.calls[-1][1]["thread_ts"] == "1700000000.000001"
@@ -133,6 +148,7 @@ def test_after_a_restart_the_same_thread_continues(settings: Settings, fake_clus
     ) as c:
         tid = c.post(URL, json=ALERT, headers=HOOK).json()["investigation"]
         wait_for(c, tid, "awaiting_approval")
+        slack.until(3)  # parent, its update, the Proposed actions
     thread = slack.calls[0][1]
     assert "waiting for your approval" in slack.calls[1][1]["text"]
     assert "kubernetes_evict_pod" in slack.calls[2][1]["text"]
@@ -146,6 +162,7 @@ def test_after_a_restart_the_same_thread_continues(settings: Settings, fake_clus
     ) as c:
         c.post(f"/investigations/{tid}/decision", json={"approve": True}, headers=AUTH)
         wait_for(c, tid, "done")
+        slack.until(6)  # "investigating" again, "done", the Report
     later = slack.calls[3:]
     assert {p.get("ts") or p.get("thread_ts") for _, p, _ in later} == {"1700000000.000001"}
     assert sum(m == "chat.postMessage" and "thread_ts" not in p for m, p, _ in later) == 0
@@ -158,14 +175,16 @@ def test_no_channel_no_posts_and_duplicates_post_nothing(
     slack = FakeSlack()
     steps = [call("TriageReport", "c1", **REPORT)]
     with client(settings, fake_cluster, *steps, slack=slack.transport()) as c:
-        wait_for(c, c.post(URL, json=ALERT, headers=HOOK).json()["investigation"], "done")
+        other = {**ALERT, "groupKey": "no-channel"}  # its own group: no dedup below
+        wait_for(c, c.post(URL, json=other, headers=HOOK).json()["investigation"], "done")
+        time.sleep(0.5)  # no channel: nothing should arrive
     assert slack.calls == []
     tid = done_once(settings, fake_cluster, slack)
     seen = len(slack.calls)
     with client(settings, fake_cluster, slack=slack.transport(), acme_channel=ACME) as c:
         assert c.post(URL, json=ALERT, headers=HOOK).json()["status"] == "duplicate"
         assert c.post(URL, json=RESOLVED, headers=HOOK).json()["status"] == "ignored"
-        time.sleep(0.2)
+        time.sleep(0.5)  # nothing should arrive
     assert len(slack.calls) == seen and tid
 
 
@@ -178,6 +197,7 @@ def test_slack_markup_in_alerts_arrives_as_text(settings: Settings, fake_cluster
     steps = [call("TriageReport", "c1", **REPORT)]
     with client(settings, fake_cluster, *steps, slack=slack.transport(), acme_channel=ACME) as c:
         wait_for(c, c.post(URL, json=hostile, headers=HOOK).json()["investigation"], "done")
+        slack.until(3)
     texts = " ".join(p.get("text", "") for _, p, _ in slack.calls)
     assert "&lt;!channel&gt; pay me &lt;@U123&gt;" in texts
     assert "<!channel>" not in texts and "<@U123>" not in texts
