@@ -107,3 +107,27 @@ def test_each_contract_uses_its_own_prometheus_credentials(
         ("http://localhost:9090", "Bearer shop-demo-token"),
         ("http://localhost:9091", "Bearer bank-demo-token"),
     ]
+
+
+@pytest.mark.anyio
+async def test_a_question_for_one_contract_cannot_reach_anothers_cluster(
+    two_contracts: Contracts, settings: Settings, fake_cluster: Any
+) -> None:
+    from langchain.messages import ToolMessage
+
+    from tests.conftest import call, scripted
+
+    answer = {"answer": "I can't see bank-kind.", "evidence": [{"source": "x", "finding": "y"}]}
+    model = scripted(
+        call("kubernetes_list_pods", "q1", cluster="bank-kind", namespace="bank"),
+        call("Answer", "q2", **answer),
+    )
+    shop = tools_for(two_contracts["demo-shop"], settings, fake_cluster)
+    async with agent.open_agent(settings, shop, model, kind="question") as a:
+        await agent.ask(a, "What runs in bank-kind?", "iso-q")
+        state = await a.aget_state({"configurable": {"thread_id": "iso-q"}})
+    (result,) = [
+        m for m in state.values["messages"] if isinstance(m, ToolMessage) and m.tool_call_id == "q1"
+    ]
+    assert result.status == "error" and "not one of this Contract's clusters" in str(result.content)
+    fake_cluster[0].list_namespaced_pod.assert_not_called()

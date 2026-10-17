@@ -191,7 +191,7 @@ uv run aiops mcp prometheus --contract demo-shop --transport http --port 8765
 | Unit (no cluster, no LLM) | Tool behavior (Prometheus against a mocked API), redaction, allowlist, approval policy. **A rejected proposed action never reaches the Kubernetes API.** Webhook auth, dedup, approval over HTTP. Contract config: every validation rule, SOPS secrets that never print, one Contract's key never decrypting another's. | `make test` (needs `sops`) |
 | Integration (kind, CI) | Real tools find all three failures. The allowlist holds on a real API server. A scripted agent completes a triage through real tools. | `make integration` |
 | Deploy smoke (kind, CI) | The real image under the shipped manifests: starts hardened, auth rejects bad tokens, RBAC is least privilege for both modes | `make deploy-smoke` |
-| Evals (real LLM, recorded data) | Triage quality on scenarios recorded from the kind demo, replayed through the real MCP tool definitions | `uv run aiops eval` |
+| Evals (real LLM, recorded data) | Triage and Answer quality on scenarios recorded from the kind demo, replayed through the real MCP tool definitions | `uv run aiops eval` |
 
 The scripted-model tests use LangChain's `GenericFakeChatModel`, so CI needs no API key. `make test` starts a throwaway Postgres in Docker (`make db`), and each test gets its own fresh database.
 
@@ -216,7 +216,21 @@ Between runs 1 and 3 the pass/fail checks never changed. What changed was the to
 
 - **Run 4 → 5:** every kubernetes tool now takes a required `cluster`, limited to the Contract's clusters. The replay now validates arguments against the real tool schema, so a missing or wrong `cluster` costs the model a turn, as it would in production. Tool calls are unchanged from run 4. A one-off run with an alert whose `cluster` label didn't match the Contract's only cluster also passed in 4 calls. Choosing between several clusters is not covered by a Scenario yet.
 
-Four scenarios is a smoke test for triage quality, not a benchmark. Add scenarios by recording new failures on kind (`AIOPS_RECORD_DIR=recordings make integration`).
+**Questions (2026-10-17).** Two Question Scenarios start from a question instead of an alert. They check keywords in the Answer, the tools its Evidence must cite, Evidence that cites a tool that never ran, and a call budget. From this date the model is `anthropic/claude-sonnet-5.5` through OpenRouter (`AIOPS_MODEL_BASE_URL`). Results are in [`evals/results/2026-10-17`](evals/results/2026-10-17):
+
+| Scenario | Run 1 | Runs 2–3 | Runs 4–5 | Calls (runs 4–5) |
+|---|---|---|---|---|
+| 4 Triage Scenarios | pass | pass | pass | 4, 3, 5, 5 (unchanged) |
+| question-checkout-rollout | over budget | 14, 5 | pass | 10, 10 |
+| question-unhealthy-workloads | over budget | 6, 6 | pass | 13, 9 |
+
+- **Run 1** went direct to Anthropic. Both Questions ran 14–27 calls, repeating calls and guessing namespaces.
+- **Behind a gateway, structured output is now native.** With an `openai:` model id LangChain can't tell the model supports it, and falls back to a forced tool call, which OpenRouter's provider rejected. The Hub now asks for native output whenever `AIOPS_MODEL_BASE_URL` is set. This is a production fix, not only an eval one.
+- **Runs 2–3 → 4–5:** a Question names no namespace, so the model guessed (`default`, `checkout`). The replay answered the guess with the recorded data, which production never would. Two fixes: the cluster argument's description now lists each cluster's namespaces, and the replay applies the Contract's namespace allowlist with the real tool's error.
+- **The Question budgets (12 and 15) were set after these runs,** from what each question needs plus room: one call answers the rollout question, and three workloads take about 8. They still fail the 14–27-call loops of run 1. Runs 4–5 were scored at the first budgets (8 and 12), and their raw `results.json` still says so; at the current budgets they pass.
+- **Known replay gap:** the recording has no pod labels, so `list_pods` with a `label_selector` returns every pod, and the model sometimes asks again. Re-recording with labels would fix it.
+
+Six scenarios is a smoke test, not a benchmark. Add scenarios by recording new failures on kind (`AIOPS_RECORD_DIR=recordings make integration`).
 
 ## Contracts
 

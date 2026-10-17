@@ -1,7 +1,8 @@
 """Offline evals: run the real agent and a real LLM against recorded tool outputs.
 
-Each scenario (evals/scenarios/*.yaml) holds an alert, the tool results recorded
-from a real cluster, and what a correct triage must contain. The MCP servers are
+Each scenario (evals/scenarios/*.yaml) holds an alert or a question, the tool
+results recorded from a real cluster, and what a correct Report or Answer must
+contain. The MCP servers are
 the real ones (same tool names and schemas the model sees in production), but a
 replay middleware answers every call from the recording, so no cluster is needed
 and runs are repeatable.
@@ -31,9 +32,15 @@ class Replay(Middleware):
     {"error": "..."} replays a tool error. Tools under `passthrough` prefixes
     (runbooks) run for real."""
 
-    def __init__(self, recordings: dict[str, Any], passthrough: tuple[str, ...] = ()) -> None:
+    def __init__(
+        self,
+        recordings: dict[str, Any],
+        passthrough: tuple[str, ...] = (),
+        namespaces: dict[str, list[str]] | None = None,
+    ) -> None:
         self.recordings = recordings
         self.passthrough = passthrough
+        self.namespaces = namespaces or {}  # cluster -> the Contract's allowlist
 
     def lookup(self, tool: str, args: dict[str, Any]) -> Any:
         rec = self.recordings.get(tool)
@@ -56,6 +63,15 @@ class Replay(Middleware):
             jsonschema.validate(args, tool.parameters if tool else {})
         except jsonschema.ValidationError as e:
             text = f"Input validation error: {e.message}"
+            return ToolResult(content=[TextContent(type="text", text=text)], is_error=True)
+        # The real tool's allowlist check, which the recording would otherwise skip:
+        # a guessed namespace must fail here too, not return the recorded one's data.
+        allowed = self.namespaces.get(args.get("cluster", ""))
+        if allowed is not None and "namespace" in args and args["namespace"] not in allowed:
+            text = (
+                f"namespace {args['namespace']!r} is not allowed in cluster "
+                f"{args['cluster']!r}; allowed: {sorted(allowed)}"
+            )
             return ToolResult(content=[TextContent(type="text", text=text)], is_error=True)
         found = self.lookup(context.message.name, args)
         if found is None or (isinstance(found, dict) and set(found) == {"error"}):
@@ -88,7 +104,8 @@ def replay_server(
     """Real tool definitions and the Hub's real list; the API clients are never reached."""
     apis = {c.name: (MagicMock(), MagicMock()) for c in contract.clusters}
     toolbox = agent.build_mcp(contract, settings, apis)
-    toolbox.mcp.add_middleware(Replay(recordings, passthrough=("runbooks_",)))
+    namespaces = {c.name: c.namespaces for c in contract.clusters}
+    toolbox.mcp.add_middleware(Replay(recordings, ("runbooks_",), namespaces))
     return toolbox
 
 
@@ -138,6 +155,28 @@ def score(scenario: dict[str, Any], outcome: agent.Outcome) -> list[str]:
     return failures
 
 
+def score_answer(scenario: dict[str, Any], outcome: agent.Outcome) -> list[str]:
+    """A Question's checks: keywords in the Answer, the Evidence sources it must cite,
+    no cited source that never ran (invented Evidence), and the tool budget."""
+    expect, answer, failures = scenario["expect"], outcome.answer, []
+    if answer is None:
+        return ["no answer"]
+    text = answer.answer.lower()
+    missing = [k for k in expect.get("keywords", []) if k.lower() not in text]
+    if missing:
+        failures.append(f"answer misses {missing}")
+    cited = {e.source for e in answer.evidence}
+    uncited = [t for t in expect.get("evidence", []) if t not in cited]
+    if uncited:
+        failures.append(f"evidence doesn't cite {uncited}")
+    invented = sorted(cited - set(outcome.tool_calls))
+    if invented:
+        failures.append(f"evidence cites tools that never ran: {invented}")
+    if len(outcome.tool_calls) > expect.get("max_tool_calls", 12):
+        failures.append(f"{len(outcome.tool_calls)} tool calls > {expect['max_tool_calls']}")
+    return failures
+
+
 def load_scenarios(directory: Path) -> list[tuple[Path, dict[str, Any]]]:
     return [(p, yaml.safe_load(p.read_text())) for p in sorted(directory.glob("*.yaml"))]
 
@@ -148,17 +187,24 @@ async def run(directory: Path, settings: Settings, runbooks_dir: Path) -> list[d
         contract = scenario_contract(
             scenario["namespace"], scenario.get("enable_actions", False), runbooks_dir
         )
-        group = AlertGroup.model_validate(scenario["alert"])
+        question, thread = scenario.get("question"), f"eval-{path.stem}"
         start = time.monotonic()
         try:
             async with agent.open_agent(
-                settings, replay_server(contract, settings, scenario["tools"])
+                settings,
+                replay_server(contract, settings, scenario["tools"]),
+                kind="question" if question else "triage",
             ) as a:
-                outcome, proposed = await triage(a, group, f"eval-{path.stem}", scenario["expect"])
-            failures = score(scenario, outcome)
-            calls, report = outcome.tool_calls, outcome.report
+                if question:
+                    outcome, proposed = await agent.ask(a, question, thread), list[dict[str, Any]]()
+                    failures = score_answer(scenario, outcome)
+                else:
+                    group = AlertGroup.model_validate(scenario["alert"])
+                    outcome, proposed = await triage(a, group, thread, scenario["expect"])
+                    failures = score(scenario, outcome)
+            calls, report, answer = outcome.tool_calls, outcome.report, outcome.answer
         except agent.TriageError as e:
-            failures, calls, report, proposed = [str(e)], [], None, []
+            failures, calls, report, answer, proposed = [str(e)], [], None, None, []
         results.append(
             {
                 "scenario": path.stem,
@@ -170,6 +216,7 @@ async def run(directory: Path, settings: Settings, runbooks_dir: Path) -> list[d
                 "calls": calls,
                 "proposed": [p["name"] for p in proposed],
                 "report": report.to_markdown() if report else None,
+                **({"answer": answer.to_markdown()} if answer else {}),
             }
         )
     return results

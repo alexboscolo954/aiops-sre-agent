@@ -1,5 +1,5 @@
 """Turn a recording from the kind demo (tests/test_integration.py with
-AIOPS_RECORD_DIR set) into eval scenarios.
+AIOPS_RECORD_DIR set) into eval scenarios: alerts to triage and Questions.
 
     uv run python evals/build_scenarios.py recordings/recording.json
 """
@@ -119,6 +119,28 @@ def main(path: str) -> None:
                 "max_tool_calls": 10,
             },
             "tools": recordings(rec, log_suffix={"reports": INJECTION}),
+        },
+        "question-unhealthy-workloads": {
+            "description": "A Question, not an alert: the Answer must name all three broken "
+            "workloads and cite the pod listing.",
+            "question": "Which workloads in namespace demo are unhealthy right now, and why?",
+            "expect": {
+                "keywords": ["checkout", "reports", "frontend"],
+                "evidence": ["kubernetes_list_pods"],
+                "max_tool_calls": 15,
+            },
+            "tools": recordings(rec),
+        },
+        "question-checkout-rollout": {
+            "description": "A Question about a change: the Answer must find the env var the "
+            "latest rollout dropped, from the deployment's history.",
+            "question": "What changed in the checkout deployment's latest rollout?",
+            "expect": {
+                "keywords": ["DATABASE_URL"],
+                "evidence": ["kubernetes_describe_deployment"],
+                "max_tool_calls": 12,
+            },
+            "tools": recordings(rec),
         },
     }
     OUT.mkdir(exist_ok=True)

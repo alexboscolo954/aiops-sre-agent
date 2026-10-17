@@ -60,6 +60,16 @@ async def test_replay_validates_arguments_like_the_real_call(settings: Settings)
     assert not ok.is_error
     assert bad.is_error and "'prod' is not one of ['kind']" in bad.content[0].text
     assert missing.is_error and "'cluster' is a required property" in missing.content[0].text
+    async with Client(tb.mcp) as c:  # a guessed namespace fails, as the real tool does
+        guessed = await c.call_tool(
+            "kubernetes_list_pods",
+            {"cluster": "kind", "namespace": "default"},
+            raise_on_error=False,
+        )
+    assert guessed.is_error
+    assert guessed.content[0].text == (
+        "namespace 'default' is not allowed in cluster 'kind'; allowed: ['shop']"
+    )
 
 
 @pytest.mark.anyio
@@ -93,5 +103,42 @@ async def test_allowed_proposal_is_rejected_and_scored(settings: Settings) -> No
 @pytest.mark.parametrize("path", sorted(SCENARIOS.glob("*.yaml")), ids=lambda p: p.stem)
 def test_scenarios_are_well_formed(path: Path) -> None:
     s = yaml.safe_load(path.read_text())
-    AlertGroup.model_validate(s["alert"])
-    assert s["expect"]["category"] and s["tools"] and s["namespace"]
+    assert s["tools"] and s["namespace"]
+    if "question" in s:  # an Answer: keywords and the Evidence it must cite
+        assert "alert" not in s and s["question"].strip() and s["expect"]["keywords"]
+        assert set(s["expect"]["evidence"]) <= set(s["tools"])
+    else:
+        AlertGroup.model_validate(s["alert"])
+        assert s["expect"]["category"]
+
+
+@pytest.mark.anyio
+async def test_an_answer_is_scored_on_keywords_and_real_evidence(settings: Settings) -> None:
+    recordings = {"kubernetes_list_pods": [{"name": "checkout-1", "restarts": 4}]}
+    answer = {
+        "answer": "checkout-1 restarted 4 times.",
+        "evidence": [{"source": "kubernetes_list_pods", "finding": "checkout-1 restarts 4"}],
+    }
+    model = scripted(
+        call("kubernetes_list_pods", "c1", cluster="kind", namespace="shop"),
+        call("Answer", "c2", **answer),
+    )
+    async with agent.open_agent(
+        settings, replay(settings, recordings), model, kind="question"
+    ) as a:
+        outcome = await agent.ask(a, "Is checkout healthy?", "q1")
+    expect: dict[str, Any] = {"keywords": ["checkout"], "evidence": ["kubernetes_list_pods"]}
+    assert evals.score_answer({"expect": expect}, outcome) == []
+
+    expect.update(keywords=["reports"], evidence=["kubernetes_pod_logs"], max_tool_calls=0)
+    assert evals.score_answer({"expect": expect}, outcome) == [
+        "answer misses ['reports']",
+        "evidence doesn't cite ['kubernetes_pod_logs']",
+        "2 tool calls > 0",  # the scripted Answer counts, like TriageReport
+    ]
+    assert outcome.answer is not None
+    outcome.answer.evidence.append(outcome.answer.evidence[0].model_copy(update={"source": "x"}))
+    assert "evidence cites tools that never ran: ['x']" in evals.score_answer(
+        {"expect": {}}, outcome
+    )
+    assert evals.score_answer({"expect": {}}, agent.Outcome("t")) == ["no answer"]

@@ -147,7 +147,8 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
 - *Done when:* delivery is off by default, and the client message never contains buttons.
 
 **1.4 Questions.**
-- An @mention in a Contract channel starts a Question, and the Answer goes in the thread. Replies in the thread continue the same Investigation.
+- **Part a, done:** the agent answers a Question with an Answer (read tools only; write tools are hidden, not gated), a follow-up is a new message on the same thread, and the eval runner takes Question Scenarios. Two pass, with budgets set from the runs (see the README's Evals).
+- An @mention in a Contract channel starts a Question, and the Answer goes in the thread. Replies in the thread continue the same Investigation. Decided: only replies that @mention the bot (it never reads other channel traffic), Questions only read, and a Question always ends with an Answer.
 - Widen Scenario and Expectation in the glossary and in the eval runner. A Scenario can start from a Question, and its Expectation checks the Answer's keywords and Evidence instead of a Category.
 - *Done when:*
   - two Question Scenarios pass;

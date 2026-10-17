@@ -50,7 +50,17 @@ async def test_an_only_cluster_is_named_outright(settings: Settings, fake_cluste
     async with Client(k8s(settings, fake_cluster)) as c:
         tools = {t.name: t for t in await c.list_tools()}
     cluster = tools["list_pods"].input_schema["properties"]["cluster"]
-    assert cluster["description"] == "This Contract's only cluster: always pass 'test'."
+    assert cluster["description"] == (
+        "This Contract's only cluster: always pass 'test'. Namespaces: shop."
+    )
+    two = k8s(settings, fake_cluster, clusters={"prod": ["shop", "pay"], "stg": ["shop-stg"]})
+    async with Client(two) as c:
+        tools = {t.name: t for t in await c.list_tools()}
+    assert (
+        tools["list_pods"]
+        .input_schema["properties"]["cluster"]["description"]
+        .endswith("One of: prod (namespaces: pay, shop); stg (namespaces: shop-stg)")
+    )
 
 
 @pytest.mark.anyio

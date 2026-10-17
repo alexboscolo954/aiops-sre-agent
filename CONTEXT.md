@@ -55,7 +55,7 @@ The Investigation of one Alert group, from receipt to final Report, including an
 _Avoid_: Using "triage" for a single agent invocation
 
 **Question**:
-An Investigation the Operator asks for in their own words, in Slack or the web console.
+An Investigation the Operator asks for in their own words, in Slack or the web console. A Question only reads: it never proposes an action. A follow-up in the same thread continues the same Question.
 
 **Check**:
 An Investigation that runs on a schedule or after a deploy, without an alert. A passing Check is recorded quietly. A failing Check produces a Report and notifies the Operator like a Triage does.
@@ -64,7 +64,7 @@ An Investigation that runs on a schedule or after a deploy, without an alert. A 
 One uninterrupted stretch of agent work inside an Investigation. An Investigation without a Proposed action has one Run. Each Approval decision or Stale rejection starts another Run.
 
 **Report**:
-The structured result of a Triage, a failing Check, or a Question that turns into a hunt for a fault: summary, Category, root cause, Evidence, Assessed severity and Recommendations.
+The structured result of a Triage or a failing Check: summary, Category, root cause, Evidence, Assessed severity and Recommendations.
 _Avoid_: Triage (for the output)
 
 **Client report**:
@@ -72,7 +72,7 @@ The copy of a Report that goes to the Contract's client channel, only when the O
 _Avoid_: Client delivery (for the message)
 
 **Answer**:
-The result of a Question: a direct reply backed by Evidence, with no Category or Assessed severity. A Question that turns into a hunt for a fault ends with a Report instead.
+The result of a Question: a direct reply backed by Evidence, with no Category or Assessed severity. A Question that finds a fault still ends with an Answer, which says so.
 
 **Failed investigation**:
 An Investigation that ended without its Report or Answer because the agent could not finish. The Operator is told explicitly. Nothing partial is delivered.
@@ -126,7 +126,7 @@ Knowledge the Operator writes that holds no client data, such as general SRE les
 ### Evaluation
 
 **Scenario**:
-A recorded Alert group, the tool results captured from a real cluster, and the Expectation a correct Triage must meet.
+A recorded Alert group or Question, the tool results captured from a real cluster, and the Expectation a correct Triage or Answer must meet.
 
 **Expectation**:
-What a passing Triage must contain: an allowed Category, root-cause keywords, a tool-call budget, and the Proposed actions it may make (none, by default).
+What a passing Triage must contain: an allowed Category, root-cause keywords, a tool-call budget, and the Proposed actions it may make (none, by default). For a Question: keywords in the Answer, the tools its Evidence must cite, and a tool-call budget.

@@ -149,12 +149,17 @@ def build_server(
         else:
             targets[c.name] = (*apis[c.name], set(c.namespaces))
     names = sorted(targets)
+    # Namespaces too: a Question names no namespace, and a guessed one only errors.
+    spaces = {n: ", ".join(sorted(targets[n][2])) for n in names}
     if len(names) == 1:
         # The alert's cluster label may name the cluster differently: don't send
         # the model looking for a match that isn't there.
-        hint = f"This Contract's only cluster: always pass {names[0]!r}."
+        only = names[0]
+        hint = f"This Contract's only cluster: always pass {only!r}. Namespaces: {spaces[only]}."
     else:
-        hint = "Which cluster; use the alert's cluster label. One of: " + ", ".join(names)
+        hint = "Which cluster; use the alert's cluster label. One of: " + "; ".join(
+            f"{n} (namespaces: {spaces[n]})" for n in names
+        )
     cluster_arg = Field(
         description=hint,
         json_schema_extra={"enum": list[Any](names)},

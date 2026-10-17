@@ -364,3 +364,65 @@ async def test_executed_action_entry_redacts_a_secret_cut_at_its_limit(
         outcome = await agent.resume(a, "t9", [{"type": "approve"}])
     (entry,) = outcome.executed_actions
     assert entry.startswith("x_rotate {}: ") and "abcdefg" not in entry
+
+
+ANSWER = {
+    "answer": "checkout-7d9f-abc is crash looping.",
+    "evidence": [{"source": "kubernetes_list_pods", "finding": "checkout-7d9f-abc restarts 5"}],
+}
+LIST_PODS = call("kubernetes_list_pods", "q1", cluster="test", namespace="shop")
+
+
+@pytest.mark.anyio
+async def test_a_question_only_reads_even_with_actions_on(
+    settings: Settings, fake_cluster: Any
+) -> None:
+    scale = call(
+        "kubernetes_scale_deployment",
+        "q2",
+        cluster="test",
+        namespace="shop",
+        name="checkout",
+        replicas=0,
+    )
+    model = scripted(LIST_PODS, scale, call("Answer", "q3", **ANSWER))
+    tb = mcp_root(settings, fake_cluster, actions=True)
+    async with agent.open_agent(settings, tb, model, kind="question") as a:
+        outcome = await agent.ask(a, "Is checkout healthy?", "q")
+    assert outcome.answer is not None and outcome.answer.answer == ANSWER["answer"]
+    assert outcome.pending == [] and outcome.report is None
+    fake_cluster[1].patch_namespaced_deployment_scale.assert_not_called()
+    assert "Evidence" in outcome.answer.to_markdown()
+
+
+@pytest.mark.anyio
+async def test_a_follow_up_answers_again_or_fails_never_repeats(
+    settings: Settings, fake_cluster: Any
+) -> None:
+    settings.max_model_calls = 2
+    second = {**ANSWER, "answer": "Still crash looping."}
+    model = scripted(
+        call("Answer", "f1", **ANSWER),
+        LIST_PODS,
+        call("Answer", "f2", **second),
+        LIST_PODS,
+        call("kubernetes_list_pods", "f3", cluster="test", namespace="shop"),
+    )
+    async with agent.open_agent(
+        settings, mcp_root(settings, fake_cluster), model, kind="question"
+    ) as a:
+        assert (await agent.ask(a, "Is checkout healthy?", "f")).answer.answer == ANSWER["answer"]
+        assert (await agent.ask(a, "And now?", "f")).answer.answer == second["answer"]
+        with pytest.raises(agent.TriageError):  # hit the call limit: no new Answer
+            await agent.ask(a, "And now?", "f")
+
+
+def test_behind_a_gateway_structured_output_is_native(settings: Settings) -> None:
+    from langchain.agents.structured_output import ProviderStrategy
+
+    from aiops_agent.models import Answer, TriageReport
+
+    assert agent.output_format(settings, "triage") is TriageReport  # LangChain picks
+    settings.model_base_url = "https://openrouter.ai/api/v1"
+    native = agent.output_format(settings, "question")
+    assert isinstance(native, ProviderStrategy) and native.schema is Answer

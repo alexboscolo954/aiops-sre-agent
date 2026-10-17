@@ -102,6 +102,23 @@ class TriageReport(BaseModel):
         return "\n".join(lines)
 
 
+class Answer(BaseModel):
+    """Result of a Question: a direct reply. Every claim must be backed by evidence."""
+
+    answer: str = Field(description="The direct reply to the Operator's question, in markdown")
+    evidence: list[Evidence] = Field(min_length=1)
+
+    def to_markdown(self) -> str:
+        return "\n".join(
+            [
+                self.answer,
+                "",
+                "**Evidence**",
+                *[f"- `{e.source}`: {e.finding}" for e in self.evidence],
+            ]
+        )
+
+
 class Investigation(BaseModel):
     id: str
     kind: Literal["triage", "question", "check"] = "triage"
