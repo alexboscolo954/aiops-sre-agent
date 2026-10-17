@@ -58,14 +58,23 @@ def investigation_then_scale() -> list[Any]:
     ]
 
 
+LIST: dict[str, Any] = {"sneaky": "write", "honest": "read", "unknown": "read", "peek": "read"}
+FIXTURE = Path(__file__).parent / "fixtures" / "vendor_server.py"
+
+
 def lying_server(ran: list[str]) -> agent.Toolbox:
-    """Tools whose annotations disagree with the Hub's list (ADR 0002)."""
+    """Tools whose annotations disagree with the Hub's list (ADR 0002), in process."""
     srv = FastMCP("x")
+
+    @srv.tool(annotations=ToolAnnotations(read_only_hint=True))
+    def peek() -> str:  # claims read-only, the Hub says read
+        ran.append("peek")
+        return "peek ran"
 
     @srv.tool(annotations=ToolAnnotations(read_only_hint=True))
     def sneaky() -> str:  # claims read-only, the Hub says write
         ran.append("sneaky")
-        return "changed something"
+        return "sneaky ran"
 
     @srv.tool(annotations=ToolAnnotations(destructive_hint=True))
     def honest() -> str:  # claims write, the Hub says read: stricter wins
@@ -84,35 +93,81 @@ def lying_server(ran: list[str]) -> agent.Toolbox:
 
     root = FastMCP("aiops")
     root.mount(srv, namespace="x")
-    return agent.Toolbox(root, {"x_sneaky": "write", "x_honest": "read", "x_unknown": "read"})
+    return agent.Toolbox(root, {f"x_{name}": a for name, a in LIST.items()})
+
+
+def fixture_spec() -> Any:
+    import sys
+
+    from aiops_agent.servers import vendors
+
+    return vendors.Spec((sys.executable, str(FIXTURE)), frozenset({"RAN_FILE", "TOKEN"}))
+
+
+def vendor_contract(monkeypatch: pytest.MonkeyPatch, tools: dict[str, Any] = LIST, **v: Any) -> Any:
+    """A Contract whose integration "x" is the fixture vendor, run as a subprocess."""
+
+    from aiops_agent import contracts
+    from aiops_agent.servers import vendors
+
+    monkeypatch.setitem(vendors.VENDORS, "fixture", fixture_spec())
+    vendor = {"name": "x", "vendor": "fixture", "tools": tools, **v}
+    return contracts.build({"id": "acme", "name": "Acme", "integrations": [vendor]})
+
+
+@pytest.fixture(params=["in-process", "vendor-subprocess"])
+def lying(
+    request: pytest.FixtureRequest,
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> tuple[agent.Toolbox, Any]:
+    """The same lying tools, in process or behind a real vendor subprocess: the
+    allowlist must hold the same way for both (slice 4.1). Returns the toolbox and
+    a function giving the tools that actually ran."""
+    if request.param == "in-process":
+        ran: list[str] = []
+        return lying_server(ran), lambda: ran
+    log = tmp_path / "ran"
+    c = vendor_contract(monkeypatch, env={"RAN_FILE": str(log)})
+    return agent.build_mcp(c, settings), lambda: log.read_text().split() if log.exists() else []
 
 
 @pytest.mark.anyio
-async def test_hub_list_decides_and_annotations_only_tighten() -> None:
+async def test_hub_list_decides_and_annotations_only_tighten(lying: Any) -> None:
     from langchain.mcp import MCPAdapter
 
-    toolbox = lying_server([])
+    toolbox, _ = lying
     async with MCPAdapter(toolbox.mcp) as adapter:
         tools: list[BaseTool] = await agent.load_tools(adapter, toolbox.access)
-    assert {t.name for t in tools} == {"x_sneaky", "x_honest", "x_unknown"}
+    assert {t.name for t in tools} == {"x_sneaky", "x_honest", "x_unknown", "x_peek"}
     assert agent.gated(tools, toolbox.access) == {"x_sneaky", "x_honest", "x_unknown"}
 
 
 @pytest.mark.anyio
-async def test_mislabelled_write_waits_for_approval_and_is_recorded(settings: Settings) -> None:
-    ran: list[str] = []
+async def test_mislabelled_write_waits_for_approval_and_is_recorded(
+    settings: Settings, lying: Any
+) -> None:
+    toolbox, ran = lying
+    recorded: list[tuple[str, str]] = []
+
+    async def sink(tool: str, args: Any, result: str, error: bool) -> None:
+        recorded.append((tool, result))
+
     model = scripted(
         call("x_unlisted", "c0"),
-        call("x_sneaky", "c1"),
-        call("TriageReport", "c2", **REPORT),
+        call("x_peek", "c1"),
+        call("x_sneaky", "c2"),
+        call("TriageReport", "c3", **REPORT),
     )
-    async with agent.open_agent(settings, lying_server(ran), model) as a:
+    async with agent.open_agent(settings, toolbox, model, record=sink) as a:
         outcome = await agent.start(a, ALERT, "t5")
         assert [p["name"] for p in outcome.pending] == ["x_sneaky"]
-        assert ran == []  # the hidden tool never ran either
+        assert ran() == ["peek"]  # the read ran unasked; the hidden tool never did
         outcome = await agent.resume(a, "t5", [{"type": "approve"}])
-    assert ran == ["sneaky"]
+    assert ran() == ["peek", "sneaky"]
     assert [e.split()[0] for e in outcome.executed_actions] == ["x_sneaky"]
+    assert ("x_peek", "peek ran") in recorded  # recorded like any tool
 
 
 def full_contract() -> Any:

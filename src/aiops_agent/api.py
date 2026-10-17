@@ -674,14 +674,22 @@ def create_app(
         """Each of a Contract's integrations, through its own tools: ok, how long, and
         on failure the error (redacted, capped). Never the data a check returns."""
 
-        async def check(client: Client[Any], name: str, tool: str, args: Any) -> dict[str, Any]:
+        async def check(
+            client: Client[Any], name: str, tool: str | None, args: Any
+        ) -> dict[str, Any]:
             start, detail = time.monotonic(), ""
             try:
-                result = await asyncio.wait_for(
-                    client.call_tool(tool, args, raise_on_error=False), PROBE_SECONDS
-                )
-                if result.is_error:
-                    detail = " ".join(getattr(b, "text", "") for b in result.content) or "error"
+                if tool is None:  # a vendor: it starts, and offers every listed tool
+                    offered = await asyncio.wait_for(client.list_tools(), PROBE_SECONDS)
+                    missing = sorted(set(args["expect"]) - {t.name for t in offered})
+                    detail = f"not offered: {', '.join(missing)}" if missing else ""
+                else:
+                    result = await asyncio.wait_for(
+                        client.call_tool(tool, args, raise_on_error=False), PROBE_SECONDS
+                    )
+                    if result.is_error:
+                        texts = (getattr(b, "text", "") for b in result.content)
+                        detail = " ".join(texts) or "error"
             except Exception as e:  # a timeout, an unreachable cluster: it's the answer
                 detail = f"{type(e).__name__}: {e}"
             ms = round(1000 * (time.monotonic() - start))

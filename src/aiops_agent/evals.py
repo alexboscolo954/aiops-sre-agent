@@ -108,8 +108,11 @@ def scenario_contract(
             built.append({"name": name, "enable_actions": enable_actions})
         elif name == "prometheus":
             built.append({"name": name, "url": "http://replay.invalid"})  # never reached
-        elif name == "runbooks" and any(d.is_dir() for d in dirs):
-            built.append({"name": name})
+        elif name == "runbooks":
+            if any(d.is_dir() for d in dirs):
+                built.append({"name": name})
+        else:  # a vendor: replaying its tools needs their saved schemas (slice 4.2)
+            raise ValueError(f"can't replay integration {name!r} yet: no schema snapshot")
     spaces = clusters or {EVAL_CLUSTER: [namespace]}
     cluster_list = [{"name": c, "context": "replay", "namespaces": ns} for c, ns in spaces.items()]
     data = {"id": "eval", "name": "Eval", "clusters": cluster_list, "integrations": built}

@@ -112,7 +112,10 @@ def change(path: str, value: Any) -> Callable[[dict[str, Any]], None]:
         (change("integration", []), "integration: Extra inputs are not permitted"),
         (change("clusters", []), "the kubernetes integration and clusters go together"),
         (change("integrations", [{"name": "runbooks"}]), "the kubernetes integration and clusters"),
-        (change("integrations", [{"name": "splunk"}]), "integrations.0: Input tag 'splunk'"),
+        (
+            change("integrations", [{"name": "splunk"}]),
+            "integrations.0.vendor: Value error, unknown integration 'splunk'",
+        ),
         (
             change("clusters.0.kubeconfig_secret", "prod-kubeconfig"),
             "secret 'prod-kubeconfig' is not in secrets.sops.yaml",

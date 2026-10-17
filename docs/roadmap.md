@@ -207,9 +207,12 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
 
 ### Phase 4: Integration framework and first integrations (4 slices)
 
-**4.1 Vendor sources.**
+**4.1 Vendor sources.** Done.
 - Vendor servers run as pinned stdio subprocesses or remote HTTP servers, behind the same allowlist enforcement as slice 0.2.
 - *Done when:* the slice 0.2 allowlist tests also pass against a vendor subprocess.
+- A Contract integration `{name, vendor, env, env_secrets, tools, probe}`: `vendor` names an entry in the Hub's registry (`servers/vendors.py`), so the command never comes from the contracts repo (the ADR 0002 reasoning for kubeconfig exec plugins); each binary ships in the image, pinned. `tools` is the Hub's read/write list for it (the YAML allowlist pencilled in for 4.1). The 0.2 allowlist tests run against an in-process server and a real vendor subprocess.
+- The subprocess gets MCP's safe default environment plus its own `env` and secrets, never the Hub's (tested with the demo Contracts). A Contract may set only the variables its vendor's registry entry lists (`LD_PRELOAD`, `PATH`, `NODE_OPTIONS` and the like would run code), and registry commands are absolute paths. One process per tool call, none outliving a Run; a handshake timeout drops a vendor that never answers, and the Run goes on. Health: a `probe` tool (must be listed `read`), or by default the vendor starts and offers every listed tool.
+- Deviations: stdio only. Remote HTTP waits for 4.4, where the Jira choice (Atlassian's remote MCP or a builtin) decides whether it's needed. Unannotated vendor tools stay gated (Grafana annotates its reads). Replaying a Scenario with a vendor refuses until 4.2's snapshots.
 
 **4.2 Schema snapshots.**
 - `aiops integrations snapshot <name>` saves a pinned vendor server's tool schemas into this repo. They hold schemas only, no data. Replay builds tools from the snapshot.
@@ -290,4 +293,4 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
 
 ## Next
 
-Phase 2 is done. Next in order is Phase 3 (Relay), but no Contract needs a Relay yet, so the Operator may take Phase 4 (vendor integrations, Grafana) first.
+Phase 4 first (the Operator's choice: no Contract needs a Relay yet). Next: slice 4.2, schema snapshots.

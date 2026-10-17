@@ -131,3 +131,41 @@ async def test_a_question_for_one_contract_cannot_reach_anothers_cluster(
     ]
     assert result.status == "error" and "not one of this Contract's clusters" in str(result.content)
     fake_cluster[0].list_namespaced_pod.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_a_vendor_process_sees_only_its_own_contracts_secrets(
+    two_contracts: Contracts, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each Contract's vendor subprocess gets its own secrets, and none of the Hub's
+    environment (model key, approver token, database URL, other Contracts)."""
+    import sys
+    from pathlib import Path
+
+    from aiops_agent.contracts import Vendor
+    from aiops_agent.servers import vendors
+
+    fixture = Path(__file__).parent / "fixtures" / "vendor_server.py"
+    monkeypatch.setitem(
+        vendors.VENDORS,
+        "fixture",
+        vendors.Spec((sys.executable, str(fixture)), frozenset({"TOKEN"})),
+    )
+    monkeypatch.setenv("AIOPS_MODEL_API_KEY", "hub-only-model-key")
+    seen = {}
+    for cid, c in two_contracts.items():
+        vendor = Vendor(
+            name="x",
+            vendor="fixture",
+            env_secrets={"TOKEN": "prometheus-token"},
+            tools={"environment": "read"},
+        )
+        mine = c.model_copy(update={"integrations": [*c.integrations, vendor]})
+        async with Client(agent.build_mcp(mine, settings).mcp) as client:
+            result = await client.call_tool("x_environment", {})
+        seen[cid] = json.loads(result.content[0].text)
+    for cid, env in seen.items():
+        assert env["TOKEN"] == two_contracts[cid].secret("prometheus-token").get_secret_value()
+        assert not any(name.startswith("AIOPS_") for name in env), env
+        assert "hub-only-model-key" not in json.dumps(env)
+    assert seen["demo-shop"]["TOKEN"] != seen["demo-bank"]["TOKEN"]

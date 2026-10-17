@@ -26,9 +26,11 @@ import yaml
 from pydantic import (
     BaseModel,
     ConfigDict,
+    Discriminator,
     Field,
     PrivateAttr,
     SecretStr,
+    Tag,
     ValidationError,
     model_validator,
 )
@@ -86,7 +88,66 @@ class Runbooks(Strict):
     name: Literal["runbooks"]  # reads <contract dir>/runbooks
 
 
-Integration = Annotated[Kubernetes | Prometheus | Runbooks, Field(discriminator="name")]
+class Probe(Strict):
+    tool: str  # one of the vendor's tools listed `read`
+    args: dict[str, Any] = {}
+
+
+class Vendor(Strict):
+    """A vendor MCP server, started by the Hub from its registry (servers/vendors.py).
+    Its tools appear as <name>_<tool>; only those in `tools` are visible, with the
+    Hub's own read or write (ADR 0002). Secrets reach it as environment variables."""
+
+    name: Slug
+    vendor: str
+    env: dict[str, str] = {}
+    env_secrets: dict[str, str] = {}  # variable -> secret name in secrets.sops.yaml
+    tools: dict[str, Literal["read", "write"]] = Field(min_length=1)
+    probe: Probe | None = None  # health; default: start it and check `tools` are offered
+
+    @model_validator(mode="before")
+    @classmethod
+    def _is_vendor(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "vendor" not in data:
+            raise ValueError(
+                f"unknown integration {data.get('name')!r}: the builtins are "
+                f"{', '.join(BUILTINS)}; a vendor integration needs `vendor:`"
+            )
+        return data
+
+    @model_validator(mode="after")
+    def _known(self) -> "Vendor":
+        from aiops_agent.servers.vendors import VENDORS
+
+        if self.vendor not in VENDORS:
+            known = ", ".join(sorted(VENDORS)) or "none yet"
+            raise ValueError(f"vendor {self.vendor!r} isn't in the Hub's registry ({known})")
+        allowed = VENDORS[self.vendor].env
+        if refused := sorted((set(self.env) | set(self.env_secrets)) - allowed):
+            raise ValueError(
+                f"vendor {self.vendor!r} takes only these variables: "
+                f"{', '.join(sorted(allowed)) or 'none'}; refused: {', '.join(refused)}"
+            )
+        if self.probe and self.tools.get(self.probe.tool) != "read":
+            raise ValueError(f"probe tool {self.probe.tool!r} must be listed in tools as read")
+        return self
+
+
+BUILTINS = ("kubernetes", "prometheus", "runbooks")
+
+
+def _kind(value: Any) -> str:
+    name = value.get("name") if isinstance(value, dict) else getattr(value, "name", None)
+    return name if name in BUILTINS else "vendor"
+
+
+Integration = Annotated[
+    Annotated[Kubernetes, Tag("kubernetes")]
+    | Annotated[Prometheus, Tag("prometheus")]
+    | Annotated[Runbooks, Tag("runbooks")]
+    | Annotated[Vendor, Tag("vendor")],
+    Discriminator(_kind),
+]
 
 
 class Slack(Strict):
@@ -152,14 +213,17 @@ class Contract(Strict):
         return name in self._secrets
 
     def secret_refs(self) -> set[str]:
-        """Every `*_secret` field, so a new integration's credentials are checked
-        without being listed here."""
-        return {
-            value
-            for item in (*self.clusters, *self.integrations)
-            for field in type(item).model_fields
-            if field.endswith("_secret") and (value := getattr(item, field)) is not None
-        }
+        """Every `*_secret` field and every value of a `*_secrets` map, so a new
+        integration's credentials are checked without being listed here."""
+        refs: set[str] = set()
+        for item in (*self.clusters, *self.integrations):
+            for field in type(item).model_fields:
+                value = getattr(item, field)
+                if field.endswith("_secret") and value is not None:
+                    refs.add(value)
+                elif field.endswith("_secrets"):
+                    refs.update(value.values())
+        return refs
 
 
 class ContractError(Exception):

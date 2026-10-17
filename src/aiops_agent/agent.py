@@ -15,7 +15,9 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Annotated, Any, Literal, NotRequired
 
-from fastmcp import FastMCP
+from fastmcp import Client, FastMCP
+from fastmcp.client.transports import StdioTransport
+from fastmcp.server import create_proxy
 from langchain.agents import create_agent
 from langchain.agents.middleware import (
     AgentState,
@@ -40,11 +42,11 @@ from langgraph.types import Command
 from pydantic import BaseModel
 
 from aiops_agent.config import Settings
-from aiops_agent.contracts import Contract, Integration, Kubernetes, Prometheus
+from aiops_agent.contracts import Contract, Integration, Kubernetes, Prometheus, Runbooks, Vendor
 from aiops_agent.models import AlertGroup, Answer, TriageReport
 from aiops_agent.observability import AuditMiddleware
 from aiops_agent.safety import redact, redact_capped, redact_strings, truncate
-from aiops_agent.servers import Access, kubernetes, prometheus, runbooks
+from aiops_agent.servers import Access, kubernetes, prometheus, runbooks, vendors
 
 log = logging.getLogger("aiops.agent")
 
@@ -195,10 +197,12 @@ def build_mcp(
     return Toolbox(root, access)
 
 
-def probes(contract: Contract) -> list[tuple[str, str, dict[str, Any]]]:
+def probes(contract: Contract) -> list[tuple[str, str | None, dict[str, Any]]]:
     """Each integration's health check: (label, tool, args), one cheap read through
-    the same tools and credentials the agent uses. Kubernetes: one per cluster."""
-    checks: list[tuple[str, str, dict[str, Any]]] = []
+    the same tools and credentials the agent uses. Kubernetes: one per cluster. A
+    vendor without a probe: tool None, and args["expect"] lists the tools it must
+    offer (it started, and nothing on the Hub's list was renamed)."""
+    checks: list[tuple[str, str | None, dict[str, Any]]] = []
     for i in contract.integrations:
         if isinstance(i, Kubernetes):
             for c in contract.clusters:
@@ -206,8 +210,12 @@ def probes(contract: Contract) -> list[tuple[str, str, dict[str, Any]]]:
                 checks.append((f"kubernetes {c.name}", "kubernetes_list_deployments", where))
         elif isinstance(i, Prometheus):
             checks.append(("prometheus", "prometheus_query", {"promql": "vector(1)"}))
-        else:
+        elif isinstance(i, Runbooks):
             checks.append(("runbooks", "runbooks_search_runbooks", {"keywords": "health"}))
+        elif i.probe:
+            checks.append((i.name, f"{i.name}_{i.probe.tool}", i.probe.args))
+        else:
+            checks.append((i.name, None, {"expect": sorted(f"{i.name}_{t}" for t in i.tools)}))
     return checks
 
 
@@ -217,14 +225,34 @@ def integration_server(
     settings: Settings,
     k8s_apis: dict[str, tuple[Any, Any]] | None = None,
 ) -> tuple[FastMCP, dict[str, Access]]:
-    """One builtin integration's MCP server and the Hub's list for its tools."""
+    """One integration's MCP server and the Hub's list for its tools."""
     if isinstance(integration, Kubernetes):
         limit = settings.tool_output_limit
         return kubernetes.build_server(contract, integration, limit, k8s_apis), kubernetes.ACCESS
     if isinstance(integration, Prometheus):
         token = contract.secret(integration.token_secret) if integration.token_secret else None
         return prometheus.build_server(integration.url, token), prometheus.ACCESS
-    return runbooks.build_server(contract.runbook_dirs), runbooks.ACCESS
+    if isinstance(integration, Runbooks):
+        return runbooks.build_server(contract.runbook_dirs), runbooks.ACCESS
+    if isinstance(integration, Vendor):
+        return vendor_server(contract, integration), dict(integration.tools)
+    raise TypeError(f"no server for integration {integration!r}")
+
+
+def vendor_server(contract: Contract, v: Vendor) -> FastMCP:
+    """A proxy to the vendor's own MCP server, run as a subprocess over stdio from the
+    Hub's registry. Its environment: MCP's safe defaults (PATH, HOME, ...) plus this
+    integration's env and secrets, never the Hub's own variables or another
+    Contract's. ponytail: one process per tool call (keep_alive off, so none
+    outlives a Run); keep one per Run if a vendor's startup ever costs too much."""
+    command = vendors.VENDORS[v.vendor].command  # its env names were checked at load
+    env = {
+        **v.env,
+        **{var: contract.secret(name).get_secret_value() for var, name in v.env_secrets.items()},
+    }
+    transport = StdioTransport(command[0], list(command[1:]), env=env, keep_alive=False)
+    client = Client(transport, timeout=vendors.CALL_SECONDS, init_timeout=vendors.START_SECONDS)
+    return create_proxy(client, name=v.name)
 
 
 def for_contract(settings: Settings, contract: Contract) -> Settings:

@@ -256,6 +256,20 @@ Six scenarios is a smoke test, not a benchmark. Add scenarios by recording new f
 The agent is moving from one global config to several Contracts, one per client engagement. The plan is in [`docs/roadmap.md`](docs/roadmap.md).
 A Contract is a directory in your **private** contracts repo, never in this one ([ADR 0003](docs/adr/0003-contract-data-in-private-git.md)). It holds `contract.yaml`, a SOPS-encrypted `secrets.sops.yaml` with one age key per Contract, and its own `runbooks/`. Runbooks in `shared/runbooks/` are Shared knowledge for every Contract; a Contract's own Runbook wins on a name clash.
 A kubeconfig whose user runs a credential plugin (`exec`, as EKS, AKS kubelogin and GKE use, or an `auth-provider`) is refused unless that cluster sets `allow_exec: true`. The plugin would run on the Hub next to every other Contract's secrets ([ADR 0002](docs/adr/0002-hub-and-relay.md)).
+**Vendor integrations.** Besides the builtins, a Contract can turn on a vendor MCP server the Hub knows:
+
+```yaml
+integrations:
+  - name: grafana             # its tools appear as grafana_<tool>
+    vendor: grafana           # an entry in the Hub's registry (src/aiops_agent/servers/vendors.py)
+    env: {GRAFANA_URL: https://grafana.acme.example}
+    env_secrets: {GRAFANA_SERVICE_ACCOUNT_TOKEN: grafana-token}   # names in secrets.sops.yaml
+    tools: {search_dashboards: read, query_prometheus: read}       # only these are visible
+    probe: {tool: search_dashboards, args: {query: ""}}            # optional health check
+```
+
+The command comes from the Hub's registry (an absolute path), never from the contracts repo, and the binary ships in the image. `env` and `env_secrets` may set only the variables the vendor's registry entry lists: anything else, like `LD_PRELOAD`, `PATH` or `NODE_OPTIONS`, could run code and is refused when the Contract loads. The process gets only those, plus MCP's safe defaults, never the Hub's environment. `tools` is the Hub's own list: a tool not listed is invisible, and a tool needs approval if the list says `write` or the server doesn't mark it read-only. Give each Contract its own vendor credentials, scoped to that client: the Hub keeps Contracts apart, but it can't see inside a vendor account several clients share. The registry is empty until Grafana arrives (slice 4.3).
+
 **Model and cost.** A Contract runs on the Hub's `AIOPS_MODEL` unless it sets `model:` (for example a cheaper one), through the Hub's gateway and key, so its prefix must match (`openai:` behind OpenRouter). Every model call's tokens are recorded, and priced from `AIOPS_MODEL_PRICES` when the model has a price: the console shows each Investigation's tokens and cost, and each Contract's spend this month. `monthly_budget_usd:` sets a Contract's monthly budget (UTC calendar month); a Contract with a budget needs its model priced, or the Hub won't start. At 80% and at 100% of it, the Contract's operator channel gets a notice, once each per month. At 100%, a new alert, Question or follow-up is refused without calling the model: it becomes a Failed investigation that names the spend and the budget, and Slack still tells you, so no alert is silently dropped. A Run that resumes after your approval always runs, so an approved action is always reported. Several Runs that start together can overshoot the budget a little.
 Name each cluster as your alerts' `cluster` label does: the agent passes that label as the tools' `cluster` argument, and a tool refuses any cluster or namespace outside its Contract. [`demo/contracts`](demo/contracts) shows the layout with two synthetic Contracts and their test-only keys.
 
