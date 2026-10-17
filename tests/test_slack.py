@@ -42,10 +42,12 @@ class FakeSlack:
     """Records every Web API call. `answers` overrides the reply to the next calls.
     apps.connections.open (Socket Mode) answers socket_url and goes in `opens`."""
 
-    def __init__(self, socket_url: str = "") -> None:
+    def __init__(self, socket_url: str = "", ts: int = 0) -> None:
+        """ts: where message ts start. Slack's are unique per channel, and one
+        thread holds one Investigation: a second fake in one test starts later."""
         self.calls: list[tuple[str, dict[str, Any], str]] = []
         self.answers: list[httpx.Response] = []
-        self.ts = 0
+        self.ts = ts
         self.socket_url, self.opens = socket_url, list[str]()
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
@@ -259,9 +261,9 @@ class FakeSocket:
         assert self.ws is not None, "the Hub never connected"
         return self.ws
 
-    def send(self, payload: dict[str, Any]) -> None:
+    def send(self, payload: dict[str, Any], kind: str = "interactive") -> None:
         envelope = str(uuid.uuid4())
-        msg = {"envelope_id": envelope, "type": "interactive", "payload": payload}
+        msg = {"envelope_id": envelope, "type": kind, "payload": payload}
         self.connection().send(json.dumps(msg))
         assert self.acks.get(timeout=5) == {"envelope_id": envelope}
 
@@ -438,7 +440,7 @@ def test_stale_and_api_decisions_take_the_buttons_away(
         sock.send(click("approve", value))
         until(lambda: ephemerals(slack) == [(OPERATOR, ANY_DECIDED)])
     settings.decision_timeout_seconds = 0
-    slack = FakeSlack(sock.url)
+    slack = FakeSlack(sock.url, ts=100)
     sock.ws = None
     stale_alert = {**ALERT, "groupKey": "stale"}
     with client(
@@ -559,7 +561,7 @@ def test_client_reports_are_off_without_a_client_channel_or_buttons(
     done_once(settings, fake_cluster, slack)  # buttons on, no client channel
     assert buttons(slack) == {}
     settings.slack_app_token = None  # a client channel, but no buttons
-    slack = FakeSlack()
+    slack = FakeSlack(ts=100)
     steps = [call("TriageReport", "c1", **REPORT)]
     with client(
         settings,
@@ -664,3 +666,152 @@ def test_the_client_report_is_escaped() -> None:
     text = client_text(t)
     assert "&lt;!channel&gt; pay &lt;@U123&gt;" in text and "&lt;!everyone&gt;" in text
     assert "<!" not in text and "<@" not in text
+
+
+# Questions: an @mention in a Contract's operator channel; follow-ups in its thread.
+
+BOT = "<@U0AIOPSBOT1>"
+ROOT = "1800000000.000001"
+ANSWER_1 = {
+    "answer": "checkout is crash looping.",
+    "evidence": [{"source": "kubernetes_list_pods", "finding": "checkout restarts 5"}],
+}
+ANSWER_2 = {**ANSWER_1, "answer": "Still crash looping, 6 restarts now."}
+
+
+def ask(
+    sock: FakeSocket,
+    text: str,
+    ts: str,
+    *,
+    thread: str | None = None,
+    user: str = OPERATOR,
+    channel: str = ACME,
+) -> None:
+    event = {"type": "app_mention", "user": user, "channel": channel, "ts": ts, "text": text}
+    if thread:
+        event["thread_ts"] = thread
+    sock.send({"event": event}, kind="events_api")
+
+
+def questions(c: TestClient) -> list[dict[str, Any]]:
+    return [t for t in c.get("/investigations", headers=AUTH).json() if t["kind"] == "question"]
+
+
+def test_a_mention_asks_and_a_mention_in_its_thread_follows_up(
+    settings: Settings, fake_cluster: Any, sock: FakeSocket
+) -> None:
+    slack = FakeSlack(sock.url)
+    steps = [call("Answer", "a1", **ANSWER_1), call("Answer", "a2", **ANSWER_2)]
+    with client(
+        settings, fake_cluster, *steps, actions=True, slack=slack.transport(), acme_channel=ACME
+    ) as c:
+        ask(sock, f"{BOT} is checkout healthy?", ROOT)
+        until(lambda: any(ANSWER_1["answer"] in r for r in replies(slack)))
+        (q,) = questions(c)
+        assert (q["contract_id"], q["title"], q["status"]) == (
+            "acme",
+            "is checkout healthy?",
+            "done",
+        )
+        assert q["answer"]["answer"] == ANSWER_1["answer"] and q["report"] is None
+        ask(sock, f"{BOT} and now?", "1800000000.000005", thread=ROOT)
+        until(lambda: any(ANSWER_2["answer"] in r for r in replies(slack)))
+        ask(sock, f"{BOT} and now?", "1800000000.000005", thread=ROOT)  # redelivered
+        time.sleep(0.3)
+        (q,) = questions(c)
+        assert q["answer"]["answer"] == ANSWER_2["answer"]
+    methods = {m for m, _, _ in slack.calls}
+    assert methods == {"chat.postMessage"}  # no parent post or edit, no buttons, no refusals
+    assert {p["thread_ts"] for _, p, _ in slack.calls} == {ROOT} and slack.channels() == {ACME}
+    texts = replies(slack)
+    assert len(texts) == 4 and "investigating" in texts[0] and "investigating" in texts[2]
+    assert "*Evidence*" in texts[1]
+
+
+def test_mentions_are_refused_outside_a_question_or_from_others(
+    settings: Settings, fake_cluster: Any, sock: FakeSocket
+) -> None:
+    slack = FakeSlack(sock.url)
+    steps = [call("TriageReport", "c1", **REPORT)]
+    with client(
+        settings,
+        fake_cluster,
+        *steps,
+        slack=slack.transport(),
+        acme_channel=ACME,
+        acme_client=ACME_CLIENT,
+    ) as c:
+        tid = c.post(URL, json=ALERT, headers=HOOK).json()["investigation"]
+        wait_for(c, tid, "done")
+        slack.until(3)
+        triage_thread = slack.calls[0][1]  # the Triage's parent: its ts is the first one
+        ask(sock, f"{BOT} why?", "1800000000.000002", user=STRANGER)
+        ask(sock, f"{BOT} why?", "1800000000.000003", channel=ACME_CLIENT)
+        ask(sock, f"{BOT} why?", "1800000000.000004", channel="C0NOBODY001")
+        ask(sock, f"{BOT}  ", "1800000000.000006")
+        ask(sock, f"{BOT} why?", "1800000000.000007", thread="1700000000.000001")
+        until(lambda: len(ephemerals(slack)) == 5)
+        assert questions(c) == []
+    assert "thread_ts" not in triage_thread
+    assert [e[1] for e in ephemerals(slack)] == [
+        "Only the Operator can ask.",
+        "Ask in a Contract's operator channel (the client sees this channel).",
+        "Ask in a Contract's operator channel (no Contract).",
+        "Ask a question after the mention.",
+        "Follow-ups work in Question threads only.",
+    ]
+    assert to(slack, ACME_CLIENT) == []
+
+
+def test_a_thread_in_one_contracts_channel_never_continues_anothers(
+    settings: Settings, fake_cluster: Any, sock: FakeSocket
+) -> None:
+    slack = FakeSlack(sock.url)
+    bank = make_contract(contract_id="bank", webhook_token="bank-token", slack_channel=BANK)
+    steps = [call("Answer", "a1", **ANSWER_1), call("Answer", "a2", **ANSWER_2)]
+    more = {"bank": (bank, make_fake_cluster())}
+    with client(
+        settings, fake_cluster, *steps, more=more, slack=slack.transport(), acme_channel=ACME
+    ) as c:
+        ask(sock, f"{BOT} how is bank?", ROOT, channel=BANK)
+        until(lambda: any(ANSWER_1["answer"] in r for r in replies(slack)))
+        ask(sock, f"{BOT} and acme?", "1800000000.000009", thread=ROOT, channel=ACME)
+        until(lambda: any(ANSWER_2["answer"] in r for r in replies(slack)))
+        by_contract = {q["contract_id"]: q for q in questions(c)}
+    assert set(by_contract) == {"acme", "bank"}  # a new Question in acme, not bank's follow-up
+    assert by_contract["bank"]["answer"]["answer"] == ANSWER_1["answer"]
+    assert by_contract["acme"]["answer"]["answer"] == ANSWER_2["answer"]
+    assert {p["channel"] for _, p, _ in slack.calls if ANSWER_2["answer"] in p["text"]} == {ACME}
+
+
+@pytest.mark.anyio
+async def test_one_run_per_question_and_each_mention_once(database_url: str) -> None:
+    from aiops_agent.store import Store, connect
+
+    async with connect(database_url) as pool:
+        st = Store(pool)
+        await st.migrate()
+        q = Investigation(
+            id="q",
+            kind="question",
+            contract_id="acme",
+            title="t",
+            started=0,
+            slack_channel=ACME,
+            slack_ts=ROOT,
+            last_mention_ts="1800000000.000001",
+        )
+        assert await st.insert_question(q)
+        assert not await st.insert_question(q.model_copy(update={"id": "q2"}))  # same thread
+        assert (await st.by_thread(ACME, ROOT)).id == "q"
+        assert await st.by_thread(BANK, ROOT) is None
+        assert not await st.claim_follow_up("q", "1800000000.000002")  # still running
+        q.status = "done"
+        await st.save(q)
+        assert not await st.claim_follow_up("q", "1800000000.000001")  # not newer
+        assert await st.claim_follow_up("q", "1800000000.000002")
+        assert not await st.claim_follow_up("q", "1800000000.000003")  # that one runs
+        triage = Investigation(id="t", contract_id="acme", title="t", started=0, status="done")
+        await st.insert(triage)
+        assert not await st.claim_follow_up("t", "1800000000.000004")

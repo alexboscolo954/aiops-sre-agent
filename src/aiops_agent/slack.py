@@ -153,6 +153,8 @@ def reply_text(t: Investigation, buttons: bool = False) -> str | None:
         return f"Waiting for your approval:\n{actions}\n{decide}"
     if t.status == "done" and t.report:
         return clean(mrkdwn(t.report.to_markdown(t.executed_actions)))
+    if t.status == "done" and t.answer:
+        return clean(mrkdwn(t.answer.to_markdown()))
     if t.status == "failed":
         return f"Investigation failed: {clean(t.error or 'unknown error', 2000)}"
     return None
@@ -221,11 +223,14 @@ class Slack:
     async def open_view(self, trigger_id: str, view: dict[str, Any]) -> None:
         await self._call("views.open", {"trigger_id": trigger_id, "view": view})
 
-    async def listen(self, app_token: SecretStr, handle: Callable[[dict[str, Any]], None]) -> None:
+    async def listen(
+        self, app_token: SecretStr, handle: Callable[[str, dict[str, Any]], None]
+    ) -> None:
         """Socket Mode until cancelled: ask for a websocket URL, ack every envelope
         before handling it (Slack wants the ack within 3s), and reconnect when Slack
         says disconnect (it does every few hours) or the socket drops. handle must
-        not block: it gets each interaction payload and spawns the work."""
+        not block: it gets each envelope's type ("interactive" for clicks,
+        "events_api" for mentions) and payload, and spawns the work."""
         backoff = 1.0
         while True:
             try:
@@ -242,8 +247,8 @@ class Slack:
                                 await ws.send(json.dumps({"envelope_id": msg["envelope_id"]}))
                             if msg.get("type") == "disconnect":
                                 break
-                            if msg.get("type") == "interactive":
-                                handle(msg["payload"])
+                            if msg.get("type") in ("interactive", "events_api"):
+                                handle(msg["type"], msg["payload"])
             except Exception as e:  # the Hub runs on without buttons; keep trying
                 log.warning("slack socket mode: %s", type(e).__name__)
             await asyncio.sleep(backoff)

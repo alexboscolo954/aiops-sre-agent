@@ -37,6 +37,7 @@ from aiops_agent.config import Settings
 from aiops_agent.models import AlertGroup, Investigation
 from aiops_agent.observability import PENDING_APPROVALS, TRIAGE_SECONDS, TRIAGES
 from aiops_agent.slack import (
+    STATUS,
     Slack,
     clean,
     client_text,
@@ -108,7 +109,7 @@ def create_app(
             await db["checkpointer"].setup()
             await recover()
             if settings.slack_app_token:
-                spawn(db["slack"].listen(settings.slack_app_token, lambda p: spawn(interact(p))))
+                spawn(db["slack"].listen(settings.slack_app_token, on_socket))
             try:
                 yield
             finally:
@@ -145,6 +146,13 @@ def create_app(
         if not channel or not settings.slack_bot_token:
             return
         slack: Slack = db["slack"]
+        if t.kind == "question":
+            # The thread's root is the Operator's own message: never post or edit a
+            # parent, only reply. A Question never pauses, so it has no buttons.
+            if t.slack_ts:
+                status = reply_text(t) or f"{STATUS[t.status]} · `{t.id}`"
+                await slack.post(channel, status, thread_ts=t.slack_ts)
+            return
         blocks = parent_blocks(t, buttons, client_channel(t))
         if t.slack_ts is None:
             ts = await slack.post(channel, parent_text(t), blocks=blocks)
@@ -187,10 +195,13 @@ def create_app(
                 spawn(expire(t.id, t.deadline))  # a deadline already past fires at once
 
     def apply(t: Investigation, outcome: agent.Outcome) -> None:
-        t.report, t.pending = outcome.report, outcome.pending
+        t.report, t.answer, t.pending = outcome.report, outcome.answer, outcome.pending
         t.executed_actions = outcome.executed_actions
         t.status = "done" if outcome.done else "awaiting_approval"
         t.deadline = now() + settings.decision_timeout_seconds if t.pending else None
+
+    def agent_kind(t: Investigation) -> agent.Kind:
+        return "question" if t.kind == "question" else "triage"  # Checks come in 8.1
 
     async def run(t: Investigation, step: Any, note: str | None = None) -> None:
         await to_slack(t, note)  # "investigating", in a new or the existing thread
@@ -203,7 +214,9 @@ def create_app(
                     await store().record_tool_call(t.id, t.contract_id, tool, args, result, error)
 
                 checkpointer = db["checkpointer"]
-                async with agent.open_agent(settings, toolbox, model, checkpointer, record) as a:
+                async with agent.open_agent(
+                    settings, toolbox, model, checkpointer, record, kind=agent_kind(t)
+                ) as a:
                     apply(t, await step(a))
             except Exception as e:  # report every failure, never lose an alert silently
                 log.exception("investigation %s failed", t.id)
@@ -342,6 +355,66 @@ def create_app(
             )
         if not done:
             await slack.ephemeral(channel, user, "Already decided or Stale: nothing to decide.")
+
+    by_channel = {c.slack.operator_channel: c for c in by_id.values() if c.slack}
+    client_channels = {c.slack.client_channel for c in by_id.values() if c.slack}
+
+    def on_socket(kind: str, payload: dict[str, Any]) -> None:
+        spawn(interact(payload) if kind == "interactive" else mention(payload))
+
+    async def mention(p: dict[str, Any]) -> None:
+        try:
+            await on_mention(p.get("event", {}))
+        except Exception:  # a malformed event must not vanish silently
+            log.exception("slack mention failed")
+
+    async def on_mention(event: dict[str, Any]) -> None:
+        """@aiops in a Contract's operator channel: a new Question, or in a Question's
+        thread, a follow-up on it. Only the Operator, and never in a client channel."""
+        if event.get("type") != "app_mention":
+            return
+        slack: Slack = db["slack"]
+        user, channel, ts = event["user"], event["channel"], event["ts"]
+        root = event.get("thread_ts") or ts
+        if user != operator:
+            await slack.ephemeral(channel, user, "Only the Operator can ask.")
+            return
+        contract = by_channel.get(channel)
+        if contract is None:
+            where = "the client sees this channel" if channel in client_channels else "no Contract"
+            await slack.ephemeral(channel, user, f"Ask in a Contract's operator channel ({where}).")
+            return
+        text = re.sub(r"^(\s*<@[UW][A-Z0-9]+>)+\s*", "", event.get("text", ""))[:4000].strip()
+        if not text:
+            await slack.ephemeral(channel, user, "Ask a question after the mention.")
+            return
+        t = await store().by_thread(channel, root)
+        if t is None:
+            t = Investigation(
+                id=str(uuid.uuid4()),
+                kind="question",
+                contract_id=contract.id,
+                title=text[:200],
+                started=now(),
+                slack_channel=channel,
+                slack_ts=root,
+                last_mention_ts=ts,
+            )
+            if not await store().insert_question(t):
+                return  # redelivered: the first delivery is already on it
+        elif t.kind != "question":
+            await slack.ephemeral(channel, user, "Follow-ups work in Question threads only.")
+            return
+        elif not await store().claim_follow_up(t.id, ts):
+            if t.last_mention_ts != ts:  # a redelivery needs no answer
+                await slack.ephemeral(
+                    channel, user, "Still answering the last one: ask again after."
+                )
+            return
+        else:
+            t.status, t.error, t.last_mention_ts = "running", None, ts
+        log.info("question %s for %s from slack", t.id, t.contract_id)
+        spawn(run(t, lambda a: agent.ask(a, text, t.id)))
 
     def spawn(coro: Any) -> None:
         task = asyncio.create_task(coro)

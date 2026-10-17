@@ -1,8 +1,10 @@
 # Slack app manifest for the Hub: api.slack.com/apps > Create New App > From a manifest.
 # The bot posts (chat:write, which also covers the "only the Operator" notes) and
-# opens the reject modal. Clicks arrive over Socket Mode, so the Hub needs no public
-# Slack endpoint. After creating the app: Basic Information > App-Level Tokens >
-# generate one with connections:write, and set it as AIOPS_SLACK_APP_TOKEN.
+# opens the reject modal. It receives only messages that @mention it
+# (app_mentions:read), never other channel traffic. Clicks and mentions arrive over
+# Socket Mode, so the Hub needs no public Slack endpoint. After creating the app:
+# Basic Information > App-Level Tokens > generate one with connections:write, and set
+# it as AIOPS_SLACK_APP_TOKEN. After changing scopes or events, reinstall the app.
 display_information:
   name: aiops
   description: Investigations and approvals for every Contract
@@ -14,7 +16,11 @@ oauth_config:
   scopes:
     bot:
       - chat:write
+      - app_mentions:read
 settings:
+  event_subscriptions:
+    bot_events:
+      - app_mention
   org_deploy_enabled: false
   interactivity:
     is_enabled: true

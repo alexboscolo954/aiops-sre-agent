@@ -146,9 +146,10 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
 - A crash between claiming the send and posting it leaves it marked sent but unsent (a `ponytail:` note in `api.py`).
 - *Done when:* delivery is off by default, and the client message never contains buttons.
 
-**1.4 Questions.**
+**1.4 Questions.** Done.
 - **Part a, done:** the agent answers a Question with an Answer (read tools only; write tools are hidden, not gated), a follow-up is a new message on the same thread, and the eval runner takes Question Scenarios. Two pass, with budgets set from the runs (see the README's Evals).
-- An @mention in a Contract channel starts a Question, and the Answer goes in the thread. Replies in the thread continue the same Investigation. Decided: only replies that @mention the bot (it never reads other channel traffic), Questions only read, and a Question always ends with an Answer.
+- **Part b, done:** an @mention in a Contract's operator channel starts a Question, and the Answer goes in the thread. A mention in the thread continues the same Investigation. Decided: only messages that @mention the bot (it never reads other channel traffic), Questions only read, and a Question always ends with an Answer.
+- One Investigation per Slack thread (a unique index), so a redelivered mention can't start two. A follow-up claims a finished Question only with a newer mention, so two never run at once. Mentions from anyone but the Operator, in a client channel, or in a Triage thread are refused privately. A Question's thread root is the Operator's message, so the Hub only replies there.
 - Widen Scenario and Expectation in the glossary and in the eval runner. A Scenario can start from a Question, and its Expectation checks the Answer's keywords and Evidence instead of a Category.
 - *Done when:*
   - two Question Scenarios pass;
@@ -280,4 +281,4 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
 
 ## Next
 
-Slice 1.4: Questions from an @mention in a Contract channel.
+Phase 2, slice 2.1: the web console's skeleton and login.

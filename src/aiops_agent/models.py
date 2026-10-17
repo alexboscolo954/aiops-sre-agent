@@ -129,6 +129,7 @@ class Investigation(BaseModel):
     status: Literal["running", "awaiting_approval", "done", "failed"] = "running"
     started: float  # epoch seconds, Python's clock
     report: TriageReport | None = None
+    answer: Answer | None = None  # a Question's latest
     pending: list[dict[str, Any]] = []
     executed_actions: list[str] = []
     error: str | None = None
@@ -141,3 +142,5 @@ class Investigation(BaseModel):
     # When the Client report was sent, and by whom (never set by a Run).
     client_sent_at: float | None = None
     client_sent_by: str | None = None
+    # A Question's last @mention (Slack ts): a follow-up must be newer.
+    last_mention_ts: str | None = None

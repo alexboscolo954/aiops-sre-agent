@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from psycopg import AsyncConnection
+from psycopg.errors import UniqueViolation
 from psycopg.rows import DictRow, dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
@@ -24,7 +25,7 @@ MIGRATION_LOCK = 4_242_001  # pg_advisory_xact_lock key: one Hub migrates at a t
 COLUMNS = (
     "id, kind, contract_id, title, group_key, group_resolved, status, started, report, "
     "pending, executed_actions, error, deadline, slack_channel, slack_ts, client_sent_at, "
-    "client_sent_by"
+    "client_sent_by, answer, last_mention_ts"
 )
 
 
@@ -91,7 +92,7 @@ class Store:
     async def insert(self, t: Investigation) -> None:
         await self._exec(
             f"insert into investigations ({COLUMNS}) values "  # noqa: S608 - fixed columns
-            "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (
                 t.id,
                 t.kind,
@@ -110,6 +111,8 @@ class Store:
                 t.slack_ts,
                 t.client_sent_at,
                 t.client_sent_by,
+                Jsonb(t.answer.model_dump(mode="json")) if t.answer else None,
+                t.last_mention_ts,
             ),
         )
 
@@ -142,13 +145,42 @@ class Store:
             (investigation_id, at),
         )
 
+    async def insert_question(self, t: Investigation) -> bool:
+        """False when its thread already has an Investigation (Slack redelivered
+        the mention, or the thread is taken)."""
+        try:
+            await self.insert(t)
+        except UniqueViolation:
+            return False
+        return True
+
+    async def by_thread(self, channel: str, ts: str) -> Investigation | None:
+        row = await self._one(
+            f"select {COLUMNS} from investigations "  # noqa: S608 - fixed columns
+            "where slack_channel = %s and slack_ts = %s",
+            (channel, ts),
+        )
+        return _investigation(row) if row else None
+
+    async def claim_follow_up(self, investigation_id: str, mention_ts: str) -> bool:
+        """One Run at a time per Question, and each mention at most once: only a
+        finished Question, and only with a mention newer than the last one."""
+        row = await self._one(
+            "update investigations set status = 'running', error = null, last_mention_ts = %s "
+            "where id = %s and kind = 'question' and status in ('done', 'failed') "
+            "and (last_mention_ts is null or last_mention_ts < %s) returning id",
+            (mention_ts, investigation_id, mention_ts),
+        )
+        return row is not None
+
     async def save(self, t: Investigation) -> None:
         """Everything a Run changes. Never group_resolved (only the resolve path sets
         it, so a Run that finishes after a resolve can't clear it), nor the Slack
-        thread (set_slack_thread), nor the Client report's send."""
+        thread (set_slack_thread), nor the Client report's send, nor the last
+        mention (claim_follow_up)."""
         await self._exec(
             "update investigations set status = %s, report = %s, pending = %s, "
-            "executed_actions = %s, error = %s, deadline = %s where id = %s",
+            "executed_actions = %s, error = %s, deadline = %s, answer = %s where id = %s",
             (
                 t.status,
                 Jsonb(t.report.model_dump(mode="json")) if t.report else None,
@@ -156,6 +188,7 @@ class Store:
                 Jsonb(t.executed_actions),
                 t.error,
                 t.deadline,
+                Jsonb(t.answer.model_dump(mode="json")) if t.answer else None,
                 t.id,
             ),
         )
