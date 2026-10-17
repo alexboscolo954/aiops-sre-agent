@@ -12,6 +12,7 @@ from tests.conftest import REPORT, call, make_contract, make_fake_cluster
 from tests.test_api import ALERT, AUTH, BANK_HOOK, BANK_URL, HOOK, URL, client
 from tests.test_restart import wait_for
 
+NO_USAGE = {"input_tokens": 0, "output_tokens": 0, "cost_usd": None}
 OPERATOR = "alex@example.com"
 AS_OPERATOR = {"Tailscale-User-Login": OPERATOR, "Tailscale-User-Name": "Alex"}
 ACT = {"Cookie": f"{COOKIE}={action_key('approver-token')}"}
@@ -62,7 +63,7 @@ def test_everything_rendered_is_escaped() -> None:
         update={"name": "<script>alert(1)</script>"}
     )
     html = TEMPLATES.get_template("index.html").render(
-        name="<img src=x onerror=alert(1)>", login="x", contracts=[hostile]
+        name="<img src=x onerror=alert(1)>", login="x", contracts=[hostile], spend={}
     )
     assert "<script>" not in html and "&lt;script&gt;alert(1)&lt;/script&gt;" in html
     assert "<img" not in html and "&lt;img src=x onerror=alert(1)&gt;" in html
@@ -188,6 +189,7 @@ def test_an_investigation_page_escapes_everything() -> None:
         name="n",
         login="l",
         t=t,
+        usage=NO_USAGE,
         can_act=True,
         decisions=[],
         tool_calls=[{"tool": hostile, "args": {"a": hostile}, "result": hostile, "is_error": True}],
@@ -272,6 +274,6 @@ def test_only_a_finished_question_takes_a_follow_up(
 def test_a_running_investigation_page_reloads_itself() -> None:
     t = Investigation(id="i", kind="question", contract_id="acme", title="q", started=0)
     html = TEMPLATES.get_template("investigation.html").render(
-        name="n", login="l", t=t, decisions=[], tool_calls=[]
+        name="n", login="l", t=t, usage=NO_USAGE, decisions=[], tool_calls=[]
     )
     assert '<meta http-equiv="refresh" content="5">' in html and "Follow up" not in html

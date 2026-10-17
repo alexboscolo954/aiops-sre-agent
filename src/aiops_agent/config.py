@@ -4,8 +4,29 @@ import os
 from pathlib import Path
 
 from dotenv import dotenv_values
-from pydantic import SecretStr
+from pydantic import BaseModel, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class LongContext(BaseModel):
+    over: int = Field(gt=0)  # a prompt over this many tokens pays the prices below
+    input: float = Field(ge=0)
+    output: float = Field(ge=0)
+
+
+class Price(BaseModel):
+    """USD per million tokens. Priced per model call, as providers bill: a call whose
+    prompt is over `long.over` tokens pays the long-context prices for the whole call.
+    ponytail: cache discounts are ignored, so a cost reads a little high (the safe
+    side for a budget); add them if the gap matters."""
+
+    input: float = Field(ge=0)
+    output: float = Field(ge=0)
+    long: LongContext | None = None
+
+    def cost(self, input_tokens: int, output_tokens: int) -> float:
+        rate = self.long if self.long and input_tokens > self.long.over else self
+        return (input_tokens * rate.input + output_tokens * rate.output) / 1_000_000
 
 
 class Settings(BaseSettings):
@@ -17,6 +38,9 @@ class Settings(BaseSettings):
     model_base_url: str | None = None
     model_api_key: SecretStr | None = None
     model_headers: dict[str, str] = {}  # JSON, e.g. {"anthropic-workspace-id": "..."}
+    # $/MTok per model string (JSON), for costs and budgets. A Contract with a budget
+    # needs its model priced; others just show tokens.
+    model_prices: dict[str, Price] = {}
     max_model_calls: int = 30
     max_tool_calls: int = 25
     tool_output_limit: int = 8000  # max characters per tool result

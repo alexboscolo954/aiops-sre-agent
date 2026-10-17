@@ -25,7 +25,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from jinja2 import Environment, FileSystemLoader
 
 from aiops_agent.contracts import Contract
-from aiops_agent.store import Store
+from aiops_agent.store import Store, now
 
 # Autoescape always: alert titles come from client Alertmanagers, Reports and
 # Answers from a model that reads tool output. Never mark anything |safe.
@@ -119,11 +119,13 @@ def router(
         login: str = Depends(viewer),
     ) -> HTMLResponse:
         shown = contract if contract in by_id else None
+        at = now()
         return page(
             request,
             "index.html",
             login=login,
             contracts=sorted(by_id.values(), key=lambda c: c.id),
+            spend={cid: await store().month_spend(cid, at) for cid in by_id},
             shown=shown,
             investigations=await store().recent(100, shown),
         )
@@ -142,6 +144,7 @@ def router(
             "investigation.html",
             login=login,
             t=t,
+            usage=await store().investigation_usage(t.id),
             tool_calls=await store().tool_calls(t.id),
             decisions=await store().decisions(t.id),
         )

@@ -37,8 +37,10 @@ def contract(settings: Settings, contract_id: str) -> contracts.Contract:
 
 async def triage(group: AlertGroup, contract_id: str, as_json: bool, auto_reject: bool) -> int:
     settings = Settings()
-    toolbox = agent.build_mcp(contract(settings, contract_id), settings)
-    async with agent.open_agent(settings, toolbox) as a:
+    c = contract(settings, contract_id)
+    toolbox = agent.build_mcp(c, settings)
+    model = agent.build_model(agent.for_contract(settings, c))
+    async with agent.open_agent(settings, toolbox, model) as a:
         outcome = await agent.start(a, group, thread_id=str(uuid.uuid4()))
         while outcome.pending:
             decisions = [ask(action, auto_reject) for action in outcome.pending]

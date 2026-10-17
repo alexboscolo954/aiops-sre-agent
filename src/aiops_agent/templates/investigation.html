@@ -7,6 +7,10 @@
   <code>{{ t.contract_id }}</code> · {{ t.kind }} · <strong>{{ t.status }}</strong>
   · started {{ t.started | when }} · <code>{{ t.id }}</code>
 </p>
+<p>
+  Tokens: {{ usage.input_tokens }} in, {{ usage.output_tokens }} out ·
+  cost: {% if usage.cost_usd is not none %}${{ "%.4f" | format(usage.cost_usd) }}{% else %}-{% endif %}
+</p>
 {% if t.error %}<p><strong>Failed:</strong> {{ t.error }}</p>{% endif %}
 
 {% if t.pending %}

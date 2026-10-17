@@ -58,6 +58,7 @@ def make_contract(
     webhook_token: str | None = None,
     slack_channel: str | None = None,
     client_channel: str | None = None,
+    **extra: Any,
 ) -> contracts.Contract:
     """A Contract in memory: by default one cluster "test" allowing namespace "shop"."""
     clusters = clusters or {CLUSTER: ["shop"]}
@@ -74,7 +75,7 @@ def make_contract(
         data["webhook_token_sha256"] = contracts.token_hash(webhook_token)
     if slack_channel:
         data["slack"] = {"operator_channel": slack_channel, "client_channel": client_channel}
-    return contracts.build(data, runbook_dirs=runbook_dirs)
+    return contracts.build({**data, **extra}, runbook_dirs=runbook_dirs)
 
 
 def toolbox(settings: Settings, fake_cluster: Any, **contract: Any) -> agent.Toolbox:

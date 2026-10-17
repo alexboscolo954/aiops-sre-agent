@@ -88,7 +88,28 @@ def create_app(
             "AIOPS_SLACK_APP_TOKEN needs AIOPS_SLACK_BOT_TOKEN and AIOPS_SLACK_OPERATOR_ID (U...)"
         )
     buttons = settings.slack_app_token is not None
-    model = model or agent.build_model(settings)
+    hub_provider = settings.model.split(":", 1)[0]
+    for c in by_id.values():
+        effective = c.model or settings.model
+        if c.monthly_budget_usd and effective not in settings.model_prices:
+            raise RuntimeError(
+                f"Contract {c.id!r} has a budget, but its model {effective!r} has no price "
+                "in AIOPS_MODEL_PRICES"
+            )
+        if c.model and settings.model_base_url and c.model.split(":", 1)[0] != hub_provider:
+            raise RuntimeError(
+                f"Contract {c.id!r}'s model {c.model!r} would go through the Hub's gateway "
+                f"(AIOPS_MODEL_BASE_URL): use a {hub_provider}: model, as AIOPS_MODEL does"
+            )
+    models: dict[str, BaseChatModel] = {}  # per Contract, built once
+
+    def model_for(c: contracts.Contract) -> BaseChatModel:
+        if model is not None:  # tests: one scripted model for every Contract
+            return model
+        if c.id not in models:
+            models[c.id] = agent.build_model(agent.for_contract(settings, c))
+        return models[c.id]
+
     if mcp_factory is None:
         mcp_factory = lambda c: agent.build_mcp(c, settings)  # noqa: E731
     db: dict[str, Any] = {}  # store and checkpointer, opened in the lifespan
@@ -213,9 +234,25 @@ def create_app(
                 async def record(tool: str, args: dict[str, Any], result: str, error: bool) -> None:
                     await store().record_tool_call(t.id, t.contract_id, tool, args, result, error)
 
+                contract = by_id[t.contract_id]
+                name = contract.model or settings.model
+                price = settings.model_prices.get(name)
+
+                async def used(input_tokens: int, output_tokens: int) -> None:
+                    cost = price.cost(input_tokens, output_tokens) if price else None
+                    await store().record_usage(
+                        t.id, t.contract_id, name, input_tokens, output_tokens, cost
+                    )
+
                 checkpointer = db["checkpointer"]
                 async with agent.open_agent(
-                    settings, toolbox, model, checkpointer, record, kind=agent_kind(t)
+                    settings,
+                    toolbox,
+                    model_for(contract),
+                    checkpointer,
+                    record,
+                    kind=agent_kind(t),
+                    usage=used,
                 ) as a:
                     apply(t, await step(a))
             except Exception as e:  # report every failure, never lose an alert silently

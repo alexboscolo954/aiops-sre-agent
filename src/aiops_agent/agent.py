@@ -21,13 +21,15 @@ from langchain.agents.middleware import (
     AgentState,
     HumanInTheLoopMiddleware,
     ModelCallLimitMiddleware,
+    ModelResponse,
     ToolCallLimitMiddleware,
+    wrap_model_call,
     wrap_tool_call,
 )
 from langchain.agents.structured_output import ProviderStrategy
 from langchain.chat_models import init_chat_model
 from langchain.mcp import MCPAdapter
-from langchain.messages import ToolMessage
+from langchain.messages import AIMessage, ToolMessage
 from langchain.tools import BaseTool
 from langchain.tools.tool_node import ToolCallRequest
 from langchain_core.language_models import BaseChatModel
@@ -198,6 +200,11 @@ def integration_server(
     return runbooks.build_server(contract.runbook_dirs), runbooks.ACCESS
 
 
+def for_contract(settings: Settings, contract: Contract) -> Settings:
+    """The Hub's settings with this Contract's model, if it sets one."""
+    return settings.model_copy(update={"model": contract.model}) if contract.model else settings
+
+
 def build_model(settings: Settings) -> BaseChatModel:
     kwargs: dict[str, Any] = {}  # provider defaults; some models reject temperature
     if settings.model_base_url:
@@ -278,6 +285,30 @@ def output_format(settings: Settings, kind: Kind) -> Any:
     return ProviderStrategy(schema) if settings.model_base_url else schema
 
 
+UsageSink = Callable[[int, int], Awaitable[None]]  # (input tokens, output tokens)
+
+
+def record_usage(sink: UsageSink) -> Any:
+    """Each model call's tokens, as it happens: a Run that fails halfway still counts
+    what it spent, and a resume never counts the thread's earlier Runs again. Best
+    effort, like the raw results: a failed write never fails the Run."""
+
+    @wrap_model_call
+    async def track(request: Any, handler: Callable[[Any], Awaitable[Any]]) -> Any:
+        response = await handler(request)
+        messages = response.result if isinstance(response, ModelResponse) else [response]
+        for m in messages:
+            usage = m.usage_metadata if isinstance(m, AIMessage) else None
+            if usage:
+                try:
+                    await sink(usage["input_tokens"], usage["output_tokens"])
+                except Exception:
+                    log.exception("could not record model usage")
+        return response
+
+    return track
+
+
 @asynccontextmanager
 async def open_agent(
     settings: Settings,
@@ -286,6 +317,7 @@ async def open_agent(
     checkpointer: BaseCheckpointSaver[Any] | None = None,
     record: ToolSink | None = None,
     kind: Kind = "triage",
+    usage: UsageSink | None = None,
 ) -> AsyncIterator[Any]:
     """The only way to build the agent, so every caller gets the Hub's list.
     record(tool, args, raw result, is_error) gets every tool result, uncapped.
@@ -313,6 +345,7 @@ async def open_agent(
                 record_executed_actions(needs_approval),
                 cap_tool_output(settings.tool_output_limit),
                 *([record_tool_results(record)] if record else []),
+                *([record_usage(usage)] if usage else []),
             ],
             checkpointer=checkpointer or InMemorySaver(),
         )

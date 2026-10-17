@@ -3,7 +3,7 @@
 {% block main %}
 <h1>Contracts</h1>
 <table>
-  <thead><tr><th>Id</th><th>Name</th><th>Clusters</th><th>Operator channel</th></tr></thead>
+  <thead><tr><th>Id</th><th>Name</th><th>Clusters</th><th>Operator channel</th><th>Model</th><th>Spent this month</th></tr></thead>
   <tbody>
   {% for c in contracts %}
     <tr>
@@ -11,9 +11,12 @@
       <td>{{ c.name }}</td>
       <td>{{ c.clusters | map(attribute="name") | join(", ") or "-" }}</td>
       <td>{{ c.slack.operator_channel if c.slack else "-" }}</td>
+      <td><code>{{ c.model or "Hub default" }}</code></td>
+      {% set spent = spend.get(c.id, 0) %}
+      <td>${{ ("%.2f" if spent >= 1 else "%.4f") | format(spent) }}{% if c.monthly_budget_usd %} of ${{ "%.2f" | format(c.monthly_budget_usd) }} ({{ "%.0f" | format(100 * spent / c.monthly_budget_usd) }}%){% endif %}</td>
     </tr>
   {% else %}
-    <tr><td colspan="4">No Contracts loaded.</td></tr>
+    <tr><td colspan="6">No Contracts loaded.</td></tr>
   {% endfor %}
   </tbody>
 </table>

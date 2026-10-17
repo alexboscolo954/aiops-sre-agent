@@ -8,6 +8,7 @@ Migrations are numbered .sql files in migrations/, applied once each at startup.
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -47,6 +48,12 @@ async def connect(url: str) -> AsyncIterator[Pool]:
         yield pool
     finally:
         await pool.close()
+
+
+def month_start(at: float) -> float:
+    """The start of `at`'s calendar month, UTC: budgets are monthly."""
+    day = datetime.fromtimestamp(at, UTC)
+    return day.replace(day=1, hour=0, minute=0, second=0, microsecond=0).timestamp()
 
 
 def _investigation(row: dict[str, Any]) -> Investigation:
@@ -295,6 +302,40 @@ class Store:
             "is_error, at) values (%s, %s, %s, %s, %s, %s, %s)",
             (investigation_id, contract_id, tool, Jsonb(args), result, is_error, now()),
         )
+
+    async def record_usage(
+        self,
+        investigation_id: str,
+        contract_id: str,
+        model: str,
+        input_tokens: int,
+        output_tokens: int,
+        cost_usd: float | None,
+    ) -> None:
+        await self._exec(
+            "insert into usage (investigation_id, contract_id, model, input_tokens, "
+            "output_tokens, cost_usd, at) values (%s, %s, %s, %s, %s, %s, %s)",
+            (investigation_id, contract_id, model, input_tokens, output_tokens, cost_usd, now()),
+        )
+
+    async def month_spend(self, contract_id: str, at: float) -> float:
+        """One Contract's cost so far in `at`'s month."""
+        row = await self._one(
+            "select coalesce(sum(cost_usd), 0) as spent from usage "
+            "where contract_id = %s and at >= %s",
+            (contract_id, month_start(at)),
+        )
+        return float(row["spent"]) if row else 0.0
+
+    async def investigation_usage(self, investigation_id: str) -> dict[str, Any]:
+        """Tokens, and cost (None when no call was priced)."""
+        row = await self._one(
+            "select coalesce(sum(input_tokens), 0) as input_tokens, "
+            "coalesce(sum(output_tokens), 0) as output_tokens, sum(cost_usd) as cost_usd "
+            "from usage where investigation_id = %s",
+            (investigation_id,),
+        )
+        return row or {"input_tokens": 0, "output_tokens": 0, "cost_usd": None}
 
     async def alert_group(
         self, contract_id: str, group_key: str

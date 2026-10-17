@@ -113,6 +113,9 @@ class Contract(Strict):
     clusters: list[Cluster] = []
     integrations: list[Integration] = Field(min_length=1)
     slack: Slack | None = None  # where the Operator follows this Contract's Investigations
+    # The Hub's AIOPS_MODEL unless set; through the Hub's gateway and key (same prefix).
+    model: str | None = None
+    monthly_budget_usd: float | None = Field(None, gt=0)  # calendar month, UTC
 
     _dir: Path = PrivateAttr(default=Path())
     _secrets: dict[str, SecretStr] = PrivateAttr(default_factory=dict)
