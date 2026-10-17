@@ -12,6 +12,7 @@ header is ambient, so a page elsewhere could otherwise make the browser post.
 Off unless AIOPS_CONSOLE_OPERATORS lists who may sign in.
 """
 
+import asyncio
 import hashlib
 import hmac
 from collections.abc import Awaitable, Callable
@@ -20,6 +21,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
+import yaml
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from jinja2 import Environment, FileSystemLoader
@@ -46,6 +48,8 @@ Decide = Callable[[str, float, bool, str, str], Awaitable[bool]]
 # ask(contract id, question, follow-up on this Question or None) -> its id, or None
 Ask = Callable[[str, str, str | None], Awaitable[str | None]]
 QUESTION_LIMIT = 4000
+# health(contract) -> one {name, ok, ms, detail} per integration check
+Health = Callable[[Contract], Awaitable[list[dict[str, Any]]]]
 
 
 def action_key(approver_token: str) -> str:
@@ -73,6 +77,8 @@ def router(
     store: Callable[[], Store],
     decide: Decide,
     ask: Ask,
+    health: Health,
+    hub_config: dict[str, Any],
     approver_token: str,
 ) -> APIRouter:
     key = action_key(approver_token)
@@ -185,6 +191,26 @@ def router(
         if await ask(t.contract_id, question_text(await form(request)), t.id) is None:
             raise HTTPException(409, "still answering, or not a Question")
         return RedirectResponse(f"/console/investigations/{t.id}", 303)
+
+    @console.get("/health", response_class=HTMLResponse)
+    async def health_page(request: Request, login: str = Depends(viewer)) -> HTMLResponse:
+        shown = sorted(by_id.values(), key=lambda c: c.id)
+        checks = await asyncio.gather(*(health(c) for c in shown))
+        last = await store().last_done()
+        rows = [
+            {
+                "contract": c,
+                "checks": check,
+                "last": last.get(c.id),
+                # The Contract as loaded, defaults included. Secret values never live
+                # in the model: only their names, and whether each one decrypted.
+                "config": yaml.safe_dump(c.model_dump(mode="json"), sort_keys=False),
+                "secrets": {name: c.has_secret(name) for name in sorted(c.secret_refs())},
+            }
+            for c, check in zip(shown, checks, strict=True)
+        ]
+        hub = yaml.safe_dump(hub_config, sort_keys=False)
+        return page(request, "health.html", login=login, rows=rows, hub=hub)
 
     @console.get("/token", response_class=HTMLResponse)
     async def token_form(request: Request, login: str = Depends(operator)) -> HTMLResponse:

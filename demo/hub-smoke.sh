@@ -107,6 +107,8 @@ with_token=("${as_operator[@]}" -H "Cookie: aiops_actions=$key")
 curl -sf "${with_token[@]}" "$local_api/console" | grep -q 'demo-shop' || fail "console"
 curl -sf "${with_token[@]}" "$local_api/console/investigations/$id" | grep -q 'ConfigException' ||
   fail "console investigation page"
+curl -sf --max-time 60 "${with_token[@]}" "$local_api/console/health" | grep -q 'FAILING' ||
+  fail "console health"   # no cluster in the container: the kubernetes checks fail, and say so
 [[ $(code "$local_api/console") == 403 ]] || fail "console without an identity"
 [[ $(code "${as_operator[@]}" "$local_api/console") == 303 ]] || fail "console without the token"
 echo "ok   console renders on 127.0.0.1 for the Operator with the token only, and is 404 through Caddy"

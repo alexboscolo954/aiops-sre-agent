@@ -148,6 +148,9 @@ class Contract(Strict):
     def secret(self, name: str) -> SecretStr:
         return self._secrets[name]
 
+    def has_secret(self, name: str) -> bool:
+        return name in self._secrets
+
     def secret_refs(self) -> set[str]:
         """Every `*_secret` field, so a new integration's credentials are checked
         without being listed here."""

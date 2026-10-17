@@ -20,6 +20,7 @@ import json
 import logging
 import re
 import secrets
+import time
 import uuid
 from contextlib import asynccontextmanager
 from typing import Any
@@ -27,6 +28,7 @@ from typing import Any
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastmcp import Client
 from langchain_core.language_models import BaseChatModel
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
@@ -36,6 +38,7 @@ from aiops_agent import agent, console, contracts
 from aiops_agent.config import Settings
 from aiops_agent.models import AlertGroup, Investigation
 from aiops_agent.observability import PENDING_APPROVALS, TRIAGE_SECONDS, TRIAGES
+from aiops_agent.safety import redact_capped
 from aiops_agent.slack import (
     STATUS,
     Slack,
@@ -50,6 +53,7 @@ from aiops_agent.store import Store, connect, now
 
 log = logging.getLogger("aiops.api")
 DEDUP_SECONDS = 30 * 60
+PROBE_SECONDS = 10  # each health check
 
 
 def usd(amount: float) -> str:
@@ -649,6 +653,30 @@ def create_app(
             return None
         return t.id
 
+    async def health(c: contracts.Contract) -> list[dict[str, Any]]:
+        """Each of a Contract's integrations, through its own tools: ok, how long, and
+        on failure the error (redacted, capped). Never the data a check returns."""
+
+        async def check(client: Client[Any], name: str, tool: str, args: Any) -> dict[str, Any]:
+            start, detail = time.monotonic(), ""
+            try:
+                result = await asyncio.wait_for(
+                    client.call_tool(tool, args, raise_on_error=False), PROBE_SECONDS
+                )
+                if result.is_error:
+                    detail = " ".join(getattr(b, "text", "") for b in result.content) or "error"
+            except Exception as e:  # a timeout, an unreachable cluster: it's the answer
+                detail = f"{type(e).__name__}: {e}"
+            ms = round(1000 * (time.monotonic() - start))
+            return {"name": name, "ok": not detail, "ms": ms, "detail": redact_capped(detail, 300)}
+
+        try:
+            async with Client(mcp_factory(c).mcp) as client:
+                return list(await asyncio.gather(*(check(client, *p) for p in agent.probes(c))))
+        except Exception as e:  # the tools couldn't even be built (a bad kubeconfig)
+            detail = redact_capped(f"{type(e).__name__}: {e}", 300)
+            return [{"name": "tools", "ok": False, "ms": 0, "detail": detail}]
+
     if settings.console_operators:  # off by default: 404, not a login page
         app.include_router(
             console.router(
@@ -657,6 +685,8 @@ def create_app(
                 store,
                 console_decide,
                 console_ask,
+                health,
+                settings.model_dump(mode="json"),  # SecretStr fields come out masked
                 approver_token,
             )
         )

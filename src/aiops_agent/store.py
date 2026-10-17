@@ -216,6 +216,14 @@ class Store:
         )
         return [_investigation(r) for r in rows]
 
+    async def last_done(self) -> dict[str, Investigation]:
+        """Each Contract's latest Investigation that finished with a Report or Answer."""
+        rows = await self._all(
+            f"select distinct on (contract_id) {COLUMNS} from investigations "  # noqa: S608
+            "where status = 'done' order by contract_id, started desc"
+        )
+        return {r["contract_id"]: _investigation(r) for r in rows}
+
     async def tool_calls(self, investigation_id: str) -> list[dict[str, Any]]:
         return await self._all(
             "select tool, args, result, is_error, at from tool_calls "

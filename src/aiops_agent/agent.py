@@ -184,6 +184,22 @@ def build_mcp(
     return Toolbox(root, access)
 
 
+def probes(contract: Contract) -> list[tuple[str, str, dict[str, Any]]]:
+    """Each integration's health check: (label, tool, args), one cheap read through
+    the same tools and credentials the agent uses. Kubernetes: one per cluster."""
+    checks: list[tuple[str, str, dict[str, Any]]] = []
+    for i in contract.integrations:
+        if isinstance(i, Kubernetes):
+            for c in contract.clusters:
+                where = {"cluster": c.name, "namespace": sorted(c.namespaces)[0]}
+                checks.append((f"kubernetes {c.name}", "kubernetes_list_deployments", where))
+        elif isinstance(i, Prometheus):
+            checks.append(("prometheus", "prometheus_query", {"promql": "vector(1)"}))
+        else:
+            checks.append(("runbooks", "runbooks_search_runbooks", {"keywords": "health"}))
+    return checks
+
+
 def integration_server(
     contract: Contract,
     integration: Integration,

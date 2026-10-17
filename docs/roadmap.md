@@ -176,8 +176,10 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
 - **Part b, done:** budgets apply only where a new Run starts (alerts, Questions, follow-ups), never on a resume. At 100% the alert is still recorded (so repeats stay duplicates) and fails with the spend and budget, with no model call; Slack still hears of it. The 80% and 100% notices post once per Contract per month (`budget_notices`). Runs starting together can overshoot (a `ponytail:` note).
 - *Done when:* at 100% budget, a new alert still notifies the Operator, and its Failed investigation names the budget as the reason.
 
-**2.5 Health.**
+**2.5 Health.** Done.
 - Shows Relay connections, integration health probes, and the last successful Investigation per Contract. Also shows the effective config read-only, with secrets masked.
+- `/console/health` runs one cheap read per integration through the Contract's own tools (`agent.probes`) on each load, with a 10 s limit each. Errors are redacted; check results are never shown. Config shows secret names and whether each decrypted, never values; Hub settings come out of pydantic with every `SecretStr` masked.
+- Deviations: no `health probe` field in `contract.yaml` (the builtin probes are enough until a vendor integration needs its own, in 4.1), and Relay connections wait for Phase 3.
 
 **2.6 Save as Scenario.**
 - Turns a finished Investigation into a Scenario YAML for the Operator to download: the alert or Question, the recorded tool results, and a draft Expectation to edit. The Operator commits it to the contracts repo. The Hub never gets push access to a repo holding every Contract's secrets. The eval runner takes `--scenarios <contracts-repo>/<contract>/scenarios`.
@@ -287,4 +289,4 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
 
 ## Next
 
-Slice 2.5: health in the console.
+Slice 2.6: save an Investigation as a Scenario.

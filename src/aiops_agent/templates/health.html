@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Health · aiops{% endblock %}
+{% block main %}
+<h1>Health</h1>
+<p>Each check is one read through the Contract's own tools, run now. Relays come with Phase 3.</p>
+{% for r in rows %}
+<h2><code>{{ r.contract.id }}</code> {{ r.contract.name }}</h2>
+<table>
+  <thead><tr><th>Integration</th><th>Status</th><th>Time</th><th>Error</th></tr></thead>
+  <tbody>
+  {% for c in r.checks %}
+    <tr><td>{{ c.name }}</td><td>{{ "ok" if c.ok else "FAILING" }}</td><td>{{ c.ms }} ms</td><td>{{ c.detail }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+<p>Last successful Investigation:
+  {% if r.last %}<a href="/console/investigations/{{ r.last.id }}">{{ r.last.title }}</a>, {{ r.last.started | when }}{% else %}none yet{% endif %}
+</p>
+<details><summary>Config</summary>
+<pre>{{ r.config }}</pre>
+<p>Secrets (names only):
+{% for name, ok in r.secrets.items() %}<code>{{ name }}</code> {{ "loaded" if ok else "MISSING" }}{% if not loop.last %}, {% endif %}{% else %}none{% endfor %}
+</p>
+</details>
+{% endfor %}
+<h2>Hub settings</h2>
+<details><summary>Effective settings (secrets masked)</summary><pre>{{ hub }}</pre></details>
+{% endblock %}
