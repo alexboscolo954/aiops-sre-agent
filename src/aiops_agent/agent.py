@@ -219,12 +219,23 @@ def cap_tool_output(limit: int) -> Any:
     ) -> Any:
         result = await handler(request)
         if isinstance(result, ToolMessage):
-            text = result.content if isinstance(result.content, str) else json.dumps(result.content)
-            if len(text) > limit:
-                result.content = truncate(text, limit)
+            content = result.content
+            size = len(content if isinstance(content, str) else json.dumps(content))
+            if size > limit:  # blocks count whole, so a big non-text block is bounded too
+                result.content = truncate(text_of(result), limit)
         return result
 
     return cap
+
+
+def text_of(result: ToolMessage) -> str:
+    """The tool's own text. MCP results arrive as content blocks, and their JSON
+    (`[{"type": "text", "text": "..."}]`) is what neither the model, the audit log
+    nor a Scenario should read. With no text block at all: the JSON, so nothing is
+    silently dropped."""
+    if isinstance(result.content, str):
+        return result.content
+    return result.text or json.dumps(result.content)
 
 
 # ponytail: a raw result is kept up to this size, then cut. Generous so a Scenario can
@@ -247,9 +258,8 @@ def record_tool_results(sink: ToolSink) -> Any:
     ) -> Any:
         result = await handler(request)
         if isinstance(result, ToolMessage):
-            raw = result.content if isinstance(result.content, str) else json.dumps(result.content)
             call = request.tool_call
-            text = redact_capped(raw, RAW_RESULT_LIMIT)
+            text = redact_capped(text_of(result), RAW_RESULT_LIMIT)
             try:
                 await sink(call["name"], call["args"], text, result.status == "error")
             except Exception:

@@ -264,6 +264,7 @@ async def test_approved_action_output_is_still_capped(settings: Settings) -> Non
         state = await a.aget_state({"configurable": {"thread_id": "t4"}})
     tool_msg = next(m for m in state.values["messages"] if getattr(m, "tool_call_id", "") == "c1")
     assert len(str(tool_msg.content)) < 500
+    assert str(tool_msg.content).startswith("yyyy")  # the text, not its content blocks' JSON
     assert [e.split()[0] for e in outcome.executed_actions] == ["x_poke"]
 
 
@@ -299,6 +300,7 @@ async def test_raw_tool_results_are_recorded_uncapped_and_redacted(
     (tool, args, raw, error), broken_call = seen
     assert (tool, args, error) == ("x_dump", {}, False)
     assert len(raw) > 5000 and "abcdefghijklmnop" not in raw and "[REDACTED]" in raw
+    assert raw.startswith("Authorization:")  # the tool's text, not `[{"type": "text", ...}]`
     assert broken_call[0] == "x_broken" and broken_call[3] is True
     capped = next(m for m in state.values["messages"] if getattr(m, "tool_call_id", "") == "c1")
     assert len(str(capped.content)) < 500  # the model still sees the capped result
@@ -426,3 +428,11 @@ def test_behind_a_gateway_structured_output_is_native(settings: Settings) -> Non
     settings.model_base_url = "https://openrouter.ai/api/v1"
     native = agent.output_format(settings, "question")
     assert isinstance(native, ProviderStrategy) and native.schema is Answer
+
+
+def test_a_result_without_text_keeps_its_blocks() -> None:
+    from langchain.messages import ToolMessage
+
+    image = [{"type": "image", "base64": "AAAA", "mime_type": "image/png"}]
+    assert agent.text_of(ToolMessage(content=image, tool_call_id="i")).startswith('[{"type"')
+    assert agent.text_of(ToolMessage(content="plain", tool_call_id="p")) == "plain"
