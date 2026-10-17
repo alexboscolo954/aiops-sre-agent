@@ -49,6 +49,12 @@ def unlisted() -> str:
 
 
 @mcp.tool(annotations=READ)
+def lookup(service: str) -> str:
+    """Takes an argument: the replay must check it against the snapshot's schema."""
+    return ran(f"lookup {service}")
+
+
+@mcp.tool(annotations=READ)
 def environment() -> dict[str, str]:
     """What this process was given, and which process it is."""
     return {**os.environ, "PID": str(os.getpid())}

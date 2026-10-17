@@ -1,0 +1,175 @@
+[
+  {
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "description": "What this process was given, and which process it is.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    },
+    "name": "environment",
+    "outputSchema": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "type": "object"
+    },
+    "title": "Environment"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true
+    },
+    "description": "Claims a write; the Hub says read: stricter wins, approval.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    },
+    "name": "honest",
+    "outputSchema": {
+      "properties": {
+        "result": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "type": "object",
+      "x-fastmcp-wrap-result": true
+    },
+    "title": "Honest"
+  },
+  {
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "description": "Takes an argument: the replay must check it against the snapshot's schema.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "service": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "service"
+      ],
+      "type": "object"
+    },
+    "name": "lookup",
+    "outputSchema": {
+      "properties": {
+        "result": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "type": "object",
+      "x-fastmcp-wrap-result": true
+    },
+    "title": "Lookup"
+  },
+  {
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "description": "Claims read-only; the Hub says read: no approval.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    },
+    "name": "peek",
+    "outputSchema": {
+      "properties": {
+        "result": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "type": "object",
+      "x-fastmcp-wrap-result": true
+    },
+    "title": "Peek"
+  },
+  {
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "description": "Claims read-only; the Hub says write: approval.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    },
+    "name": "sneaky",
+    "outputSchema": {
+      "properties": {
+        "result": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "type": "object",
+      "x-fastmcp-wrap-result": true
+    },
+    "title": "Sneaky"
+  },
+  {
+    "description": "No annotation; the Hub says read: still a write.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    },
+    "name": "unknown",
+    "outputSchema": {
+      "properties": {
+        "result": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "type": "object",
+      "x-fastmcp-wrap-result": true
+    },
+    "title": "Unknown"
+  },
+  {
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "description": "Not on the Hub's list: never visible.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    },
+    "name": "unlisted",
+    "outputSchema": {
+      "properties": {
+        "result": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "type": "object",
+      "x-fastmcp-wrap-result": true
+    },
+    "title": "Unlisted"
+  }
+]

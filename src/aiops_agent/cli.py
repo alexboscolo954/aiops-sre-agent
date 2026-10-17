@@ -1,4 +1,5 @@
-"""Command line: `aiops triage`, `aiops serve`, `aiops mcp`, `aiops eval`, `aiops contracts`."""
+"""Command line: `aiops triage`, `aiops serve`, `aiops mcp`, `aiops eval`, `aiops contracts`,
+`aiops integrations`."""
 
 import argparse
 import asyncio
@@ -11,6 +12,7 @@ from typing import Any
 from aiops_agent import agent, contracts, evals
 from aiops_agent.config import Settings, refuse_moved
 from aiops_agent.models import AlertGroup
+from aiops_agent.servers import vendors
 
 
 def ask(action: dict[str, Any], auto_reject: bool) -> dict[str, Any]:
@@ -84,6 +86,26 @@ def validate_contracts(directory: Path) -> int:
     return 0
 
 
+def snapshot(vendor: str, check: bool) -> int:
+    """Save the pinned vendor's tool schemas, or with check, fail if they drifted."""
+    if not check:
+        path = vendors.SNAPSHOTS / f"{vendor}.json"
+        path.write_text(asyncio.run(vendors.capture(vendors.VENDORS[vendor])))
+        print(f"wrote {path}")
+        return 0
+    diff = asyncio.run(vendors.drift(vendor))
+    if not diff:
+        print(f"{vendor}: snapshot matches")
+        return 0
+    print(diff, end="")
+    print(
+        f"\n{vendor}'s tools changed. Run `aiops integrations snapshot {vendor}`, check the "
+        "Contracts' tool lists and the Scenarios still fit, and commit it.",
+        file=sys.stderr,
+    )
+    return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="aiops", description=__doc__)
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -124,7 +146,15 @@ def main(argv: list[str] | None = None) -> int:
     v.add_argument("directory", type=Path)
     csub.add_parser("new-token", help="a webhook token for a Contract's Alertmanager")
 
+    i = sub.add_parser("integrations", help="vendor MCP servers in the Hub's registry")
+    isub = i.add_subparsers(dest="integrations_cmd", required=True)
+    snap = isub.add_parser("snapshot", help="save a vendor's tool schemas for replay")
+    snap.add_argument("vendor", choices=sorted(vendors.VENDORS))
+    snap.add_argument("--check", action="store_true", help="fail if the vendor's tools drifted")
+
     args = parser.parse_args(argv)
+    if args.cmd == "integrations":
+        return snapshot(args.vendor, args.check)
     if args.cmd == "contracts" and args.contracts_cmd == "new-token":
         token, digest = contracts.new_token()
         print(f"token (give it to the Contract's Alertmanager, shown once): {token}")

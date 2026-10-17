@@ -15,8 +15,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Annotated, Any, Literal, NotRequired
 
-from fastmcp import Client, FastMCP
-from fastmcp.client.transports import StdioTransport
+from fastmcp import FastMCP
 from fastmcp.server import create_proxy
 from langchain.agents import create_agent
 from langchain.agents.middleware import (
@@ -185,14 +184,19 @@ def mount(
 
 
 def build_mcp(
-    contract: Contract, settings: Settings, k8s_apis: dict[str, tuple[Any, Any]] | None = None
+    contract: Contract,
+    settings: Settings,
+    k8s_apis: dict[str, tuple[Any, Any]] | None = None,
+    snapshots: bool = False,
 ) -> Toolbox:
     """One Contract's integrations, mounted in-process under one namespace-prefixed
     root. Nothing of another Contract is reachable from it.
-    k8s_apis: cluster name -> (CoreV1Api, AppsV1Api) instead of connecting, for tests."""
+    k8s_apis: cluster name -> (CoreV1Api, AppsV1Api) instead of connecting, for tests.
+    snapshots: vendors' tools from their schema snapshots, never started (replay)."""
     root, access = FastMCP(f"aiops-{contract.id}"), dict[str, Access]()
     for i in contract.integrations:
-        mount(root, access, i.name, *integration_server(contract, i, settings, k8s_apis))
+        server = integration_server(contract, i, settings, k8s_apis, snapshots)
+        mount(root, access, i.name, *server)
     root.add_middleware(AuditMiddleware(contract.id))
     return Toolbox(root, access)
 
@@ -224,6 +228,7 @@ def integration_server(
     integration: Integration,
     settings: Settings,
     k8s_apis: dict[str, tuple[Any, Any]] | None = None,
+    snapshots: bool = False,
 ) -> tuple[FastMCP, dict[str, Access]]:
     """One integration's MCP server and the Hub's list for its tools."""
     if isinstance(integration, Kubernetes):
@@ -235,7 +240,11 @@ def integration_server(
     if isinstance(integration, Runbooks):
         return runbooks.build_server(contract.runbook_dirs), runbooks.ACCESS
     if isinstance(integration, Vendor):
-        return vendor_server(contract, integration), dict(integration.tools)
+        if snapshots:
+            server = vendors.snapshot_server(integration.vendor, integration.name)
+        else:
+            server = vendor_server(contract, integration)
+        return server, dict(integration.tools)
     raise TypeError(f"no server for integration {integration!r}")
 
 
@@ -245,14 +254,11 @@ def vendor_server(contract: Contract, v: Vendor) -> FastMCP:
     integration's env and secrets, never the Hub's own variables or another
     Contract's. ponytail: one process per tool call (keep_alive off, so none
     outlives a Run); keep one per Run if a vendor's startup ever costs too much."""
-    command = vendors.VENDORS[v.vendor].command  # its env names were checked at load
-    env = {
+    env = {  # its names were checked against the registry at load
         **v.env,
         **{var: contract.secret(name).get_secret_value() for var, name in v.env_secrets.items()},
     }
-    transport = StdioTransport(command[0], list(command[1:]), env=env, keep_alive=False)
-    client = Client(transport, timeout=vendors.CALL_SECONDS, init_timeout=vendors.START_SECONDS)
-    return create_proxy(client, name=v.name)
+    return create_proxy(vendors.client(vendors.VENDORS[v.vendor], env), name=v.name)
 
 
 def for_contract(settings: Settings, contract: Contract) -> Settings:

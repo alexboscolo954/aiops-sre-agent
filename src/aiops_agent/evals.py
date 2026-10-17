@@ -3,9 +3,10 @@
 Each scenario (evals/scenarios/*.yaml) holds an alert or a question, the tool
 results recorded from a real cluster, and what a correct Report or Answer must
 contain. The MCP servers are
-the real ones (same tool names and schemas the model sees in production), but a
-replay middleware answers every call from the recording, so no cluster is needed
-and runs are repeatable.
+the real ones (same tool names and schemas the model sees in production; a
+vendor's come from its schema snapshot), but a replay middleware answers every
+call from the recording, so no cluster or vendor binary is needed and runs are
+repeatable.
 """
 
 import json
@@ -23,7 +24,7 @@ from mcp.types import TextContent
 
 from aiops_agent import agent, contracts
 from aiops_agent.config import Settings
-from aiops_agent.contracts import Contract
+from aiops_agent.contracts import Contract, Integration, Vendor
 from aiops_agent.models import AlertGroup, Investigation
 from aiops_agent.safety import redact, redact_strings
 
@@ -95,25 +96,31 @@ def scenario_contract(
     enable_actions: bool,
     runbook_dirs: Path | list[Path],
     clusters: dict[str, list[str]] | None = None,
-    integrations: list[str] | None = None,
+    integrations: list[str | dict[str, Any]] | None = None,
 ) -> Contract:
     """The Contract a Scenario runs in, offering the same tools production did. A
     saved Scenario names its clusters (with namespaces) and integrations; an older
     one has one cluster, `kind`, with its namespace, and kubernetes plus runbooks.
-    Integrations get placeholder config: the replay answers before any real call."""
+    Integrations get placeholder config: the replay answers before any real call.
+    A vendor is {name, vendor, tools}: its tools come from the vendor's schema
+    snapshot, and the Hub's list is the one the Contract had."""
     dirs = [runbook_dirs] if isinstance(runbook_dirs, Path) else runbook_dirs
     built: list[dict[str, Any]] = []
     for name in integrations or ["kubernetes", "runbooks"]:
-        if name == "kubernetes":
+        if isinstance(name, dict):  # a vendor
+            built.append({k: name[k] for k in ("name", "vendor", "tools")})
+        elif name == "kubernetes":
             built.append({"name": name, "enable_actions": enable_actions})
         elif name == "prometheus":
             built.append({"name": name, "url": "http://replay.invalid"})  # never reached
         elif name == "runbooks":
             if any(d.is_dir() for d in dirs):
                 built.append({"name": name})
-        else:  # a vendor: replaying its tools needs their saved schemas (slice 4.2)
-            raise ValueError(f"can't replay integration {name!r} yet: no schema snapshot")
-    spaces = clusters or {EVAL_CLUSTER: [namespace]}
+        else:  # a vendor saved by name only: which vendor, and its list, are unknown
+            raise ValueError(
+                f"can't replay integration {name!r}: a vendor needs {{name, vendor, tools}}"
+            )
+    spaces = {EVAL_CLUSTER: [namespace]} if clusters is None else clusters  # {}: none
     cluster_list = [{"name": c, "context": "replay", "namespaces": ns} for c, ns in spaces.items()]
     data = {"id": "eval", "name": "Eval", "clusters": cluster_list, "integrations": built}
     return contracts.build(data, runbook_dirs=dirs)
@@ -124,7 +131,7 @@ def replay_server(
 ) -> agent.Toolbox:
     """Real tool definitions and the Hub's real list; the API clients are never reached."""
     apis = {c.name: (MagicMock(), MagicMock()) for c in contract.clusters}
-    toolbox = agent.build_mcp(contract, settings, apis)
+    toolbox = agent.build_mcp(contract, settings, apis, snapshots=True)
     namespaces = {c.name: c.namespaces for c in contract.clusters}
     toolbox.mcp.add_middleware(Replay(recordings, ("runbooks_",), namespaces))
     return toolbox
@@ -267,6 +274,14 @@ def _result(text: str) -> Any:
         return text
 
 
+def integration(i: Integration) -> str | dict[str, Any]:
+    """A builtin by name; a vendor with what replay needs: which vendor (for its
+    schema snapshot) and the Hub's list. Never its env, secrets or probe."""
+    if isinstance(i, Vendor):
+        return {"name": i.name, "vendor": i.vendor, "tools": dict(i.tools)}
+    return i.name
+
+
 def scenario_yaml(
     t: Investigation,
     contract: Contract,
@@ -293,7 +308,7 @@ def scenario_yaml(
     body: dict[str, Any] = {
         "description": redact(f"Saved from {t.kind} {t.id} ({t.contract_id}): {t.title}"),
         "clusters": {c.name: sorted(c.namespaces) for c in contract.clusters},
-        "integrations": [i.name for i in contract.integrations],
+        "integrations": [integration(i) for i in contract.integrations],
     }
     if t.kind == "question":
         body["question"] = redact_strings(t.input["question"])

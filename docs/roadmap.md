@@ -214,11 +214,15 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
 - The subprocess gets MCP's safe default environment plus its own `env` and secrets, never the Hub's (tested with the demo Contracts). A Contract may set only the variables its vendor's registry entry lists (`LD_PRELOAD`, `PATH`, `NODE_OPTIONS` and the like would run code), and registry commands are absolute paths. One process per tool call, none outliving a Run; a handshake timeout drops a vendor that never answers, and the Run goes on. Health: a `probe` tool (must be listed `read`), or by default the vendor starts and offers every listed tool.
 - Deviations: stdio only. Remote HTTP waits for 4.4, where the Jira choice (Atlassian's remote MCP or a builtin) decides whether it's needed. Unannotated vendor tools stay gated (Grafana annotates its reads). Replaying a Scenario with a vendor refuses until 4.2's snapshots.
 
-**4.2 Schema snapshots.**
+**4.2 Schema snapshots.** Done.
 - `aiops integrations snapshot <name>` saves a pinned vendor server's tool schemas into this repo. They hold schemas only, no data. Replay builds tools from the snapshot.
 - *Done when:* a test diffs the snapshot against the real pinned server, so a vendor renaming a tool fails a test instead of silently breaking an eval.
+- As built: `src/aiops_agent/servers/snapshots/<vendor>.json` keeps each tool's name, title, description, input and output schemas and annotations (what the model and the approval gate see), sorted, so a diff reads well. The vendor starts with no Contract and no variables at all: a vendor that writes its config into a description has none to write into a file this public repo commits. `--check` prints the diff and fails. A saved Scenario lists a vendor as `{name, vendor, tools}` (never its env, secrets or probe), and replay offers its tools from the snapshot without starting it.
+- Deviations: the registry is still empty, so the diff test runs against the fixture vendor (`tests/fixtures/snapshots/fixture.json`, checked against the live fixture on every CI run); for a real vendor the check is `aiops integrations snapshot <name> --check`, run where its pinned binary is (4.3). A vendor saved by name only, in a draft from before 4.2, still refuses to replay. A Scenario from a Contract with no clusters now replays with none, instead of a made-up `kind` one.
 
 **4.3 Grafana stack** through `mcp-grafana`.
+- Registry entry plus `snapshots/grafana.json`; hub-smoke runs `aiops integrations snapshot grafana --check` inside the image, where the pinned binary is, so a renamed Grafana tool fails CI.
+- Check first: a snapshot is taken with no variables, so mcp-grafana must list its tools without `GRAFANA_URL`, and its toolset choice must live in the registry's command args, not in env; otherwise the snapshot won't match what a Contract's Run offers.
 - Covers Prometheus/Mimir and Loki (stats and patterns before raw logs, an IncidentFox idea), plus Tempo traces, Pyroscope and dashboard deep links in Reports. Grafana Alerting becomes a second alert source, normalized into an Alert group.
 - The kind demo gains a Grafana LGTM stack.
 - *Done when:* two new recorded Scenarios pass, one with the root cause in log patterns and one in traces.
@@ -293,4 +297,4 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
 
 ## Next
 
-Phase 4 first (the Operator's choice: no Contract needs a Relay yet). Next: slice 4.2, schema snapshots.
+Phase 4 first (the Operator's choice: no Contract needs a Relay yet). Next: slice 4.3, the Grafana stack.
