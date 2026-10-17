@@ -38,6 +38,11 @@ class Settings(BaseSettings):
     slack_app_token: SecretStr | None = None
     slack_operator_id: str | None = None  # U...
 
+    # Web console: the Tailscale logins (JSON list) that may sign in. Empty = off.
+    # Only behind `tailscale serve`: anything else reaching the port could send the
+    # identity header itself (console.py).
+    console_operators: set[str] = set()
+
 
 # Settings that are gone: most moved into a Contract's contract.yaml (slice 0.3).
 MOVED = {

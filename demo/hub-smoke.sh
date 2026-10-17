@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # The Hub's compose stack (deploy/hub) on this machine, with the demo Contracts:
 # - comes up healthy, and both Contracts decrypt inside the image;
-# - only the alert route is public: everything else through Caddy is a 404;
+# - only the alert route is public: everything else through Caddy is a 404,
+#   the console included, even with a forged Tailscale identity header;
+# - the console renders on 127.0.0.1 for the Operator's identity only;
 # - an alert is stored and fails as expected (no cluster, no model key in CI);
 # - a backup restores, and a bad contracts update never restarts the Hub.
 # Usage: demo/hub-smoke.sh [image]
@@ -45,6 +47,7 @@ AIOPS_HTTP_PORT=18081
 AIOPS_HTTPS_PORT=18443
 EOF
 printf 'AIOPS_APPROVER_TOKEN=smoke-approver\nAIOPS_MODEL_API_KEY=not-a-real-key\n' >"$work/hub.env"
+echo 'AIOPS_CONSOLE_OPERATORS=["smoke@example.com"]' >>"$work/hub.env"
 
 dc up -d --wait --quiet-pull || fail "stack did not come up healthy"
 [[ $(dc port hub 8080) == 127.0.0.1:18000 ]] || fail "hub published on $(dc port hub 8080)"
@@ -76,6 +79,8 @@ done
 big=$(code -X POST "$alert" -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
   --data-binary @<(head -c 2000000 /dev/zero | tr '\0' 'a'))
 [[ $big == 413 ]] || fail "a 2 MB body got $big, want 413"
+as_operator=(-H 'Tailscale-User-Login: smoke@example.com')
+[[ $(code "${as_operator[@]}" "$public/console") == 404 ]] || fail "the console is public"
 echo "ok   only the alert route is public; bodies over 1 MB refused"
 
 local_api=http://127.0.0.1:18000
@@ -93,6 +98,12 @@ assert t["status"] == "failed" and t["contract_id"] == "demo-shop", t
 assert t["error"].startswith("ConfigException"), t["error"]
 EOF
 echo "ok   investigation stored, failed as expected without a cluster"
+
+# The console, as `tailscale serve` reaches it: the image has its templates, and
+# only the Operator's identity header gets in.
+curl -sf "${as_operator[@]}" "$local_api/console" | grep -q 'demo-shop' || fail "console"
+[[ $(code "$local_api/console") == 403 ]] || fail "console without an identity"
+echo "ok   console renders on 127.0.0.1 for the Operator only, and is 404 through Caddy"
 
 dc exec -T backup /backup.sh once >/dev/null || fail "backup"
 dc exec -T backup sh -c '

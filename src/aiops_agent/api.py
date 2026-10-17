@@ -32,7 +32,7 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel
 
-from aiops_agent import agent, contracts
+from aiops_agent import agent, console, contracts
 from aiops_agent.config import Settings
 from aiops_agent.models import AlertGroup, Investigation
 from aiops_agent.observability import PENDING_APPROVALS, TRIAGE_SECONDS, TRIAGES
@@ -118,6 +118,8 @@ def create_app(
                 await asyncio.gather(*tasks, return_exceptions=True)
 
     app = FastAPI(title="aiops-sre-agent", lifespan=lifespan)
+    if settings.console_operators:  # off by default: 404, not a login page
+        app.include_router(console.router(settings.console_operators, by_id))
     bearer = HTTPBearer()
 
     def check(creds: HTTPAuthorizationCredentials, expected: str) -> None:

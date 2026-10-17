@@ -55,7 +55,7 @@ A slice is one commit-sized change, about one working session (1 to 3 hours).
 | Many clusters | One kubernetes server per Contract, with a `cluster` argument limited to that Contract's clusters | A Contract can have dozens of clusters, and one server per cluster would multiply the tool count |
 | Slack | Web API over httpx; Socket Mode over `websockets` (1.2), not slack-bolt | No public Slack endpoint, and no framework for one socket and a few calls |
 | Console stack | FastAPI + Jinja + HTMX, with no JS build | One language, one process |
-| Console login | Tailscale identity headers from `tailscale serve`, with the console on `127.0.0.1`, plus an Operator allowlist | No passwords to manage, and no way to forge the header |
+| Console login | Tailscale identity headers from `tailscale serve`, with the console on `127.0.0.1`, plus an Operator allowlist | No passwords to manage. `serve` strips a client's copy of the header, but anything else that can reach the port (local processes, other containers on the compose network) could send it |
 | Jira | An issue is created only when the Operator clicks | Never write to a client's tracker unasked |
 | Budget | Monthly per Contract. Warn at 80%. At 100%, refuse new Investigations but still notify | An alert is never silently dropped |
 | Model | One Hub default, overridable per Contract | |
@@ -157,12 +157,16 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
 
 ### Phase 2: Web console, Tailscale only (6 slices)
 
-**2.1 Skeleton and login.**
+**2.1 Skeleton and login.** Done.
 - Login trusts the identity headers that `tailscale serve` sets. That is safe only because the console listens on `127.0.0.1` (slice 0.5).
+- `/console` lists the Contracts for a login in `AIOPS_CONSOLE_OPERATORS`; anything else gets a 403, and with no operators set the console isn't mounted (404), so the in-cluster deploy stays closed. Jinja autoescapes everything, and pages send a CSP and `frame-ancestors 'none'`. `hub-smoke` proves `/console` is a 404 through Caddy even with a forged header, and renders on `127.0.0.1` from the image.
+- Not covered by CI: a real `tailscale serve`.
 - *Done when:* a request without the Operator's Tailscale identity is refused.
 
 **2.2 Investigations.**
 - Filter by Contract. Show the Report or Answer with its Evidence and tool calls. Approve and reject through the same `resume` path.
+- **CSRF:** `serve` adds the identity header to every request it proxies, including one a malicious page makes the Operator's browser send. Every POST must check `Origin` or `Sec-Fetch-Site`. Vendor HTMX as a static file, never from a CDN.
+- Before actions become clickable, decide with the Operator how to stop anything but `tailscale serve` from sending the header: split the compose network (Caddy and Hub apart from Postgres and backups), or check each request with tailscaled's `whois` on the peer address instead of trusting the header (needs tailscaled's socket in the container). A loopback check alone doesn't work: through Docker's published port, `serve` arrives from the bridge gateway, not 127.0.0.1.
 
 **2.3 Ask a Question** from a form.
 
@@ -281,4 +285,4 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
 
 ## Next
 
-Phase 2, slice 2.1: the web console's skeleton and login.
+Slice 2.2: Investigations in the console.

@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Contracts · aiops{% endblock %}
+{% block main %}
+<h1>Contracts</h1>
+<table>
+  <thead><tr><th>Id</th><th>Name</th><th>Clusters</th><th>Operator channel</th></tr></thead>
+  <tbody>
+  {% for c in contracts %}
+    <tr>
+      <td><code>{{ c.id }}</code></td>
+      <td>{{ c.name }}</td>
+      <td>{{ c.clusters | map(attribute="name") | join(", ") or "-" }}</td>
+      <td>{{ c.slack.operator_channel if c.slack else "-" }}</td>
+    </tr>
+  {% else %}
+    <tr><td colspan="4">No Contracts loaded.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

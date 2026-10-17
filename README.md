@@ -140,6 +140,15 @@ While Proposed actions wait, the parent message has **Approve** (with a confirm 
 
 Without `AIOPS_SLACK_APP_TOKEN` there are no buttons and no Questions: you decide through the API, and Client reports can't be sent. Everything posted is escaped (a label like `<!channel>` arrives as text, never as a ping), redacted and capped. A Slack failure, including a dropped socket (it reconnects), is logged and never fails an Investigation.
 
+### Web console
+
+The console is the Operator's view of every Contract (for now, the list of Contracts; Investigations come next). It has no passwords: `tailscale serve` adds your Tailscale identity to every request it proxies, as `Tailscale-User-Login`, and strips any copy a client sends.
+
+1. Set `AIOPS_CONSOLE_OPERATORS='["you@example.com"]'` in `hub.env`: the Tailscale logins that may sign in.
+2. Open `https://<vm>.<tailnet>.ts.net/console` from a device on your tailnet (the `tailscale serve` of step 6 above).
+
+Anything else gets a 403, including a tagged device, which has no user. With no operators set, `/console` doesn't exist. **Set it only where nothing but `tailscale serve` reaches the Hub's port**: on the VM that holds, but local processes and other containers on the compose network could still send the header themselves. Never set it on the in-cluster deploy, where any pod can reach the Service. Through Caddy, `/console` is a 404.
+
 ## Running as a service in one cluster
 
 ```bash
@@ -269,6 +278,7 @@ Hub settings are `AIOPS_*` environment variables (or `.env`). See [`config.py`](
 | `AIOPS_DATABASE_URL` | | Postgres, required for `serve`. Migrations run at startup |
 | `AIOPS_SLACK_BOT_TOKEN` | | The Hub's Slack bot (`xoxb-...`). Each Contract names its own channel |
 | `AIOPS_SLACK_APP_TOKEN` / `_OPERATOR_ID` | | Approve and reject buttons: an app-level token (`xapp-...`, `connections:write`) and the Operator's Slack member ID (`U...`). The app token needs both others |
+| `AIOPS_CONSOLE_OPERATORS` | | Web console: JSON list of the Tailscale logins that may sign in. Empty means off. Only behind `tailscale serve` |
 | `AIOPS_MAX_TOOL_CALLS` / `AIOPS_MAX_MODEL_CALLS` | 25 / 30 | Per run |
 | `AIOPS_MAX_CONCURRENT_TRIAGES` | 3 | Alert storms queue instead of fanning out |
 | `AIOPS_DECISION_TIMEOUT_SECONDS` | 1800 | Proposed actions with no decision by then are rejected as stale. So are those whose alert group resolves, which needs `send_resolved: true` ([`deploy/alertmanager-receiver.yaml`](deploy/alertmanager-receiver.yaml)) |
