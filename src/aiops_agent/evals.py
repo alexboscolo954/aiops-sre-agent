@@ -10,6 +10,7 @@ and runs are repeatable.
 
 import json
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -23,7 +24,8 @@ from mcp.types import TextContent
 from aiops_agent import agent, contracts
 from aiops_agent.config import Settings
 from aiops_agent.contracts import Contract
-from aiops_agent.models import AlertGroup
+from aiops_agent.models import AlertGroup, Investigation
+from aiops_agent.safety import redact
 
 
 class Replay(Middleware):
@@ -88,14 +90,30 @@ class Replay(Middleware):
 EVAL_CLUSTER = "kind"  # the Scenarios were recorded on the kind demo
 
 
-def scenario_contract(namespace: str, enable_actions: bool, runbooks_dir: Path) -> Contract:
-    """The Contract a Scenario runs in: one cluster, its namespace, the repo's Runbooks."""
-    integrations: list[dict[str, Any]] = [{"name": "kubernetes", "enable_actions": enable_actions}]
-    if runbooks_dir.is_dir():
-        integrations.append({"name": "runbooks"})
-    cluster = {"name": EVAL_CLUSTER, "context": "replay", "namespaces": [namespace]}
-    data = {"id": "eval", "name": "Eval", "clusters": [cluster], "integrations": integrations}
-    return contracts.build(data, runbook_dirs=[runbooks_dir])
+def scenario_contract(
+    namespace: str,
+    enable_actions: bool,
+    runbook_dirs: Path | list[Path],
+    clusters: dict[str, list[str]] | None = None,
+    integrations: list[str] | None = None,
+) -> Contract:
+    """The Contract a Scenario runs in, offering the same tools production did. A
+    saved Scenario names its clusters (with namespaces) and integrations; an older
+    one has one cluster, `kind`, with its namespace, and kubernetes plus runbooks.
+    Integrations get placeholder config: the replay answers before any real call."""
+    dirs = [runbook_dirs] if isinstance(runbook_dirs, Path) else runbook_dirs
+    built: list[dict[str, Any]] = []
+    for name in integrations or ["kubernetes", "runbooks"]:
+        if name == "kubernetes":
+            built.append({"name": name, "enable_actions": enable_actions})
+        elif name == "prometheus":
+            built.append({"name": name, "url": "http://replay.invalid"})  # never reached
+        elif name == "runbooks" and any(d.is_dir() for d in dirs):
+            built.append({"name": name})
+    spaces = clusters or {EVAL_CLUSTER: [namespace]}
+    cluster_list = [{"name": c, "context": "replay", "namespaces": ns} for c, ns in spaces.items()]
+    data = {"id": "eval", "name": "Eval", "clusters": cluster_list, "integrations": built}
+    return contracts.build(data, runbook_dirs=dirs)
 
 
 def replay_server(
@@ -181,11 +199,17 @@ def load_scenarios(directory: Path) -> list[tuple[Path, dict[str, Any]]]:
     return [(p, yaml.safe_load(p.read_text())) for p in sorted(directory.glob("*.yaml"))]
 
 
-async def run(directory: Path, settings: Settings, runbooks_dir: Path) -> list[dict[str, Any]]:
+async def run(
+    directory: Path, settings: Settings, runbook_dirs: Path | list[Path]
+) -> list[dict[str, Any]]:
     results = []
     for path, scenario in load_scenarios(directory):
         contract = scenario_contract(
-            scenario["namespace"], scenario.get("enable_actions", False), runbooks_dir
+            scenario.get("namespace", ""),
+            scenario.get("enable_actions", False),
+            runbook_dirs,
+            scenario.get("clusters"),
+            scenario.get("integrations"),
         )
         question, thread = scenario.get("question"), f"eval-{path.stem}"
         start = time.monotonic()
@@ -231,3 +255,72 @@ def table(results: list[dict[str, Any]]) -> str:
     passed = sum(r["passed"] for r in results)
     rows.append(f"\n{passed}/{len(results)} passed")
     return "\n".join(rows)
+
+
+def _redacted(value: Any) -> Any:
+    """Every string in an alert or question, redacted: the file goes into git."""
+    if isinstance(value, str):
+        return redact(value)
+    if isinstance(value, dict):
+        return {k: _redacted(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_redacted(v) for v in value]
+    return value
+
+
+def _result(text: str) -> Any:
+    try:
+        return json.loads(text)
+    except ValueError:
+        return text
+
+
+def scenario_yaml(
+    t: Investigation,
+    contract: Contract,
+    tool_calls: list[dict[str, Any]],
+    decisions: list[dict[str, Any]],
+) -> str:
+    """A finished Investigation as a draft Scenario: what started it, every recorded
+    tool result (already redacted when recorded), and an Expectation to edit. Replay
+    passes Runbook tools through to the real files, so they aren't recorded here.
+    Known limits: a call made twice with different results replays the first; a
+    replayed call must pass every argument the recording did; and the text is the
+    same content but not byte for byte the same JSON."""
+    assert t.input is not None and t.status == "done"
+    tools: dict[str, list[dict[str, Any]]] = {}
+    for call in tool_calls:
+        if call["tool"].startswith("runbooks_"):
+            continue
+        result = {"error": call["result"]} if call["is_error"] else _result(call["result"])
+        tools.setdefault(call["tool"], []).append({"match": call["args"], "result": result})
+    approved = [a for d in decisions if d["approve"] for a in d["actions"]]
+    budget = len(tool_calls) + 3
+    body: dict[str, Any] = {
+        "description": redact(f"Saved from {t.kind} {t.id} ({t.contract_id}): {t.title}"),
+        "clusters": {c.name: sorted(c.namespaces) for c in contract.clusters},
+        "integrations": [i.name for i in contract.integrations],
+    }
+    if t.kind == "question":
+        body["question"] = _redacted(t.input["question"])
+        cited = sorted({e.source for e in t.answer.evidence}) if t.answer else []
+        body["expect"] = {"keywords": [], "evidence": cited, "max_tool_calls": budget}
+    else:
+        body["alert"] = _redacted(t.input)
+        category = [t.report.category] if t.report else []
+        body["expect"] = {"category": category, "keywords": [], "max_tool_calls": budget}
+        if approved:
+            body["enable_actions"] = True
+            body["expect"]["allowed_actions"] = [
+                {"name": a["name"], "args": a["args"]} for a in approved
+            ]
+    body["tools"] = tools
+    day = datetime.fromtimestamp(t.started, UTC).strftime("%Y-%m-%d")
+    header = (
+        f"# Draft Scenario from {t.kind} {t.id} ({t.contract_id}), {day}.\n"
+        "# Before committing it to <contracts-repo>/" + t.contract_id + "/scenarios/:\n"
+        "# add the keywords a correct result must contain, and check the category,\n"
+        "# evidence, budget and allowed actions. A Question with follow-ups keeps only\n"
+        "# its first question, but every call, so its budget reads high.\n"
+    )
+    return header + yaml.safe_dump(body, sort_keys=False, width=100, allow_unicode=True)

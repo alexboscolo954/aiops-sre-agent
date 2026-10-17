@@ -24,6 +24,7 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
@@ -59,6 +60,19 @@ PROBE_SECONDS = 10  # each health check
 def usd(amount: float) -> str:
     """Cents above a dollar, tenths of a cent below: small spends stay visible."""
     return f"${amount:.2f}" if amount >= 1 else f"${amount:.4f}"
+
+
+def shown_settings(settings: Settings) -> dict[str, Any]:
+    """The Hub's settings for the console. pydantic masks SecretStr fields; these
+    two can carry credentials as plain strings, so they're masked here too."""
+    shown = settings.model_dump(mode="json")
+    shown["model_headers"] = {name: "**********" for name in settings.model_headers}
+    if settings.model_base_url:
+        url = urlsplit(settings.model_base_url)
+        if url.username or url.password:
+            host = url.netloc.rsplit("@", 1)[1]
+            shown["model_base_url"] = url._replace(netloc=f"**********@{host}").geturl()
+    return shown
 
 
 class Decision(BaseModel):
@@ -511,6 +525,7 @@ def create_app(
             slack_channel=channel,
             slack_ts=root,
             last_mention_ts=asked_ts,
+            input={"question": text},
         )
         if not await store().insert_question(t):
             return None
@@ -579,6 +594,7 @@ def create_app(
             title=group.title,
             group_key=group.groupKey,
             started=started,
+            input=group.model_dump(mode="json"),
         )
         await store().insert(t)
         await store().remember_group(contract_id, group.groupKey, started, t.id, seen | firing)
@@ -686,7 +702,7 @@ def create_app(
                 console_decide,
                 console_ask,
                 health,
-                settings.model_dump(mode="json"),  # SecretStr fields come out masked
+                shown_settings(settings),
                 approver_token,
             )
         )

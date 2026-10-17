@@ -109,7 +109,14 @@ def main(argv: list[str] | None = None) -> int:
     e.add_argument("scenarios", type=Path, nargs="?", default=Path("evals/scenarios"))
     e.add_argument("--json", action="store_true")
     e.add_argument("--out", type=Path, help="write each report as markdown here")
-    e.add_argument("--runbooks", type=Path, default=Path("runbooks"), help="runbooks to replay")
+    e.add_argument(
+        "--runbooks",
+        type=Path,
+        action="append",
+        help="runbook folder to replay (repeat: shared/runbooks, then the Contract's own, "
+        "which wins a name clash); "
+        "default ./runbooks",
+    )
 
     c = sub.add_parser("contracts", help="manage the contracts directory")
     csub = c.add_subparsers(dest="contracts_cmd", required=True)
@@ -137,7 +144,8 @@ def main(argv: list[str] | None = None) -> int:
         uvicorn.run("aiops_agent.api:create_app", factory=True, host=args.host, port=args.port)
         return 0
     if args.cmd == "eval":
-        results = asyncio.run(evals.run(args.scenarios, Settings(), args.runbooks))
+        runbooks = args.runbooks or [Path("runbooks")]
+        results = asyncio.run(evals.run(args.scenarios, Settings(), runbooks))
         if args.out:
             args.out.mkdir(parents=True, exist_ok=True)
             for r in results:

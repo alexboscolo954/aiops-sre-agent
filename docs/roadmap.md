@@ -181,7 +181,8 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
 - `/console/health` runs one cheap read per integration through the Contract's own tools (`agent.probes`) on each load, with a 10 s limit each. Errors are redacted; check results are never shown. Config shows secret names and whether each decrypted, never values; Hub settings come out of pydantic with every `SecretStr` masked.
 - Deviations: no `health probe` field in `contract.yaml` (the builtin probes are enough until a vendor integration needs its own, in 4.1), and Relay connections wait for Phase 3.
 
-**2.6 Save as Scenario.**
+**2.6 Save as Scenario.** Done.
+- Each Investigation stores its input at intake (migration 0008). The download (`/console/investigations/<id>/scenario.yaml`, identity plus token) builds the Scenario from the recorded tool calls, leaving out Runbook tools (replay reads the files). A saved Scenario names its `clusters` and `integrations`, and the replay builds exactly those with placeholder config, so it offers the tools production did; older Scenarios build byte-identical tools (fingerprinted). `--runbooks` repeats for shared plus the Contract's own.
 - Turns a finished Investigation into a Scenario YAML for the Operator to download: the alert or Question, the recorded tool results, and a draft Expectation to edit. The Operator commits it to the contracts repo. The Hub never gets push access to a repo holding every Contract's secrets. The eval runner takes `--scenarios <contracts-repo>/<contract>/scenarios`.
 - *Done when:* a saved Scenario replays to the same tool calls.
 
@@ -289,4 +290,4 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
 
 ## Next
 
-Slice 2.6: save an Investigation as a Scenario.
+Phase 2 is done. Next in order is Phase 3 (Relay), but no Contract needs a Relay yet, so the Operator may take Phase 4 (vendor integrations, Grafana) first.

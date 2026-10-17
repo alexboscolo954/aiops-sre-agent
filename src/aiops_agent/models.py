@@ -144,3 +144,6 @@ class Investigation(BaseModel):
     client_sent_by: str | None = None
     # A Question's last @mention (Slack ts): a follow-up must be newer.
     last_mention_ts: str | None = None
+    # What started it, as received (written once): the Alert group, or
+    # {"question": text} for a Question's first message. None before migration 0008.
+    input: dict[str, Any] | None = None

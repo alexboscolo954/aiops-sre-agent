@@ -103,7 +103,7 @@ async def test_allowed_proposal_is_rejected_and_scored(settings: Settings) -> No
 @pytest.mark.parametrize("path", sorted(SCENARIOS.glob("*.yaml")), ids=lambda p: p.stem)
 def test_scenarios_are_well_formed(path: Path) -> None:
     s = yaml.safe_load(path.read_text())
-    assert s["tools"] and s["namespace"]
+    assert s["tools"] and (s.get("namespace") or s.get("clusters"))
     if "question" in s:  # an Answer: keywords and the Evidence it must cite
         assert "alert" not in s and s["question"].strip() and s["expect"]["keywords"]
         assert set(s["expect"]["evidence"]) <= set(s["tools"])

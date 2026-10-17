@@ -23,10 +23,12 @@ from urllib.parse import parse_qs, urlsplit
 
 import yaml
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from jinja2 import Environment, FileSystemLoader
 
+from aiops_agent import evals
 from aiops_agent.contracts import Contract
+from aiops_agent.safety import redact
 from aiops_agent.store import Store, now
 
 # Autoescape always: alert titles come from client Alertmanagers, Reports and
@@ -155,6 +157,28 @@ def router(
             decisions=await store().decisions(t.id),
         )
 
+    @console.get("/investigations/{investigation_id}/scenario.yaml")
+    async def scenario(investigation_id: str, login: str = Depends(viewer)) -> Response:
+        """A download only: the Hub never writes to the contracts repo."""
+        t = await store().get(investigation_id)
+        if t is None:
+            raise HTTPException(404, "unknown investigation")
+        if t.status != "done":
+            raise HTTPException(409, f"investigation is {t.status}: only a finished one saves")
+        if t.input is None or t.contract_id not in by_id:
+            raise HTTPException(
+                409, "started before Scenarios were recorded, or its Contract is gone"
+            )
+        body = evals.scenario_yaml(
+            t, by_id[t.contract_id], await store().tool_calls(t.id), await store().decisions(t.id)
+        )
+        name = f"{t.contract_id}-{t.id[:8]}.yaml"
+        return Response(
+            body,
+            media_type="application/yaml",
+            headers={**HEADERS, "Content-Disposition": f'attachment; filename="{name}"'},
+        )
+
     @console.post("/investigations/{investigation_id}/decision")
     async def decision(
         request: Request,
@@ -209,7 +233,7 @@ def router(
             }
             for c, check in zip(shown, checks, strict=True)
         ]
-        hub = yaml.safe_dump(hub_config, sort_keys=False)
+        hub = redact(yaml.safe_dump(hub_config, sort_keys=False))  # and redacted, to be sure
         return page(request, "health.html", login=login, rows=rows, hub=hub)
 
     @console.get("/token", response_class=HTMLResponse)

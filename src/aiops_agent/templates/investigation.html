@@ -12,6 +12,9 @@
   cost: {% if usage.cost_usd is not none %}${{ "%.4f" | format(usage.cost_usd) }}{% else %}-{% endif %}
 </p>
 {% if t.error %}<p><strong>Failed:</strong> {{ t.error }}</p>{% endif %}
+{% if t.status == "done" and t.input %}
+<p><a href="/console/investigations/{{ t.id }}/scenario.yaml">Save as Scenario</a>: a draft to edit and commit to the contracts repo.</p>
+{% endif %}
 
 {% if t.pending %}
 <h2>Waiting for your approval</h2>

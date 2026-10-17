@@ -73,3 +73,18 @@ def test_secret_values_never_show_and_unbuildable_tools_fail_the_check(
     bank = section(page, "demo-bank")
     assert "<td>tools</td><td>FAILING</td>" in bank and "RuntimeError: kubeconfig not found" in bank
     assert "abcdefghijklmnop1234" not in bank  # errors are redacted too
+
+
+def test_hub_settings_never_show_credentials_in_plain_strings() -> None:
+    from aiops_agent.api import shown_settings
+
+    settings = Settings(
+        _env_file=None,
+        model_headers={"Authorization": "Bearer sk-live-abcdefghijklmnop", "x-team": "sre"},
+        model_base_url="https://user:hunter2@gateway.example/v1",
+        model_api_key=SecretStr("sk-key-abcdefghijklmnop"),
+    )
+    shown = str(shown_settings(settings))
+    for value in ("sk-live-abcdefghijklmnop", "hunter2", "user:", "sre", "sk-key-abc"):
+        assert value not in shown, value
+    assert "gateway.example" in shown and "Authorization" in shown

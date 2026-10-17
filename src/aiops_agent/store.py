@@ -26,7 +26,7 @@ MIGRATION_LOCK = 4_242_001  # pg_advisory_xact_lock key: one Hub migrates at a t
 COLUMNS = (
     "id, kind, contract_id, title, group_key, group_resolved, status, started, report, "
     "pending, executed_actions, error, deadline, slack_channel, slack_ts, client_sent_at, "
-    "client_sent_by, answer, last_mention_ts"
+    "client_sent_by, answer, last_mention_ts, input"
 )
 
 
@@ -99,7 +99,7 @@ class Store:
     async def insert(self, t: Investigation) -> None:
         await self._exec(
             f"insert into investigations ({COLUMNS}) values "  # noqa: S608 - fixed columns
-            "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (
                 t.id,
                 t.kind,
@@ -120,6 +120,7 @@ class Store:
                 t.client_sent_by,
                 Jsonb(t.answer.model_dump(mode="json")) if t.answer else None,
                 t.last_mention_ts,
+                Jsonb(t.input) if t.input is not None else None,
             ),
         )
 
