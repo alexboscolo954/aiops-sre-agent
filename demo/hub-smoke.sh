@@ -3,7 +3,7 @@
 # - comes up healthy, and both Contracts decrypt inside the image;
 # - only the alert route is public: everything else through Caddy is a 404,
 #   the console included, even with a forged Tailscale identity header;
-# - the console renders on 127.0.0.1 for the Operator's identity only;
+# - the console renders on 127.0.0.1 for the Operator's identity plus the token cookie;
 # - an alert is stored and fails as expected (no cluster, no model key in CI);
 # - a backup restores, and a bad contracts update never restarts the Hub.
 # Usage: demo/hub-smoke.sh [image]
@@ -101,11 +101,15 @@ echo "ok   investigation stored, failed as expected without a cluster"
 
 # The console, as `tailscale serve` reaches it: the image has its templates, and
 # only the Operator's identity header gets in.
-curl -sf "${as_operator[@]}" "$local_api/console" | grep -q 'demo-shop' || fail "console"
-curl -sf "${as_operator[@]}" "$local_api/console/investigations/$id" | grep -q 'ConfigException' ||
+# The cookie the token page sets: an HMAC of the approver token (console.py).
+key=$(python3 -c 'import hashlib,hmac; print(hmac.new(b"smoke-approver", b"aiops-console", hashlib.sha256).hexdigest())')
+with_token=("${as_operator[@]}" -H "Cookie: aiops_actions=$key")
+curl -sf "${with_token[@]}" "$local_api/console" | grep -q 'demo-shop' || fail "console"
+curl -sf "${with_token[@]}" "$local_api/console/investigations/$id" | grep -q 'ConfigException' ||
   fail "console investigation page"
 [[ $(code "$local_api/console") == 403 ]] || fail "console without an identity"
-echo "ok   console renders on 127.0.0.1 for the Operator only, and is 404 through Caddy"
+[[ $(code "${as_operator[@]}" "$local_api/console") == 303 ]] || fail "console without the token"
+echo "ok   console renders on 127.0.0.1 for the Operator with the token only, and is 404 through Caddy"
 
 dc exec -T backup /backup.sh once >/dev/null || fail "backup"
 dc exec -T backup sh -c '

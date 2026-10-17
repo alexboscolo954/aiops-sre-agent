@@ -4,9 +4,9 @@ Who: Tailscale's identity header. `tailscale serve` sets Tailscale-User-Login on
 every request it proxies and strips any copy a client sends, so the header is only
 as trustworthy as the port: the Hub listens on 127.0.0.1 behind `serve` (slice
 0.5), but local processes and the other containers on the compose network could
-still send it themselves. So the header only lets you look.
-Acting (approve, reject) also needs the approver token, pasted once per browser and
-kept as an HMAC of it in a Secure, HttpOnly, SameSite=Strict cookie, and every POST
+still send it themselves. So the header alone opens only the token page: every
+other page, and every action, also needs the approver token, pasted once per browser
+and kept as an HMAC of it in a Secure, HttpOnly, SameSite=Strict cookie. Every POST
 must come from the console's own pages (Sec-Fetch-Site or Origin): the identity
 header is ambient, so a page elsewhere could otherwise make the browser post.
 Off unless AIOPS_CONSOLE_OPERATORS lists who may sign in.
@@ -43,6 +43,9 @@ COOKIE = "aiops_actions"
 COOKIE_DAYS = 30
 # decide(investigation id, the pause's deadline, approve, reason, login) -> decided
 Decide = Callable[[str, float, bool, str, str], Awaitable[bool]]
+# ask(contract id, question, follow-up on this Question or None) -> its id, or None
+Ask = Callable[[str, str, str | None], Awaitable[str | None]]
+QUESTION_LIMIT = 4000
 
 
 def action_key(approver_token: str) -> str:
@@ -69,6 +72,7 @@ def router(
     by_id: dict[str, Contract],
     store: Callable[[], Store],
     decide: Decide,
+    ask: Ask,
     approver_token: str,
 ) -> APIRouter:
     key = action_key(approver_token)
@@ -82,10 +86,24 @@ def router(
     def can_act(request: Request) -> bool:
         return hmac.compare_digest(request.cookies.get(COOKIE, ""), key)
 
-    def acting(request: Request, login: str = Depends(operator)) -> str:
+    def viewer(request: Request, login: str = Depends(operator)) -> str:
+        if not can_act(request):
+            raise HTTPException(303, headers={"Location": "/console/token"})
+        return login
+
+    def posting(request: Request, login: str = Depends(operator)) -> str:
         if not same_origin(request):
             raise HTTPException(403, "cross-site request refused")
         return login
+
+    def acting(request: Request, login: str = Depends(posting)) -> str:
+        return viewer(request, login)
+
+    def question_text(f: dict[str, str]) -> str:
+        text = f.get("question", "").strip()
+        if not text or len(text) > QUESTION_LIMIT:
+            raise HTTPException(400, f"ask a question of 1 to {QUESTION_LIMIT} characters")
+        return text
 
     console = APIRouter(prefix="/console")
 
@@ -98,7 +116,7 @@ def router(
     async def index(
         request: Request,
         contract: str | None = None,
-        login: str = Depends(operator),
+        login: str = Depends(viewer),
     ) -> HTMLResponse:
         shown = contract if contract in by_id else None
         return page(
@@ -114,7 +132,7 @@ def router(
     async def investigation(
         request: Request,
         investigation_id: str,
-        login: str = Depends(operator),
+        login: str = Depends(viewer),
     ) -> HTMLResponse:
         t = await store().get(investigation_id)
         if t is None:
@@ -124,7 +142,6 @@ def router(
             "investigation.html",
             login=login,
             t=t,
-            can_act=can_act(request),
             tool_calls=await store().tool_calls(t.id),
             decisions=await store().decisions(t.id),
         )
@@ -135,8 +152,6 @@ def router(
         investigation_id: str,
         login: str = Depends(acting),
     ) -> RedirectResponse:
-        if not can_act(request):
-            raise HTTPException(403, "enter the approver token first: /console/token")
         f = await form(request)
         try:
             deadline = float(f["deadline"])
@@ -147,12 +162,33 @@ def router(
             raise HTTPException(409, "already decided or Stale: nothing to decide")
         return RedirectResponse(f"/console/investigations/{investigation_id}", 303)
 
+    @console.post("/questions")
+    async def question(request: Request, login: str = Depends(acting)) -> RedirectResponse:
+        f = await form(request)
+        if f.get("contract") not in by_id:
+            raise HTTPException(400, "which Contract?")
+        asked = await ask(f["contract"], question_text(f), None)
+        if asked is None:
+            raise HTTPException(409, "could not start the Question")
+        return RedirectResponse(f"/console/investigations/{asked}", 303)
+
+    @console.post("/investigations/{investigation_id}/questions")
+    async def follow_up(
+        request: Request, investigation_id: str, login: str = Depends(acting)
+    ) -> RedirectResponse:
+        t = await store().get(investigation_id)
+        if t is None:
+            raise HTTPException(404, "unknown investigation")
+        if await ask(t.contract_id, question_text(await form(request)), t.id) is None:
+            raise HTTPException(409, "still answering, or not a Question")
+        return RedirectResponse(f"/console/investigations/{t.id}", 303)
+
     @console.get("/token", response_class=HTMLResponse)
     async def token_form(request: Request, login: str = Depends(operator)) -> HTMLResponse:
         return page(request, "token.html", login=login, can_act=can_act(request))
 
     @console.post("/token")
-    async def token(request: Request, login: str = Depends(acting)) -> RedirectResponse:
+    async def token(request: Request, login: str = Depends(posting)) -> RedirectResponse:
         given = (await form(request)).get("token", "")
         if not hmac.compare_digest(given.encode(), approver_token.encode()):
             raise HTTPException(403, "that is not the approver token")

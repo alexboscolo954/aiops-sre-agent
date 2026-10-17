@@ -166,9 +166,10 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
 **2.2 Investigations.** Done.
 - `/console` lists Investigations, filtered by Contract; each one's page shows the Report or Answer, the decisions and every tool call (args, and the redacted raw result).
 - Approve and reject are plain forms (no HTMX needed), through the same decision path as the API and Slack. Each form names its pause (the deadline), like the buttons.
-- **Acting needs more than the identity header.** `serve` only strips a *client's* copy of the header; anything else that reaches the Hub's port (local processes, the other containers on the compose network) could send it, and neither a network split nor tailscaled's `whois` stops that behind Docker's published port. So the header only lets you look, and every POST also needs the approver token (pasted once per browser, kept as an HMAC of it in a Secure, HttpOnly, SameSite=Strict cookie) and must be same-origin (`Sec-Fetch-Site`, or `Origin` against `Host`), which also stops CSRF.
+- **Acting needs more than the identity header.** `serve` only strips a *client's* copy of the header; anything else that reaches the Hub's port (local processes, the other containers on the compose network) could send it, and neither a network split nor tailscaled's `whois` stops that behind Docker's published port. So the header alone opens nothing but the token page (since 2.3: a forged header could read client data from tool results), and every page and every POST also needs the approver token (pasted once per browser, kept as an HMAC of it in a Secure, HttpOnly, SameSite=Strict cookie) and must be same-origin (`Sec-Fetch-Site`, or `Origin` against `Host`), which also stops CSRF.
 
-**2.3 Ask a Question** from a form.
+**2.3 Ask a Question** from a form. Done.
+- A form on `/console` (Contract and question) and **Follow up** on a Question's page, through the same Question path as Slack (`start_question`, `follow_up`). Same rules as acting: identity, the token cookie, same origin. The page reloads itself while the Question runs (a meta refresh, no script). A console Question has no Slack thread.
 
 **2.4 Cost.**
 - Token usage per Run gives a cost per Investigation and per Contract. Apply budgets with the vetoable default above.
@@ -285,4 +286,4 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
 
 ## Next
 
-Slice 2.3: ask a Question from a form in the console.
+Slice 2.4: cost per Run, Investigation and Contract, with monthly budgets.

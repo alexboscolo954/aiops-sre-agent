@@ -390,31 +390,47 @@ def create_app(
             return
         t = await store().by_thread(channel, root)
         if t is None:
-            t = Investigation(
-                id=str(uuid.uuid4()),
-                kind="question",
-                contract_id=contract.id,
-                title=text[:200],
-                started=now(),
-                slack_channel=channel,
-                slack_ts=root,
-                last_mention_ts=ts,
-            )
-            if not await store().insert_question(t):
-                return  # redelivered: the first delivery is already on it
+            await start_question(contract.id, text, ts, channel, root)  # None: redelivered
         elif t.kind != "question":
             await slack.ephemeral(channel, user, "Follow-ups work in Question threads only.")
-            return
-        elif not await store().claim_follow_up(t.id, ts):
-            if t.last_mention_ts != ts:  # a redelivery needs no answer
-                await slack.ephemeral(
-                    channel, user, "Still answering the last one: ask again after."
-                )
-            return
-        else:
-            t.status, t.error, t.last_mention_ts = "running", None, ts
-        log.info("question %s for %s from slack", t.id, t.contract_id)
+        elif not await follow_up(t, text, ts) and t.last_mention_ts != ts:
+            # Still running. A redelivery of the mention it's answering needs no reply.
+            await slack.ephemeral(channel, user, "Still answering the last one: ask again after.")
+
+    async def start_question(
+        contract_id: str,
+        text: str,
+        asked_ts: str,
+        channel: str | None = None,
+        root: str | None = None,
+    ) -> Investigation | None:
+        """A new Question, from Slack (its thread) or the console (no thread). None
+        when its Slack thread already has one (a redelivered mention)."""
+        t = Investigation(
+            id=str(uuid.uuid4()),
+            kind="question",
+            contract_id=contract_id,
+            title=text[:200],
+            started=now(),
+            slack_channel=channel,
+            slack_ts=root,
+            last_mention_ts=asked_ts,
+        )
+        if not await store().insert_question(t):
+            return None
+        log.info("question %s for %s", t.id, contract_id)
         spawn(run(t, lambda a: agent.ask(a, text, t.id)))
+        return t
+
+    async def follow_up(t: Investigation, text: str, asked_ts: str) -> bool:
+        """One more message on a finished Question; False while it's still running,
+        or when asked_ts isn't newer than the last ask (a redelivery)."""
+        if not await store().claim_follow_up(t.id, asked_ts):
+            return False
+        t.status, t.error, t.last_mention_ts = "running", None, asked_ts
+        log.info("question %s follow-up", t.id)
+        spawn(run(t, lambda a: agent.ask(a, text, t.id)))
+        return True
 
     def spawn(coro: Any) -> None:
         task = asyncio.create_task(coro)
@@ -518,9 +534,29 @@ def create_app(
             note = f":no_entry: Rejected by {who}{shown}"
         return await settle(t, deadline, approve, message, f"console:{login}", note)
 
+    async def console_ask(contract_id: str, text: str, question_id: str | None) -> str | None:
+        """A Question from the console, or a follow-up on question_id: the
+        Investigation's id, or None when there's nothing to ask (still running, not
+        a Question). The ask's time orders it like a Slack ts."""
+        asked = f"{now():.6f}"
+        if question_id is None:
+            t = await start_question(contract_id, text, asked)
+            return t.id if t else None
+        t = await store().get(question_id)
+        if t is None or not await follow_up(t, text, asked):  # the claim checks the kind
+            return None
+        return t.id
+
     if settings.console_operators:  # off by default: 404, not a login page
         app.include_router(
-            console.router(settings.console_operators, by_id, store, console_decide, approver_token)
+            console.router(
+                settings.console_operators,
+                by_id,
+                store,
+                console_decide,
+                console_ask,
+                approver_token,
+            )
         )
 
     @app.get("/healthz")

@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block title %}{{ t.title }} · aiops{% endblock %}
+{% block head %}{% if t.status == "running" %}<meta http-equiv="refresh" content="5">{% endif %}{% endblock %}
 {% block main %}
 <h1>{{ t.title }}</h1>
 <p>
@@ -12,7 +13,6 @@
 <h2>Waiting for your approval</h2>
 <p>Goes Stale at {{ t.deadline | when }}.</p>
 <ul>{% for p in t.pending %}<li><pre>{{ p.description }}</pre></li>{% endfor %}</ul>
-{% if can_act %}
 <form method="post" action="/console/investigations/{{ t.id }}/decision">
   <input type="hidden" name="deadline" value="{{ t.deadline }}">
   <input type="hidden" name="approve" value="1">
@@ -24,18 +24,22 @@
   <label>Reason (the agent reads it) <input type="text" name="reason" size="60"></label>
   <button type="submit">Reject</button>
 </form>
-{% else %}
-<p>To approve or reject here, <a href="/console/token">enter the approver token</a> once.</p>
-{% endif %}
 {% endif %}
 
 {% if t.report %}
 <h2>Report</h2>
 <pre>{{ t.report.to_markdown(t.executed_actions) }}</pre>
 {% endif %}
+{% if t.status == "running" %}<p>Working on it: this page reloads every 5 seconds.</p>{% endif %}
 {% if t.answer %}
 <h2>Answer</h2>
 <pre>{{ t.answer.to_markdown() }}</pre>
+{% endif %}
+{% if t.kind == "question" and t.status in ("done", "failed") %}
+<form method="post" action="/console/investigations/{{ t.id }}/questions">
+  <p><textarea name="question" rows="2" cols="80" maxlength="4000" required></textarea></p>
+  <button type="submit">Follow up</button> The agent keeps this Question's earlier exchange.
+</form>
 {% endif %}
 
 <h2>Decisions</h2>

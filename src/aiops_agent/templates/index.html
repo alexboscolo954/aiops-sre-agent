@@ -18,6 +18,20 @@
   </tbody>
 </table>
 
+<h1>Ask a Question</h1>
+<form method="post" action="/console/questions">
+  <label>Contract
+    <select name="contract">
+    {% for c in contracts %}
+      <option value="{{ c.id }}"{% if c.id == shown %} selected{% endif %}>{{ c.id }}</option>
+    {% endfor %}
+    </select>
+  </label>
+  <p><textarea name="question" rows="3" cols="80" maxlength="4000" required
+     placeholder="which pods in namespace demo are unhealthy?"></textarea></p>
+  <button type="submit">Ask</button> It only reads, and its Answer opens here.
+</form>
+
 <h1>Investigations{% if shown %} for <code>{{ shown }}</code> · <a href="/console">all</a>{% endif %}</h1>
 <table>
   <thead><tr><th>Started</th><th>Contract</th><th>Kind</th><th>Status</th><th>Title</th></tr></thead>

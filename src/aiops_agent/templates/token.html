@@ -4,9 +4,9 @@
 <h1>Approver token</h1>
 {% if can_act %}<p>This browser can approve and reject.</p>{% endif %}
 <p>
-  Your Tailscale identity lets you look. Approving or rejecting also needs
-  <code>AIOPS_APPROVER_TOKEN</code>, once per browser: it stays as a cookie that
-  proves the token without holding it.
+  Your Tailscale identity says who you are. To see anything else here, and to
+  approve, reject or ask, the console also needs <code>AIOPS_APPROVER_TOKEN</code>,
+  once per browser: it stays as a cookie that proves the token without holding it.
 </p>
 <form method="post" action="/console/token">
   <label>Approver token <input type="password" name="token" autocomplete="off" size="60"></label>
