@@ -5,6 +5,7 @@ model's context, so it is scrubbed and bounded before it gets there.
 """
 
 import re
+from typing import Any
 
 _REDACTED = "[REDACTED]"
 
@@ -64,3 +65,15 @@ def redact_capped(text: str, limit: int, keep: str = "head") -> str:
     window = redact(text[:span] if keep == "head" else text[-span:])
     marker = f"\n...[truncated, {len(text)} chars in all]...\n"
     return window[:limit] + marker if keep == "head" else marker + window[-limit:]
+
+
+def redact_strings(value: Any) -> Any:
+    """Every string in a JSON-like value, redacted (dict keys stay): tool arguments,
+    an alert, anything structured that leaves the Hub or reaches its records."""
+    if isinstance(value, str):
+        return redact(value)
+    if isinstance(value, dict):
+        return {k: redact_strings(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [redact_strings(v) for v in value]
+    return value

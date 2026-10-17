@@ -25,7 +25,7 @@ from aiops_agent import agent, contracts
 from aiops_agent.config import Settings
 from aiops_agent.contracts import Contract
 from aiops_agent.models import AlertGroup, Investigation
-from aiops_agent.safety import redact
+from aiops_agent.safety import redact, redact_strings
 
 
 class Replay(Middleware):
@@ -257,17 +257,6 @@ def table(results: list[dict[str, Any]]) -> str:
     return "\n".join(rows)
 
 
-def _redacted(value: Any) -> Any:
-    """Every string in an alert or question, redacted: the file goes into git."""
-    if isinstance(value, str):
-        return redact(value)
-    if isinstance(value, dict):
-        return {k: _redacted(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_redacted(v) for v in value]
-    return value
-
-
 def _result(text: str) -> Any:
     try:
         return json.loads(text)
@@ -293,7 +282,9 @@ def scenario_yaml(
         if call["tool"].startswith("runbooks_"):
             continue
         result = {"error": call["result"]} if call["is_error"] else _result(call["result"])
-        tools.setdefault(call["tool"], []).append({"match": call["args"], "result": result})
+        # Arguments are redacted when recorded; again here for rows from before that.
+        match = redact_strings(call["args"])
+        tools.setdefault(call["tool"], []).append({"match": match, "result": result})
     approved = [a for d in decisions if d["approve"] for a in d["actions"]]
     budget = len(tool_calls) + 3
     body: dict[str, Any] = {
@@ -302,17 +293,17 @@ def scenario_yaml(
         "integrations": [i.name for i in contract.integrations],
     }
     if t.kind == "question":
-        body["question"] = _redacted(t.input["question"])
+        body["question"] = redact_strings(t.input["question"])
         cited = sorted({e.source for e in t.answer.evidence}) if t.answer else []
         body["expect"] = {"keywords": [], "evidence": cited, "max_tool_calls": budget}
     else:
-        body["alert"] = _redacted(t.input)
+        body["alert"] = redact_strings(t.input)
         category = [t.report.category] if t.report else []
         body["expect"] = {"category": category, "keywords": [], "max_tool_calls": budget}
         if approved:
             body["enable_actions"] = True
             body["expect"]["allowed_actions"] = [
-                {"name": a["name"], "args": a["args"]} for a in approved
+                {"name": a["name"], "args": redact_strings(a["args"])} for a in approved
             ]
     body["tools"] = tools
     day = datetime.fromtimestamp(t.started, UTC).strftime("%Y-%m-%d")

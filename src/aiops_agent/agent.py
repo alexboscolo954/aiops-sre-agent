@@ -42,7 +42,7 @@ from aiops_agent.config import Settings
 from aiops_agent.contracts import Contract, Integration, Kubernetes, Prometheus
 from aiops_agent.models import AlertGroup, Answer, TriageReport
 from aiops_agent.observability import AuditMiddleware
-from aiops_agent.safety import redact, redact_capped, truncate
+from aiops_agent.safety import redact, redact_capped, redact_strings, truncate
 from aiops_agent.servers import Access, kubernetes, prometheus, runbooks
 
 log = logging.getLogger("aiops.agent")
@@ -284,7 +284,8 @@ def record_tool_results(sink: ToolSink) -> Any:
             call = request.tool_call
             text = redact_capped(text_of(result), RAW_RESULT_LIMIT)
             try:
-                await sink(call["name"], call["args"], text, result.status == "error")
+                args = redact_strings(call["args"])  # the model wrote them, maybe from a log
+                await sink(call["name"], args, text, result.status == "error")
             except Exception:
                 log.exception("could not record the result of %s", call["name"])
         return result

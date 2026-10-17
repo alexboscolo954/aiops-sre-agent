@@ -222,3 +222,43 @@ def test_an_approved_action_becomes_an_allowed_one(
             "args": {"cluster": "test", "namespace": "shop", "name": "checkout-7d9f-abc"},
         }
     ]
+
+
+def test_tool_arguments_are_redacted_too(
+    settings: Settings, fake_cluster: Any, full: dict[str, Any]
+) -> None:
+    """The model writes the arguments, and it can copy a secret out of a log."""
+    leaky = call(
+        "kubernetes_list_pods",
+        "l",
+        cluster="test",
+        namespace="shop",
+        label_selector=f"app={SECRET}",
+    )
+    with client(settings, fake_cluster, leaky, call("TriageReport", "r", **REPORT), acme=full) as c:
+        tid = c.post(URL, json=ALERT, headers=HOOK).json()["investigation"]
+        wait_for(c, tid, "done")
+        _, scenario, text = download(c, tid)
+        page = c.get(f"/console/investigations/{tid}", headers=VIEW).text
+    assert SECRET not in page  # stored redacted: the console's tool calls don't show it
+    assert SECRET not in text
+    assert (
+        scenario["tools"]["kubernetes_list_pods"][0]["match"]["label_selector"]
+        == "app=token=[REDACTED]"
+    )
+
+
+def test_rows_recorded_before_argument_redaction_are_redacted_on_export() -> None:
+    t = Investigation(
+        id="old", contract_id="acme", title="t", started=0, status="done", input={"question": "q"}
+    )
+    old_row = {
+        "tool": "kubernetes_list_pods",
+        "args": {"label_selector": SECRET},
+        "result": "[]",
+        "is_error": False,
+    }
+    approved = {"approve": True, "actions": [{"name": "x", "args": {"note": SECRET}}]}
+    assert SECRET not in evals.scenario_yaml(t, make_contract(), [old_row], [])
+    t = t.model_copy(update={"kind": "triage", "input": {"status": "firing", "alerts": []}})
+    assert SECRET not in evals.scenario_yaml(t, make_contract(), [], [approved])
