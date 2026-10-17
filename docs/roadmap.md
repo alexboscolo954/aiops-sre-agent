@@ -38,7 +38,7 @@ A slice is one commit-sized change, about one working session (1 to 3 hours).
 | Reaching a Contract | **Direct** (the Hub holds the credentials) or **Relay** (dials out from the client network) |
 | Hub | A cloud VM you own: docker compose with the Hub and Postgres |
 | Operator interfaces | Your own Slack workspace, one channel per Contract, with approve buttons. Also a web console |
-| Client delivery | Optional per Contract. Reports only, never approval controls |
+| Client delivery | Optional per Contract. A Client report goes when the Operator clicks Send, never with approval controls |
 | Data policy | Set per Contract. Default: no restrictions |
 | Integrations | Hybrid: vendor MCP servers where they're good, our own where they're missing |
 | Contract config | YAML per Contract in one private repo, with SOPS secrets and an age key per Contract |
@@ -75,8 +75,8 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
   - its integrations, as a list of entries. `kubernetes` (`enable_actions`, `max_replicas`), `prometheus` (`url`, `token_secret`) and `runbooks` are builtin entries, so Phase 4 needs no migration.
 - These fields mirror today's `Settings`. Unknown keys fail, so each later field arrives in the slice that gives it behaviour, and existing files stay valid:
   - tool allowlist in YAML: 4.1, when vendor tools need it. Builtins keep their list in code;
-  - notification targets: 1.1;
-  - Data policy: 1.3, 6.4;
+  - notification targets: 1.1 (the client channel: 1.3);
+  - Data policy: 6.4 (1.3 needed none: the Operator reviews each Client report);
   - model and budget: 2.4;
   - health probe: 2.5;
   - reach: 3.2;
@@ -140,8 +140,10 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
   - a second click is refused;
   - going Stale updates the message.
 
-**1.3 Optional client delivery.**
-- Per Contract, the Report goes to the client's channel. It never includes approval controls, and it respects the Data policy.
+**1.3 Optional client delivery.** Done.
+- Per Contract, `slack.client_channel` (a Slack Connect channel). A finished Report gets a **Send to client** button in the Operator's thread, and the Client report goes once, as plain text with no controls. It holds the summary, root cause, severity, affected and Recommendations. Evidence, Executed actions, the Runbook and ids never go.
+- Deviations: sent on the Operator's click, not automatically, so AI output is read before a client sees it. No Data policy field: the click is the review, and masking stays in 6.4.
+- A crash between claiming the send and posting it leaves it marked sent but unsent (a `ponytail:` note in `api.py`).
 - *Done when:* delivery is off by default, and the client message never contains buttons.
 
 **1.4 Questions.**
@@ -277,4 +279,4 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
 
 ## Next
 
-Slice 1.3: optional client delivery.
+Slice 1.4: Questions from an @mention in a Contract channel.

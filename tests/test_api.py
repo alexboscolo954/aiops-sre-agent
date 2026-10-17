@@ -38,13 +38,17 @@ def client(
     more: dict[str, tuple[Contract, Any]] | None = None,
     slack: Any = None,
     acme_channel: str | None = None,
+    acme_client: str | None = None,
 ) -> TestClient:
     """Contract "acme" (token hook-token) on fake_cluster, plus `more`: id -> (Contract,
     its own fake cluster). The model is shared, so its steps run in alert order.
     slack: an httpx transport standing in for Slack's Web API."""
     settings.approver_token = SecretStr("approver-token")
     acme = make_contract(
-        enable_actions=actions, webhook_token="hook-token", slack_channel=acme_channel
+        enable_actions=actions,
+        webhook_token="hook-token",
+        slack_channel=acme_channel,
+        client_channel=acme_client,
     )
     clusters = {"acme": (acme, fake_cluster), **(more or {})}
 

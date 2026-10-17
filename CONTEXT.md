@@ -11,7 +11,7 @@ One client engagement the agent works for: its clusters and integrations, its cr
 _Avoid_: Client, tenant, customer
 
 **Operator**:
-The person who runs the agent across all Contracts. The Operator receives every Report and makes every Approval decision. A Contract can also send its Reports to the client team's own channel, but that is optional.
+The person who runs the agent across all Contracts. The Operator receives every Report and makes every Approval decision. If a Contract has a client channel, the Operator can send a Client report there, one Report at a time.
 _Avoid_: User, admin
 
 **Data policy**:
@@ -66,6 +66,10 @@ One uninterrupted stretch of agent work inside an Investigation. An Investigatio
 **Report**:
 The structured result of a Triage, a failing Check, or a Question that turns into a hunt for a fault: summary, Category, root cause, Evidence, Assessed severity and Recommendations.
 _Avoid_: Triage (for the output)
+
+**Client report**:
+The copy of a Report that goes to the Contract's client channel, only when the Operator clicks to send it. It holds the summary, root cause, Assessed severity, what is affected and the Recommendations. It never holds Evidence, Executed actions, the Runbook used, or any approval control.
+_Avoid_: Client delivery (for the message)
 
 **Answer**:
 The result of a Question: a direct reply backed by Evidence, with no Category or Assessed severity. A Question that turns into a hunt for a fault ends with a Report instead.

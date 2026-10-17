@@ -23,7 +23,8 @@ MIGRATIONS = Path(__file__).parent / "migrations"
 MIGRATION_LOCK = 4_242_001  # pg_advisory_xact_lock key: one Hub migrates at a time
 COLUMNS = (
     "id, kind, contract_id, title, group_key, group_resolved, status, started, report, "
-    "pending, executed_actions, error, deadline, slack_channel, slack_ts"
+    "pending, executed_actions, error, deadline, slack_channel, slack_ts, client_sent_at, "
+    "client_sent_by"
 )
 
 
@@ -90,7 +91,7 @@ class Store:
     async def insert(self, t: Investigation) -> None:
         await self._exec(
             f"insert into investigations ({COLUMNS}) values "  # noqa: S608 - fixed columns
-            "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (
                 t.id,
                 t.kind,
@@ -107,6 +108,8 @@ class Store:
                 t.deadline,
                 t.slack_channel,
                 t.slack_ts,
+                t.client_sent_at,
+                t.client_sent_by,
             ),
         )
 
@@ -119,10 +122,30 @@ class Store:
         )
         return row is not None
 
+    async def claim_client_report(self, investigation_id: str, by: str) -> float | None:
+        """Take the one send of a finished Report: its time, or None when it was
+        already sent (or isn't finished)."""
+        at = now()
+        row = await self._one(
+            "update investigations set client_sent_at = %s, client_sent_by = %s "
+            "where id = %s and status = 'done' and report is not null "
+            "and client_sent_at is null returning id",
+            (at, by, investigation_id),
+        )
+        return at if row else None
+
+    async def release_client_report(self, investigation_id: str, at: float) -> None:
+        """The post failed: free the send for a retry, unless it was claimed again."""
+        await self._exec(
+            "update investigations set client_sent_at = null, client_sent_by = null "
+            "where id = %s and client_sent_at = %s",
+            (investigation_id, at),
+        )
+
     async def save(self, t: Investigation) -> None:
         """Everything a Run changes. Never group_resolved (only the resolve path sets
         it, so a Run that finishes after a resolve can't clear it), nor the Slack
-        thread (set_slack_thread)."""
+        thread (set_slack_thread), nor the Client report's send."""
         await self._exec(
             "update investigations set status = %s, report = %s, pending = %s, "
             "executed_actions = %s, error = %s, deadline = %s where id = %s",

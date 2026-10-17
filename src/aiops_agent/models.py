@@ -121,3 +121,6 @@ class Investigation(BaseModel):
     # The Slack thread this Investigation posts to, once its parent message exists.
     slack_channel: str | None = None
     slack_ts: str | None = None
+    # When the Client report was sent, and by whom (never set by a Run).
+    client_sent_at: float | None = None
+    client_sent_by: str | None = None

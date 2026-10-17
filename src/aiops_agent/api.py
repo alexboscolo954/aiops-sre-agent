@@ -36,7 +36,15 @@ from aiops_agent import agent, contracts
 from aiops_agent.config import Settings
 from aiops_agent.models import AlertGroup, Investigation
 from aiops_agent.observability import PENDING_APPROVALS, TRIAGE_SECONDS, TRIAGES
-from aiops_agent.slack import Slack, clean, parent_blocks, parent_text, reject_modal, reply_text
+from aiops_agent.slack import (
+    Slack,
+    clean,
+    client_text,
+    parent_blocks,
+    parent_text,
+    reject_modal,
+    reply_text,
+)
 from aiops_agent.store import Store, connect, now
 
 log = logging.getLogger("aiops.api")
@@ -137,7 +145,7 @@ def create_app(
         if not channel or not settings.slack_bot_token:
             return
         slack: Slack = db["slack"]
-        blocks = parent_blocks(t, buttons)
+        blocks = parent_blocks(t, buttons, client_channel(t))
         if t.slack_ts is None:
             ts = await slack.post(channel, parent_text(t), blocks=blocks)
             if ts and await store().set_slack_thread(t.id, channel, ts):
@@ -267,6 +275,31 @@ def create_app(
         except Exception:  # a malformed payload must not vanish silently
             log.exception("slack interaction %s failed", p.get("type"))
 
+    def client_channel(t: Investigation) -> str | None:
+        """From the loaded Contract, never from a click: the config decides."""
+        contract = by_id.get(t.contract_id)
+        return contract.slack.client_channel if contract and contract.slack else None
+
+    async def send_to_client(t: Investigation, channel: str, user: str) -> None:
+        """The Client report, once: claim, post as plain text (no blocks, so no
+        controls), then take the button away. ponytail: a crash between the claim
+        and the post leaves it marked sent but unsent; check the client channel."""
+        slack: Slack = db["slack"]
+        client = client_channel(t)
+        at = await store().claim_client_report(t.id, f"slack:{user}") if client else None
+        if not client or at is None:
+            await slack.ephemeral(channel, user, "Already sent, or nothing to send.")
+            return
+        if await slack.post(client, client_text(t)) is None:
+            await store().release_client_report(t.id, at)
+            await slack.ephemeral(channel, user, "Slack refused the post: nothing was sent.")
+            return
+        t.client_sent_at, t.client_sent_by = at, f"slack:{user}"
+        log.info("investigation %s client report sent by %s", t.id, t.client_sent_by)
+        assert t.slack_ts is not None  # the click came from this thread's parent
+        await slack.update(channel, t.slack_ts, parent_text(t), parent_blocks(t, buttons, client))
+        await slack.post(channel, f":outbox_tray: Sent to the client by <@{user}>.", t.slack_ts)
+
     async def interaction(p: dict[str, Any]) -> None:
         """A Slack button click or reject modal, from Socket Mode (already acked)."""
         slack: Slack = db["slack"]
@@ -286,6 +319,9 @@ def create_app(
         # A button only decides its own Investigation, from its own Contract's channel.
         if t is None or t.slack_channel != channel:
             await slack.ephemeral(channel, user, "That Investigation isn't in this channel.")
+            return
+        if action["action_id"] == "send_to_client":
+            await send_to_client(t, channel, user)
             return
         deadline = pause["deadline"]
         by, who = f"slack:{user}", f"<@{user}>"

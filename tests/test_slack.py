@@ -24,7 +24,8 @@ from websockets.sync.server import ServerConnection, serve
 
 from aiops_agent.api import create_app
 from aiops_agent.config import Settings
-from aiops_agent.slack import clean
+from aiops_agent.models import Investigation, TriageReport
+from aiops_agent.slack import clean, client_text
 from tests.conftest import REPORT, call, make_contract, make_fake_cluster, scripted
 from tests.test_api import ALERT, AUTH, BANK_HOOK, BANK_URL, HOOK, RESOLVED, URL, client
 from tests.test_restart import wait_for
@@ -293,7 +294,7 @@ def submit(metadata: str, reason: str, user: str = OPERATOR) -> dict[str, Any]:
 def buttons(slack: FakeSlack) -> dict[str, dict[str, Any]]:
     """The buttons on the parent as last posted or updated, by action_id."""
     parents = [p for m, p, _ in slack.calls if m in ("chat.postMessage", "chat.update")]
-    last = [p for p in parents if "thread_ts" not in p][-1]["blocks"]
+    last = [p for p in parents if "thread_ts" not in p and "blocks" in p][-1]["blocks"]
     return {e["action_id"]: e for b in last if b["type"] == "actions" for e in b["elements"]}
 
 
@@ -314,7 +315,7 @@ def until(check: Any) -> None:
 
 @contextmanager
 def paused(
-    settings: Settings, fake_cluster: Any, slack: FakeSlack, *after: Any
+    settings: Settings, fake_cluster: Any, slack: FakeSlack, *after: Any, **kw: Any
 ) -> Iterator[tuple[TestClient, str]]:
     """An Investigation waiting for approval of EVICT, its buttons posted."""
     with client(
@@ -325,6 +326,7 @@ def paused(
         actions=True,
         slack=slack.transport(),
         acme_channel=ACME,
+        **kw,
     ) as c:
         tid = c.post(URL, json=ALERT, headers=HOOK).json()["investigation"]
         wait_for(c, tid, "awaiting_approval")
@@ -491,3 +493,174 @@ def test_bad_payloads_and_a_dead_socket_are_logged_never_fatal(
     dead = FakeSlack("ws://127.0.0.1:1")
     with client(settings, fake_cluster, slack=dead.transport()):
         until(lambda: "slack socket mode: " in caplog.text)
+
+
+# Client reports: sent to the Contract's client channel only when the Operator clicks.
+
+ACME_CLIENT, BANK_CLIENT = "C0ACMECLI01", "C0BANKCLI01"
+REPORT_WITH_RUNBOOK = call("TriageReport", "c2", **REPORT, runbook="oom-killed")
+
+
+def to(slack: FakeSlack, channel: str) -> list[dict[str, Any]]:
+    return [p for m, p, _ in slack.calls if m == "chat.postMessage" and p["channel"] == channel]
+
+
+def sent_by(database_url: str) -> list[tuple[str, str | None]]:
+    with psycopg.connect(database_url) as conn:
+        rows = conn.execute("select id, client_sent_by from investigations order by started")
+        return [(r[0], r[1]) for r in rows.fetchall()]
+
+
+def test_the_operator_sends_the_client_report_once(
+    settings: Settings, fake_cluster: Any, sock: FakeSocket, database_url: str
+) -> None:
+    slack = FakeSlack(sock.url)
+    with paused(settings, fake_cluster, slack, REPORT_WITH_RUNBOOK, acme_client=ACME_CLIENT) as (
+        c,
+        tid,
+    ):
+        assert set(buttons(slack)) == {"approve", "reject"}  # no Send while waiting
+        sock.send(click("send_to_client", json.dumps({"id": tid})))  # forged, before done
+        until(lambda: ephemerals(slack) == [(OPERATOR, "Already sent, or nothing to send.")])
+        sock.send(click("approve", buttons(slack)["approve"]["value"]))
+        wait_for(c, tid, "done")
+        until(lambda: "send_to_client" in buttons(slack))
+        send = buttons(slack)["send_to_client"]
+        assert send["confirm"]["text"]["text"].endswith(f"client channel {ACME_CLIENT}.")
+        assert to(slack, ACME_CLIENT) == []  # nothing until the click
+        sock.send(click("send_to_client", send["value"]))
+        until(lambda: any("Sent to the client by <@U0OPERATOR1>" in r for r in replies(slack)))
+        assert buttons(slack) == {}
+        assert "sent to the client" in slack.calls[-2][1]["text"]  # the parent, updated
+        sock.send(click("send_to_client", send["value"]))  # a second click
+        until(lambda: ephemerals(slack) == [(OPERATOR, "Already sent, or nothing to send.")] * 2)
+    (message,) = to(slack, ACME_CLIENT)
+    text = message["text"]
+    assert "blocks" not in message and "thread_ts" not in message
+    assert REPORT["summary"] in text and "Raise the memory limit to 512Mi" in text
+    for internal in (
+        "kubernetes_pod_logs",
+        "OutOfMemoryError",
+        "Executed",
+        "kubernetes_evict",
+        "oom-killed",
+        "Evidence",
+        tid,
+        "resource_limits",
+    ):
+        assert internal not in text, internal
+    assert sent_by(database_url) == [(tid, "slack:U0OPERATOR1")]
+
+
+def test_client_reports_are_off_without_a_client_channel_or_buttons(
+    settings: Settings, fake_cluster: Any, sock: FakeSocket
+) -> None:
+    slack = FakeSlack(sock.url)
+    done_once(settings, fake_cluster, slack)  # buttons on, no client channel
+    assert buttons(slack) == {}
+    settings.slack_app_token = None  # a client channel, but no buttons
+    slack = FakeSlack()
+    steps = [call("TriageReport", "c1", **REPORT)]
+    with client(
+        settings,
+        fake_cluster,
+        *steps,
+        slack=slack.transport(),
+        acme_channel=ACME,
+        acme_client=ACME_CLIENT,
+    ) as c:
+        other = {**ALERT, "groupKey": "no-buttons"}
+        wait_for(c, c.post(URL, json=other, headers=HOOK).json()["investigation"], "done")
+        slack.until(3)
+    assert buttons(slack) == {} and to(slack, ACME_CLIENT) == []
+
+
+def test_only_the_operator_sends_and_a_refused_post_can_be_retried(
+    settings: Settings, fake_cluster: Any, sock: FakeSocket, database_url: str
+) -> None:
+    slack = FakeSlack(sock.url)
+    steps = [call("TriageReport", "c1", **REPORT)]
+    with client(
+        settings,
+        fake_cluster,
+        *steps,
+        slack=slack.transport(),
+        acme_channel=ACME,
+        acme_client=ACME_CLIENT,
+    ) as c:
+        tid = c.post(URL, json=ALERT, headers=HOOK).json()["investigation"]
+        wait_for(c, tid, "done")
+        until(lambda: "send_to_client" in buttons(slack))
+        value = buttons(slack)["send_to_client"]["value"]
+        sock.send(click("send_to_client", value, user=STRANGER))
+        sock.send(click("send_to_client", value, channel=BANK))
+        until(lambda: len(ephemerals(slack)) == 2)
+        assert to(slack, ACME_CLIENT) == [] and sent_by(database_url) == [(tid, None)]
+        slack.answers = [httpx.Response(200, json={"ok": False, "error": "not_in_channel"})]
+        sock.send(click("send_to_client", value))
+        until(lambda: len(ephemerals(slack)) == 3)
+        assert sent_by(database_url) == [(tid, None)]  # released: it can be retried
+        assert "send_to_client" in buttons(slack)
+        sock.send(click("send_to_client", value))
+        until(lambda: any("Sent to the client" in r for r in replies(slack)))
+    assert [e[1] for e in ephemerals(slack)] == [
+        "Only the Operator can decide.",
+        "That Investigation isn't in this channel.",
+        "Slack refused the post: nothing was sent.",
+    ]
+    assert len(to(slack, ACME_CLIENT)) == 2  # the refused one, then the one sent
+    assert sent_by(database_url) == [(tid, "slack:U0OPERATOR1")]
+
+
+def test_each_contract_sends_only_to_its_own_client_channel(
+    settings: Settings, fake_cluster: Any, sock: FakeSocket
+) -> None:
+    slack = FakeSlack(sock.url)
+    bank = make_contract(
+        contract_id="bank",
+        webhook_token="bank-token",
+        slack_channel=BANK,
+        client_channel=BANK_CLIENT,
+    )
+    steps = [call("TriageReport", "c1", **REPORT), call("TriageReport", "c2", **REPORT)]
+    more = {"bank": (bank, make_fake_cluster())}
+    with client(
+        settings,
+        fake_cluster,
+        *steps,
+        more=more,
+        slack=slack.transport(),
+        acme_channel=ACME,
+        acme_client=ACME_CLIENT,
+    ) as c:
+        a = c.post(URL, json=ALERT, headers=HOOK).json()["investigation"]
+        wait_for(c, a, "done")
+        until(lambda: "send_to_client" in buttons(slack))
+        a_send = buttons(slack)["send_to_client"]["value"]
+        b = c.post(BANK_URL, json=ALERT, headers=BANK_HOOK).json()["investigation"]
+        wait_for(c, b, "done")
+        until(
+            lambda: (
+                json.loads(buttons(slack).get("send_to_client", {"value": a_send})["value"])["id"]
+                == b
+            )
+        )
+        b_send = buttons(slack)["send_to_client"]["value"]
+        sock.send(click("send_to_client", a_send))
+        until(lambda: len(to(slack, ACME_CLIENT)) == 1)
+        sock.send(click("send_to_client", b_send, channel=BANK))
+        until(lambda: len(to(slack, BANK_CLIENT)) == 1)
+        sock.send(click("send_to_client", b_send))  # B's button, clicked in A's channel
+        until(lambda: len(ephemerals(slack)) == 1)
+    assert "[bank]" not in to(slack, ACME_CLIENT)[0]["text"]
+    assert len(to(slack, ACME_CLIENT)) == len(to(slack, BANK_CLIENT)) == 1
+
+
+def test_the_client_report_is_escaped() -> None:
+    hostile = {**REPORT, "summary": "<!channel> pay <@U123>", "recommended_actions": ["<!here>"]}
+    t = Investigation(
+        id="i", contract_id="acme", title="<!everyone>", started=0, report=TriageReport(**hostile)
+    )
+    text = client_text(t)
+    assert "&lt;!channel&gt; pay &lt;@U123&gt;" in text and "&lt;!everyone&gt;" in text
+    assert "<!" not in text and "<@" not in text

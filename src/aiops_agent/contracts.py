@@ -93,6 +93,15 @@ class Slack(Strict):
     # A channel ID (C0123ABCD), not a name: names can be renamed. The bot must be
     # a member. One Contract per channel, so a channel always names its Contract.
     operator_channel: str = Field(pattern=r"^[CG][A-Z0-9]{8,}$")
+    # Optional: where the Operator can send Client reports (a Slack Connect channel
+    # shared with the client). Never gets buttons.
+    client_channel: str | None = Field(None, pattern=r"^[CG][A-Z0-9]{8,}$")
+
+    @model_validator(mode="after")
+    def _apart(self) -> "Slack":
+        if self.client_channel == self.operator_channel:
+            raise ValueError("client_channel must not be the operator_channel: clients see it")
+        return self
 
 
 class Contract(Strict):
@@ -182,8 +191,10 @@ def load(directory: Path) -> dict[str, Contract]:
             )
     by_channel: dict[str, list[str]] = defaultdict(list)
     for c in contracts.values():
-        if c.slack:
+        if c.slack:  # operator and client channels alike: a channel names one Contract
             by_channel[c.slack.operator_channel].append(c.id)
+            if c.slack.client_channel:
+                by_channel[c.slack.client_channel].append(c.id)
     for channel, ids in by_channel.items():
         if len(ids) > 1:
             problems.append(

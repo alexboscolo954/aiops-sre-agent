@@ -281,6 +281,28 @@ def test_one_slack_channel_per_contract(tmp_path: Path) -> None:
     assert any("one, two share Slack channel C0SHARED01" in p for p in problems(tmp_path))
 
 
+def test_a_client_channel_is_never_another_channel(tmp_path: Path) -> None:
+    write(tmp_path, {**BASE, "id": "one", "slack": {"operator_channel": "C0ONEOPS01"}})
+    write(
+        tmp_path,
+        {
+            **BASE,
+            "id": "two",
+            "slack": {"operator_channel": "C0TWOOPS01", "client_channel": "C0ONEOPS01"},
+        },
+    )
+    assert any("one, two share Slack channel C0ONEOPS01" in p for p in problems(tmp_path))
+    write(
+        tmp_path,
+        {
+            **BASE,
+            "id": "two",
+            "slack": {"operator_channel": "C0TWOOPS01", "client_channel": "C0TWOOPS01"},
+        },
+    )
+    assert any("client_channel must not be the operator_channel" in p for p in problems(tmp_path))
+
+
 def test_slack_channel_must_be_an_id(tmp_path: Path) -> None:
     write(tmp_path, {**BASE, "slack": {"operator_channel": "#acme-alerts"}})
     assert any("slack.operator_channel: String should match" in p for p in problems(tmp_path))

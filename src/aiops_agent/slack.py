@@ -48,15 +48,55 @@ def mrkdwn(markdown: str) -> str:
 
 
 def parent_text(t: Investigation) -> str:
-    return f"*[{clean(t.contract_id)}] {clean(t.title, 300)}*\n{STATUS[t.status]} · `{t.id}`"
+    sent = " · :outbox_tray: sent to the client" if t.client_sent_at else ""
+    return f"*[{clean(t.contract_id)}] {clean(t.title, 300)}*\n{STATUS[t.status]} · `{t.id}`{sent}"
 
 
-def parent_blocks(t: Investigation, buttons: bool) -> list[dict[str, Any]]:
+def client_text(t: Investigation) -> str:
+    """The Client report: no Evidence, Executed actions, Runbook, ids or controls.
+    The model's own prose can still name pods or quote a log line."""
+    assert t.report is not None
+    r = t.report
+    md = "\n".join(
+        [
+            f"## {t.title}: {r.summary}",
+            "",
+            f"**Root cause** ({r.confidence} confidence): {r.probable_root_cause}",
+            f"**Severity:** {r.severity}  ·  **Affected:** {', '.join(r.affected) or '-'}",
+            "",
+            "**Recommendations**",
+            *[f"{i}. {a}" for i, a in enumerate(r.recommended_actions, 1)],
+        ]
+    )
+    return clean(mrkdwn(md))
+
+
+def parent_blocks(
+    t: Investigation, buttons: bool, client: str | None = None
+) -> list[dict[str, Any]]:
     """Always sent in full, so no stale buttons survive an update. Each button
-    names its pause (the deadline): a late click can't decide a later pause."""
+    names its pause (the deadline): a late click can't decide a later pause.
+    client: the Contract's client channel, for the Send to client button."""
     blocks: list[dict[str, Any]] = [
         {"type": "section", "text": {"type": "mrkdwn", "text": parent_text(t)}}
     ]
+    if buttons and client and t.report and not t.client_sent_at:  # a Report: done
+        send = {
+            "type": "button",
+            "action_id": "send_to_client",
+            "text": {"type": "plain_text", "text": "Send to client"},
+            "value": json.dumps({"id": t.id}),
+            "confirm": {
+                "title": {"type": "plain_text", "text": "Send to the client?"},
+                "text": {
+                    "type": "plain_text",
+                    "text": f"The Report, without Evidence, goes to the client channel {client}.",
+                },
+                "confirm": {"type": "plain_text", "text": "Send"},
+                "deny": {"type": "plain_text", "text": "Cancel"},
+            },
+        }
+        blocks.append({"type": "actions", "elements": [send]})
     if buttons and t.status == "awaiting_approval":
         value = json.dumps({"id": t.id, "deadline": t.deadline})
         names = ", ".join(sorted({p["name"] for p in t.pending}))

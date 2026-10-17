@@ -134,7 +134,9 @@ While Proposed actions wait, the parent message has **Approve** (with a confirm 
 - each button names its pause, so a second click, or a click left over from an earlier pause, decides nothing;
 - once the actions are decided (in Slack or through the API) or go Stale, the buttons disappear and the thread says who decided, or why it went Stale.
 
-Without `AIOPS_SLACK_APP_TOKEN` there are no buttons, and you decide through the API. Everything posted is escaped (a label like `<!channel>` arrives as text, never as a ping), redacted and capped. A Slack failure, including a dropped socket (it reconnects), is logged and never fails an Investigation.
+**Client reports (optional, per Contract).** Add `client_channel: C...` next to `operator_channel`: a Slack Connect channel shared with the client, with the bot invited. A finished Report then gets a **Send to client** button in your thread. Nothing reaches the client until you click it, and it goes once. The client gets plain text with the summary, root cause, severity, what is affected and the Recommendations. Evidence, Executed actions, the Runbook and the Investigation id stay with you, and the client message never has buttons. Only the Evidence list is held back, though: the summary and root cause are the model's own words and can still name a pod or quote a log line, so read before you send. A channel belongs to one Contract, as operator or client channel, never both.
+
+Without `AIOPS_SLACK_APP_TOKEN` there are no buttons: you decide through the API, and Client reports can't be sent. Everything posted is escaped (a label like `<!channel>` arrives as text, never as a ping), redacted and capped. A Slack failure, including a dropped socket (it reconnects), is logged and never fails an Investigation.
 
 ## Running as a service in one cluster
 
