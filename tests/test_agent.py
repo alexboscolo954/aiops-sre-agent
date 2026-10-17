@@ -436,3 +436,13 @@ def test_a_result_without_text_keeps_its_blocks() -> None:
     image = [{"type": "image", "base64": "AAAA", "mime_type": "image/png"}]
     assert agent.text_of(ToolMessage(content=image, tool_call_id="i")).startswith('[{"type"')
     assert agent.text_of(ToolMessage(content="plain", tool_call_id="p")) == "plain"
+
+
+def test_checkpoints_load_our_results_and_nothing_else_unlisted() -> None:
+    from aiops_agent.models import Answer, Investigation, TriageReport
+
+    serde = agent.CHECKPOINT_SERDE
+    for value in (TriageReport(**REPORT), Answer(**ANSWER)):
+        assert serde.loads_typed(serde.dumps_typed(value)) == value
+    forged = Investigation(id="i", contract_id="c", title="t", started=0)
+    assert not isinstance(serde.loads_typed(serde.dumps_typed(forged)), Investigation)

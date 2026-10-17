@@ -5,6 +5,7 @@ from typing import Any
 
 from pydantic import SecretStr
 
+from aiops_agent import agent
 from aiops_agent.config import Settings
 from aiops_agent.console import COOKIE, TEMPLATES, action_key
 from aiops_agent.models import Investigation, TriageReport
@@ -252,6 +253,29 @@ def test_a_question_asked_in_the_console_answers_and_follows_up(
         assert post(more, {"question": "x"}, cross).status_code == 403
         assert post("/console/investigations/nope/questions", {"question": "x"}).status_code == 404
     assert slack.calls == []  # a console Question has no Slack thread
+
+
+def test_a_follow_up_loads_its_checkpoint_without_warnings(
+    settings: Settings, fake_cluster: Any, database_url: str, caplog: Any
+) -> None:
+    """The follow-up's Run loads the earlier Answer from the Postgres checkpoint."""
+    settings.database_url = SecretStr(database_url)
+    settings.console_operators = {OPERATOR}
+    steps = [call("Answer", "a1", **ANSWER_1), call("Answer", "a2", **ANSWER_2)]
+    with client(settings, fake_cluster, *steps) as c:
+        asked = c.post(
+            "/console/questions",
+            data={"contract": "acme", "question": "healthy?"},
+            headers=SAME,
+            follow_redirects=False,
+        )
+        qid = asked.headers["location"].rsplit("/", 1)[1]
+        wait_for(c, qid, "done")
+        c.post(f"/console/investigations/{qid}/questions", data={"question": "now?"}, headers=SAME)
+        assert wait_for(c, qid, "done")["answer"]["answer"] == ANSWER_2["answer"]
+        serde = c.app.state.checkpointer.serde  # type: ignore[attr-defined]
+    assert serde is agent.CHECKPOINT_SERDE  # LangGraph warns only once per process
+    assert "unregistered type" not in caplog.text and "Blocked deserialization" not in caplog.text
 
 
 def test_only_a_finished_question_takes_a_follow_up(

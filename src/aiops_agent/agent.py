@@ -35,6 +35,7 @@ from langchain.tools.tool_node import ToolCallRequest
 from langchain_core.language_models import BaseChatModel
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.types import Command
 from pydantic import BaseModel
 
@@ -98,6 +99,16 @@ Rules:
 """
 
 Kind = Literal["triage", "question"]
+
+# Checkpoints hold LangGraph's own types plus our structured results. Naming ours
+# allows them (LangGraph will block unlisted types) and blocks everything else: a
+# write to the checkpoint table can't make the Hub build an arbitrary class.
+CHECKPOINT_SERDE = JsonPlusSerializer(
+    allowed_msgpack_modules=[
+        ("aiops_agent.models", "TriageReport"),
+        ("aiops_agent.models", "Answer"),
+    ]
+)
 
 
 @dataclass
@@ -364,7 +375,7 @@ async def open_agent(
                 *([record_tool_results(record)] if record else []),
                 *([record_usage(usage)] if usage else []),
             ],
-            checkpointer=checkpointer or InMemorySaver(),
+            checkpointer=checkpointer or InMemorySaver(serde=CHECKPOINT_SERDE),
         )
 
 

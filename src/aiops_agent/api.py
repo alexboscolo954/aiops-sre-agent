@@ -149,7 +149,8 @@ def create_app(
             db["slack"] = Slack(settings.slack_bot_token, http)
             db["store"] = Store(pool)
             await store().migrate()
-            db["checkpointer"] = AsyncPostgresSaver(pool)
+            db["checkpointer"] = AsyncPostgresSaver(pool, serde=agent.CHECKPOINT_SERDE)
+            app.state.checkpointer = db["checkpointer"]  # for tests
             await db["checkpointer"].setup()
             await recover()
             if settings.slack_app_token:
