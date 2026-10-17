@@ -171,10 +171,9 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
 **2.3 Ask a Question** from a form. Done.
 - A form on `/console` (Contract and question) and **Follow up** on a Question's page, through the same Question path as Slack (`start_question`, `follow_up`). Same rules as acting: identity, the token cookie, same origin. The page reloads itself while the Question runs (a meta refresh, no script). A console Question has no Slack thread.
 
-**2.4 Cost.**
+**2.4 Cost.** Done.
 - **Part a, done:** every model call's tokens are recorded as it happens (a `wrap_model_call` middleware, so a resume never counts earlier Runs and a failed Run still counts), priced per call from `AIOPS_MODEL_PRICES` in USD, including Haiku's long-context tier. The console shows tokens and cost per Investigation and spend per Contract this month. Contracts gain `model:` (through the Hub's gateway) and `monthly_budget_usd:`; a budget needs its model priced at startup.
-- **Part b:** apply budgets with the vetoable default above, only where a new Run starts (alerts, Questions, follow-ups), never on a resume.
-- Token usage per Run gives a cost per Investigation and per Contract. Apply budgets with the vetoable default above.
+- **Part b, done:** budgets apply only where a new Run starts (alerts, Questions, follow-ups), never on a resume. At 100% the alert is still recorded (so repeats stay duplicates) and fails with the spend and budget, with no model call; Slack still hears of it. The 80% and 100% notices post once per Contract per month (`budget_notices`). Runs starting together can overshoot (a `ponytail:` note).
 - *Done when:* at 100% budget, a new alert still notifies the Operator, and its Failed investigation names the budget as the reason.
 
 **2.5 Health.**
@@ -288,4 +287,4 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
 
 ## Next
 
-Slice 2.4: cost per Run, Investigation and Contract, with monthly budgets.
+Slice 2.5: health in the console.

@@ -52,6 +52,11 @@ log = logging.getLogger("aiops.api")
 DEDUP_SECONDS = 30 * 60
 
 
+def usd(amount: float) -> str:
+    """Cents above a dollar, tenths of a cent below: small spends stay visible."""
+    return f"${amount:.2f}" if amount >= 1 else f"${amount:.4f}"
+
+
 class Decision(BaseModel):
     approve: bool
     message: str = ""
@@ -187,6 +192,55 @@ def create_app(
             if reply:
                 await slack.post(channel, reply, thread_ts=t.slack_ts)
 
+    async def over_budget(contract_id: str) -> str | None:
+        """Why a new Run may not start: the Contract has spent its monthly budget.
+        Checked only where a new Run would start, never on a resume (an approved
+        action must still be reported). ponytail: Runs that start together can all
+        pass the check and overshoot; a reservation per Run if that ever matters."""
+        budget = by_id[contract_id].monthly_budget_usd
+        spent = await store().month_spend(contract_id, now()) if budget else 0.0
+        if not budget or spent < budget:
+            return None
+        return (
+            f"Contract {contract_id!r} has used its monthly budget: {usd(spent)} of "
+            f"{usd(budget)}. New Investigations are refused until next month, or until "
+            "monthly_budget_usd is raised."
+        )
+
+    async def refuse(t: Investigation, reason: str) -> None:
+        """No Run, no model call: the Operator still hears about it (fail notifies)."""
+        log.warning("investigation %s refused: %s", t.id, reason)
+        await fail(t, reason)
+        await budget_notices(t.contract_id)
+
+    async def budget_notices(contract_id: str) -> None:
+        """80% and 100% of the month's budget, each posted once per Contract per month
+        in its operator channel (logged when it has none)."""
+        c = by_id[contract_id]
+        if not c.monthly_budget_usd:
+            return
+        at = now()
+        spent = await store().month_spend(c.id, at)
+        for level in (80, 100):
+            if spent < c.monthly_budget_usd * level / 100:
+                continue
+            if not await store().notice_once(c.id, at, level):
+                continue
+            if level == 100:
+                text = (
+                    f":no_entry: *[{clean(c.id)}]* has used its monthly budget: "
+                    f"{usd(spent)} of {usd(c.monthly_budget_usd)}. New Investigations are "
+                    "refused until next month, or until `monthly_budget_usd` is raised."
+                )
+            else:
+                text = (
+                    f":warning: *[{clean(c.id)}]* has used {level}% of its monthly budget: "
+                    f"{usd(spent)} of {usd(c.monthly_budget_usd)}."
+                )
+            log.warning("budget %s %d%%: %.4f of %.2f", c.id, level, spent, c.monthly_budget_usd)
+            if c.slack and settings.slack_bot_token:
+                await db["slack"].post(c.slack.operator_channel, text)
+
     async def fail(t: Investigation, error: str) -> None:
         t.status, t.error, t.pending, t.deadline = "failed", error, [], None
         await store().save(t)
@@ -270,6 +324,7 @@ def create_app(
                 await reject_stale(t.id, t.deadline, "The alert group resolved before a decision")
                 return  # no one to ask; the resumed run reports
         await notify(t)
+        await budget_notices(t.contract_id)
         if t.status == "awaiting_approval":
             spawn(expire(t.id, t.deadline))
 
@@ -455,6 +510,9 @@ def create_app(
         )
         if not await store().insert_question(t):
             return None
+        if reason := await over_budget(contract_id):
+            await refuse(t, reason)
+            return t
         log.info("question %s for %s", t.id, contract_id)
         spawn(run(t, lambda a: agent.ask(a, text, t.id)))
         return t
@@ -465,6 +523,9 @@ def create_app(
         if not await store().claim_follow_up(t.id, asked_ts):
             return False
         t.status, t.error, t.last_mention_ts = "running", None, asked_ts
+        if reason := await over_budget(t.contract_id):
+            await refuse(t, reason)
+            return True
         log.info("question %s follow-up", t.id)
         spawn(run(t, lambda a: agent.ask(a, text, t.id)))
         return True
@@ -517,6 +578,10 @@ def create_app(
         )
         await store().insert(t)
         await store().remember_group(contract_id, group.groupKey, started, t.id, seen | firing)
+        if reason := await over_budget(contract_id):
+            # Recorded and remembered, so repeats are duplicates, not one refusal each.
+            await refuse(t, reason)
+            return {"status": "refused", "investigation": t.id, "reason": reason}
         spawn(run(t, lambda a: agent.start(a, group, t.id)))
         return {"status": "accepted", "investigation": t.id}
 

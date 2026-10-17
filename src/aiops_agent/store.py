@@ -327,6 +327,15 @@ class Store:
         )
         return float(row["spent"]) if row else 0.0
 
+    async def notice_once(self, contract_id: str, at: float, level: int) -> bool:
+        """True only for the first caller this month at this level."""
+        row = await self._one(
+            "insert into budget_notices values (%s, %s, %s, %s) "
+            "on conflict do nothing returning level",
+            (contract_id, month_start(at), level, at),
+        )
+        return row is not None
+
     async def investigation_usage(self, investigation_id: str) -> dict[str, Any]:
         """Tokens, and cost (None when no call was priced)."""
         row = await self._one(
