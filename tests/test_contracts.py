@@ -273,3 +273,14 @@ def test_new_token_prints_a_token_and_its_hash(capsys: pytest.CaptureFixture[str
     assert not contracts.token_matches(c, token + "x")
     assert not contracts.token_matches(None, token)
     assert not contracts.token_matches(contracts.build(BASE), token)  # no hash, no entry
+
+
+def test_one_slack_channel_per_contract(tmp_path: Path) -> None:
+    write(tmp_path, {**BASE, "id": "one", "slack": {"operator_channel": "C0SHARED01"}})
+    write(tmp_path, {**BASE, "id": "two", "slack": {"operator_channel": "C0SHARED01"}})
+    assert any("one, two share Slack channel C0SHARED01" in p for p in problems(tmp_path))
+
+
+def test_slack_channel_must_be_an_id(tmp_path: Path) -> None:
+    write(tmp_path, {**BASE, "slack": {"operator_channel": "#acme-alerts"}})
+    assert any("slack.operator_channel: String should match" in p for p in problems(tmp_path))

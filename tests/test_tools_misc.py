@@ -147,6 +147,10 @@ def test_settings_that_moved_into_a_contract_refuse_to_start(
         refuse_moved(env)
     assert "AIOPS_KUBE_CONTEXT -> clusters[].context" in str(e.value)
     assert "AIOPS_NAMESPACES -> clusters[].namespaces" in str(e.value)
+    monkeypatch.delenv("AIOPS_KUBE_CONTEXT")
+    monkeypatch.setenv("AIOPS_SLACK_WEBHOOK_URL", "https://hooks.slack.com/x")
+    with pytest.raises(RuntimeError, match="AIOPS_SLACK_WEBHOOK_URL -> AIOPS_SLACK_BOT_TOKEN"):
+        refuse_moved(None)
 
 
 @pytest.mark.parametrize("keep", ["head", "tail"])

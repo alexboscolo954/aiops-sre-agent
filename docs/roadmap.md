@@ -53,7 +53,7 @@ A slice is one commit-sized change, about one working session (1 to 3 hours).
 | Persistence | Postgres 17, `langgraph-checkpoint-postgres`, psycopg 3, numbered `.sql` migrations | One database for state, checkpoints and knowledge |
 | Secrets | `sops -d` at load. The Hub holds age keys for Direct Contracts only | No new library. A Relay Contract's credentials never reach the Hub |
 | Many clusters | One kubernetes server per Contract, with a `cluster` argument limited to that Contract's clusters | A Contract can have dozens of clusters, and one server per cluster would multiply the tool count |
-| Slack | `slack-bolt` in Socket Mode | No public Slack endpoint |
+| Slack | Posting over httpx (1.1); Socket Mode for events from 1.2 | No public Slack endpoint |
 | Console stack | FastAPI + Jinja + HTMX, with no JS build | One language, one process |
 | Console login | Tailscale identity headers from `tailscale serve`, with the console on `127.0.0.1`, plus an Operator allowlist | No passwords to manage, and no way to forge the header |
 | Jira | An issue is created only when the Operator clicks | Never write to a client's tracker unasked |
@@ -126,8 +126,9 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
 
 ### Phase 1: Slack (4 slices)
 
-**1.1 Socket Mode app.**
+**1.1 Slack threads.** Done.
 - Each Contract has its own channel. Each Investigation is one thread that shows its status, then the Report. This replaces `slack_webhook_url`.
+- Posting needs only the Web API (`chat.postMessage`, `chat.update`) with a bot token, so 1.1 uses httpx and no Slack library. Socket Mode, which receives events, moves to 1.2 with the buttons; decide there between keeping this poster and slack-bolt's client.
 - *Done when:* a fake Slack client shows A's Investigations never post to B's channel.
 
 **1.2 Approve and reject buttons.**
@@ -274,4 +275,4 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
 
 ## Next
 
-Phase 1, slice 1.1: the Slack app in Socket Mode, one channel per Contract.
+Slice 1.2: approve and reject buttons in the thread, over Socket Mode.

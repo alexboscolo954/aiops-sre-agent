@@ -56,6 +56,7 @@ def make_contract(
     runbook_dirs: tuple[Path, ...] = (),
     contract_id: str = "acme",
     webhook_token: str | None = None,
+    slack_channel: str | None = None,
 ) -> contracts.Contract:
     """A Contract in memory: by default one cluster "test" allowing namespace "shop"."""
     clusters = clusters or {CLUSTER: ["shop"]}
@@ -70,6 +71,8 @@ def make_contract(
     }
     if webhook_token:
         data["webhook_token_sha256"] = contracts.token_hash(webhook_token)
+    if slack_channel:
+        data["slack"] = {"operator_channel": slack_channel}
     return contracts.build(data, runbook_dirs=runbook_dirs)
 
 

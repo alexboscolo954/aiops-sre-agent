@@ -23,7 +23,7 @@ MIGRATIONS = Path(__file__).parent / "migrations"
 MIGRATION_LOCK = 4_242_001  # pg_advisory_xact_lock key: one Hub migrates at a time
 COLUMNS = (
     "id, kind, contract_id, title, group_key, group_resolved, status, started, report, "
-    "pending, executed_actions, error, deadline"
+    "pending, executed_actions, error, deadline, slack_channel, slack_ts"
 )
 
 
@@ -90,7 +90,7 @@ class Store:
     async def insert(self, t: Investigation) -> None:
         await self._exec(
             f"insert into investigations ({COLUMNS}) values "  # noqa: S608 - fixed columns
-            "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (
                 t.id,
                 t.kind,
@@ -105,12 +105,24 @@ class Store:
                 Jsonb(t.executed_actions),
                 t.error,
                 t.deadline,
+                t.slack_channel,
+                t.slack_ts,
             ),
         )
 
+    async def set_slack_thread(self, investigation_id: str, channel: str, ts: str) -> bool:
+        """Only while it has none: a thread, once started, is never replaced."""
+        row = await self._one(
+            "update investigations set slack_channel = %s, slack_ts = %s "
+            "where id = %s and slack_ts is null returning id",
+            (channel, ts, investigation_id),
+        )
+        return row is not None
+
     async def save(self, t: Investigation) -> None:
-        """Everything a Run changes. Never group_resolved: only the resolve path sets
-        it, so a Run that finishes after a resolve can't clear it."""
+        """Everything a Run changes. Never group_resolved (only the resolve path sets
+        it, so a Run that finishes after a resolve can't clear it), nor the Slack
+        thread (set_slack_thread)."""
         await self._exec(
             "update investigations set status = %s, report = %s, pending = %s, "
             "executed_actions = %s, error = %s, deadline = %s where id = %s",

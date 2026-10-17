@@ -32,10 +32,10 @@ class Settings(BaseSettings):
     database_url: SecretStr | None = None  # Postgres; required for serve
     max_concurrent_triages: int = 3  # alert storms queue instead of fanning out
     decision_timeout_seconds: int = 1800  # proposed actions go stale after this
-    slack_webhook_url: SecretStr | None = None
+    slack_bot_token: SecretStr | None = None  # xoxb-...; channels are per Contract
 
 
-# Settings that moved into a Contract's contract.yaml in slice 0.3.
+# Settings that are gone: most moved into a Contract's contract.yaml (slice 0.3).
 MOVED = {
     "AIOPS_IN_CLUSTER": "clusters[].in_cluster",
     "AIOPS_KUBECONFIG": "clusters[].kubeconfig_file",
@@ -47,6 +47,7 @@ MOVED = {
     "AIOPS_PROMETHEUS_TOKEN": "the prometheus integration's token_secret",
     "AIOPS_RUNBOOKS_DIR": "<contract>/runbooks and shared/runbooks",
     "AIOPS_WEBHOOK_TOKEN": "webhook_token_sha256 (aiops contracts new-token)",
+    "AIOPS_SLACK_WEBHOOK_URL": "AIOPS_SLACK_BOT_TOKEN, plus each Contract's slack.operator_channel",
 }
 
 
@@ -59,6 +60,4 @@ def refuse_moved(env_file: Path | None = Path(".env")) -> None:
     found = sorted(set(MOVED) & names)
     if found:
         where = "; ".join(f"{n} -> {MOVED[n]}" for n in found)
-        raise RuntimeError(
-            f"these settings moved into contract.yaml (AIOPS_CONTRACTS_DIR): {where}"
-        )
+        raise RuntimeError(f"these settings are gone; set instead: {where}")

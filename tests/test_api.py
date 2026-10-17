@@ -3,6 +3,7 @@ import time
 from typing import Any
 from unittest.mock import MagicMock
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
@@ -35,11 +36,16 @@ def client(
     *steps: Any,
     actions: bool = False,
     more: dict[str, tuple[Contract, Any]] | None = None,
+    slack: Any = None,
+    acme_channel: str | None = None,
 ) -> TestClient:
     """Contract "acme" (token hook-token) on fake_cluster, plus `more`: id -> (Contract,
-    its own fake cluster). The model is shared, so its steps run in alert order."""
+    its own fake cluster). The model is shared, so its steps run in alert order.
+    slack: an httpx transport standing in for Slack's Web API."""
     settings.approver_token = SecretStr("approver-token")
-    acme = make_contract(enable_actions=actions, webhook_token="hook-token")
+    acme = make_contract(
+        enable_actions=actions, webhook_token="hook-token", slack_channel=acme_channel
+    )
     clusters = {"acme": (acme, fake_cluster), **(more or {})}
 
     def mcp(c: Contract) -> agent.Toolbox:
@@ -47,7 +53,8 @@ def client(
         return agent.build_mcp(c, settings, {cl.name: fake for cl in c.clusters})
 
     by_id = {cid: c for cid, (c, _) in clusters.items()}
-    return TestClient(create_app(settings, scripted(*steps), mcp, by_id))
+    http = httpx.AsyncClient(transport=slack) if slack else None
+    return TestClient(create_app(settings, scripted(*steps), mcp, by_id, http))
 
 
 def wait_for(c: TestClient, investigation_id: str, status: str) -> dict[str, Any]:

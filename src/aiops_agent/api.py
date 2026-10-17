@@ -33,6 +33,7 @@ from aiops_agent import agent, contracts
 from aiops_agent.config import Settings
 from aiops_agent.models import AlertGroup, Investigation
 from aiops_agent.observability import PENDING_APPROVALS, TRIAGE_SECONDS, TRIAGES
+from aiops_agent.slack import Slack, parent_text, reply_text
 from aiops_agent.store import Store, connect, now
 
 log = logging.getLogger("aiops.api")
@@ -44,23 +45,15 @@ class Decision(BaseModel):
     message: str = ""
 
 
-def slack_text(t: Investigation) -> str:
-    if t.report:
-        body = t.report.to_markdown(t.executed_actions).replace("**", "*").replace("## ", "*")
-    elif t.pending:
-        body = "Waiting for approval:\n" + "\n".join(f"- {p['description']}" for p in t.pending)
-    else:
-        body = f"Investigation failed: {t.error}"
-    return f"*[aiops] [{t.contract_id}] {t.title}* (`{t.id}`)\n{body}"
-
-
 def create_app(
     settings: Settings | None = None,
     model: BaseChatModel | None = None,
     mcp_factory: Any = None,
     by_id: dict[str, contracts.Contract] | None = None,
+    slack_http: httpx.AsyncClient | None = None,
 ) -> FastAPI:
-    """mcp_factory(contract) -> Toolbox, and by_id (the loaded Contracts), for tests."""
+    """mcp_factory(contract) -> Toolbox, by_id (the loaded Contracts) and slack_http
+    (an httpx client for Slack's Web API), for tests."""
     settings = settings or Settings()
     if not settings.approver_token:
         raise RuntimeError("set AIOPS_APPROVER_TOKEN")
@@ -88,7 +81,8 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> Any:
-        async with connect(database_url) as pool:
+        async with connect(database_url) as pool, slack_http or httpx.AsyncClient() as http:
+            db["slack"] = Slack(settings.slack_bot_token, http)
             db["store"] = Store(pool)
             await store().migrate()
             db["checkpointer"] = AsyncPostgresSaver(pool)
@@ -117,15 +111,27 @@ def create_app(
         if t.status in ("done", "failed"):
             TRIAGES.labels(t.status).inc()
             TRIAGE_SECONDS.observe(now() - t.started)
-        if not settings.slack_webhook_url:
+        await to_slack(t)
+
+    async def to_slack(t: Investigation) -> None:
+        """The Investigation's thread in its own Contract's channel: start it if it has
+        none yet (or the first post failed), keep the parent's status current, and
+        reply with anything the Operator should read."""
+        contract = by_id.get(t.contract_id)
+        channel = t.slack_channel or (
+            contract.slack.operator_channel if contract and contract.slack else None
+        )
+        if not channel or not settings.slack_bot_token:
             return
-        try:
-            async with httpx.AsyncClient(timeout=10) as http:
-                await http.post(
-                    settings.slack_webhook_url.get_secret_value(), json={"text": slack_text(t)}
-                )
-        except httpx.HTTPError as e:
-            log.warning("slack notification failed: %s", e)
+        slack: Slack = db["slack"]
+        if t.slack_ts is None:
+            ts = await slack.post(channel, parent_text(t))
+            if ts and await store().set_slack_thread(t.id, channel, ts):
+                t.slack_channel, t.slack_ts = channel, ts
+        else:
+            await slack.update(channel, t.slack_ts, parent_text(t))
+        if t.slack_ts and (reply := reply_text(t)):
+            await slack.post(channel, reply, thread_ts=t.slack_ts)
 
     async def fail(t: Investigation, error: str) -> None:
         t.status, t.error, t.pending, t.deadline = "failed", error, [], None
@@ -162,6 +168,7 @@ def create_app(
         t.deadline = now() + settings.decision_timeout_seconds if t.pending else None
 
     async def run(t: Investigation, step: Any) -> None:
+        await to_slack(t)  # "investigating", in a new or the existing thread
         async with slots:
             try:
                 # Always the Investigation's own Contract, on start and on every resume.

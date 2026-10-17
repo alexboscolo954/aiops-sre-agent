@@ -89,6 +89,12 @@ class Runbooks(Strict):
 Integration = Annotated[Kubernetes | Prometheus | Runbooks, Field(discriminator="name")]
 
 
+class Slack(Strict):
+    # A channel ID (C0123ABCD), not a name: names can be renamed. The bot must be
+    # a member. One Contract per channel, so a channel always names its Contract.
+    operator_channel: str = Field(pattern=r"^[CG][A-Z0-9]{8,}$")
+
+
 class Contract(Strict):
     id: Slug
     name: str
@@ -97,6 +103,7 @@ class Contract(Strict):
     webhook_token_sha256: str | None = Field(None, pattern=r"^[0-9a-f]{64}$")
     clusters: list[Cluster] = []
     integrations: list[Integration] = Field(min_length=1)
+    slack: Slack | None = None  # where the Operator follows this Contract's Investigations
 
     _dir: Path = PrivateAttr(default=Path())
     _secrets: dict[str, SecretStr] = PrivateAttr(default_factory=dict)
@@ -172,6 +179,16 @@ def load(directory: Path) -> dict[str, Contract]:
             problems.append(
                 f"{directory}: {', '.join(ids)} share a webhook token; "
                 "one Contract's Alertmanager could post as another"
+            )
+    by_channel: dict[str, list[str]] = defaultdict(list)
+    for c in contracts.values():
+        if c.slack:
+            by_channel[c.slack.operator_channel].append(c.id)
+    for channel, ids in by_channel.items():
+        if len(ids) > 1:
+            problems.append(
+                f"{directory}: {', '.join(ids)} share Slack channel {channel}; "
+                "one channel per Contract"
             )
     for recipient, ids in owners.items():
         if len(ids) > 1:

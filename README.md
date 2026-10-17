@@ -120,6 +120,16 @@ The Hub runs every Contract from one VM you own: [`deploy/hub`](deploy/hub) is a
 
 `make hub-smoke` runs the stack locally and in CI with the demo Contracts. It checks that the stack comes up healthy, that every path except the alert route returns 404 through Caddy (including `../` and `%2F` tricks and oversized bodies), that an alert is stored, that a backup restores, and that a bad contracts update is refused. CI does not cover `tailscale serve`, real Let's Encrypt certificates, the deploy-key clone or the arm64 image.
 
+### Slack
+
+Each Investigation is one thread in its Contract's channel. The parent message shows the status (investigating, waiting for your approval, done, failed), and replies carry the Proposed actions, the Report or the error.
+
+1. Create the app from [`deploy/slack-app.yaml`](deploy/slack-app.yaml) (api.slack.com/apps > From a manifest), install it, and set its bot token as `AIOPS_SLACK_BOT_TOKEN`.
+2. Make one channel per Contract and invite the bot: `/invite @aiops`. The bot can't post where it isn't a member.
+3. Put the channel's ID (channel details > the `C...` at the bottom) in the Contract: `slack: {operator_channel: C0123ABCD}`. Two Contracts can't share a channel.
+
+Everything posted is escaped (a label like `<!channel>` arrives as text, never as a ping), redacted and capped. A Slack failure is logged and never fails an Investigation. For now you approve through the API; approve and reject buttons come in slice 1.2.
+
 ## Running as a service in one cluster
 
 ```bash
@@ -233,6 +243,7 @@ Hub settings are `AIOPS_*` environment variables (or `.env`). See [`config.py`](
 | `AIOPS_CONTRACTS_DIR` | | One directory per Contract (required for `serve`, `triage`, `mcp`) |
 | `AIOPS_APPROVER_TOKEN` | | The Operator's token, required for `serve` |
 | `AIOPS_DATABASE_URL` | | Postgres, required for `serve`. Migrations run at startup |
+| `AIOPS_SLACK_BOT_TOKEN` | | The Hub's Slack bot (`xoxb-...`). Each Contract names its own channel |
 | `AIOPS_MAX_TOOL_CALLS` / `AIOPS_MAX_MODEL_CALLS` | 25 / 30 | Per run |
 | `AIOPS_MAX_CONCURRENT_TRIAGES` | 3 | Alert storms queue instead of fanning out |
 | `AIOPS_DECISION_TIMEOUT_SECONDS` | 1800 | Proposed actions with no decision by then are rejected as stale. So are those whose alert group resolves, which needs `send_resolved: true` ([`deploy/alertmanager-receiver.yaml`](deploy/alertmanager-receiver.yaml)) |

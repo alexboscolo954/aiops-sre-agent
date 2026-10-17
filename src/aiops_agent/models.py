@@ -118,3 +118,6 @@ class Investigation(BaseModel):
     # When this pause's Proposed actions go Stale. Also identifies the pause: a
     # decision claims it only while it is still the same pause.
     deadline: float | None = None
+    # The Slack thread this Investigation posts to, once its parent message exists.
+    slack_channel: str | None = None
+    slack_ts: str | None = None
