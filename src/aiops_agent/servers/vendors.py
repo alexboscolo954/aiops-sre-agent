@@ -5,7 +5,7 @@ push there must not be able to run a program next to every Contract's keys (the
 reasoning of ADR 0002 for kubeconfig exec plugins). For the same reason a Contract
 may set only the variables its vendor's entry lists: `LD_PRELOAD`, `PATH`,
 `NODE_OPTIONS` and the like would run code all the same. Each binary ships in the
-image, pinned and checksum-verified like sops. Grafana arrives in slice 4.3.
+image, pinned and checksum-verified like sops (versions in the Dockerfile).
 
 Each vendor's tool schemas are snapshotted into snapshots/<name>.json (slice 4.2):
 Scenarios replay against them with no binary, and `aiops integrations snapshot
@@ -34,7 +34,22 @@ class Spec:
             raise ValueError(f"vendor command must be an absolute path: {self.command[0]!r}")
 
 
-VENDORS: dict[str, Spec] = {}
+VENDORS: dict[str, Spec] = {
+    # Read-only by flag (every tool then claims readOnlyHint), no usage reports to
+    # Grafana Labs, and no toolset that reaches past its datasources: not `api`
+    # (any Grafana endpoint), `rendering`, `docs` (fetches the web), nor the Grafana
+    # Cloud-only ones. A Contract's `tools` narrows it further.
+    "grafana": Spec(
+        (
+            "/usr/local/bin/mcp-grafana",
+            "--usage-stats=disabled",
+            "--disable-write",
+            "--enabled-tools=search,datasource,prometheus,loki,tempo,pyroscope,alerting,"
+            "dashboard,navigation",
+        ),
+        frozenset({"GRAFANA_URL", "GRAFANA_SERVICE_ACCOUNT_TOKEN", "GRAFANA_ORG_ID"}),
+    ),
+}
 START_SECONDS = 30  # a vendor that never finishes MCP's handshake fails the Run
 CALL_SECONDS = 60  # each vendor tool call
 SNAPSHOTS = Path(__file__).parent / "snapshots"

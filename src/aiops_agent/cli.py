@@ -86,12 +86,17 @@ def validate_contracts(directory: Path) -> int:
     return 0
 
 
-def snapshot(vendor: str, check: bool) -> int:
-    """Save the pinned vendor's tool schemas, or with check, fail if they drifted."""
+def snapshot(vendor: str, check: bool, out: str | None = None) -> int:
+    """Save the pinned vendor's tool schemas, or with check, fail if they drifted.
+    out "-": print it instead (from the image, where the pinned binary is)."""
     if not check:
-        path = vendors.SNAPSHOTS / f"{vendor}.json"
-        path.write_text(asyncio.run(vendors.capture(vendors.VENDORS[vendor])))
-        print(f"wrote {path}")
+        text = asyncio.run(vendors.capture(vendors.VENDORS[vendor]))
+        if out == "-":
+            print(text, end="")
+            return 0
+        path = Path(out) if out else vendors.SNAPSHOTS / f"{vendor}.json"
+        path.write_text(text)
+        print(f"wrote {path}", file=sys.stderr)
         return 0
     diff = asyncio.run(vendors.drift(vendor))
     if not diff:
@@ -99,8 +104,9 @@ def snapshot(vendor: str, check: bool) -> int:
         return 0
     print(diff, end="")
     print(
-        f"\n{vendor}'s tools changed. Run `aiops integrations snapshot {vendor}`, check the "
-        "Contracts' tool lists and the Scenarios still fit, and commit it.",
+        f"\n{vendor}'s tools changed. Regenerate the snapshot (`make snapshots` runs "
+        f"`aiops integrations snapshot {vendor}` in the image, where the pinned binary is), "
+        "check the Contracts' tool lists and the Scenarios still fit, and commit it.",
         file=sys.stderr,
     )
     return 1
@@ -151,10 +157,11 @@ def main(argv: list[str] | None = None) -> int:
     snap = isub.add_parser("snapshot", help="save a vendor's tool schemas for replay")
     snap.add_argument("vendor", choices=sorted(vendors.VENDORS))
     snap.add_argument("--check", action="store_true", help="fail if the vendor's tools drifted")
+    snap.add_argument("--out", help="write here instead of the package's snapshots/; - prints")
 
     args = parser.parse_args(argv)
     if args.cmd == "integrations":
-        return snapshot(args.vendor, args.check)
+        return snapshot(args.vendor, args.check, args.out)
     if args.cmd == "contracts" and args.contracts_cmd == "new-token":
         token, digest = contracts.new_token()
         print(f"token (give it to the Contract's Alertmanager, shown once): {token}")

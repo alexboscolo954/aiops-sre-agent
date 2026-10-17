@@ -2,7 +2,7 @@ CLUSTER := aiops
 CTX     := kind-$(CLUSTER)
 PG      := postgres:17.10
 
-.PHONY: lint test db cluster demo integration image deploy-smoke hub-smoke rbac-check down
+.PHONY: lint test db cluster demo integration image snapshots deploy-smoke hub-smoke rbac-check down
 
 lint:
 	uv run ruff check .
@@ -31,6 +31,11 @@ integration: ## real MCP tools on the kind demo, as the demo Contracts (kind con
 
 image:
 	docker build -t aiops-sre-agent:ci .
+
+snapshots: image ## vendors' tool schemas, from the pinned binaries in the image
+	docker run --rm aiops-sre-agent:ci integrations snapshot grafana --out - \
+	  >src/aiops_agent/servers/snapshots/grafana.json.tmp
+	mv src/aiops_agent/servers/snapshots/grafana.json.tmp src/aiops_agent/servers/snapshots/grafana.json
 
 deploy-smoke: image ## real image + shipped manifests on kind
 	kind load docker-image aiops-sre-agent:ci --name $(CLUSTER)

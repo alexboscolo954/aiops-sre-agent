@@ -5,7 +5,8 @@
 #   the console included, even with a forged Tailscale identity header;
 # - the console renders on 127.0.0.1 for the Operator's identity plus the token cookie;
 # - an alert is stored and fails as expected (no cluster, no model key in CI);
-# - a backup restores, and a bad contracts update never restarts the Hub.
+# - a backup restores, and a bad contracts update never restarts the Hub;
+# - each pinned vendor in the image still offers the tools its snapshot has.
 # Usage: demo/hub-smoke.sh [image]
 set -euo pipefail
 image=${1:-aiops-sre-agent:ci}
@@ -21,6 +22,8 @@ cp "$root"/deploy/hub/{compose.yaml,Caddyfile,backup.sh,update-contracts.sh} "$w
 
 # The contracts repo as the VM has it: a clone of a remote. demo-shop gets a
 # webhook token the way an Operator adds one.
+docker run --rm "$image" integrations snapshot grafana --check \
+  || { echo "FAIL: mcp-grafana's tools drifted from its snapshot: make snapshots" >&2; exit 1; }
 new=$(docker run --rm "$image" contracts new-token 2>/dev/null)
 token=$(sed -n 1p <<<"$new" | awk '{print $NF}')
 git_ init -q -b main "$work/seed"

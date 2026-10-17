@@ -220,11 +220,12 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
 - As built: `src/aiops_agent/servers/snapshots/<vendor>.json` keeps each tool's name, title, description, input and output schemas and annotations (what the model and the approval gate see), sorted, so a diff reads well. The vendor starts with no Contract and no variables at all: a vendor that writes its config into a description has none to write into a file this public repo commits. `--check` prints the diff and fails. A saved Scenario lists a vendor as `{name, vendor, tools}` (never its env, secrets or probe), and replay offers its tools from the snapshot without starting it.
 - Deviations: the registry is still empty, so the diff test runs against the fixture vendor (`tests/fixtures/snapshots/fixture.json`, checked against the live fixture on every CI run); for a real vendor the check is `aiops integrations snapshot <name> --check`, run where its pinned binary is (4.3). A vendor saved by name only, in a draft from before 4.2, still refuses to replay. A Scenario from a Contract with no clusters now replays with none, instead of a made-up `kind` one.
 
-**4.3 Grafana stack** through `mcp-grafana`.
+**4.3 Grafana stack** through `mcp-grafana`. Part a done (registry, pinned binary, snapshot, CI check); part b next (the kind demo's LGTM stack and the two Scenarios), then part c (Grafana Alerting as an alert source).
 - Registry entry plus `snapshots/grafana.json`; hub-smoke runs `aiops integrations snapshot grafana --check` inside the image, where the pinned binary is, so a renamed Grafana tool fails CI.
-- Check first: a snapshot is taken with no variables, so mcp-grafana must list its tools without `GRAFANA_URL`, and its toolset choice must live in the registry's command args, not in env; otherwise the snapshot won't match what a Contract's Run offers.
+- Checked (v2.0.2): it lists all its tools with no variables, toolsets are command flags, `--disable-write` leaves only tools that claim read-only, and Tempo is a static toolset (`tempo`). It reports usage statistics to Grafana Labs by default, so the registry passes `--usage-stats=disabled`. The original note: a snapshot is taken with no variables, so mcp-grafana must list its tools without `GRAFANA_URL`, and its toolset choice must live in the registry's command args, not in env; otherwise the snapshot won't match what a Contract's Run offers.
 - Covers Prometheus/Mimir and Loki (stats and patterns before raw logs, an IncidentFox idea), plus Tempo traces, Pyroscope and dashboard deep links in Reports. Grafana Alerting becomes a second alert source, normalized into an Alert group.
 - The kind demo gains a Grafana LGTM stack.
+- Part b, check first: the snapshot was taken with Grafana unreachable, and mcp-grafana reads `/api/frontend/settings` at startup. Capture once with the registry flags and `GRAFANA_URL` at the demo Grafana, and diff against `grafana.json`. A mismatch means grafana's snapshot must be taken against a demo Grafana, and hub-smoke's check changes with it.
 - *Done when:* two new recorded Scenarios pass, one with the root cause in log patterns and one in traces.
 
 **4.4 Jira.**
@@ -297,4 +298,4 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
 
 ## Next
 
-Phase 4 first (the Operator's choice: no Contract needs a Relay yet). Next: slice 4.3, the Grafana stack.
+Phase 4 first (the Operator's choice: no Contract needs a Relay yet). Next: slice 4.3 part b, the kind demo's LGTM stack and the log-pattern and trace Scenarios.

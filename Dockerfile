@@ -19,6 +19,29 @@ with open("/usr/local/bin/sops", "wb") as f:
     f.write(data)
 os.chmod("/usr/local/bin/sops", 0o755)
 EOF
+# mcp-grafana, the Grafana vendor (servers/vendors.py). Pinned and verified the
+# same way; after a bump, `make snapshots` and commit the schema diff.
+ARG MCP_GRAFANA_VERSION=2.0.2
+RUN python - <<'EOF'
+import hashlib, io, os, tarfile, urllib.request
+arch, version = os.environ["TARGETARCH"], os.environ["MCP_GRAFANA_VERSION"]
+name, sha256 = {
+    "amd64": ("Linux_x86_64", "624e997b78bcadf236f82f8086827890ba77b6dfdc6fd6446f7c48dfd9e586f0"),
+    "arm64": ("Linux_arm64", "96559ba56803c253ee4bfc2be971a5132bdd60a09b4a20375b6456564216ec48"),
+}[arch]
+url = (
+    "https://github.com/grafana/mcp-grafana/releases/download/"
+    f"v{version}/mcp-grafana_{name}.tar.gz"
+)
+data = urllib.request.urlopen(url, timeout=60).read()
+if hashlib.sha256(data).hexdigest() != sha256:
+    raise SystemExit(f"mcp-grafana {version} {arch}: checksum mismatch")
+with tarfile.open(fileobj=io.BytesIO(data)) as tar:
+    binary = tar.extractfile("mcp-grafana").read()
+with open("/usr/local/bin/mcp-grafana", "wb") as f:
+    f.write(binary)
+os.chmod("/usr/local/bin/mcp-grafana", 0o755)
+EOF
 WORKDIR /app
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
 COPY pyproject.toml uv.lock README.md ./
@@ -31,6 +54,7 @@ RUN useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin aiops
 WORKDIR /app
 COPY --from=build /app/.venv /app/.venv
 COPY --from=build /usr/local/bin/sops /usr/local/bin/sops
+COPY --from=build /usr/local/bin/mcp-grafana /usr/local/bin/mcp-grafana
 ENV PATH=/app/.venv/bin:$PATH PYTHONUNBUFFERED=1
 USER 10001
 EXPOSE 8080

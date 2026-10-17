@@ -77,9 +77,10 @@ CHECK = ["integrations", "snapshot", "fixture", "--check"]
 
 @pytest.fixture
 def snapshots(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
-    """The fixture vendor in the registry, with its snapshot in a scratch copy of
-    tests/fixtures/snapshots (for tests that change or delete it)."""
+    """The fixture vendor in the registry, with its snapshot and the real vendors'
+    in a scratch copy (for tests that change or delete one)."""
     monkeypatch.setitem(vendors.VENDORS, "fixture", fixture_spec())
+    shutil.copytree(vendors.SNAPSHOTS, tmp_path, dirs_exist_ok=True)
     shutil.copytree(SNAPSHOTS, tmp_path, dirs_exist_ok=True)
     monkeypatch.setattr(vendors, "SNAPSHOTS", tmp_path)
     return tmp_path
@@ -117,7 +118,7 @@ def test_check_fails_on_a_renamed_or_redescribed_tool(
     lines = out.out.splitlines()
     assert any(line.startswith("-") and saved in line for line in lines)
     assert any(line.startswith("+") and live in line for line in lines)
-    assert "Run `aiops integrations snapshot fixture`" in out.err
+    assert "`aiops integrations snapshot fixture`" in out.err
 
 
 def test_snapshot_writes_what_check_accepts(snapshots: Path) -> None:
@@ -352,3 +353,51 @@ async def test_a_snapshot_tool_reached_without_a_recording_fails_loudly(snapshot
     async with Client(vendors.snapshot_server("fixture", "x")) as client:
         result = await client.call_tool("peek", {}, raise_on_error=False)
     assert result.is_error and "peek is a snapshot" in result.content[0].text
+
+
+def test_the_grafana_vendor_only_reads_and_never_reports_usage() -> None:
+    """The registry's flags, and the snapshot proving they held when it was taken:
+    every tool claims read-only (so a missing --disable-write shows as drift)."""
+    command = vendors.VENDORS["grafana"].command
+    assert "--disable-write" in command and "--usage-stats=disabled" in command
+    enabled = next(a for a in command if a.startswith("--enabled-tools=")).split("=")[1]
+    assert not {"api", "rendering", "docs", "admin"} & set(enabled.split(","))
+    snapshot = json.loads((vendors.SNAPSHOTS / "grafana.json").read_text())
+    assert {"query_loki_patterns", "search_tempo_traces", "query_prometheus"} <= {
+        t["name"] for t in snapshot
+    }
+    assert all(t["annotations"]["readOnlyHint"] is True for t in snapshot)
+
+
+@pytest.mark.anyio
+async def test_a_grafana_scenario_replays_without_the_binary(settings: Settings) -> None:
+    """The real snapshot's schemas work for replay: tools, validation, no approval."""
+    tools = {"query_loki_patterns": "read", "search_tempo_traces": "read"}
+    vendor = {"name": "grafana", "vendor": "grafana", "tools": tools}
+    contract = evals.scenario_contract("", False, [Path("no-runbooks")], {}, [vendor])
+    patterns = [{"pattern": "<_> connection refused <_>", "totalCount": 412}]
+    toolbox = evals.replay_server(contract, settings, {"grafana_query_loki_patterns": patterns})
+    async with MCPAdapter(toolbox.mcp) as adapter:
+        loaded = await agent.load_tools(adapter, toolbox.access)
+    assert {t.name for t in loaded} == {
+        "grafana_query_loki_patterns",
+        "grafana_search_tempo_traces",
+    }
+    assert agent.gated(loaded, toolbox.access) == set()
+    async with Client(toolbox.mcp) as client:
+        args = {"datasourceUid": "loki", "logql": '{app="checkout"}'}
+        ok = await client.call_tool("grafana_query_loki_patterns", args)
+        bad = await client.call_tool(
+            "grafana_query_loki_patterns", {"logql": 7}, raise_on_error=False
+        )
+    assert json.loads(ok.content[0].text) == patterns
+    assert bad.is_error and "Input validation error" in bad.content[0].text
+
+
+def test_snapshot_out_dash_prints_only_the_snapshot(
+    snapshots: Path, capfd: pytest.CaptureFixture[str]
+) -> None:
+    """`make snapshots` redirects this from the image straight into the file."""
+    capfd.readouterr()
+    assert cli.main(["integrations", "snapshot", "fixture", "--out", "-"]) == 0
+    assert capfd.readouterr().out == (SNAPSHOTS / "fixture.json").read_text()
