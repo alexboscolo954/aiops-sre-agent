@@ -53,7 +53,7 @@ A slice is one commit-sized change, about one working session (1 to 3 hours).
 | Persistence | Postgres 17, `langgraph-checkpoint-postgres`, psycopg 3, numbered `.sql` migrations | One database for state, checkpoints and knowledge |
 | Secrets | `sops -d` at load. The Hub holds age keys for Direct Contracts only | No new library. A Relay Contract's credentials never reach the Hub |
 | Many clusters | One kubernetes server per Contract, with a `cluster` argument limited to that Contract's clusters | A Contract can have dozens of clusters, and one server per cluster would multiply the tool count |
-| Slack | Posting over httpx (1.1); Socket Mode for events from 1.2 | No public Slack endpoint |
+| Slack | Web API over httpx; Socket Mode over `websockets` (1.2), not slack-bolt | No public Slack endpoint, and no framework for one socket and a few calls |
 | Console stack | FastAPI + Jinja + HTMX, with no JS build | One language, one process |
 | Console login | Tailscale identity headers from `tailscale serve`, with the console on `127.0.0.1`, plus an Operator allowlist | No passwords to manage, and no way to forge the header |
 | Jira | An issue is created only when the Operator clicks | Never write to a client's tracker unasked |
@@ -131,8 +131,10 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
 - Posting needs only the Web API (`chat.postMessage`, `chat.update`) with a bot token, so 1.1 uses httpx and no Slack library. Socket Mode, which receives events, moves to 1.2 with the buttons; decide there between keeping this poster and slack-bolt's client.
 - *Done when:* a fake Slack client shows A's Investigations never post to B's channel.
 
-**1.2 Approve and reject buttons.**
-- The buttons use the same `resume` path as the API. A reject reason is entered in a modal. Only the Operator's Slack user id is accepted. Buttons are disabled once the actions are decided or Stale.
+**1.2 Approve and reject buttons.** Done.
+- The buttons use the same decision path as the API (`settle`: claim, record, resume). A reject reason is entered in a modal, and the pause is claimed only on submit, so a cancelled modal decides nothing. Only the Operator's Slack user id (`AIOPS_SLACK_OPERATOR_ID`) is accepted, and only in the Investigation's own channel.
+- The buttons sit on the thread's parent, not on a reply: the parent is re-rendered on every status change, so they disappear on any decision or Stale with no extra state. Each button carries its pause's deadline, so a click from an earlier pause can't decide a later one.
+- Socket Mode is a small loop over `websockets` (ack each envelope, reconnect on `disconnect`); the httpx poster stays, and slack-bolt was not needed.
 - *Done when:*
   - a click from anyone but the Operator is refused;
   - a second click is refused;
@@ -275,4 +277,4 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
 
 ## Next
 
-Slice 1.2: approve and reject buttons in the thread, over Socket Mode.
+Slice 1.3: optional client delivery.

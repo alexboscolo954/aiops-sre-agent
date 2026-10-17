@@ -4,7 +4,8 @@ POST /contracts/{id}/alertmanager  That Contract's Alertmanager (its own webhook
                                 Starts a triage, or makes a resolved group's
                                 proposed actions stale. Unknown id = wrong token = 401.
 GET  /investigations[/{id}]     Status, report, pending actions (approver token).
-POST /investigations/{id}/decisionApprove or reject pending actions (approver token).
+POST /investigations/{id}/decision  Approve or reject pending actions (approver token).
+                                The same decision path as the Slack buttons.
 GET  /healthz, /metrics
 
 State lives in Postgres (store.py): Investigations, the dedup memory, every
@@ -15,7 +16,9 @@ atomic) but share no limit.
 """
 
 import asyncio
+import json
 import logging
+import re
 import secrets
 import uuid
 from contextlib import asynccontextmanager
@@ -33,7 +36,7 @@ from aiops_agent import agent, contracts
 from aiops_agent.config import Settings
 from aiops_agent.models import AlertGroup, Investigation
 from aiops_agent.observability import PENDING_APPROVALS, TRIAGE_SECONDS, TRIAGES
-from aiops_agent.slack import Slack, parent_text, reply_text
+from aiops_agent.slack import Slack, clean, parent_blocks, parent_text, reject_modal, reply_text
 from aiops_agent.store import Store, connect, now
 
 log = logging.getLogger("aiops.api")
@@ -68,6 +71,14 @@ def create_app(
     if not settings.database_url:
         raise RuntimeError("set AIOPS_DATABASE_URL")
     database_url = settings.database_url.get_secret_value()
+    operator = settings.slack_operator_id
+    if settings.slack_app_token and not (
+        settings.slack_bot_token and operator and re.fullmatch(r"[UW][A-Z0-9]{8,}", operator)
+    ):
+        raise RuntimeError(
+            "AIOPS_SLACK_APP_TOKEN needs AIOPS_SLACK_BOT_TOKEN and AIOPS_SLACK_OPERATOR_ID (U...)"
+        )
+    buttons = settings.slack_app_token is not None
     model = model or agent.build_model(settings)
     if mcp_factory is None:
         mcp_factory = lambda c: agent.build_mcp(c, settings)  # noqa: E731
@@ -88,6 +99,8 @@ def create_app(
             db["checkpointer"] = AsyncPostgresSaver(pool)
             await db["checkpointer"].setup()
             await recover()
+            if settings.slack_app_token:
+                spawn(db["slack"].listen(settings.slack_app_token, lambda p: spawn(interact(p))))
             try:
                 yield
             finally:
@@ -113,10 +126,10 @@ def create_app(
             TRIAGE_SECONDS.observe(now() - t.started)
         await to_slack(t)
 
-    async def to_slack(t: Investigation) -> None:
+    async def to_slack(t: Investigation, note: str | None = None) -> None:
         """The Investigation's thread in its own Contract's channel: start it if it has
-        none yet (or the first post failed), keep the parent's status current, and
-        reply with anything the Operator should read."""
+        none yet (or the first post failed), keep the parent's status (and buttons)
+        current, and reply with the note and anything the Operator should read."""
         contract = by_id.get(t.contract_id)
         channel = t.slack_channel or (
             contract.slack.operator_channel if contract and contract.slack else None
@@ -124,14 +137,18 @@ def create_app(
         if not channel or not settings.slack_bot_token:
             return
         slack: Slack = db["slack"]
+        blocks = parent_blocks(t, buttons)
         if t.slack_ts is None:
-            ts = await slack.post(channel, parent_text(t))
+            ts = await slack.post(channel, parent_text(t), blocks=blocks)
             if ts and await store().set_slack_thread(t.id, channel, ts):
                 t.slack_channel, t.slack_ts = channel, ts
         else:
-            await slack.update(channel, t.slack_ts, parent_text(t))
-        if t.slack_ts and (reply := reply_text(t)):
-            await slack.post(channel, reply, thread_ts=t.slack_ts)
+            await slack.update(channel, t.slack_ts, parent_text(t), blocks)
+        if not t.slack_ts:
+            return
+        for reply in (note, reply_text(t, buttons)):
+            if reply:
+                await slack.post(channel, reply, thread_ts=t.slack_ts)
 
     async def fail(t: Investigation, error: str) -> None:
         t.status, t.error, t.pending, t.deadline = "failed", error, [], None
@@ -167,8 +184,8 @@ def create_app(
         t.status = "done" if outcome.done else "awaiting_approval"
         t.deadline = now() + settings.decision_timeout_seconds if t.pending else None
 
-    async def run(t: Investigation, step: Any) -> None:
-        await to_slack(t)  # "investigating", in a new or the existing thread
+    async def run(t: Investigation, step: Any, note: str | None = None) -> None:
+        await to_slack(t, note)  # "investigating", in a new or the existing thread
         async with slots:
             try:
                 # Always the Investigation's own Contract, on start and on every resume.
@@ -204,24 +221,91 @@ def create_app(
             investigation_id, deadline, f"No decision within {settings.decision_timeout_seconds}s"
         )
 
-    async def resume(t: Investigation, decisions: list[dict[str, Any]]) -> None:
+    async def settle(
+        t: Investigation,
+        deadline: float | None,
+        approve: bool,
+        message: str,
+        decided_by: str,
+        note: str,
+    ) -> bool:
+        """The one decision path (API, Slack buttons, Stale): claim the pause named
+        by its deadline, record who decided, resume. False when that pause is
+        already decided, Stale, or not the current one."""
+        pending = await store().claim(t.id, deadline)
+        if pending is None:
+            return False
+        log.info(
+            "investigation %s decision approve=%s by %s actions=%s",
+            t.id,
+            approve,
+            decided_by,
+            [p["name"] for p in pending],
+        )
+        await store().record_decision(t.id, approve, pending, message, decided_by)
+        decisions: list[dict[str, Any]] = [
+            {"type": "approve"} if approve else {"type": "reject", "message": message}
+            for _ in pending
+        ]
         t.status, t.pending, t.deadline = "running", [], None
-        spawn(run(t, lambda a: agent.resume(a, t.id, decisions)))
+        spawn(run(t, lambda a: agent.resume(a, t.id, decisions), note))
+        return True
 
     async def reject_stale(investigation_id: str, deadline: float | None, reason: str) -> bool:
         """A stale proposed action is rejected automatically; the investigation still
         ends with a report. False when someone else already decided this pause."""
-        pending = await store().claim(investigation_id, deadline)
         t = await store().get(investigation_id)
-        if pending is None or t is None:
+        if t is None:
             return False
-        log.info(
-            "investigation %s stale: %s, rejecting %s", t.id, reason, [p["name"] for p in pending]
-        )
         msg = f"{reason}. The action was not executed. Do not retry; finish the report."
-        await store().record_decision(t.id, False, pending, msg, "stale")
-        await resume(t, [{"type": "reject", "message": msg} for _ in pending])
-        return True
+        note = f":hourglass: Stale, rejected automatically: {clean(reason, 500)}."
+        return await settle(t, deadline, False, msg, "stale", note)
+
+    async def interact(p: dict[str, Any]) -> None:
+        try:
+            await interaction(p)
+        except Exception:  # a malformed payload must not vanish silently
+            log.exception("slack interaction %s failed", p.get("type"))
+
+    async def interaction(p: dict[str, Any]) -> None:
+        """A Slack button click or reject modal, from Socket Mode (already acked)."""
+        slack: Slack = db["slack"]
+        user = p.get("user", {}).get("id", "")
+        if p.get("type") == "block_actions":
+            action = p["actions"][0]
+            pause, channel = json.loads(action["value"]), p["channel"]["id"]
+        elif p.get("type") == "view_submission" and p["view"]["callback_id"] == "reject":
+            pause = json.loads(p["view"]["private_metadata"])
+            channel, action = pause["channel"], {"action_id": "reject_submit"}
+        else:
+            return
+        if user != operator:
+            await slack.ephemeral(channel, user, "Only the Operator can decide.")
+            return
+        t = await store().get(pause["id"])
+        # A button only decides its own Investigation, from its own Contract's channel.
+        if t is None or t.slack_channel != channel:
+            await slack.ephemeral(channel, user, "That Investigation isn't in this channel.")
+            return
+        deadline = pause["deadline"]
+        by, who = f"slack:{user}", f"<@{user}>"
+        if action["action_id"] == "approve":
+            done = await settle(t, deadline, True, "", by, f":white_check_mark: Approved by {who}.")
+        elif action["action_id"] == "reject":
+            # Claim only on submit: a cancelled modal leaves the pause undecided.
+            done = t.status == "awaiting_approval" and t.deadline == deadline
+            if done:
+                meta = json.dumps({**pause, "channel": channel})
+                await slack.open_view(p["trigger_id"], reject_modal(meta))
+        else:
+            reason = (p["view"]["state"]["values"]["reason"]["reason"].get("value") or "").strip()
+            message = reason or "Rejected by the Operator. Do not retry."
+            shown = f": {clean(reason, 2000)}" if reason else ""
+            done = await settle(
+                t, deadline, False, message, by, f":no_entry: Rejected by {who}{shown}"
+            )
+        if not done:
+            await slack.ephemeral(channel, user, "Already decided or Stale: nothing to decide.")
 
     def spawn(coro: Any) -> None:
         task = asyncio.create_task(coro)
@@ -294,25 +378,19 @@ def create_app(
         t = await store().get(investigation_id)
         if t is None:
             raise HTTPException(404, "unknown investigation")
-        pending = await store().claim(t.id, t.deadline) if t.status == "awaiting_approval" else None
-        if pending is None:  # already decided, stale, or never paused
+        if decision.approve:
+            message, note = "", ":white_check_mark: Approved through the API."
+        else:
+            message = decision.message or "Rejected by the Operator. Do not retry."
+            shown = f": {clean(decision.message, 2000)}" if decision.message else ""
+            note = f":no_entry: Rejected through the API{shown}"
+        decided = t.status == "awaiting_approval" and await settle(
+            t, t.deadline, decision.approve, message, "operator", note
+        )
+        if not decided:  # already decided, stale, or never paused
             current = await store().get(t.id)
             status = current.status if current else t.status
             raise HTTPException(409, f"investigation is {status}, nothing to decide")
-        if decision.approve:
-            decisions: list[dict[str, Any]] = [{"type": "approve"} for _ in pending]
-            message = ""
-        else:
-            message = decision.message or "Rejected by the Operator. Do not retry."
-            decisions = [{"type": "reject", "message": message} for _ in pending]
-        log.info(
-            "investigation %s decision approve=%s actions=%s",
-            t.id,
-            decision.approve,
-            [p["name"] for p in pending],
-        )
-        await store().record_decision(t.id, decision.approve, pending, message, "operator")
-        await resume(t, decisions)
         return {"status": "resumed"}
 
     @app.get("/healthz")

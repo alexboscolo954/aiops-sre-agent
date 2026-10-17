@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     max_concurrent_triages: int = 3  # alert storms queue instead of fanning out
     decision_timeout_seconds: int = 1800  # proposed actions go stale after this
     slack_bot_token: SecretStr | None = None  # xoxb-...; channels are per Contract
+    # Approve / reject buttons: Socket Mode with an app-level token (xapp-...,
+    # connections:write). Only clicks from the Operator's Slack user id decide.
+    slack_app_token: SecretStr | None = None
+    slack_operator_id: str | None = None  # U...
 
 
 # Settings that are gone: most moved into a Contract's contract.yaml (slice 0.3).

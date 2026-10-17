@@ -1,6 +1,8 @@
 # Slack app manifest for the Hub: api.slack.com/apps > Create New App > From a manifest.
-# Slice 1.1 only posts, so the bot needs chat:write. Slice 1.2 adds Socket Mode and
-# interactivity for the approve / reject buttons.
+# The bot posts (chat:write, which also covers the "only the Operator" notes) and
+# opens the reject modal. Clicks arrive over Socket Mode, so the Hub needs no public
+# Slack endpoint. After creating the app: Basic Information > App-Level Tokens >
+# generate one with connections:write, and set it as AIOPS_SLACK_APP_TOKEN.
 display_information:
   name: aiops
   description: Investigations and approvals for every Contract
@@ -14,5 +16,7 @@ oauth_config:
       - chat:write
 settings:
   org_deploy_enabled: false
-  socket_mode_enabled: false
+  interactivity:
+    is_enabled: true
+  socket_mode_enabled: true
   token_rotation_enabled: false

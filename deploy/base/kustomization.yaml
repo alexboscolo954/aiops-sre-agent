@@ -13,4 +13,5 @@ configMapGenerator:
 #   kubectl -n aiops create secret generic aiops-secrets \
 #     --from-literal=AIOPS_APPROVER_TOKEN=... --from-literal=AIOPS_MODEL_API_KEY=... \
 #     --from-literal=AIOPS_DATABASE_URL=postgresql://user:pass@host:5432/aiops \
-#     [--from-literal=AIOPS_SLACK_BOT_TOKEN=xoxb-...]
+#     [--from-literal=AIOPS_SLACK_BOT_TOKEN=xoxb-...] \
+#     [--from-literal=AIOPS_SLACK_APP_TOKEN=xapp-... --from-literal=AIOPS_SLACK_OPERATOR_ID=U...]

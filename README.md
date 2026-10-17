@@ -122,13 +122,19 @@ The Hub runs every Contract from one VM you own: [`deploy/hub`](deploy/hub) is a
 
 ### Slack
 
-Each Investigation is one thread in its Contract's channel. The parent message shows the status (investigating, waiting for your approval, done, failed), and replies carry the Proposed actions, the Report or the error.
+Each Investigation is one thread in its Contract's channel. The parent message shows the status (investigating, waiting for your approval, done, failed), and replies carry the Proposed actions, each Approval decision, the Report or the error.
 
 1. Create the app from [`deploy/slack-app.yaml`](deploy/slack-app.yaml) (api.slack.com/apps > From a manifest), install it, and set its bot token as `AIOPS_SLACK_BOT_TOKEN`.
-2. Make one channel per Contract and invite the bot: `/invite @aiops`. The bot can't post where it isn't a member.
-3. Put the channel's ID (channel details > the `C...` at the bottom) in the Contract: `slack: {operator_channel: C0123ABCD}`. Two Contracts can't share a channel.
+2. For the buttons: Basic Information > App-Level Tokens > generate a token with `connections:write`, set it as `AIOPS_SLACK_APP_TOKEN`, and set your own member ID (your profile > ⋮ > Copy member ID) as `AIOPS_SLACK_OPERATOR_ID`.
+3. Make one channel per Contract and invite the bot: `/invite @aiops`. The bot can't post where it isn't a member.
+4. Put the channel's ID (channel details > the `C...` at the bottom) in the Contract: `slack: {operator_channel: C0123ABCD}`. Two Contracts can't share a channel.
 
-Everything posted is escaped (a label like `<!channel>` arrives as text, never as a ping), redacted and capped. A Slack failure is logged and never fails an Investigation. For now you approve through the API; approve and reject buttons come in slice 1.2.
+While Proposed actions wait, the parent message has **Approve** (with a confirm step) and **Reject** (a modal asks for a reason, which the agent reads). Clicks arrive over Socket Mode, so the Hub opens no Slack endpoint. They take the same decision path as `POST /investigations/{id}/decision`:
+- only `AIOPS_SLACK_OPERATOR_ID`'s clicks count, and only in the Investigation's own Contract channel; anyone else gets a private "Only the Operator can decide";
+- each button names its pause, so a second click, or a click left over from an earlier pause, decides nothing;
+- once the actions are decided (in Slack or through the API) or go Stale, the buttons disappear and the thread says who decided, or why it went Stale.
+
+Without `AIOPS_SLACK_APP_TOKEN` there are no buttons, and you decide through the API. Everything posted is escaped (a label like `<!channel>` arrives as text, never as a ping), redacted and capped. A Slack failure, including a dropped socket (it reconnects), is logged and never fails an Investigation.
 
 ## Running as a service in one cluster
 
@@ -244,6 +250,7 @@ Hub settings are `AIOPS_*` environment variables (or `.env`). See [`config.py`](
 | `AIOPS_APPROVER_TOKEN` | | The Operator's token, required for `serve` |
 | `AIOPS_DATABASE_URL` | | Postgres, required for `serve`. Migrations run at startup |
 | `AIOPS_SLACK_BOT_TOKEN` | | The Hub's Slack bot (`xoxb-...`). Each Contract names its own channel |
+| `AIOPS_SLACK_APP_TOKEN` / `_OPERATOR_ID` | | Approve and reject buttons: an app-level token (`xapp-...`, `connections:write`) and the Operator's Slack member ID (`U...`). The app token needs both others |
 | `AIOPS_MAX_TOOL_CALLS` / `AIOPS_MAX_MODEL_CALLS` | 25 / 30 | Per run |
 | `AIOPS_MAX_CONCURRENT_TRIAGES` | 3 | Alert storms queue instead of fanning out |
 | `AIOPS_DECISION_TIMEOUT_SECONDS` | 1800 | Proposed actions with no decision by then are rejected as stale. So are those whose alert group resolves, which needs `send_resolved: true` ([`deploy/alertmanager-receiver.yaml`](deploy/alertmanager-receiver.yaml)) |
