@@ -118,8 +118,6 @@ def create_app(
                 await asyncio.gather(*tasks, return_exceptions=True)
 
     app = FastAPI(title="aiops-sre-agent", lifespan=lifespan)
-    if settings.console_operators:  # off by default: 404, not a login page
-        app.include_router(console.router(settings.console_operators, by_id))
     bearer = HTTPBearer()
 
     def check(creds: HTTPAuthorizationCredentials, expected: str) -> None:
@@ -503,6 +501,27 @@ def create_app(
             status = current.status if current else t.status
             raise HTTPException(409, f"investigation is {status}, nothing to decide")
         return {"status": "resumed"}
+
+    async def console_decide(
+        investigation_id: str, deadline: float, approve: bool, reason: str, login: str
+    ) -> bool:
+        """A console decision on one pause (the deadline its page showed)."""
+        t = await store().get(investigation_id)
+        if t is None or t.status != "awaiting_approval":
+            return False
+        who = f"{clean(login, 200)} in the console"
+        if approve:
+            message, note = "", f":white_check_mark: Approved by {who}."
+        else:
+            message = reason.strip() or "Rejected by the Operator. Do not retry."
+            shown = f": {clean(reason.strip(), 2000)}" if reason.strip() else ""
+            note = f":no_entry: Rejected by {who}{shown}"
+        return await settle(t, deadline, approve, message, f"console:{login}", note)
+
+    if settings.console_operators:  # off by default: 404, not a login page
+        app.include_router(
+            console.router(settings.console_operators, by_id, store, console_decide, approver_token)
+        )
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:

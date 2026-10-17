@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}{{ t.title }} · aiops{% endblock %}
+{% block main %}
+<h1>{{ t.title }}</h1>
+<p>
+  <code>{{ t.contract_id }}</code> · {{ t.kind }} · <strong>{{ t.status }}</strong>
+  · started {{ t.started | when }} · <code>{{ t.id }}</code>
+</p>
+{% if t.error %}<p><strong>Failed:</strong> {{ t.error }}</p>{% endif %}
+
+{% if t.pending %}
+<h2>Waiting for your approval</h2>
+<p>Goes Stale at {{ t.deadline | when }}.</p>
+<ul>{% for p in t.pending %}<li><pre>{{ p.description }}</pre></li>{% endfor %}</ul>
+{% if can_act %}
+<form method="post" action="/console/investigations/{{ t.id }}/decision">
+  <input type="hidden" name="deadline" value="{{ t.deadline }}">
+  <input type="hidden" name="approve" value="1">
+  <button type="submit">Approve</button>
+</form>
+<form method="post" action="/console/investigations/{{ t.id }}/decision">
+  <input type="hidden" name="deadline" value="{{ t.deadline }}">
+  <input type="hidden" name="approve" value="0">
+  <label>Reason (the agent reads it) <input type="text" name="reason" size="60"></label>
+  <button type="submit">Reject</button>
+</form>
+{% else %}
+<p>To approve or reject here, <a href="/console/token">enter the approver token</a> once.</p>
+{% endif %}
+{% endif %}
+
+{% if t.report %}
+<h2>Report</h2>
+<pre>{{ t.report.to_markdown(t.executed_actions) }}</pre>
+{% endif %}
+{% if t.answer %}
+<h2>Answer</h2>
+<pre>{{ t.answer.to_markdown() }}</pre>
+{% endif %}
+
+<h2>Decisions</h2>
+<table>
+  <thead><tr><th>When</th><th>By</th><th>Decision</th><th>Actions</th><th>Message</th></tr></thead>
+  <tbody>
+  {% for d in decisions %}
+    <tr>
+      <td>{{ d.at | when }}</td><td>{{ d.decided_by }}</td>
+      <td>{{ "approved" if d.approve else "rejected" }}</td>
+      <td>{{ d.actions | map(attribute="name") | join(", ") }}</td><td>{{ d.message }}</td>
+    </tr>
+  {% else %}
+    <tr><td colspan="5">None.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+<h2>Tool calls</h2>
+<ol>
+{% for c in tool_calls %}
+  <li>
+    <code>{{ c.tool }}</code> {% if c.is_error %}<strong>error</strong>{% endif %}
+    <details><summary><code>{{ c.args | tojson }}</code></summary><pre>{{ c.result[:4000] }}</pre></details>
+  </li>
+{% else %}
+  <li>None.</li>
+{% endfor %}
+</ol>
+{% endblock %}

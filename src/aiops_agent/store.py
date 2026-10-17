@@ -200,12 +200,28 @@ class Store:
         )
         return _investigation(row) if row else None
 
-    async def recent(self, limit: int = 50) -> list[Investigation]:
+    async def recent(self, limit: int = 50, contract_id: str | None = None) -> list[Investigation]:
+        """Newest first; one Contract's only when contract_id is given."""
         rows = await self._all(
-            f"select {COLUMNS} from investigations order by started desc limit %s",  # noqa: S608
-            (limit,),
+            f"select {COLUMNS} from investigations "  # noqa: S608 - fixed columns
+            "where %s::text is null or contract_id = %s order by started desc limit %s",
+            (contract_id, contract_id, limit),
         )
         return [_investigation(r) for r in rows]
+
+    async def tool_calls(self, investigation_id: str) -> list[dict[str, Any]]:
+        return await self._all(
+            "select tool, args, result, is_error, at from tool_calls "
+            "where investigation_id = %s order by id",
+            (investigation_id,),
+        )
+
+    async def decisions(self, investigation_id: str) -> list[dict[str, Any]]:
+        return await self._all(
+            "select approve, actions, message, decided_by, at from decisions "
+            "where investigation_id = %s order by id",
+            (investigation_id,),
+        )
 
     async def unfinished(self) -> list[Investigation]:
         rows = await self._all(

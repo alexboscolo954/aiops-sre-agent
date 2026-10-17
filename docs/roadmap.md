@@ -163,10 +163,10 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
 - Not covered by CI: a real `tailscale serve`.
 - *Done when:* a request without the Operator's Tailscale identity is refused.
 
-**2.2 Investigations.**
-- Filter by Contract. Show the Report or Answer with its Evidence and tool calls. Approve and reject through the same `resume` path.
-- **CSRF:** `serve` adds the identity header to every request it proxies, including one a malicious page makes the Operator's browser send. Every POST must check `Origin` or `Sec-Fetch-Site`. Vendor HTMX as a static file, never from a CDN.
-- Before actions become clickable, decide with the Operator how to stop anything but `tailscale serve` from sending the header: split the compose network (Caddy and Hub apart from Postgres and backups), or check each request with tailscaled's `whois` on the peer address instead of trusting the header (needs tailscaled's socket in the container). A loopback check alone doesn't work: through Docker's published port, `serve` arrives from the bridge gateway, not 127.0.0.1.
+**2.2 Investigations.** Done.
+- `/console` lists Investigations, filtered by Contract; each one's page shows the Report or Answer, the decisions and every tool call (args, and the redacted raw result).
+- Approve and reject are plain forms (no HTMX needed), through the same decision path as the API and Slack. Each form names its pause (the deadline), like the buttons.
+- **Acting needs more than the identity header.** `serve` only strips a *client's* copy of the header; anything else that reaches the Hub's port (local processes, the other containers on the compose network) could send it, and neither a network split nor tailscaled's `whois` stops that behind Docker's published port. So the header only lets you look, and every POST also needs the approver token (pasted once per browser, kept as an HMAC of it in a Secure, HttpOnly, SameSite=Strict cookie) and must be same-origin (`Sec-Fetch-Site`, or `Origin` against `Host`), which also stops CSRF.
 
 **2.3 Ask a Question** from a form.
 
@@ -285,4 +285,4 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
 
 ## Next
 
-Slice 2.2: Investigations in the console.
+Slice 2.3: ask a Question from a form in the console.

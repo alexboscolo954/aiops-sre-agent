@@ -102,6 +102,8 @@ echo "ok   investigation stored, failed as expected without a cluster"
 # The console, as `tailscale serve` reaches it: the image has its templates, and
 # only the Operator's identity header gets in.
 curl -sf "${as_operator[@]}" "$local_api/console" | grep -q 'demo-shop' || fail "console"
+curl -sf "${as_operator[@]}" "$local_api/console/investigations/$id" | grep -q 'ConfigException' ||
+  fail "console investigation page"
 [[ $(code "$local_api/console") == 403 ]] || fail "console without an identity"
 echo "ok   console renders on 127.0.0.1 for the Operator only, and is 404 through Caddy"
 
