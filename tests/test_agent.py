@@ -215,6 +215,8 @@ async def test_approved_action_runs_once(settings: Settings, fake_cluster: Any) 
     assert len(outcome.executed_actions) == 1
     assert outcome.executed_actions[0].startswith("kubernetes_scale_deployment ")
     assert '"replicas": 0' in outcome.executed_actions[0]
+    # The tool's text, not its content blocks: `[{'type': 'text', ...}]` once leaked.
+    assert outcome.executed_actions[0].endswith(": deployment shop/checkout scaled to 0")
     assert "Executed actions" in outcome.report.to_markdown(outcome.executed_actions)
     fake_cluster[1].patch_namespaced_deployment_scale.assert_called_once()
 

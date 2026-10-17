@@ -128,7 +128,7 @@ def record_executed_actions(gated_names: set[str]) -> Any:
         args = json.dumps(call["args"], sort_keys=True)
         failed = "FAILED " if result.status == "error" else ""
         # Goes to the API and Slack: redact, since third-party tool output isn't.
-        entry = f"{failed}{call['name']} {redact(args)}: {redact_capped(str(result.content), 200)}"
+        entry = f"{failed}{call['name']} {redact(args)}: {redact_capped(result.text, 200)}"
         return Command(update={"messages": [result], "executed_actions": [entry]})
 
     return record
