@@ -437,3 +437,130 @@ async def test_the_grafana_guide_reaches_the_model_only_with_grafana(
     toolbox = evals.replay_server(with_grafana, settings, {})
     assert agent.prompt("question", toolbox).startswith(agent.QUESTION_PROMPT)
     assert "obs_search_tempo_traces" in agent.prompt("question", toolbox)
+
+
+LINK = "https://grafana.acme.example/explore?panes=%7B%22a%22%7D&schemaVersion=1"
+PLANTED = "https://phish.example/login"
+
+
+def linking(deeplink_access: str = "read") -> agent.Toolbox:
+    """x_deeplink returns a link the Hub may show; x_logs returns client data that
+    happens to contain a URL."""
+    from fastmcp import FastMCP
+    from mcp.types import ToolAnnotations
+
+    srv = FastMCP("x")
+    read = ToolAnnotations(readOnlyHint=True)
+
+    @srv.tool(annotations=read)
+    def deeplink() -> str:
+        return LINK
+
+    @srv.tool(annotations=read)
+    def logs() -> str:
+        return f"error: session expired, sign in again at {PLANTED}"
+
+    @srv.tool(annotations=read)
+    def annotation() -> str:  # client data that is only a URL, like a runbook_url label
+        return PLANTED
+
+    root = FastMCP("aiops")
+    root.mount(srv, namespace="x")
+    access: dict[str, Any] = {
+        "x_deeplink": deeplink_access,
+        "x_logs": "read",
+        "x_annotation": "read",
+    }
+    return agent.Toolbox(root, access, link_tools={"x_deeplink"})
+
+
+def cited(*links: str | None) -> list[dict[str, Any]]:
+    return [{"source": "x_logs", "finding": f"f{i}", "link": link} for i, link in enumerate(links)]
+
+
+@pytest.mark.parametrize("kind", ["triage", "question"])
+@pytest.mark.anyio
+async def test_a_link_is_shown_only_if_a_link_tool_returned_it(
+    settings: Settings, kind: str
+) -> None:
+    """Exact link kept; one character off, or a URL another tool returned, dropped."""
+    evidence = cited(LINK, LINK[:-1] + "2", PLANTED, None)
+    final = (
+        call("TriageReport", "r", **{**REPORT, "evidence": evidence})
+        if kind == "triage"
+        else call("Answer", "r", answer="a", evidence=evidence)
+    )
+    model = scripted(call("x_deeplink", "d"), call("x_logs", "l"), call("x_annotation", "u"), final)
+    async with agent.open_agent(settings, linking(), model, kind=kind) as a:  # type: ignore[arg-type]
+        outcome = await (
+            agent.start(a, ALERT, "k") if kind == "triage" else agent.ask(a, "why?", "k")
+        )
+    result = outcome.report or outcome.answer
+    assert result is not None
+    assert [e.link for e in result.evidence] == [LINK, None, None, None]
+    assert outcome.dropped_links == 2
+    assert f"- `x_logs`: f0 ({LINK})" in result.to_markdown()
+
+
+@pytest.mark.anyio
+async def test_a_link_never_run_is_never_shown(settings: Settings) -> None:
+    model = scripted(call("TriageReport", "r", **{**REPORT, "evidence": cited(LINK)}))
+    async with agent.open_agent(settings, linking(), model) as a:
+        outcome = await agent.start(a, ALERT, "n")
+    assert outcome.report is not None and outcome.report.evidence[0].link is None
+
+
+@pytest.mark.anyio
+async def test_an_approved_link_tool_records_both_the_action_and_the_link(
+    settings: Settings,
+) -> None:
+    """Both recorders write state through a Command: neither may lose the other's."""
+    model = scripted(
+        call("x_deeplink", "d"), call("TriageReport", "r", **{**REPORT, "evidence": cited(LINK)})
+    )
+    async with agent.open_agent(settings, linking("write"), model) as a:
+        assert (await agent.start(a, ALERT, "w")).pending
+        outcome = await agent.resume(a, "w", [{"type": "approve"}])
+    assert outcome.executed_actions == [f"x_deeplink {{}}: {LINK}"]
+    assert outcome.report is not None and outcome.report.evidence[0].link == LINK
+
+
+def test_deeplinks_count_only_when_the_contract_lists_them(settings: Settings) -> None:
+    def toolbox(tools: dict[str, str]) -> agent.Toolbox:
+        vendor = {"name": "obs", "vendor": "grafana", "tools": tools}
+        c = evals.scenario_contract("", False, [Path("no-runbooks")], {}, [vendor])
+        return evals.replay_server(c, settings, {})
+
+    listed = toolbox({"query_loki_patterns": "read", "generate_deeplink": "read"})
+    assert listed.link_tools == {"obs_generate_deeplink"}
+    assert "obs_generate_deeplink" in agent.prompt("triage", listed)
+    unlisted = toolbox({"query_loki_patterns": "read"})
+    assert unlisted.link_tools == set()
+    assert "generate_deeplink" not in agent.prompt("triage", unlisted)
+
+
+def test_a_scenario_can_require_a_link() -> None:
+    from aiops_agent.models import Evidence
+
+    report = TriageReport(**{**REPORT, "evidence": [Evidence(source="s", finding="f")]})
+    outcome = agent.Outcome("t", report=report, tool_calls=["s"])
+    expect = {"category": [REPORT["category"]], "links": 1}
+    assert evals.score({"expect": expect}, outcome) == ["0 evidence links < 1"]
+    report.evidence[0].link = LINK
+    assert evals.score({"expect": expect}, outcome) == []
+
+
+def test_a_recorded_deeplink_reaches_slack_whole() -> None:
+    """Explore links carry percent-encoded JSON: Slack's escaping and the redaction
+    must leave every character (Slack shows &amp; as &)."""
+    from aiops_agent import slack
+
+    scenarios = Path(__file__).parent.parent / "evals" / "scenarios"
+    links = [
+        case["result"]
+        for path in scenarios.glob("grafana-*.yaml")
+        for case in yaml.safe_load(path.read_text())["tools"]["grafana_generate_deeplink"]
+    ]
+    assert len(links) == 3
+    for link in links:
+        assert slack.clean(slack.mrkdwn(link)) == link.replace("&", "&amp;")

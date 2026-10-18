@@ -37,6 +37,7 @@ LOGS = {
     "query_loki_stats": "read",
     "query_loki_patterns": "read",
     "query_loki_logs": "read",
+    "generate_deeplink": "read",
 }
 TRACES = {
     **LOGS,
@@ -108,7 +109,13 @@ async def record(binary: str, url: str) -> None:
             await call(tools, "query_loki_stats", datasourceUid=loki, logql=selector)
             await call(tools, "query_loki_patterns", datasourceUid=loki, logql=selector)
             await call(tools, "query_loki_logs", datasourceUid=loki, logql=selector, limit=50)
+            await deeplink(tools, loki, {"refId": "A", "expr": selector})
             return loki, uid["tempo"]
+
+        async def deeplink(tools: dict[str, list[Any]], uid: str, query: dict[str, str]) -> None:
+            """One explore link per datasource: replay serves it for any query there."""
+            args = {"datasourceUid": uid, "queries": [query], "timeRange": {"from": "now-1h"}}
+            await call(tools, "generate_deeplink", resourceType="explore", **args)
 
         logs: dict[str, list[Any]] = {}
         await common(logs, "payments")
@@ -120,6 +127,7 @@ async def record(binary: str, url: str) -> None:
         await call(
             traces, "list_tempo_attribute_values", datasourceUid=tempo, name="resource.service.name"
         )
+        await deeplink(traces, tempo, {"refId": "A", "queryType": "traceql", "query": query})
         for t in found["traces"][:5]:
             await call(
                 traces, "get_tempo_trace", ("trace_id",), datasourceUid=tempo, trace_id=t["traceID"]
@@ -134,7 +142,12 @@ async def record(binary: str, url: str) -> None:
             "payments",
             "8% of POST /charge requests return 5xx over the last 10 minutes.",
         ),
-        {"category": ["dependency_failure"], "keywords": ["fraud-check"], "max_tool_calls": 10},
+        {
+            "category": ["dependency_failure"],
+            "keywords": ["fraud-check"],
+            "links": 1,
+            "max_tool_calls": 12,
+        },
         LOGS,
         logs,
     )
@@ -150,7 +163,8 @@ async def record(binary: str, url: str) -> None:
         {
             "category": ["dependency_failure", "app_error", "capacity"],
             "keywords": ["inventory"],
-            "max_tool_calls": 10,
+            "links": 1,
+            "max_tool_calls": 12,
         },
         TRACES,
         traces,

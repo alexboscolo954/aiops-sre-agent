@@ -1,0 +1,46 @@
+[
+  {
+    "scenario": "grafana-log-patterns",
+    "passed": true,
+    "failures": [],
+    "category": "dependency_failure",
+    "tool_calls": 9,
+    "seconds": 26.4,
+    "calls": [
+      "grafana_list_datasources",
+      "grafana_query_loki_patterns",
+      "grafana_query_loki_logs",
+      "grafana_query_loki_stats",
+      "grafana_list_loki_label_values",
+      "grafana_query_loki_logs",
+      "grafana_query_loki_logs",
+      "grafana_list_loki_label_values",
+      "grafana_generate_deeplink"
+    ],
+    "proposed": [],
+    "dropped_links": 0,
+    "report": "## POST /charge 5xx errors come from payments failing its risk check: calls to fraud-check.risk.svc.cluster.local:8443 are refused, and each one returns a 502. The payments service itself appears healthy, so the fix is likely on the fraud-check side, which I could not inspect.\n\n**Root cause** (medium confidence, `dependency_failure`): The fraud-check risk service at fraud-check.risk.svc.cluster.local:8443 is refusing connections (connection refused), so payments returns 502 'risk check unavailable' on charge requests. Likely causes are that fraud-check is down, has no ready endpoints, or is not listening on 8443. This is inferred from payments logs only; no Kubernetes or fraud-check logs were available to confirm.\n**Severity:** high  \u00b7  **Affected:** shop/Service/payments, risk/Service/fraud-check\n\n**Evidence**\n- `grafana_query_loki_patterns (loki, {service_name=\"payments\"}, last 30m)`: Pattern 'charge order=<_> failed status=502: risk check unavailable: dial tcp fraud-check.risk.svc.cluster.local:8443: connect: connection refused' occurred 135 times in 30m, against 636 'charge order=<_> status=200' lines.\n- `grafana_query_loki_logs (loki, {service_name=\"payments\"} |~ error/exception/5xx, last 30m)`: Repeated ERROR lines, e.g. 'charge order=o-c75499fd failed status=502: risk check unavailable: dial tcp fraud-check.risk.svc.cluster.local:8443: connect: connection refused', interleaved with successful 'charge ... status=200 latency_ms=85' lines. Failures are continuous across the window, not a single burst.\n- `grafana_query_loki_logs (loki, {service_name=\"payments\"} |= \"risk check unavailable\", last 2h)`: The same connection-refused error is present in the 2h window, so the dependency failure is ongoing and not limited to the last 10 minutes.\n- `grafana_list_loki_label_values (loki, service_namespace=\"risk\")`: Only service_name values 'payments' and 'storefront' were returned. No logs from a fraud-check service were found in Loki, so the risk service's own health is unverified.\n- `grafana_generate_deeplink (explore, loki)`: Explore link for the payments logs (the returned link shows the payments selector; the risk-check filter may not be preserved in the link). (http://localhost:3000/explore?panes=%7B%22a%22%3A%7B%22datasource%22%3A%22loki%22%2C%22queries%22%3A%5B%7B%22datasource%22%3A%7B%22uid%22%3A%22loki%22%7D%2C%22expr%22%3A%22%7Bservice_name%3D%5C%22payments%5C%22%7D%22%2C%22refId%22%3A%22A%22%7D%5D%2C%22range%22%3A%7B%22from%22%3A%22now-1h%22%7D%7D%7D&schemaVersion=1)\n\n**Recommendations**\n1. Check the fraud-check service in the risk namespace: pod status, restarts, Service endpoints, and whether it listens on port 8443. A refused connection usually means no ready pods or a wrong port.\n2. If fraud-check is down, restore it (roll back its latest change if it has one, or restart its pods after human approval) and confirm that payments 502s stop.\n3. Page the risk/fraud-check owners now, since payments charges are failing for roughly 8% of requests.\n4. If fraud-check cannot be restored quickly, decide with the payments owners whether to bypass or degrade the risk check. That is a business decision and should not be made by automation.\n5. Once recovered, confirm the 502 pattern count in payments logs drops to zero and that the PaymentsHighErrorRate alert resolves."
+  },
+  {
+    "scenario": "grafana-slow-traces",
+    "passed": true,
+    "failures": [],
+    "category": "app_error",
+    "tool_calls": 9,
+    "seconds": 29.6,
+    "calls": [
+      "grafana_list_datasources",
+      "grafana_search_tempo_traces",
+      "grafana_query_loki_stats",
+      "grafana_get_tempo_trace",
+      "grafana_query_loki_patterns",
+      "grafana_query_loki_patterns",
+      "grafana_query_loki_patterns",
+      "grafana_query_loki_logs",
+      "grafana_generate_deeplink"
+    ],
+    "proposed": [],
+    "dropped_links": 0,
+    "report": "## Storefront p99 latency on GET /product/{sku} is high because the slow spans sit in inventory's stock query. In the sampled slow trace, the inventory span 'SELECT qty FROM stock ... FOR UPDATE' waited about 3050ms of a 3103ms request on a Lock:tuple wait in inventory-db. The root cause is row-lock contention in inventory-db, not storefront itself. The blocking transaction was not identified, and no Kubernetes state was checked.\n\n**Root cause** (medium confidence, `app_error`): Row-lock contention in inventory-db. Inventory's read path runs SELECT ... FOR UPDATE on the stock table, and requests queue behind a lock held by another transaction (the holder was not identified). Storefront latency is inherited from the inventory call.\n**Severity:** high  \u00b7  **Affected:** shop/service/storefront, shop/service/inventory, shop/service/inventory-db\n\n**Evidence**\n- `grafana_search_tempo_traces`: TraceQL {resource.service.name=\"storefront\" && duration > 2s} returned many GET /product/{sku} traces of about 2.4-3.3s, e.g. 45d31a48f074c35561c0353b3bdfe298 at 3103ms and aa889c27b4277ffe35150f32673a376f at 2523ms. (http://localhost:3000/explore?panes=%7B%22a%22%3A%7B%22datasource%22%3A%22tempo%22%2C%22queries%22%3A%5B%7B%22datasource%22%3A%7B%22uid%22%3A%22tempo%22%7D%2C%22query%22%3A%22%7Bresource.service.name%3D%5C%22storefront%5C%22+%5Cu0026%5Cu0026+duration+%5Cu003e+2s%7D%22%2C%22queryType%22%3A%22traceql%22%2C%22refId%22%3A%22A%22%7D%5D%2C%22range%22%3A%7B%22from%22%3A%22now-1h%22%7D%7D%7D&schemaVersion=1)\n- `grafana_get_tempo_trace`: Trace 45d31a48f074c35561c0353b3bdfe298: storefront GET /product/{sku} 3103ms, catalog 14ms, pricing 21ms, inventory GET /stock/{sku} 3056ms, and child span 'SELECT stock' 3050ms with db.system=postgresql, db.query.text='SELECT qty FROM stock WHERE sku = $1 FOR UPDATE', db.wait_event='Lock:tuple', server.address=inventory-db.shop.svc.\n- `grafana_query_loki_logs`: Storefront log lines show slow requests mixed with normal ones, e.g. 'GET /product/sku-1010 200 2606ms slow' and 'GET /product/sku-1088 200 2834ms slow', while most lines show about 55-62ms ok.\n- `grafana_query_loki_patterns`: The {service_name=\"storefront\"} pattern 'GET <_> 200 <_> <_>' has 346 entries in the last hour. Patterns for inventory and inventory-db returned the same result, so they were not independently verified.\n\n**Recommendations**\n1. Query inventory-db (for example pg_stat_activity and pg_locks) to find the transaction holding row locks on the stock table and the sessions waiting on it.\n2. Find the code path that issues SELECT ... FOR UPDATE for GET /stock/{sku} and check whether it is a read path that should be a plain SELECT, or whether it holds the transaction open too long.\n3. If a long-running or idle-in-transaction session is the blocker, terminate it or fix the transaction scope. This is a DB-side action and needs human approval.\n4. Check recent inventory deploys or config changes, since FOR UPDATE on a read path may be new. Confirm the Kubernetes rollout history for the shop namespace, which was not checked here.\n5. Confirm that the inventory service logs show the same lock-wait pattern. The Loki inventory query returned storefront lines, so this is not yet verified."
+  }
+]

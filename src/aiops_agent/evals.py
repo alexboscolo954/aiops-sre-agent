@@ -180,7 +180,14 @@ def score(scenario: dict[str, Any], outcome: agent.Outcome) -> list[str]:
         failures.append(f"root cause misses {missing}")
     if len(outcome.tool_calls) > expect.get("max_tool_calls", 12):
         failures.append(f"{len(outcome.tool_calls)} tool calls > {expect['max_tool_calls']}")
-    return failures
+    return failures + missing_links(expect, report.evidence)
+
+
+def missing_links(expect: dict[str, Any], evidence: list[Any]) -> list[str]:
+    """expect.links: at least this many Evidence links, after the Hub dropped any a
+    link tool didn't return."""
+    kept = sum(e.link is not None for e in evidence)
+    return [f"{kept} evidence links < {expect['links']}"] if kept < expect.get("links", 0) else []
 
 
 def score_answer(scenario: dict[str, Any], outcome: agent.Outcome) -> list[str]:
@@ -202,7 +209,7 @@ def score_answer(scenario: dict[str, Any], outcome: agent.Outcome) -> list[str]:
         failures.append(f"evidence cites tools that never ran: {invented}")
     if len(outcome.tool_calls) > expect.get("max_tool_calls", 12):
         failures.append(f"{len(outcome.tool_calls)} tool calls > {expect['max_tool_calls']}")
-    return failures
+    return failures + missing_links(expect, answer.evidence)
 
 
 def load_scenarios(directory: Path) -> list[tuple[Path, dict[str, Any]]]:
@@ -237,8 +244,9 @@ async def run(
                     outcome, proposed = await triage(a, group, thread, scenario["expect"])
                     failures = score(scenario, outcome)
             calls, report, answer = outcome.tool_calls, outcome.report, outcome.answer
+            dropped = outcome.dropped_links
         except agent.TriageError as e:
-            failures, calls, report, answer, proposed = [str(e)], [], None, None, []
+            failures, calls, report, answer, proposed, dropped = [str(e)], [], None, None, [], 0
         results.append(
             {
                 "scenario": path.stem,
@@ -249,6 +257,7 @@ async def run(
                 "seconds": round(time.monotonic() - start, 1),
                 "calls": calls,
                 "proposed": [p["name"] for p in proposed],
+                "dropped_links": dropped,
                 "report": report.to_markdown() if report else None,
                 **({"answer": answer.to_markdown()} if answer else {}),
             }

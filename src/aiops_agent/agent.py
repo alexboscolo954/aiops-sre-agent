@@ -120,6 +120,7 @@ class Toolbox:
     mcp: FastMCP
     access: dict[str, Access]
     guides: list[str] = field(default_factory=list)  # vendors' prompt additions
+    link_tools: set[str] = field(default_factory=set)  # results the Hub may show as links
 
 
 def read_only(tool: BaseTool) -> bool:
@@ -151,6 +152,34 @@ async def load_tools(adapter: MCPAdapter, access: dict[str, Access]) -> list[Bas
 
 class TriageState(AgentState[BaseModel]):
     executed_actions: NotRequired[Annotated[list[str], operator.add]]
+    links: NotRequired[Annotated[list[str], operator.add]]  # what link tools returned
+
+
+def record_links(link_tools: set[str]) -> Any:
+    """Links are recorded where a link tool ran, so a Report can only show a link a
+    tool built (see _outcome). Only the Hub's link tools count: a URL in a log line
+    or a span attribute is client data. Outermost tool wrapper: it also takes the
+    executed-actions recorder's Command apart, so a gated link tool keeps both."""
+
+    @wrap_tool_call(state_schema=TriageState)
+    async def record_link(
+        request: ToolCallRequest, handler: Callable[[ToolCallRequest], Awaitable[Any]]
+    ) -> Any:
+        result = await handler(request)
+        if request.tool_call["name"] not in link_tools:
+            return result
+        update: dict[str, Any] = (
+            dict(result.update or {}) if isinstance(result, Command) else {"messages": [result]}
+        )
+        message = (update.get("messages") or [None])[0]
+        if not isinstance(message, ToolMessage) or message.status == "error":
+            return result
+        link = message.text.strip()
+        if not link.startswith(("https://", "http://")) or any(c.isspace() for c in link):
+            return result
+        return Command(update={**update, "links": [link]})
+
+    return record_link
 
 
 def record_executed_actions(gated_names: set[str]) -> Any:
@@ -195,13 +224,20 @@ def build_mcp(
     k8s_apis: cluster name -> (CoreV1Api, AppsV1Api) instead of connecting, for tests.
     snapshots: vendors' tools from their schema snapshots, never started (replay)."""
     root, access, guides = FastMCP(f"aiops-{contract.id}"), dict[str, Access](), []
+    link_tools: set[str] = set()
     for i in contract.integrations:
         server = integration_server(contract, i, settings, k8s_apis, snapshots)
         mount(root, access, i.name, *server)
-        if isinstance(i, Vendor) and (guide := vendors.VENDORS[i.vendor].guide):
-            guides.append(guide.format(name=i.name))
+        if isinstance(i, Vendor):
+            spec = vendors.VENDORS[i.vendor]
+            if spec.guide:
+                guides.append(spec.guide.format(name=i.name))
+            for tool, sentence in spec.links:
+                if tool in i.tools:
+                    link_tools.add(f"{i.name}_{tool}")
+                    guides.append(sentence.format(name=i.name))
     root.add_middleware(AuditMiddleware(contract.id))
-    return Toolbox(root, access, guides)
+    return Toolbox(root, access, guides, link_tools)
 
 
 def probes(contract: Contract) -> list[tuple[str, str | None, dict[str, Any]]]:
@@ -411,8 +447,9 @@ async def open_agent(
                 ),
                 ModelCallLimitMiddleware(run_limit=settings.max_model_calls, exit_behavior="end"),
                 ToolCallLimitMiddleware(run_limit=settings.max_tool_calls),
-                # Outermost first: the recorder must wrap the cap, or the cap would
-                # see the recorder's Command instead of the ToolMessage and skip it.
+                # Outermost first: the recorders must wrap the cap, or the cap would
+                # see a recorder's Command instead of the ToolMessage and skip it.
+                record_links(toolbox.link_tools),
                 record_executed_actions(needs_approval),
                 cap_tool_output(settings.tool_output_limit),
                 *([record_tool_results(record)] if record else []),
@@ -430,6 +467,7 @@ class Outcome:
     pending: list[dict[str, Any]] = field(default_factory=list)  # proposed actions
     tool_calls: list[str] = field(default_factory=list)
     executed_actions: list[str] = field(default_factory=list)
+    dropped_links: int = 0  # Evidence links no link tool returned, removed
 
     @property
     def done(self) -> bool:
@@ -459,11 +497,25 @@ def _outcome(thread_id: str, result: Any) -> Outcome:
         pending = [a for i in result.interrupts for a in i.value["action_requests"]]
         return Outcome(thread_id, pending=pending, tool_calls=calls, executed_actions=executed)
     found = result.value.get("structured_response")
-    if isinstance(found, Answer):
-        return Outcome(thread_id, answer=found, tool_calls=calls)
     if found is None:
         raise TriageError("agent stopped without a report (call limit reached?)")
-    return Outcome(thread_id, report=found, tool_calls=calls, executed_actions=executed)
+    dropped = drop_unreturned_links(found, set(result.value.get("links", [])))
+    if isinstance(found, Answer):
+        return Outcome(thread_id, answer=found, tool_calls=calls, dropped_links=dropped)
+    return Outcome(
+        thread_id, report=found, tool_calls=calls, executed_actions=executed, dropped_links=dropped
+    )
+
+
+def drop_unreturned_links(found: TriageReport | Answer, returned: set[str]) -> int:
+    """Keep an Evidence link only if a link tool returned exactly it: an invented
+    link, or one copied from tool output, never reaches Slack or the console."""
+    dropped = 0
+    for e in found.evidence:
+        if e.link is not None and e.link not in returned:
+            log.warning("dropping an Evidence link no link tool returned: %.200s", e.link)
+            e.link, dropped = None, dropped + 1
+    return dropped
 
 
 async def start(agent: Any, group: AlertGroup, thread_id: str) -> Outcome:

@@ -57,6 +57,14 @@ Category = Literal[
 class Evidence(BaseModel):
     source: str = Field(description="Tool that produced it, e.g. kubernetes_pod_logs")
     finding: str = Field(description="What it showed, quoted or summarized, one line")
+    link: str | None = Field(
+        None,
+        description="A link a tool returned that opens this evidence (e.g. from a "
+        "generate_deeplink tool), copied exactly. Never build or edit one.",
+    )
+
+    def to_markdown(self) -> str:
+        return f"- `{self.source}`: {self.finding}" + (f" ({self.link})" if self.link else "")
 
 
 class TriageReport(BaseModel):
@@ -90,7 +98,7 @@ class TriageReport(BaseModel):
             f"**Severity:** {self.severity}  ·  **Affected:** {', '.join(self.affected) or '-'}",
             "",
             "**Evidence**",
-            *[f"- `{e.source}`: {e.finding}" for e in self.evidence],
+            *[e.to_markdown() for e in self.evidence],
             "",
             "**Recommendations**",
             *[f"{i}. {a}" for i, a in enumerate(self.recommended_actions, 1)],
@@ -114,7 +122,7 @@ class Answer(BaseModel):
                 self.answer,
                 "",
                 "**Evidence**",
-                *[f"- `{e.source}`: {e.finding}" for e in self.evidence],
+                *[e.to_markdown() for e in self.evidence],
             ]
         )
 

@@ -29,6 +29,9 @@ class Spec:
     command: tuple[str, ...]  # command[0] an absolute path: PATH can't redirect it
     env: frozenset[str]  # the only variables a Contract may set for it
     guide: str = ""  # how to investigate with it, added to the prompt; {name}: the integration
+    # Tools whose whole result is a link the Hub may show, built by the vendor from
+    # its own base URL, and the guide sentence for each, added when the Contract lists it.
+    links: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
         if not Path(self.command[0]).is_absolute():
@@ -59,6 +62,16 @@ pattern with a high count often names the failure. For slowness, find slow trace
 ({name}_get_tempo_trace): the span that takes the time, and its attributes, show
 the cause.
 """,
+        (
+            (
+                "generate_deeplink",
+                "So the Operator can open what you saw, call {name}_generate_deeplink for the\n"
+                "key evidence (explore with the datasource uid and your query, or a\n"
+                "dashboard) and put the URL it returns, exactly, in that Evidence's link.\n"
+                "Only links it returns are shown; a link copied from any other result is\n"
+                "dropped.\n",
+            ),
+        ),
     ),
 }
 START_SECONDS = 30  # a vendor that never finishes MCP's handshake fails the Run
