@@ -14,6 +14,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import shutil
 import subprocess
@@ -146,6 +147,16 @@ class Vendor(Strict):
             )
         if self.probe and self.tools.get(self.probe.tool) != "read":
             raise ValueError(f"probe tool {self.probe.tool!r} must be listed in tools as read")
+        spec = VENDORS[self.vendor]
+        if missing := sorted(set(spec.required_env) - set(self.env) - set(self.env_secrets)):
+            raise ValueError(f"vendor {self.vendor!r} needs {', '.join(missing)}")
+        for var, form in spec.required_env.items():
+            if var in self.env and not re.fullmatch(form, self.env[var]):
+                raise ValueError(f"{var}: {self.env[var]!r} doesn't match {form}")
+        if spec.probe and not self.probe and self.tools.get(spec.probe[0]) != "read":
+            raise ValueError(
+                f"list {spec.probe[0]!r} in tools as read: it's the {self.vendor} health check"
+            )
         return self
 
 

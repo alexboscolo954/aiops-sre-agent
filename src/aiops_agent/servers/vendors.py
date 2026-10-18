@@ -5,28 +5,38 @@ push there must not be able to run a program next to every Contract's keys (the
 reasoning of ADR 0002 for kubeconfig exec plugins). For the same reason a Contract
 may set only the variables its vendor's entry lists: `LD_PRELOAD`, `PATH`,
 `NODE_OPTIONS` and the like would run code all the same. Each binary ships in the
-image, pinned and checksum-verified like sops (versions in the Dockerfile).
+image, pinned and checksum-verified like sops (versions in the Dockerfile). A
+remote vendor (Google's MCP servers) runs nothing here: the Hub calls its fixed
+https URLs with a token it mints from the Contract's key.
 
 Each vendor's tool schemas are snapshotted into snapshots/<name>.json (slice 4.2):
 Scenarios replay against them with no binary, and `aiops integrations snapshot
 <name> --check` fails when the pinned server's tools drift from the snapshot.
 """
 
+import asyncio
+import base64
 import difflib
 import json
+import time
+from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import httpx2
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from fastmcp import Client, FastMCP
-from fastmcp.client.transports import StdioTransport
+from fastmcp.client.transports import StdioTransport, StreamableHttpTransport
+from fastmcp.server import create_proxy
 from fastmcp.tools import Tool, ToolResult
 from mcp.types import ToolAnnotations
 
 
 @dataclass(frozen=True)
 class Spec:
-    command: tuple[str, ...]  # command[0] an absolute path: PATH can't redirect it
+    command: tuple[str, ...]  # command[0] an absolute path: PATH can't redirect it; () if remote
     env: frozenset[str]  # the only variables a Contract may set for it
     guide: str = ""  # how to investigate with it, added to the prompt; {name}: the integration
     # Tools whose whole result is a link the Hub may show, built by the vendor from
@@ -37,10 +47,24 @@ class Spec:
     fixed_env: dict[str, str] = field(default_factory=dict)
     # Allowed variables that hold credentials: only from secrets.sops.yaml (env_secrets).
     secret_env: frozenset[str] = frozenset()
+    # A remote vendor instead of a command: its https servers, merged into one, and
+    # the auth the Hub builds from the Contract's variables for them.
+    urls: tuple[str, ...] = ()
+    auth: Callable[[dict[str, str]], httpx2.Auth] | None = None
+    # Variables a Contract must set, and the form each must have (checked at load:
+    # a guide or probe built from a bad one fails `aiops contracts validate`, not a Run).
+    required_env: dict[str, str] = field(default_factory=dict)
+    # The health check when the Contract sets none: a tool it must list as read, and
+    # its arguments, formatted with the Contract's variables.
+    probe: tuple[str, dict[str, str]] | None = None
 
     def __post_init__(self) -> None:
-        if not Path(self.command[0]).is_absolute():
+        if bool(self.command) == bool(self.urls):
+            raise ValueError("a vendor has a command or remote urls, exactly one")
+        if self.command and not Path(self.command[0]).is_absolute():
             raise ValueError(f"vendor command must be an absolute path: {self.command[0]!r}")
+        if not all(u.startswith("https://") for u in self.urls):
+            raise ValueError(f"remote vendor urls must be https: {self.urls}")
         if overlap := sorted(self.env & set(self.fixed_env)):
             raise ValueError(f"the registry fixes these, a Contract can't set them: {overlap}")
 
@@ -110,6 +134,87 @@ AZURE_TOOLS = (
     "subscription_list",
 )
 
+# Google's token endpoint, never the key file's own `token_uri`: a key edited in the
+# contracts repo must not send a signed assertion elsewhere.
+GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"  # noqa: S105
+# Read-only scopes: a token can't write even where a role could (cloudtrace.user
+# creates trace scopes), nor if Google adds a write tool to these servers.
+GOOGLE_SCOPES = " ".join(
+    f"https://www.googleapis.com/auth/{s}"
+    for s in ("logging.read", "monitoring.read", "trace.readonly")
+)
+
+
+def _b64(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+class GoogleKey(httpx2.Auth):
+    """Bearer tokens for a service account key (OAuth 2 JWT bearer, RFC 7523), minted
+    by the Hub: the key never leaves it. One per integration, so a Run reuses its
+    token until a minute before it expires. No assertion or token in any error."""
+
+    def __init__(self, key: str) -> None:
+        info = json.loads(key)
+        self.email, self.key_id = info["client_email"], info["private_key_id"]
+        private = serialization.load_pem_private_key(info["private_key"].encode(), None)
+        if not isinstance(private, rsa.RSAPrivateKey):
+            raise ValueError("a Google service account key is RSA")
+        self.private = private
+        self.token, self.expires = "", 0.0
+        self.lock = asyncio.Lock()  # a Run's three servers start at once: one token
+
+    def assertion(self, now: int) -> str:
+        header = {"alg": "RS256", "typ": "JWT", "kid": self.key_id}
+        claims = {
+            "iss": self.email,
+            "scope": GOOGLE_SCOPES,
+            "aud": GOOGLE_TOKEN_URL,
+            "iat": now,
+            "exp": now + 600,
+        }
+        signed = ".".join(_b64(json.dumps(p).encode()) for p in (header, claims))
+        signature = self.private.sign(signed.encode(), padding.PKCS1v15(), hashes.SHA256())
+        return f"{signed}.{_b64(signature)}"
+
+    async def refresh(self) -> None:
+        now = int(time.time())
+        grant = {
+            "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+            "assertion": self.assertion(now),
+        }
+        async with httpx2.AsyncClient(timeout=CALL_SECONDS) as http:
+            r = await http.post(GOOGLE_TOKEN_URL, data=grant)
+        if r.status_code != 200:  # Google's error names the problem, never the assertion
+            error = r.json() if "json" in r.headers.get("content-type", "") else {}
+            raise RuntimeError(
+                f"Google token for {self.email}: HTTP {r.status_code} "
+                f"{error.get('error', '')} {error.get('error_description', '')}".rstrip()
+            )
+        body = r.json()
+        self.token, self.expires = body["access_token"], now + float(body["expires_in"])
+
+    async def async_auth_flow(
+        self, request: httpx2.Request
+    ) -> AsyncGenerator[httpx2.Request, httpx2.Response]:
+        async with self.lock:
+            if time.time() > self.expires - 60:
+                await self.refresh()
+        request.headers["Authorization"] = f"Bearer {self.token}"
+        yield request
+
+
+GCP_GUIDE = """\
+Google Cloud ({name}_ tools), project {GOOGLE_CLOUD_PROJECT}: name it in every call,
+as "projects/{GOOGLE_CLOUD_PROJECT}" (resourceNames, parent, name) or
+"{GOOGLE_CLOUD_PROJECT}" (projectId). Logs: {name}_list_log_entries with a filter
+that bounds the time and narrows the resource, such as timestamp>="<start>" AND
+severity>=ERROR AND resource.type="cloud_run_revision", orderBy "timestamp desc" and
+a small pageSize. Metrics: {name}_query_range with PromQL, or {name}_list_timeseries.
+Traces: {name}_list_traces over a time window, then {name}_get_trace on a slow one.
+"""
+
+
 VENDORS: dict[str, Spec] = {
     # Read-only by flag (every tool then claims readOnlyHint), no usage reports to
     # Grafana Labs, and no toolset that reaches past its datasources: not `api`
@@ -173,6 +278,25 @@ the cause.
         },
         secret_env=frozenset({"AZURE_CLIENT_SECRET"}),
     ),
+    # Google's own remote MCP servers: every tool claims read-only, and the token the
+    # Hub mints has read-only scopes. Unpinned: Google deploys them, so drift is a
+    # warning (hub-smoke), and only a replay sees an old schema. Error Reporting has
+    # no remote server.
+    "gcp": Spec(
+        (),
+        frozenset({"GOOGLE_CLOUD_PROJECT", "GOOGLE_SERVICE_ACCOUNT_KEY"}),
+        GCP_GUIDE,
+        secret_env=frozenset({"GOOGLE_SERVICE_ACCOUNT_KEY"}),
+        urls=tuple(
+            f"https://{s}.googleapis.com/mcp" for s in ("logging", "monitoring", "cloudtrace")
+        ),
+        auth=lambda env: GoogleKey(env["GOOGLE_SERVICE_ACCOUNT_KEY"]),
+        required_env={
+            "GOOGLE_CLOUD_PROJECT": r"[a-z][a-z0-9-]{4,28}[a-z0-9]",
+            "GOOGLE_SERVICE_ACCOUNT_KEY": r".+",
+        },
+        probe=("list_log_names", {"parent": "projects/{GOOGLE_CLOUD_PROJECT}"}),
+    ),
 }
 START_SECONDS = 30  # a vendor that never finishes MCP's handshake fails the Run
 CALL_SECONDS = 60  # each vendor tool call
@@ -189,11 +313,77 @@ def client(spec: Spec, env: dict[str, str]) -> Client[StdioTransport]:
     return Client(transport, timeout=CALL_SECONDS, init_timeout=START_SECONDS)
 
 
+class Reasons(httpx2.AsyncBaseTransport):
+    """Google answers a refused tool call (no permission, billing off) with HTTP 4xx
+    around a JSON-RPC result that says why. Passed on as 200, the client reads that
+    reason instead of a bare "Server returned an error response"."""
+
+    def __init__(self, inner: httpx2.AsyncBaseTransport | None = None) -> None:
+        self.inner = inner or httpx2.AsyncHTTPTransport()
+
+    async def handle_async_request(self, request: httpx2.Request) -> httpx2.Response:
+        response = await self.inner.handle_async_request(request)
+        if not (400 <= response.status_code < 500) or "json" not in response.headers.get(
+            "content-type", ""
+        ):
+            return response
+        body = await response.aread()
+        try:
+            status = 200 if "result" in json.loads(body) else response.status_code
+        except (ValueError, TypeError):
+            status = response.status_code
+        drop = {"content-encoding", "content-length"}  # aread decoded it
+        headers = {k: v for k, v in response.headers.items() if k.lower() not in drop}
+        return httpx2.Response(status, headers=headers, content=body, request=request)
+
+    async def aclose(self) -> None:
+        await self.inner.aclose()
+
+
+def http_client(
+    headers: dict[str, str] | None = None,
+    timeout: httpx2.Timeout | None = None,
+    auth: httpx2.Auth | None = None,
+    **settings: Any,  # whatever else the MCP client asks for (follow_redirects)
+) -> httpx2.AsyncClient:
+    """The MCP client's httpx client, through Reasons."""
+    return httpx2.AsyncClient(
+        headers=headers,
+        timeout=timeout or httpx2.Timeout(CALL_SECONDS),
+        auth=auth,
+        transport=Reasons(),
+        **settings,
+    )
+
+
+def remote(url: str, auth: httpx2.Auth | None = None) -> Client[StreamableHttpTransport]:
+    transport = StreamableHttpTransport(url, auth=auth, httpx_client_factory=http_client)
+    return Client(transport, timeout=CALL_SECONDS, init_timeout=START_SECONDS)
+
+
+def server(spec: Spec, env: dict[str, str], name: str) -> FastMCP:
+    """A proxy to the vendor: its subprocess, or its remote servers merged into one,
+    all sharing one auth (one token per Run)."""
+    if spec.command:
+        return create_proxy(client(spec, env), name=name)
+    assert spec.auth
+    auth, merged = spec.auth(env), FastMCP(name)
+    for url in spec.urls:
+        merged.mount(create_proxy(remote(url, auth)))
+    return merged
+
+
 async def capture(spec: Spec) -> str:
     """The vendor's tool schemas as stable JSON. Started with no Contract and no
-    variables at all, so no credential can end up in a file this public repo commits."""
-    async with client(spec, {}) as c:
-        tools = await c.list_tools()
+    variables at all, so no credential can end up in a file this public repo commits.
+    A remote vendor lists its tools without auth."""
+    tools = []
+    for c in [client(spec, {})] if spec.command else [remote(u) for u in spec.urls]:
+        async with c:
+            tools += await c.list_tools()
+    names = [t.name for t in tools]
+    if clash := sorted({n for n in names if names.count(n) > 1}):
+        raise ValueError(f"two of the vendor's servers offer {clash}: which one answers?")
     dumped = [t.model_dump(mode="json", by_alias=True, exclude_none=True) for t in tools]
     kept = [{k: t[k] for k in SNAPSHOT_FIELDS if k in t} for t in dumped]
     return json.dumps(sorted(kept, key=lambda t: t["name"]), indent=2, sort_keys=True) + "\n"

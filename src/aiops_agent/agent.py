@@ -16,7 +16,6 @@ from dataclasses import dataclass, field
 from typing import Annotated, Any, Literal, NotRequired
 
 from fastmcp import FastMCP
-from fastmcp.server import create_proxy
 from langchain.agents import create_agent
 from langchain.agents.middleware import (
     AgentState,
@@ -241,7 +240,7 @@ def build_mcp(
         if isinstance(i, Vendor):
             spec = vendors.VENDORS[i.vendor]
             if spec.guide:
-                guides.append(spec.guide.format(name=i.name))
+                guides.append(spec.guide.format(name=i.name, **i.env))
             for tool, sentence in spec.links:
                 if tool in i.tools:
                     link_tools.add(f"{i.name}_{tool}")
@@ -269,6 +268,11 @@ def probes(contract: Contract) -> list[tuple[str, str | None, dict[str, Any]]]:
             checks.append(("jira", "jira_search_issues", {"text": "health", "days": 1, "limit": 1}))
         elif i.probe:
             checks.append((i.name, f"{i.name}_{i.probe.tool}", i.probe.args))
+        elif probe := vendors.VENDORS[i.vendor].probe:  # one authenticated read
+            tool, args = probe
+            checks.append(
+                (i.name, f"{i.name}_{tool}", {k: v.format(**i.env) for k, v in args.items()})
+            )
         else:
             checks.append((i.name, None, {"expect": sorted(f"{i.name}_{t}" for t in i.tools)}))
     return checks
@@ -313,7 +317,7 @@ def vendor_server(contract: Contract, v: Vendor) -> FastMCP:
         **v.env,
         **{var: contract.secret(name).get_secret_value() for var, name in v.env_secrets.items()},
     }
-    return create_proxy(vendors.client(vendors.VENDORS[v.vendor], env), name=v.name)
+    return vendors.server(vendors.VENDORS[v.vendor], env, v.name)
 
 
 def for_contract(settings: Settings, contract: Contract) -> Settings:

@@ -28,6 +28,7 @@ from aiops_agent.config import Settings
 from aiops_agent.contracts import Contract, Integration, Vendor
 from aiops_agent.models import AlertGroup, Investigation
 from aiops_agent.safety import redact, redact_strings
+from aiops_agent.servers import vendors
 
 
 class Replay(Middleware):
@@ -103,13 +104,18 @@ def scenario_contract(
     saved Scenario names its clusters (with namespaces) and integrations; an older
     one has one cluster, `kind`, with its namespace, and kubernetes plus runbooks.
     Integrations get placeholder config: the replay answers before any real call.
-    A vendor is {name, vendor, tools}: its tools come from the vendor's schema
-    snapshot, and the Hub's list is the one the Contract had."""
+    A vendor is {name, vendor, tools, env?}: its tools come from the vendor's schema
+    snapshot, the Hub's list is the one the Contract had, and env holds what its
+    guide needs (gcp's project)."""
     dirs = [runbook_dirs] if isinstance(runbook_dirs, Path) else runbook_dirs
     built: list[dict[str, Any]] = []
     for name in integrations or ["kubernetes", "runbooks"]:
         if isinstance(name, dict):  # a vendor
-            built.append({k: name[k] for k in ("name", "vendor", "tools")})
+            v = {k: name[k] for k in ("name", "vendor", "tools")} | {"env": name.get("env", {})}
+            if spec := vendors.VENDORS.get(name["vendor"]):  # an unknown one: build says so
+                # Credentials it must have: the placeholder, never used.
+                v["env_secrets"] = {r: "replay" for r in spec.required_env if r in spec.secret_env}
+            built.append(v)
         elif name == "kubernetes":
             built.append({"name": name, "enable_actions": enable_actions})
         elif name == "prometheus":
@@ -297,9 +303,14 @@ def _result(text: str) -> Any:
 
 def integration(i: Integration) -> str | dict[str, Any]:
     """A builtin by name; a vendor with what replay needs: which vendor (for its
-    schema snapshot) and the Hub's list. Never its env, secrets or probe."""
+    schema snapshot), the Hub's list, and the plain variables its registry entry
+    requires (gcp's project, for its guide). Never other env, secrets or probe."""
     if isinstance(i, Vendor):
-        return {"name": i.name, "vendor": i.vendor, "tools": dict(i.tools)}
+        required = vendors.VENDORS[i.vendor].required_env
+        env = {k: v for k, v in i.env.items() if k in required}
+        return {"name": i.name, "vendor": i.vendor, "tools": dict(i.tools)} | (
+            {"env": env} if env else {}
+        )
     return i.name
 
 

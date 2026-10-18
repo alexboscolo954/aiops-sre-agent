@@ -47,6 +47,9 @@ snapshots: image ## vendors' tool schemas, from the pinned binaries in the image
 	docker run --rm aiops-sre-agent:ci integrations snapshot azure --out - \
 	  >src/aiops_agent/servers/snapshots/azure.json.tmp
 	mv src/aiops_agent/servers/snapshots/azure.json.tmp src/aiops_agent/servers/snapshots/azure.json
+	docker run --rm aiops-sre-agent:ci integrations snapshot gcp --out - \
+	  >src/aiops_agent/servers/snapshots/gcp.json.tmp
+	mv src/aiops_agent/servers/snapshots/gcp.json.tmp src/aiops_agent/servers/snapshots/gcp.json
 
 deploy-smoke: image ## real image + shipped manifests on kind
 	kind load docker-image aiops-sre-agent:ci --name $(CLUSTER)

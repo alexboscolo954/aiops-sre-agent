@@ -6,7 +6,8 @@
 # - the console renders on 127.0.0.1 for the Operator's identity plus the token cookie;
 # - an alert is stored and fails as expected (no cluster, no model key in CI);
 # - a backup restores, and a bad contracts update never restarts the Hub;
-# - each pinned vendor in the image still offers the tools its snapshot has.
+# - each pinned vendor in the image still offers the tools its snapshot has (gcp,
+#   remote and unpinned: a warning only).
 # Usage: demo/hub-smoke.sh [image]
 set -euo pipefail
 image=${1:-aiops-sre-agent:ci}
@@ -26,6 +27,9 @@ for vendor in grafana azure; do
   docker run --rm --read-only --tmpfs /tmp "$image" integrations snapshot "$vendor" --check \
     || { echo "FAIL: $vendor's tools drifted from its snapshot: make snapshots" >&2; exit 1; }
 done
+# gcp is Google's remote servers, unpinned: their deploys must not fail this push.
+docker run --rm --read-only --tmpfs /tmp "$image" integrations snapshot gcp --check \
+  || echo "WARNING: gcp's remote tools drifted from its snapshot: make snapshots" >&2
 new=$(docker run --rm "$image" contracts new-token 2>/dev/null)
 token=$(sed -n 1p <<<"$new" | awk '{print $NF}')
 git_ init -q -b main "$work/seed"
