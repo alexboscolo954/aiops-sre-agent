@@ -22,8 +22,10 @@ cp "$root"/deploy/hub/{compose.yaml,Caddyfile,backup.sh,update-contracts.sh} "$w
 
 # The contracts repo as the VM has it: a clone of a remote. demo-shop gets a
 # webhook token the way an Operator adds one.
-docker run --rm "$image" integrations snapshot grafana --check \
-  || { echo "FAIL: mcp-grafana's tools drifted from its snapshot: make snapshots" >&2; exit 1; }
+for vendor in grafana azure; do
+  docker run --rm --read-only --tmpfs /tmp "$image" integrations snapshot "$vendor" --check \
+    || { echo "FAIL: $vendor's tools drifted from its snapshot: make snapshots" >&2; exit 1; }
+done
 new=$(docker run --rm "$image" contracts new-token 2>/dev/null)
 token=$(sed -n 1p <<<"$new" | awk '{print $NF}')
 git_ init -q -b main "$work/seed"

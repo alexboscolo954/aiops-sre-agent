@@ -14,7 +14,7 @@ Scenarios replay against them with no binary, and `aiops integrations snapshot
 
 import difflib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -32,11 +32,83 @@ class Spec:
     # Tools whose whole result is a link the Hub may show, built by the vendor from
     # its own base URL, and the guide sentence for each, added when the Contract lists it.
     links: tuple[tuple[str, str], ...] = ()
+    # Set by the registry on every start, snapshots included, over anything else:
+    # telemetry off, which credential to use. A Contract can't set or override them.
+    fixed_env: dict[str, str] = field(default_factory=dict)
+    # Allowed variables that hold credentials: only from secrets.sops.yaml (env_secrets).
+    secret_env: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         if not Path(self.command[0]).is_absolute():
             raise ValueError(f"vendor command must be an absolute path: {self.command[0]!r}")
+        if overlap := sorted(self.env & set(self.fixed_env)):
+            raise ValueError(f"the registry fixes these, a Contract can't set them: {overlap}")
 
+
+AZURE_TOOLS = (
+    "advisor_metadata_get",
+    "advisor_metadata_list",
+    "advisor_recommendation_list",
+    "advisor_recommendation_summary",
+    "advisor_remediation_get",
+    "aks_cluster_get",
+    "aks_nodepool_get",
+    "applicationinsights_recommendation_list",
+    "appservice_webapp_deployment_get",
+    "appservice_webapp_diagnostic_diagnose",
+    "appservice_webapp_diagnostic_list",
+    "appservice_webapp_get",
+    "compute_disk_get",
+    "compute_vm_get",
+    "compute_vmss_get",
+    "containerapps_list",
+    "cosmos_list",
+    "eventhubs_eventhub_consumergroup_get",
+    "eventhubs_eventhub_get",
+    "eventhubs_namespace_get",
+    "functionapp_get",
+    "group_list",
+    "group_resource_list",
+    "monitor_activitylog_list",
+    "monitor_healthmodels_get",
+    "monitor_healthmodels_list",
+    "monitor_metrics_batchquery",
+    "monitor_metrics_definitions",
+    "monitor_metrics_query",
+    "monitor_resource_log_query",
+    "monitor_table_list",
+    "monitor_table_type_list",
+    "monitor_webtests_get",
+    "monitor_workspace_list",
+    "monitor_workspace_log_query",
+    "monitor_workspace_log_search",
+    "mysql_list",
+    "mysql_server_config_get",
+    "mysql_server_param_get",
+    "mysql_table_schema_get",
+    "postgres_list",
+    "postgres_server_config_get",
+    "postgres_server_param_get",
+    "postgres_table_schema_get",
+    "quota_region_availability_list",
+    "quota_usage_check",
+    "redis_list",
+    "resourcehealth_availability-status_get",
+    "resourcehealth_health-events_list",
+    "servicebus_queue_details",
+    "servicebus_topic_details",
+    "servicebus_topic_subscription_details",
+    "sql_db_get",
+    "sql_elastic-pool_list",
+    "sql_server_entra-admin_list",
+    "sql_server_firewall-rule_list",
+    "sql_server_get",
+    "storage_account_get",
+    "storage_blob_container_get",
+    "storage_blob_get",
+    "storage_table_list",
+    "subscription_list",
+)
 
 VENDORS: dict[str, Spec] = {
     # Read-only by flag (every tool then claims readOnlyHint), no usage reports to
@@ -73,6 +145,34 @@ the cause.
             ),
         ),
     ),
+    # Read-only by flag, and only these tools: metadata, health, metrics and logs an SRE
+    # reads. Not keyvault (secrets), extension (builds az CLI commands), deploy or
+    # terraform; not app settings (often connection strings) nor Cosmos documents
+    # (client data). The Contract's `tools` narrows it further.
+    "azure": Spec(
+        (
+            "/opt/azmcp/azmcp",
+            "server",
+            "start",
+            "--read-only",
+            "--disable-proxy-tools",
+            *(f"--tool={t}" for t in AZURE_TOOLS),
+        ),
+        frozenset(
+            {"AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET", "AZURE_SUBSCRIPTION_ID"}
+        ),
+        fixed_env={
+            "AZURE_MCP_COLLECT_TELEMETRY": "false",
+            # Only the Contract's service principal: never the host's az login,
+            # VS Code session or managed identity.
+            "AZURE_TOKEN_CREDENTIALS": "EnvironmentCredential",
+            "HOME": "/nonexistent",  # no ~/.azure: no default subscription from the host
+            # Writable on the read-only root: the container's own tmpfs, uid 10001 only.
+            "DOTNET_BUNDLE_EXTRACT_BASE_DIR": "/tmp/azmcp",  # noqa: S108
+            "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT": "1",  # slim image: no ICU
+        },
+        secret_env=frozenset({"AZURE_CLIENT_SECRET"}),
+    ),
 }
 START_SECONDS = 30  # a vendor that never finishes MCP's handshake fails the Run
 CALL_SECONDS = 60  # each vendor tool call
@@ -84,6 +184,7 @@ SNAPSHOT_FIELDS = ("name", "title", "description", "inputSchema", "outputSchema"
 def client(spec: Spec, env: dict[str, str]) -> Client[StdioTransport]:
     """The vendor as a subprocess with exactly `env` on top of MCP's safe defaults
     (PATH, HOME, ...). keep_alive off: one process per use, none outlives a Run."""
+    env = {**env, **spec.fixed_env}  # the registry's last: nothing overrides it
     transport = StdioTransport(spec.command[0], list(spec.command[1:]), env=env, keep_alive=False)
     return Client(transport, timeout=CALL_SECONDS, init_timeout=START_SECONDS)
 

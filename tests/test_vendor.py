@@ -564,3 +564,93 @@ def test_a_recorded_deeplink_reaches_slack_whole() -> None:
     assert len(links) == 3
     for link in links:
         assert slack.clean(slack.mrkdwn(link)) == link.replace("&", "&amp;")
+
+
+def test_the_azure_vendor_reads_only_with_the_contracts_service_principal() -> None:
+    spec = vendors.VENDORS["azure"]
+    assert "--read-only" in spec.command and "--disable-proxy-tools" in spec.command
+    tools = {a.split("=", 1)[1] for a in spec.command if a.startswith("--tool=")}
+    for never in (
+        "keyvault_",
+        "extension_",
+        "deploy_",
+        "azureterraform",
+        "cosmos_database_container_item",
+    ):
+        assert not any(t.startswith(never) for t in tools), never
+    assert "appservice_webapp_settings_get-appsettings" not in tools
+    assert spec.fixed_env["AZURE_MCP_COLLECT_TELEMETRY"] == "false"
+    assert spec.fixed_env["AZURE_TOKEN_CREDENTIALS"] == "EnvironmentCredential"
+    assert spec.fixed_env["HOME"] == "/nonexistent"
+    snapshot = json.loads((vendors.SNAPSHOTS / "azure.json").read_text())
+    assert {t["name"] for t in snapshot} == tools  # what the registry asks for, all of it
+    assert all(t["annotations"]["readOnlyHint"] is True for t in snapshot)
+
+
+@pytest.mark.parametrize(
+    "variable",
+    [
+        "AZURE_AUTHORITY_HOST",  # would send the secret to a host the contracts repo picks
+        "AZURE_CLIENT_CERTIFICATE_PATH",  # a Hub file path of its choosing
+        "AZURE_FEDERATED_TOKEN_FILE",
+        "AZURE_TOKEN_CREDENTIALS",  # the registry's: only the service principal
+        "AZURE_MCP_COLLECT_TELEMETRY",
+        "HOME",
+    ],
+)
+def test_an_azure_contract_cannot_set_what_the_registry_owns(variable: str) -> None:
+    azure = {"name": "az", "vendor": "azure", "tools": {"subscription_list": "read"}}
+    with pytest.raises(Exception, match=f"refused: {variable}"):
+        contracts.build(
+            {"id": "a", "name": "a", "integrations": [{**azure, "env": {variable: "x"}}]}
+        )
+
+
+def test_a_client_secret_comes_only_from_secrets_sops() -> None:
+    azure = {"name": "az", "vendor": "azure", "tools": {"subscription_list": "read"}}
+    with pytest.raises(
+        Exception, match="AZURE_CLIENT_SECRET hold credentials: set them in env_secrets"
+    ):
+        contracts.build(
+            {
+                "id": "a",
+                "name": "a",
+                "integrations": [{**azure, "env": {"AZURE_CLIENT_SECRET": "s"}}],
+            }
+        )
+    c = contracts.build(
+        {
+            "id": "a",
+            "name": "a",
+            "integrations": [{**azure, "env_secrets": {"AZURE_CLIENT_SECRET": "sp"}}],
+        }
+    )
+    assert c.secret_refs() == {"sp"}
+
+
+def test_the_registry_fixes_variables_over_everything(monkeypatch: pytest.MonkeyPatch) -> None:
+    with pytest.raises(ValueError, match="the registry fixes these"):
+        vendors.Spec(("/bin/x",), frozenset({"HOME"}), fixed_env={"HOME": "/nonexistent"})
+    spec = vendors.Spec(
+        fixture_spec().command, frozenset(), fixed_env={"HOME": "/nonexistent", "FIXED": "registry"}
+    )
+
+    async def environment() -> dict[str, str]:
+        async with vendors.client(spec, {"FIXED": "contract"}) as c:
+            result = await c.call_tool("environment", {})
+        return dict(json.loads(result.content[0].text))
+
+    seen = anyio.run(environment)
+    assert seen["HOME"] == "/nonexistent"  # over MCP's default HOME
+    assert seen["FIXED"] == "registry"  # over what the caller passed
+
+
+@pytest.mark.anyio
+async def test_an_azure_scenario_replays_without_the_binary(settings: Settings) -> None:
+    vendor = {"name": "azure", "vendor": "azure", "tools": {"quota_usage_check": "read"}}
+    contract = evals.scenario_contract("", False, [Path("no-runbooks")], {}, [vendor])
+    toolbox = evals.replay_server(contract, settings, {"azure_quota_usage_check": {"usage": 98}})
+    async with MCPAdapter(toolbox.mcp) as adapter:
+        loaded = await agent.load_tools(adapter, toolbox.access)
+    assert [t.name for t in loaded] == ["azure_quota_usage_check"]
+    assert agent.gated(loaded, toolbox.access) == set()

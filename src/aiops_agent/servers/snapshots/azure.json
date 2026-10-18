@@ -1,0 +1,2497 @@
+[
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Get Advisor Recommendation Metadata"
+    },
+    "description": "Get Azure Advisor metadata for a specific recommendation type id. Explains what an Advisor recommendation type means, including its display name, category, sub-category, impact, supported resource type, description, potential benefits, and a learn-more documentation link for the recommendation.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "language": {
+          "description": "Catalog locale to filter on (properties.language). Defaults to 'en'. Case-insensitive. Supported values: en, cs, de, es, fr, hu, id, it, ja, ko, nl, pl, pt-br, pt-pt, ru, sv, tr, zh-hans, zh-hant. Region-qualified tags such as 'en-US' are accepted and mapped to the base language ('en').",
+          "type": "string"
+        },
+        "recommendation-type-id": {
+          "description": "The stable Advisor recommendation type id (properties.recommendationTypeId) to look up in the global recommendation-metadata catalog. This is the join key shared with individual recommendations. Required.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "recommendation-type-id"
+      ],
+      "type": "object"
+    },
+    "name": "advisor_metadata_get"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "List Advisor Recommendation Metadata"
+    },
+    "description": "List the global Azure Advisor recommendation metadata catalog, also known as recommendation types. Use this for metadata catalog lookups, including service-retirement metadata by Service Health tracking ID (for example, QNY1-HB8), or to discover what recommendations Advisor could produce before deploying resources, even when there are no active recommendations. Show Advisor service retirements on, before, or after a specified retirement date. For current recommendation records or affected resources, use advisor recommendation list instead. The global Azure Resource Graph catalog supports greenfield discovery and resource-type filtering for brownfield onboarding. Optional filters include language, resource type, impact, category, subcategory, tracking ID, and retirement date. Returns localized type IDs, names, categories, subcategories, impact, priority, descriptions, benefits, actions, scope, source query, and service-retirement details, ordered by impact from High to Medium to Low and then by display name.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "category": {
+          "description": "Optional exact Advisor category filter. Allowed values are Cost, HighAvailability, Security, Performance, and OperationalExcellence. Matched case-insensitively.",
+          "type": "string"
+        },
+        "impact": {
+          "description": "Optional recommendation impact filter. Allowed values are High, Medium, or Low. Matched case-insensitively; unfiltered results are ordered High, Medium, then Low.",
+          "type": "string"
+        },
+        "language": {
+          "description": "Language for localized recommendation metadata. Defaults to English ('en'). Supported catalog languages are en, cs, de, es, fr, hu, id, it, ja, ko, nl, pl, pt-BR, pt-PT, ru, sv, tr, zh-Hans, and zh-Hant. Regional variants map to a supported base language when available, such as en-US to en and fr-CA to fr; locale-specific catalog languages remain distinct.",
+          "type": "string"
+        },
+        "resource-type": {
+          "description": "Optional exact Azure resource type filter, such as 'microsoft.compute/virtualmachines'. Use it during brownfield onboarding to discover recommendation types applicable to that resource type. Matched case-insensitively.",
+          "type": "string"
+        },
+        "retirement-date": {
+          "description": "Optional service-retirement date filter in '<operator>:<yyyy-MM-dd>' format, for example 'ge:2026-03-31'. Supported operators are eq, lt, le, gt, and ge. Applies only to the ServiceUpgradeAndRetirement subcategory; --sub-category may be omitted but cannot specify a different value.",
+          "type": "string"
+        },
+        "sub-category": {
+          "description": "Optional exact recommendation subcategory filter, matched case-insensitively. Known catalog values include ComputeOptimization, DataPerformance, DataProtectionAndRecovery, EfficiencyOptimization, FailureMitigation, GovernanceAndCompliance, MonitoringAndAlerting, NetworkOptimization, Other, Personalized, RegionalResiliency, Reservations, SafeAndSecureDeployment, SavingsPlan, Scalability, ServiceUpgradeAndRetirement, StorageOptimization, UsageOptimization, and ZoneResiliency. The catalog can add values over time, so other subcategories are accepted.",
+          "type": "string"
+        },
+        "tracking-id": {
+          "description": "Optional exact Service Health tracking ID filter, such as QNY1-HB8. Matched case-insensitively within ServiceUpgradeAndRetirement metadata. --sub-category may be omitted but cannot specify a different value.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "advisor_metadata_list"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "List Advisor Recommendations"
+    },
+    "description": "List, show, search, or find actual Azure Advisor recommendation records in a subscription, including affected resource details when available. Use this for current recommendation findings and affected resources in the Cost, Security, Performance, HighAvailability, or OperationalExcellence categories. This returns recommendation instances, not the global metadata catalog, recommendation types, or service-retirement metadata by Service Health tracking ID; use advisor metadata list for those catalog lookups. Filter by category, business impact, recommendation type ID, impacted Azure resource type (for example, Microsoft.Storage/storageAccounts), resource name or ID, recommendation text, subcategory, Service Health tracking IDs, or retirement date. Do NOT use this to answer aggregate questions like 'how many', 'top N resource types', 'breakdown by category', or 'which impact has the most' \u2014 for those, call the 'summary' tool instead (it aggregates server-side over the entire population, while 'list' returns at most 100 records and reports when results are truncated). Do not use list to summarize, count, or group service retirements by retirement date; use summary for aggregate retirement requests. Filter by --status to return New, Postponed, Dismissed, or Completed recommendations; status defaults to New when omitted. --tracking-ids accepts multiple Service Health tracking IDs and returns recommendations matching any of them. --tracking-ids and --retirement-date can be used independently or together. With either filter, --sub-category is optional; when specified, it must be ServiceUpgradeAndRetirement. Each result uses the standard ARM resource shape; its name is the stable recommendation ID accepted by tools that operate on a recommendation. --top caps the number of returned items (default 50, max 100).",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "category": {
+          "description": "Filter recommendations by category (e.g., 'Security', 'Cost', 'Performance', 'HighAvailability', 'OperationalExcellence'). Case-insensitive exact match.",
+          "type": "string"
+        },
+        "impact": {
+          "description": "Filter recommendations by business impact ('High', 'Medium', or 'Low'). Case-insensitive exact match.",
+          "type": "string"
+        },
+        "recommendation-type-id": {
+          "description": "Filter recommendations by the recommendation type ID GUID. Uses a case-insensitive exact match and can be combined with other filters.",
+          "type": "string"
+        },
+        "resource": {
+          "description": "Filter recommendations by impacted resource name or full ARM resource ID. Case-insensitive substring match.",
+          "type": "string"
+        },
+        "resource-group": {
+          "description": "The Azure resource group name.",
+          "type": "string"
+        },
+        "resource-type": {
+          "description": "Filter recommendations by impacted Azure resource type (e.g., 'Microsoft.Storage/storageAccounts'). Case-insensitive exact match.",
+          "type": "string"
+        },
+        "retirement-date": {
+          "description": "Filter recommendations by service-retirement date in '<operator>:<yyyy-MM-dd>' format, for example 'ge:2026-03-31'. Supported operators are eq, lt, le, gt, and ge. Can be combined with --tracking-ids. --sub-category may be omitted; when specified, it must be ServiceUpgradeAndRetirement.",
+          "type": "string"
+        },
+        "search": {
+          "description": "Free-text filter applied to the recommendation problem text (case-insensitive substring match). Use this whenever the user's request includes a topical phrase such as 'related to Microsoft Foundry', 'about encryption', 'mentioning right-size', or 'for Key Vault'. Extract the salient noun(s) from the phrase (e.g., 'Foundry', 'encrypt', 'right-size', 'Key Vault') and pass them here.",
+          "type": "string"
+        },
+        "status": {
+          "description": "Filter recommendations by status ('New', 'Postponed', 'Dismissed', or 'Completed'). Defaults to 'New' when omitted.",
+          "type": "string"
+        },
+        "sub-category": {
+          "description": "Filter recommendations by recommendation subcategory, matched case-insensitively against the Advisor recommendation metadata. Known values include ComputeOptimization, DataPerformance, DataProtectionAndRecovery, EfficiencyOptimization, FailureMitigation, GovernanceAndCompliance, MonitoringAndAlerting, NetworkOptimization, Other, RegionalResiliency, Reservations, SafeAndSecureDeployment, SavingsPlan, Scalability, ServiceUpgradeAndRetirement, StorageOptimization, UsageOptimization, and ZoneResiliency. Advisor can add values over time, so other subcategories are accepted.",
+          "type": "string"
+        },
+        "subscription": {
+          "description": "The Azure subscription GUID identifier or display name. If not specified, the Azure CLI profile default subscription or AZURE_SUBSCRIPTION_ID environment variable will be used.",
+          "type": "string"
+        },
+        "tenant": {
+          "description": "The Microsoft Entra ID tenant GUID identifier or display name.",
+          "type": "string"
+        },
+        "top": {
+          "description": "Maximum number of recommendation records to return. Defaults to 50 and is clamped to the server-side range of 1 through 100.",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "tracking-ids": {
+          "description": "Filter recommendations by one or more Service Health tracking IDs, such as QNY1-HB8. Pass several IDs as space-separated values after one option, for example --tracking-ids QNY1-HB8 9G0V-_G8; recommendations matching any of them are returned. Matched case-insensitively within ServiceUpgradeAndRetirement metadata. Can be combined with --retirement-date. --sub-category may be omitted; when specified, it must be ServiceUpgradeAndRetirement.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "name": "advisor_recommendation_list"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Summarize Advisor Recommendations in a Subscription"
+    },
+    "description": "Summarize the key themes from Azure Advisor recommendation instances using server-side counts, totals, rankings, and distributions. This is the aggregate-only tool for questions such as how many, count, breakdown, distribution, top, most common, or which has the most. Use it for an executive summary or main themes, counts by category or business impact, top recommendation types, ranking resource types by critical or High-impact recommendations, lifecycle counts for New, Completed, Dismissed, and Postponed recommendations, and metadata subcategory breakdowns such as ZoneResiliency. Count overdue service-retirement Advisor recommendations that are still active, or group active service-retirement recommendations by retirement date. Retirement filters are one-sided: le:<end-date> includes every active recommendation retiring on or before the end date, including overdue retirements, and is not a bounded next-N window. Use explicit exact, on-or-before, or on-or-after retirement-date questions; recommendation list is capped and must not be counted client-side. Group by recommendation-type, category, impact, resource-type, status, sub-category, or retirement-date; category is the default. All groups return canonical key, label, and count values. Recommendation-type keys are recommendation type ID GUIDs with English metadata labels. All groupings except status include only active New recommendations; status includes every backend lifecycle state. Filters include category, impact, recommendation type ID, impacted resource type, resource name or ARM ID, problem-text search, subcategory, and explicit retirement-date comparisons. Use --search with this summary tool for topical aggregate questions such as counts or impact breakdowns for recommendations mentioning encryption or right-size; do not call recommendation list and count its capped results. Use recommendation list instead when the user wants individual recommendation records. TotalRecommendations always covers the complete filtered population, even when --top limits displayed buckets.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "category": {
+          "description": "Filter recommendations by category. Allowed values are Cost, HighAvailability, Security, Performance, and OperationalExcellence. Matched case-insensitively against metadata with recommendation-instance fallback.",
+          "type": "string"
+        },
+        "group-by": {
+          "description": "Optional field to group the summary by. One of: 'recommendation-type', 'category', 'impact', 'resource-type', 'status', 'sub-category', or 'retirement-date'. Defaults to 'category' when omitted, which surfaces the high-level themes (Cost, Security, Reliability, etc.) so prompts like 'summarize the key themes from my Advisor recommendations' work without naming a field.",
+          "type": "string"
+        },
+        "impact": {
+          "description": "Filter recommendations by business impact. Allowed values are High, Medium, and Low. Matched case-insensitively against metadata with recommendation-instance fallback.",
+          "type": "string"
+        },
+        "recommendation-type-id": {
+          "description": "Filter recommendations by one recommendation type ID GUID. Uses a case-insensitive exact match.",
+          "type": "string"
+        },
+        "resource": {
+          "description": "Filter recommendations by impacted resource name or full ARM resource ID. Uses a case-insensitive substring match.",
+          "type": "string"
+        },
+        "resource-group": {
+          "description": "The Azure resource group name.",
+          "type": "string"
+        },
+        "resource-type": {
+          "description": "Filter recommendations by the impacted Azure resource type in properties.impactedField, such as 'Microsoft.Storage/storageAccounts'. Uses a case-insensitive exact match.",
+          "type": "string"
+        },
+        "retirement-date": {
+          "description": "Filter recommendations by service-retirement date in '<operator>:<yyyy-MM-dd>' format, for example 'le:2026-12-31'. Supported operators are eq, lt, le, gt, and ge. The ServiceUpgradeAndRetirement subcategory is inferred when omitted.",
+          "type": "string"
+        },
+        "search": {
+          "description": "Filter recommendation problem text using a case-insensitive substring match. Prefer structured filters when an equivalent category, impact, subcategory, or resource-type filter exists.",
+          "type": "string"
+        },
+        "sub-category": {
+          "description": "Filter recommendations by metadata subcategory using a case-insensitive exact match. Known values include ServiceUpgradeAndRetirement, ZoneResiliency, and RegionalResiliency; future non-empty catalog values are accepted.",
+          "type": "string"
+        },
+        "subscription": {
+          "description": "The Azure subscription GUID identifier or display name. If not specified, the Azure CLI profile default subscription or AZURE_SUBSCRIPTION_ID environment variable will be used.",
+          "type": "string"
+        },
+        "tenant": {
+          "description": "The Microsoft Entra ID tenant GUID identifier or display name.",
+          "type": "string"
+        },
+        "top": {
+          "description": "Optional display cap from 1 through 100 on the number of known buckets returned. TotalRecommendations still reflects the complete filtered population, and an Unknown bucket is preserved after the selected buckets.",
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "name": "advisor_recommendation_summary"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Get Advisor Recommendation Remediation"
+    },
+    "description": "Fix, resolve, or remediate a specific Azure Advisor recommendation type id. Use this whenever you are asked how to fix or how to resolve an Advisor recommendation. Returns its remediation package: step-by-step remediation steps plus ready-to-run artifacts, scripts, and deployment templates in ARM template, Bicep, Azure CLI, PowerShell, and terraform formats to remediate the issue. Also indicates remediation characteristics such as whether it is destructive, reversible, or grounded, along with its confidence, effort, and output type. Use whenever you need to fix, resolve, remediate, or verify a recommendation, or want the ARM, Bicep, CLI, PowerShell, or terraform artifacts and scripts to remediate it.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "recommendation-type-id": {
+          "description": "The Advisor recommendation type id (GUID) whose remediation package should be fetched. Must be a 36-character GUID in the form xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx. Required.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "recommendation-type-id"
+      ],
+      "type": "object"
+    },
+    "name": "advisor_remediation_get"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Get Azure Kubernetes Service (AKS) Cluster Details"
+    },
+    "description": "List/enumerate all AKS (Azure Kubernetes Service) clusters in a subscription. Get/retrieve/show the details of a specific cluster if a name is provided.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "cluster": {
+          "description": "AKS Cluster name.",
+          "type": "string"
+        },
+        "resource-group": {
+          "description": "The Azure resource group name.",
+          "type": "string"
+        },
+        "subscription": {
+          "description": "The Azure subscription GUID identifier or display name. If not specified, the Azure CLI profile default subscription or AZURE_SUBSCRIPTION_ID environment variable will be used.",
+          "type": "string"
+        },
+        "tenant": {
+          "description": "The Microsoft Entra ID tenant GUID identifier or display name.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "aks_cluster_get"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Get Azure Kubernetes Service (AKS) Node Pool Details"
+    },
+    "description": "List/enumerate all AKS (Azure Kubernetes Service) node pools in a cluster. Get/retrieve/show the details of a specific node pool if a name is provided.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "cluster": {
+          "description": "AKS Cluster name.",
+          "type": "string"
+        },
+        "nodepool": {
+          "description": "AKS node pool (agent pool) name.",
+          "type": "string"
+        },
+        "resource-group": {
+          "description": "The Azure resource group name.",
+          "type": "string"
+        },
+        "subscription": {
+          "description": "The Azure subscription GUID identifier or display name. If not specified, the Azure CLI profile default subscription or AZURE_SUBSCRIPTION_ID environment variable will be used.",
+          "type": "string"
+        },
+        "tenant": {
+          "description": "The Microsoft Entra ID tenant GUID identifier or display name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "resource-group",
+        "cluster"
+      ],
+      "type": "object"
+    },
+    "name": "aks_nodepool_get"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "List Application Insights Recommendations"
+    },
+    "description": "List Application Insights Code Optimization Recommendations in a subscription. Optionally filter by resource group when --resource-group is provided.\nReturns the code optimization recommendations based on the profiler data.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "resource-group": {
+          "description": "The Azure resource group name.",
+          "type": "string"
+        },
+        "subscription": {
+          "description": "The Azure subscription GUID identifier or display name. If not specified, the Azure CLI profile default subscription or AZURE_SUBSCRIPTION_ID environment variable will be used.",
+          "type": "string"
+        },
+        "tenant": {
+          "description": "The Microsoft Entra ID tenant GUID identifier or display name.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "applicationinsights_recommendation_list"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Gets Azure App Service Web App Deployment Details"
+    },
+    "description": "Retrieves detailed information about Azure App Service web app deployments, including deployment name,\nif deployment is actively happening, when the deployment started and ended, who authored and deployed the\ndeployment, and the type of deployment. If a specific deployment ID is not provided, the command will return\ndetails for all deployments in the web app. You can specify a deployment ID to get details for a specific\ndeployment.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "app": {
+          "description": "The name of the Azure App Service (e.g., my-webapp).",
+          "type": "string"
+        },
+        "deployment-id": {
+          "description": "The ID of the deployment.",
+          "type": "string"
+        },
+        "resource-group": {
+          "description": "The Azure resource group name.",
+          "type": "string"
+        },
+        "subscription": {
+          "description": "The Azure subscription GUID identifier or display name. If not specified, the Azure CLI profile default subscription or AZURE_SUBSCRIPTION_ID environment variable will be used.",
+          "type": "string"
+        },
+        "tenant": {
+          "description": "The Microsoft Entra ID tenant GUID identifier or display name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "app",
+        "resource-group"
+      ],
+      "type": "object"
+    },
+    "name": "appservice_webapp_deployment_get"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Diagnose an App Service Web App"
+    },
+    "description": "Runs a specific diagnostic detector on an App Service Web App to troubleshoot issues with performance, availability,\nconfiguration, or errors. Returns detailed analysis results including insights and recommendations. Use this to investigate\nwhy a web app is slow, failing, restarting, or unhealthy. Requires a detector ID from 'azmcp appservice webapp diagnostic list'.\nSupports optional time range filtering for historical analysis.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "app": {
+          "description": "The name of the Azure App Service (e.g., my-webapp).",
+          "type": "string"
+        },
+        "detector-id": {
+          "description": "The ID of the diagnostic detector to run. Use the 'id' field from 'azmcp appservice webapp diagnostic list' output (e.g., LinuxContainerRecycle, LinuxMemoryDrillDown).",
+          "type": "string"
+        },
+        "end-time": {
+          "description": "The end time in ISO format (e.g., 2023-01-01T00:00:00Z).",
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "interval": {
+          "description": "The time interval (e.g., PT1H for 1 hour, PT5M for 5 minutes).",
+          "type": "string"
+        },
+        "resource-group": {
+          "description": "The Azure resource group name.",
+          "type": "string"
+        },
+        "start-time": {
+          "description": "The start time in ISO format (e.g., 2023-01-01T00:00:00Z).",
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "subscription": {
+          "description": "The Azure subscription GUID identifier or display name. If not specified, the Azure CLI profile default subscription or AZURE_SUBSCRIPTION_ID environment variable will be used.",
+          "type": "string"
+        },
+        "tenant": {
+          "description": "The Microsoft Entra ID tenant GUID identifier or display name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "app",
+        "detector-id",
+        "resource-group"
+      ],
+      "type": "object"
+    },
+    "name": "appservice_webapp_diagnostic_diagnose"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "List the Diagnostic Detectors for an App Service Web App"
+    },
+    "description": "Lists all available diagnostic detectors for an App Service Web App. Use this to discover which diagnostics\nare available before running a specific detector. Returns the detector ID, name, type, description, category,\nand analysis types for each detector. Useful for troubleshooting app service issues, checking available\nhealth checks, and finding the right detector for performance, availability, or configuration analysis.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "app": {
+          "description": "The name of the Azure App Service (e.g., my-webapp).",
+          "type": "string"
+        },
+        "resource-group": {
+          "description": "The Azure resource group name.",
+          "type": "string"
+        },
+        "subscription": {
+          "description": "The Azure subscription GUID identifier or display name. If not specified, the Azure CLI profile default subscription or AZURE_SUBSCRIPTION_ID environment variable will be used.",
+          "type": "string"
+        },
+        "tenant": {
+          "description": "The Microsoft Entra ID tenant GUID identifier or display name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "app",
+        "resource-group"
+      ],
+      "type": "object"
+    },
+    "name": "appservice_webapp_diagnostic_list"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Gets Azure App Service Web App Details"
+    },
+    "description": "Retrieves detailed information about Azure App Service web apps, including app name, resource group, location,\nstate, hostnames, etc. If a specific app name is not provided, the command will return details for all web apps\nin a subscription or resource group in a subscription. You can specify the app name, resource group name, and\nsubscription to get details for a specific web app.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "app": {
+          "description": "The name of the Azure App Service (e.g., my-webapp).",
+          "type": "string"
+        },
+        "resource-group": {
+          "description": "The Azure resource group name.",
+          "type": "string"
+        },
+        "subscription": {
+          "description": "The Azure subscription GUID identifier or display name. If not specified, the Azure CLI profile default subscription or AZURE_SUBSCRIPTION_ID environment variable will be used.",
+          "type": "string"
+        },
+        "tenant": {
+          "description": "The Microsoft Entra ID tenant GUID identifier or display name.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "appservice_webapp_get"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Get Disk Details"
+    },
+    "description": "Lists available Azure managed disks or retrieves detailed information about a specific disk. Shows all disks in a subscription or resource group, including disk size, SKU, provisioning state, and OS type. Supports wildcard patterns in disk names (e.g., 'win_OsDisk*'). When disk name is provided without resource group, searches across the entire subscription. When resource group is specified, scopes the search to that resource group. Both parameters are optional.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "disk-name": {
+          "description": "The name of the disk.",
+          "type": "string"
+        },
+        "resource-group": {
+          "description": "The Azure resource group name.",
+          "type": "string"
+        },
+        "subscription": {
+          "description": "The Azure subscription GUID identifier or display name. If not specified, the Azure CLI profile default subscription or AZURE_SUBSCRIPTION_ID environment variable will be used.",
+          "type": "string"
+        },
+        "tenant": {
+          "description": "The Microsoft Entra ID tenant GUID identifier or display name.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "compute_disk_get"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Get Virtual Machine(s)"
+    },
+    "description": "List or get all Azure Virtual Machines (VMs) in a subscription, or query VMs in a specific resource group. Show all VMs or retrieve a specific VM by name. Returns read-only VM details including name, location, VM size, provisioning state, OS type, and network interfaces. Use --instance-view to query and check the current runtime status and power state of a VM along with provisioning state. This is a read-only inspection and inventory tool for viewing VM configuration, properties, and runtime status.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "instance-view": {
+          "description": "Include instance view details (only available when retrieving a specific VM)",
+          "type": "boolean"
+        },
+        "resource-group": {
+          "description": "The Azure resource group name.",
+          "type": "string"
+        },
+        "subscription": {
+          "description": "The Azure subscription GUID identifier or display name. If not specified, the Azure CLI profile default subscription or AZURE_SUBSCRIPTION_ID environment variable will be used.",
+          "type": "string"
+        },
+        "tenant": {
+          "description": "The Microsoft Entra ID tenant GUID identifier or display name.",
+          "type": "string"
+        },
+        "vm-name": {
+          "description": "The name of the virtual machine.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "compute_vm_get"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Get Virtual Machine Scale Set(s)"
+    },
+    "description": "List, show, or get Azure Virtual Machine Scale Sets (VMSS) and their instances in a subscription or resource group. Show all scale sets or get a specific VMSS by name. Get VMSS instance details by instance ID. Returns scale set details including name, location, SKU, capacity, upgrade policy, and individual VM instance information. Do not use this for single standalone VMs (use VM get instead).",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "instance-id": {
+          "description": "The instance ID of the virtual machine in the scale set",
+          "type": "string"
+        },
+        "resource-group": {
+          "description": "The Azure resource group name.",
+          "type": "string"
+        },
+        "subscription": {
+          "description": "The Azure subscription GUID identifier or display name. If not specified, the Azure CLI profile default subscription or AZURE_SUBSCRIPTION_ID environment variable will be used.",
+          "type": "string"
+        },
+        "tenant": {
+          "description": "The Microsoft Entra ID tenant GUID identifier or display name.",
+          "type": "string"
+        },
+        "vmss-name": {
+          "description": "The name of the virtual machine scale set.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "compute_vmss_get"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "List Container Apps"
+    },
+    "description": "List Azure Container Apps in a subscription. Optionally filter by resource group. Each container app result\nincludes: name, location, resourceGroup, managedEnvironmentId, provisioningState. If no container apps are\nfound the tool returns an empty list of results (consistent with other list commands).",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "resource-group": {
+          "description": "The Azure resource group name.",
+          "type": "string"
+        },
+        "subscription": {
+          "description": "The Azure subscription GUID identifier or display name. If not specified, the Azure CLI profile default subscription or AZURE_SUBSCRIPTION_ID environment variable will be used.",
+          "type": "string"
+        },
+        "tenant": {
+          "description": "The Microsoft Entra ID tenant GUID identifier or display name.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "containerapps_list"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "List Cosmos DB Resources"
+    },
+    "description": "List Cosmos DB accounts, databases, or containers. Returns all accounts in the subscription by default. Specify --account to list databases in that account, or --account and --database to list containers in a specific database.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "account": {
+          "description": "The name of the Cosmos DB account (optional). When not specified, lists all accounts in the subscription. Specify this to list databases, or combine with --database to list containers.",
+          "type": "string"
+        },
+        "auth-method": {
+          "description": "Authentication method to use. Options: 'credential' (Azure CLI/managed identity), 'key' (access key), or 'connectionString'.",
+          "type": "string"
+        },
+        "database": {
+          "description": "The name of the database (optional). Requires --account to be specified. When provided, lists containers within this database.",
+          "type": "string"
+        },
+        "resource-group": {
+          "description": "The Azure resource group name.",
+          "type": "string"
+        },
+        "subscription": {
+          "description": "The Azure subscription GUID identifier or display name. If not specified, the Azure CLI profile default subscription or AZURE_SUBSCRIPTION_ID environment variable will be used.",
+          "type": "string"
+        },
+        "tenant": {
+          "description": "The Microsoft Entra ID tenant GUID identifier or display name.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "cosmos_list"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Get Event Hubs Consumer Groups"
+    },
+    "description": "Get consumer groups from Azure Event Hub. This command can either:\n\n1) List all consumer groups in an Event Hub\n2) Get a single consumer group by name\n\nThe EventHub, Namespace, and ResourceGroup parameters are required (for both get and list)\nThe Consumer Group parameter is only required for getting a specific consumer-group\nWhen retrieving a single consumer group and when listing all available consumer groups, return all available metadata on the consumer group.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "consumer-group": {
+          "description": "The name of the consumer group within the Event Hub.",
+          "type": "string"
+        },
+        "eventhub": {
+          "description": "The name of the Event Hub within the namespace.",
+          "type": "string"
+        },
+        "namespace": {
+          "description": "The name of the Event Hubs namespace to retrieve.",
+          "type": "string"
+        },
+        "resource-group": {
+          "description": "The Azure resource group name.",
+          "type": "string"
+        },
+        "subscription": {
+          "description": "The Azure subscription GUID identifier or display name. If not specified, the Azure CLI profile default subscription or AZURE_SUBSCRIPTION_ID environment variable will be used.",
+          "type": "string"
+        },
+        "tenant": {
+          "description": "The Microsoft Entra ID tenant GUID identifier or display name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "namespace",
+        "eventhub",
+        "resource-group"
+      ],
+      "type": "object"
+    },
+    "name": "eventhubs_eventhub_consumergroup_get"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Get Event Hubs from Namespace"
+    },
+    "description": "Get Event Hubs from Azure namespace. This command can either:\n1. List all Event Hubs in a namespace\n2. Get a single Event Hub by name\n\nWhen retrieving a single Event Hub or listing multiple Event Hubs, detailed information including\npartition count, settings, and metadata is returned for all Event Hubs.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "eventhub": {
+          "description": "The name of the Event Hub within the namespace.",
+          "type": "string"
+        },
+        "namespace": {
+          "description": "The name of the Event Hubs namespace to retrieve.",
+          "type": "string"
+        },
+        "resource-group": {
+          "description": "The Azure resource group name.",
+          "type": "string"
+        },
+        "subscription": {
+          "description": "The Azure subscription GUID identifier or display name. If not specified, the Azure CLI profile default subscription or AZURE_SUBSCRIPTION_ID environment variable will be used.",
+          "type": "string"
+        },
+        "tenant": {
+          "description": "The Microsoft Entra ID tenant GUID identifier or display name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "namespace",
+        "resource-group"
+      ],
+      "type": "object"
+    },
+    "name": "eventhubs_eventhub_get"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Get Event Hubs Namespaces"
+    },
+    "description": "Get Event Hubs namespaces from Azure. This command supports three modes of operation:\n1. List all Event Hubs namespaces in a subscription \n2. List all Event Hubs namespaces in a specific resource group \n3. Get a single namespace by name \n\nWhen retrieving a single namespace, detailed information including SKU, settings, and metadata \nis returned. When listing namespaces, the same detailed information is returned for all \nnamespaces in the specified scope.\n\nThe --resource-group parameter is optional for listing operations but required when getting a specific namespace.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "namespace": {
+          "description": "The name of the Event Hubs namespace to retrieve.",
+          "type": "string"
+        },
+        "resource-group": {
+          "description": "The Azure resource group name.",
+          "type": "string"
+        },
+        "subscription": {
+          "description": "The Azure subscription GUID identifier or display name. If not specified, the Azure CLI profile default subscription or AZURE_SUBSCRIPTION_ID environment variable will be used.",
+          "type": "string"
+        },
+        "tenant": {
+          "description": "The Microsoft Entra ID tenant GUID identifier or display name.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "eventhubs_namespace_get"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Get Azure Function App Details"
+    },
+    "description": "Gets Azure Function App details. Lists all Function Apps in the subscription or resource group.  If function app name and resource group\nis specified, retrieves the details of that specific function app.  Returns the details of Azure Function Apps, including its name,\nlocation, status, and app service plan name.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "function-app": {
+          "description": "The name of the Function App.",
+          "type": "string"
+        },
+        "resource-group": {
+          "description": "The Azure resource group name.",
+          "type": "string"
+        },
+        "subscription": {
+          "description": "The Azure subscription GUID identifier or display name. If not specified, the Azure CLI profile default subscription or AZURE_SUBSCRIPTION_ID environment variable will be used.",
+          "type": "string"
+        },
+        "tenant": {
+          "description": "The Microsoft Entra ID tenant GUID identifier or display name.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "functionapp_get"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "List Resource Groups"
+    },
+    "description": "List all resource groups in a subscription. This command retrieves all resource groups available\nin the specified subscription. Results include resource group names and IDs,\nreturned as a JSON array.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "subscription": {
+          "description": "The Azure subscription GUID identifier or display name. If not specified, the Azure CLI profile default subscription or AZURE_SUBSCRIPTION_ID environment variable will be used.",
+          "type": "string"
+        },
+        "tenant": {
+          "description": "The Microsoft Entra ID tenant GUID identifier or display name.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "group_list"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "List Resources in Resource Group"
+    },
+    "description": "List all resources in a resource group. This command retrieves all resources available\nin the specified resource group within the given subscription. Results include resource\nnames, IDs, types, and locations. The command returns a JSON object with a `resources`\narray containing these entries.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "resource-group": {
+          "description": "The Azure resource group name.",
+          "type": "string"
+        },
+        "subscription": {
+          "description": "The Azure subscription GUID identifier or display name. If not specified, the Azure CLI profile default subscription or AZURE_SUBSCRIPTION_ID environment variable will be used.",
+          "type": "string"
+        },
+        "tenant": {
+          "description": "The Microsoft Entra ID tenant GUID identifier or display name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "resource-group"
+      ],
+      "type": "object"
+    },
+    "name": "group_resource_list"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "List Activity Logs"
+    },
+    "description": "Always use this tool if user is asking for activity logs for a resource.\nLists activity logs for the specified Azure resource over the given prior number of hours.\nThis command retrieves activity logs to help understand resource deployment history, modification activities, and access patterns.\nReturns activity log events with details including timestamp, operation name, status, and caller information. should be called to help retrieve information about why a resource failed to deploy or may not be working.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "event-level": {
+          "description": "The level of activity logs to retrieve. Valid levels are: Critical, Error, Informational, Verbose, Warning. If not provided, returns all levels.",
+          "type": "string"
+        },
+        "hours": {
+          "description": "The number of hours prior to now to retrieve activity logs for. Default is 24.0.",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "resource-group": {
+          "description": "The Azure resource group name.",
+          "type": "string"
+        },
+        "resource-name": {
+          "description": "The name of the Azure resource to retrieve activity logs for.",
+          "type": "string"
+        },
+        "resource-type": {
+          "description": "The type of the Azure resource (e.g., 'Microsoft.Storage/storageAccounts'). Only provide this if needed to disambiguate between multiple resources with the same name.",
+          "type": "string"
+        },
+        "subscription": {
+          "description": "The Azure subscription GUID identifier or display name. If not specified, the Azure CLI profile default subscription or AZURE_SUBSCRIPTION_ID environment variable will be used.",
+          "type": "string"
+        },
+        "tenant": {
+          "description": "The Microsoft Entra ID tenant GUID identifier or display name.",
+          "type": "string"
+        },
+        "top": {
+          "description": "The maximum number of activity logs to retrieve. Default is 10.",
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "resource-name"
+      ],
+      "type": "object"
+    },
+    "name": "monitor_activitylog_list"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Get an Azure Monitor Health Model"
+    },
+    "description": "Get (show/view) a single, specific Azure Monitor Health Model by name, within a resource group and subscription.\nReturns the model's metadata and if available, the health state (e.g. Healthy, Degraded, Unhealthy, Unknown) or null if it cannot be provided.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "health-model": {
+          "description": "The name of the health model to retrieve.",
+          "type": "string"
+        },
+        "resource-group": {
+          "description": "The Azure resource group name.",
+          "type": "string"
+        },
+        "subscription": {
+          "description": "The Azure subscription GUID identifier or display name. If not specified, the Azure CLI profile default subscription or AZURE_SUBSCRIPTION_ID environment variable will be used.",
+          "type": "string"
+        },
+        "tenant": {
+          "description": "The Microsoft Entra ID tenant GUID identifier or display name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "health-model",
+        "resource-group"
+      ],
+      "type": "object"
+    },
+    "name": "monitor_healthmodels_get"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "List Azure Monitor Health Models"
+    },
+    "description": "List (find/show/enumerate) Azure Monitor Health Models (Microsoft.CloudHealth/healthmodels) in a subscription, or scoped to a specific resource group.\nReturns a summary of each health model, including its name, resource group, and location.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "resource-group": {
+          "description": "The Azure resource group name.",
+          "type": "string"
+        },
+        "subscription": {
+          "description": "The Azure subscription GUID identifier or display name. If not specified, the Azure CLI profile default subscription or AZURE_SUBSCRIPTION_ID environment variable will be used.",
+          "type": "string"
+        },
+        "tenant": {
+          "description": "The Microsoft Entra ID tenant GUID identifier or display name.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "monitor_healthmodels_list"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Query Azure Monitor Metrics for Multiple Resources"
+    },
+    "description": "Query Azure Monitor metrics for multiple resources in a single batch request. Returns time series data for the specified metrics, grouped by resource. All resources must belong to the same subscription, Azure region, and resource type.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "aggregation": {
+          "description": "The aggregation type(s) to use (comma-separated, e.g., Average,Maximum).",
+          "type": "string"
+        },
+        "end-time": {
+          "description": "The end time for the query in ISO format (e.g., 2023-01-01T00:00:00Z). Defaults to now.",
+          "type": "string"
+        },
+        "filter": {
+          "description": "OData filter to apply to the metrics query.",
+          "type": "string"
+        },
+        "interval": {
+          "description": "The time interval for data points (e.g., PT1H for 1 hour, PT5M for 5 minutes). If not specified, Azure Monitor selects the granularity automatically.",
+          "type": "string"
+        },
+        "max-buckets": {
+          "description": "The maximum number of time buckets to return per metric time series. Defaults to 50.",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "metric-names": {
+          "description": "The names of metrics to query (comma-separated).",
+          "type": "string"
+        },
+        "metric-namespace": {
+          "description": "The metric namespace to query. Obtain this value from the azmcp-monitor-metrics-definitions command.",
+          "type": "string"
+        },
+        "order-by": {
+          "description": "The aggregation to use for sorting results and the direction of the sort (e.g., 'total asc'). Only valid when '--filter' is specified.",
+          "type": "string"
+        },
+        "resource-group": {
+          "description": "The Azure resource group name.",
+          "type": "string"
+        },
+        "resource-type": {
+          "description": "The Azure resource type (e.g., 'Microsoft.Storage/storageAccounts', 'Microsoft.Compute/virtualMachines'), applied to all resources. If not specified, will attempt to infer from each resource name.",
+          "type": "string"
+        },
+        "resources": {
+          "description": "Comma-separated list of resource names or full resource IDs to query metrics for (up to 50 resources). All resources must belong to the same subscription, Azure region, and resource type.",
+          "type": "string"
+        },
+        "start-time": {
+          "description": "The start time for the query in ISO format (e.g., 2023-01-01T00:00:00Z). Defaults to 24 hours ago.",
+          "type": "string"
+        },
+        "subscription": {
+          "description": "The Azure subscription GUID identifier or display name. If not specified, the Azure CLI profile default subscription or AZURE_SUBSCRIPTION_ID environment variable will be used.",
+          "type": "string"
+        },
+        "tenant": {
+          "description": "The Microsoft Entra ID tenant GUID identifier or display name.",
+          "type": "string"
+        },
+        "top": {
+          "description": "The maximum number of time series to retrieve per resource per metric. Only valid when '--filter' is specified. Defaults to 10.",
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "resources",
+        "metric-names",
+        "metric-namespace"
+      ],
+      "type": "object"
+    },
+    "name": "monitor_metrics_batchquery"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "List Azure Monitor Metric Definitions"
+    },
+    "description": "List available metric definitions for an Azure resource. Returns metadata about the metrics available for the resource.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "limit": {
+          "description": "The maximum number of metric definitions to return. Defaults to 10.",
+          "type": "integer"
+        },
+        "metric-namespace": {
+          "description": "The metric namespace to query. Obtain this value from the azmcp-monitor-metrics-definitions command.",
+          "type": "string"
+        },
+        "resource": {
+          "description": "The name of the Azure resource to query metrics for.",
+          "type": "string"
+        },
+        "resource-group": {
+          "description": "The Azure resource group name.",
+          "type": "string"
+        },
+        "resource-type": {
+          "description": "The Azure resource type (e.g., 'Microsoft.Storage/storageAccounts', 'Microsoft.Compute/virtualMachines'). If not specified, will attempt to infer from resource name.",
+          "type": "string"
+        },
+        "search-string": {
+          "description": "A string to filter the metric definitions by. Helpful for reducing the number of records returned. Performs case-insensitive matching on metric name and description fields.",
+          "type": "string"
+        },
+        "subscription": {
+          "description": "The Azure subscription GUID identifier or display name. If not specified, the Azure CLI profile default subscription or AZURE_SUBSCRIPTION_ID environment variable will be used.",
+          "type": "string"
+        },
+        "tenant": {
+          "description": "The Microsoft Entra ID tenant GUID identifier or display name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "resource"
+      ],
+      "type": "object"
+    },
+    "name": "monitor_metrics_definitions"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Query Azure Monitor Metrics"
+    },
+    "description": "Query Azure Monitor metrics for a resource. Returns time series data for the specified metrics.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "aggregation": {
+          "description": "The aggregation type to use (Average, Maximum, Minimum, Total, Count).",
+          "type": "string"
+        },
+        "end-time": {
+          "description": "The end time for the query in ISO format (e.g., 2023-01-01T00:00:00Z). Defaults to now.",
+          "type": "string"
+        },
+        "filter": {
+          "description": "OData filter to apply to the metrics query.",
+          "type": "string"
+        },
+        "interval": {
+          "description": "The time interval for data points (e.g., PT1H for 1 hour, PT5M for 5 minutes).",
+          "type": "string"
+        },
+        "max-buckets": {
+          "description": "The maximum number of time buckets to return. Defaults to 50.",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "metric-names": {
+          "description": "The names of metrics to query (comma-separated).",
+          "type": "string"
+        },
+        "metric-namespace": {
+          "description": "The metric namespace to query. Obtain this value from the azmcp-monitor-metrics-definitions command.",
+          "type": "string"
+        },
+        "resource": {
+          "description": "The name of the Azure resource to query metrics for.",
+          "type": "string"
+        },
+        "resource-group": {
+          "description": "The Azure resource group name.",
+          "type": "string"
+        },
+        "resource-type": {
+          "description": "The Azure resource type (e.g., 'Microsoft.Storage/storageAccounts', 'Microsoft.Compute/virtualMachines'). If not specified, will attempt to infer from resource name.",
+          "type": "string"
+        },
+        "start-time": {
+          "description": "The start time for the query in ISO format (e.g., 2023-01-01T00:00:00Z). Defaults to 24 hours ago.",
+          "type": "string"
+        },
+        "subscription": {
+          "description": "The Azure subscription GUID identifier or display name. If not specified, the Azure CLI profile default subscription or AZURE_SUBSCRIPTION_ID environment variable will be used.",
+          "type": "string"
+        },
+        "tenant": {
+          "description": "The Microsoft Entra ID tenant GUID identifier or display name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "metric-names",
+        "metric-namespace",
+        "resource"
+      ],
+      "type": "object"
+    },
+    "name": "monitor_metrics_query"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Query Logs for Azure Resource"
+    },
+    "description": "Query diagnostic and activity logs for a SPECIFIC Azure resource in a Log Analytics workspace using Kusto Query Language (KQL). \nUse this tool when the user mentions a specific resource name or Resource ID in their request (e.g., \"show logs for resource 'app-monitor'\"). \nThis tool filters logs to only show data from the specified resource.\n\nWhen to use: User asks for logs from a specific resource by name or ID.\nWhen NOT to use: User asks for general workspace-wide logs without mentioning a specific resource.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "hours": {
+          "description": "The number of hours to query back from now. Defaults to 24 hours.",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "limit": {
+          "description": "The maximum number of results to return. Defaults to 20.",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "query": {
+          "description": "The KQL query to execute against the Log Analytics workspace. You can use predefined queries by name:\n- 'recent': Shows most recent logs ordered by TimeGenerated\n- 'errors': Shows error-level logs ordered by TimeGenerated\nOtherwise, provide a custom KQL query.",
+          "type": "string"
+        },
+        "resource-id": {
+          "description": "The Azure Resource ID to query logs. Example: /subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.OperationalInsights/workspaces/<ws>",
+          "type": "string"
+        },
+        "subscription": {
+          "description": "The Azure subscription GUID identifier or display name. If not specified, the Azure CLI profile default subscription or AZURE_SUBSCRIPTION_ID environment variable will be used.",
+          "type": "string"
+        },
+        "table": {
+          "description": "The name of the table to query. This is the specific table within the workspace.",
+          "type": "string"
+        },
+        "tenant": {
+          "description": "The Microsoft Entra ID tenant GUID identifier or display name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "query",
+        "table",
+        "resource-id"
+      ],
+      "type": "object"
+    },
+    "name": "monitor_resource_log_query"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "List Log Analytics Tables"
+    },
+    "description": "List all tables in a Log Analytics workspace. Requires workspace.\nReturns table names and schemas that can be used for constructing KQL queries.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "resource-group": {
+          "description": "The Azure resource group name.",
+          "type": "string"
+        },
+        "subscription": {
+          "description": "The Azure subscription GUID identifier or display name. If not specified, the Azure CLI profile default subscription or AZURE_SUBSCRIPTION_ID environment variable will be used.",
+          "type": "string"
+        },
+        "table-type": {
+          "description": "The type of table to query. Options: 'CustomLog', 'AzureMetrics', etc. Defaults to 'CustomLog'.",
+          "type": "string"
+        },
+        "tenant": {
+          "description": "The Microsoft Entra ID tenant GUID identifier or display name.",
+          "type": "string"
+        },
+        "workspace": {
+          "description": "The Log Analytics workspace ID or name. This can be either the unique identifier (GUID) or the display name of your workspace.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "workspace",
+        "table-type",
+        "resource-group"
+      ],
+      "type": "object"
+    },
+    "name": "monitor_table_list"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "List Log Analytics Table Types"
+    },
+    "description": "List available table types in a Log Analytics workspace. Returns table type names.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "resource-group": {
+          "description": "The Azure resource group name.",
+          "type": "string"
+        },
+        "subscription": {
+          "description": "The Azure subscription GUID identifier or display name. If not specified, the Azure CLI profile default subscription or AZURE_SUBSCRIPTION_ID environment variable will be used.",
+          "type": "string"
+        },
+        "tenant": {
+          "description": "The Microsoft Entra ID tenant GUID identifier or display name.",
+          "type": "string"
+        },
+        "workspace": {
+          "description": "The Log Analytics workspace ID or name. This can be either the unique identifier (GUID) or the display name of your workspace.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "workspace",
+        "resource-group"
+      ],
+      "type": "object"
+    },
+    "name": "monitor_table_type_list"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Get or list web tests"
+    },
+    "description": "Gets details for a specific web test or lists all web tests.\nWhen --webtest-resource is provided, returns detailed information about a single web test.\nWhen --webtest-resource is omitted, returns a list of all web tests in the subscription (optionally filtered by resource group).",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "resource-group": {
+          "description": "The Azure resource group name.",
+          "type": "string"
+        },
+        "subscription": {
+          "description": "The Azure subscription GUID identifier or display name. If not specified, the Azure CLI profile default subscription or AZURE_SUBSCRIPTION_ID environment variable will be used.",
+          "type": "string"
+        },
+        "tenant": {
+          "description": "The Microsoft Entra ID tenant GUID identifier or display name.",
+          "type": "string"
+        },
+        "webtest-resource": {
+          "description": "The name of the Web Test resource to operate on.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "monitor_webtests_get"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "List Log Analytics Workspaces"
+    },
+    "description": "List Log Analytics workspaces in a subscription. This command retrieves all Log Analytics workspaces\navailable in the specified Azure subscription, displaying their names, IDs, and other key properties.\nUse this command to identify workspaces before querying their logs or tables.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "resource-group": {
+          "description": "The Azure resource group name.",
+          "type": "string"
+        },
+        "subscription": {
+          "description": "The Azure subscription GUID identifier or display name. If not specified, the Azure CLI profile default subscription or AZURE_SUBSCRIPTION_ID environment variable will be used.",
+          "type": "string"
+        },
+        "tenant": {
+          "description": "The Microsoft Entra ID tenant GUID identifier or display name.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "monitor_workspace_list"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Query Log Analytics Workspace"
+    },
+    "description": "Query logs across an ENTIRE Log Analytics workspace using Kusto Query Language (KQL). \nUse this tool when the user wants to query all resources in a workspace or doesn't specify a particular resource name/ID (e.g., \"show all errors in workspace\", \"query workspace logs\", \"what happened in my workspace\").\nThis tool queries across all resources and tables in the workspace.\n\nWhen to use: User asks for workspace-wide logs, all resources, or doesn't mention a specific resource.\nWhen NOT to use: User mentions a specific resource name or Resource ID - use resource log query instead.\n\nquery accepts KQL syntax.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "hours": {
+          "description": "The number of hours to query back from now. Defaults to 24 hours.",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "limit": {
+          "description": "The maximum number of results to return. Defaults to 20.",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "query": {
+          "description": "The KQL query to execute against the Log Analytics workspace. You can use predefined queries by name:\n- 'recent': Shows most recent logs ordered by TimeGenerated\n- 'errors': Shows error-level logs ordered by TimeGenerated\nOtherwise, provide a custom KQL query.",
+          "type": "string"
+        },
+        "subscription": {
+          "description": "The Azure subscription GUID identifier or display name. If not specified, the Azure CLI profile default subscription or AZURE_SUBSCRIPTION_ID environment variable will be used.",
+          "type": "string"
+        },
+        "table": {
+          "description": "The name of the table to query. This is the specific table within the workspace.",
+          "type": "string"
+        },
+        "tenant": {
+          "description": "The Microsoft Entra ID tenant GUID identifier or display name.",
+          "type": "string"
+        },
+        "workspace": {
+          "description": "The Log Analytics workspace ID or name. This can be either the unique identifier (GUID) or the display name of your workspace.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "workspace",
+        "query",
+        "table"
+      ],
+      "type": "object"
+    },
+    "name": "monitor_workspace_log_query"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Search Basic or Auxiliary Workspace Logs"
+    },
+    "description": "Searches one Basic or Auxiliary table in an Azure Log Analytics workspace through the synchronous Logs search API.\nRequires resourceGroup, workspace, table, a KQL pipeline fragment beginning with '|', and an explicit timespan of at most 30 days.\nThe server binds the table and appends a final take from limit (default 20, maximum 100). Returns typed columns and rows and explicitly marks partial results.\nScan cost is based on table ingestion volume across the timespan, not limit. Use monitor_workspace_log_query for Analytics-plan tables.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "limit": {
+          "description": "The maximum number of rows to return, from 1 through 100.",
+          "type": "integer"
+        },
+        "query": {
+          "description": "A KQL pipeline fragment beginning with '|'. The table is bound by the server.",
+          "type": "string"
+        },
+        "resource-group": {
+          "description": "The Azure resource group name.",
+          "type": "string"
+        },
+        "subscription": {
+          "description": "The Azure subscription GUID identifier or display name. If not specified, the Azure CLI profile default subscription or AZURE_SUBSCRIPTION_ID environment variable will be used.",
+          "type": "string"
+        },
+        "table": {
+          "description": "The ASCII name of the Basic or Auxiliary Log Analytics table to search.",
+          "type": "string"
+        },
+        "tenant": {
+          "description": "The Microsoft Entra ID tenant GUID identifier or display name.",
+          "type": "string"
+        },
+        "timespan": {
+          "description": "A positive ISO 8601 duration or a closed RFC 3339 start/end interval, up to 30 days.",
+          "type": "string"
+        },
+        "workspace": {
+          "description": "The name of the Log Analytics workspace containing the table.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "resource-group",
+        "workspace",
+        "table",
+        "query",
+        "timespan"
+      ],
+      "type": "object"
+    },
+    "name": "monitor_workspace_log_search"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "List MySQL Resources"
+    },
+    "description": "List MySQL servers, databases, or tables in your subscription. Returns all servers in the subscription by default, or servers in a resource group when --resource-group is specified. Specify --server to list databases on that server, or --server and --database to list tables in a specific database.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "database": {
+          "description": "The MySQL database to list tables from (requires --server).",
+          "type": "string"
+        },
+        "resource-group": {
+          "description": "The Azure resource group name.",
+          "type": "string"
+        },
+        "server": {
+          "description": "The MySQL server to list databases from (requires --user).",
+          "type": "string"
+        },
+        "subscription": {
+          "description": "The Azure subscription GUID identifier or display name. If not specified, the Azure CLI profile default subscription or AZURE_SUBSCRIPTION_ID environment variable will be used.",
+          "type": "string"
+        },
+        "user": {
+          "description": "The user name to access MySQL server.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "mysql_list"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Get MySQL Server Configuration"
+    },
+    "description": "Retrieves comprehensive configuration details for the specified Azure Database for MySQL Flexible Server instance. This command provides insights into server settings, performance parameters, security configurations, and operational characteristics essential for database administration and optimization. Returns configuration data in JSON format including ServerName, Location, Version, SKU, StorageSizeGB, BackupRetentionDays, and GeoRedundantBackup properties.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "resource-group": {
+          "description": "The Azure resource group name.",
+          "type": "string"
+        },
+        "server": {
+          "description": "The MySQL server to be accessed.",
+          "type": "string"
+        },
+        "subscription": {
+          "description": "The Azure subscription GUID identifier or display name. If not specified, the Azure CLI profile default subscription or AZURE_SUBSCRIPTION_ID environment variable will be used.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "server",
+        "resource-group"
+      ],
+      "type": "object"
+    },
+    "name": "mysql_server_config_get"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Get MySQL Server Parameter"
+    },
+    "description": "Retrieves the current value of a single server configuration parameter on an Azure Database for MySQL Flexible Server. Use to inspect a setting (e.g. max_connections, wait_timeout, slow_query_log) before changing it.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "param": {
+          "description": "The MySQL parameter to be accessed.",
+          "type": "string"
+        },
+        "resource-group": {
+          "description": "The Azure resource group name.",
+          "type": "string"
+        },
+        "server": {
+          "description": "The MySQL server to be accessed.",
+          "type": "string"
+        },
+        "subscription": {
+          "description": "The Azure subscription GUID identifier or display name. If not specified, the Azure CLI profile default subscription or AZURE_SUBSCRIPTION_ID environment variable will be used.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "param",
+        "server",
+        "resource-group"
+      ],
+      "type": "object"
+    },
+    "name": "mysql_server_param_get"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Get MySQL Table Schema"
+    },
+    "description": "Retrieves detailed schema information for a specific table within an Azure Database for MySQL Flexible Server database. This command provides comprehensive metadata including column definitions, data types, constraints, indexes, and relationships, essential for understanding table structure and supporting application development.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "database": {
+          "description": "The MySQL database to be accessed.",
+          "type": "string"
+        },
+        "server": {
+          "description": "The MySQL server to be accessed.",
+          "type": "string"
+        },
+        "table": {
+          "description": "The MySQL table to be accessed.",
+          "type": "string"
+        },
+        "user": {
+          "description": "The user name to access MySQL server.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "table",
+        "server",
+        "database",
+        "user"
+      ],
+      "type": "object"
+    },
+    "name": "mysql_table_schema_get"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "List PostgreSQL Resources"
+    },
+    "description": "List PostgreSQL servers, databases, or tables. Returns all servers in the subscription by default (optionally scoped to a --resource-group). Specify --server to list databases on that server, or --server and --database to list tables in a specific database. --user is required when --server is provided.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "auth-type": {
+          "description": "The authentication type to access PostgreSQL server. Supported values are 'MicrosoftEntra' or 'PostgreSQL'. By default 'MicrosoftEntra' is used.",
+          "type": "string"
+        },
+        "database": {
+          "description": "The PostgreSQL database to list tables from (requires --server).",
+          "type": "string"
+        },
+        "password": {
+          "description": "The user password to access PostgreSQL server, Only required if 'auth-type' is set to 'PostgreSQL' authentication, not needed for 'MicrosoftEntra' authentication.",
+          "type": "string"
+        },
+        "resource-group": {
+          "description": "The Azure resource group name.",
+          "type": "string"
+        },
+        "schema": {
+          "description": "The PostgreSQL schema to list tables from when listing tables (defaults to 'public').",
+          "type": "string"
+        },
+        "server": {
+          "description": "The PostgreSQL server to list databases from.",
+          "type": "string"
+        },
+        "subscription": {
+          "description": "The Azure subscription GUID identifier or display name. If not specified, the Azure CLI profile default subscription or AZURE_SUBSCRIPTION_ID environment variable will be used.",
+          "type": "string"
+        },
+        "user": {
+          "description": "The user name to access PostgreSQL server.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "postgres_list"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Get PostgreSQL Server Configuration"
+    },
+    "description": "Retrieve the configuration of a PostgreSQL server.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "resource-group": {
+          "description": "The Azure resource group name.",
+          "type": "string"
+        },
+        "server": {
+          "description": "The PostgreSQL server to be accessed.",
+          "type": "string"
+        },
+        "subscription": {
+          "description": "The Azure subscription GUID identifier or display name. If not specified, the Azure CLI profile default subscription or AZURE_SUBSCRIPTION_ID environment variable will be used.",
+          "type": "string"
+        },
+        "tenant": {
+          "description": "The Microsoft Entra ID tenant GUID identifier or display name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "server",
+        "resource-group"
+      ],
+      "type": "object"
+    },
+    "name": "postgres_server_config_get"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Get PostgreSQL Server Parameter"
+    },
+    "description": "Retrieves a specific parameter of a PostgreSQL server.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "param": {
+          "description": "The PostgreSQL parameter to be accessed.",
+          "type": "string"
+        },
+        "resource-group": {
+          "description": "The Azure resource group name.",
+          "type": "string"
+        },
+        "server": {
+          "description": "The PostgreSQL server to be accessed.",
+          "type": "string"
+        },
+        "subscription": {
+          "description": "The Azure subscription GUID identifier or display name. If not specified, the Azure CLI profile default subscription or AZURE_SUBSCRIPTION_ID environment variable will be used.",
+          "type": "string"
+        },
+        "tenant": {
+          "description": "The Microsoft Entra ID tenant GUID identifier or display name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "param",
+        "server",
+        "resource-group"
+      ],
+      "type": "object"
+    },
+    "name": "postgres_server_param_get"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Get PostgreSQL Table Schema"
+    },
+    "description": "Retrieves the schema of a specified table in a PostgreSQL database.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "auth-type": {
+          "description": "The authentication type to access PostgreSQL server. Supported values are 'MicrosoftEntra' or 'PostgreSQL'. By default 'MicrosoftEntra' is used.",
+          "type": "string"
+        },
+        "database": {
+          "description": "The PostgreSQL database to be accessed.",
+          "type": "string"
+        },
+        "password": {
+          "description": "The user password to access PostgreSQL server, Only required if 'auth-type' is set to 'PostgreSQL' authentication, not needed for 'MicrosoftEntra' authentication.",
+          "type": "string"
+        },
+        "server": {
+          "description": "The PostgreSQL server to be accessed.",
+          "type": "string"
+        },
+        "table": {
+          "description": "The PostgreSQL table to be accessed.",
+          "type": "string"
+        },
+        "user": {
+          "description": "The user name to access PostgreSQL server.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "table",
+        "auth-type",
+        "user",
+        "server",
+        "database"
+      ],
+      "type": "object"
+    },
+    "name": "postgres_table_schema_get"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Get available regions for Azure resource types"
+    },
+    "description": "Given a list of Azure resource types, this tool will return a list of regions where the resource types are available. Always get the user's subscription ID before calling this tool.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "cognitive-service-deployment-sku-name": {
+          "description": "Optional deployment SKU name for cognitive services. Only needed when Microsoft.CognitiveServices is included in resource types.",
+          "type": "string"
+        },
+        "cognitive-service-model-name": {
+          "description": "Optional model name for cognitive services. Only needed when Microsoft.CognitiveServices is included in resource types.",
+          "type": "string"
+        },
+        "cognitive-service-model-version": {
+          "description": "Optional model version for cognitive services. Only needed when Microsoft.CognitiveServices is included in resource types.",
+          "type": "string"
+        },
+        "resource-types": {
+          "description": "Comma-separated list of Azure resource types to check available regions for. E.g. 'Microsoft.App/containerApps, Microsoft.Web/sites, Microsoft.CognitiveServices/accounts'.",
+          "type": "string"
+        },
+        "subscription": {
+          "description": "The Azure subscription GUID identifier or display name. If not specified, the Azure CLI profile default subscription or AZURE_SUBSCRIPTION_ID environment variable will be used.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "resource-types"
+      ],
+      "type": "object"
+    },
+    "name": "quota_region_availability_list"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Check Azure resources usage and quota in a region"
+    },
+    "description": "This tool will check the usage and quota information for Azure resources in a region.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "region": {
+          "description": "The Azure region where the resources will be deployed. E.g. 'eastus', 'westus', etc.",
+          "type": "string"
+        },
+        "resource-types": {
+          "description": "Comma-separated list of Azure resource types that are going to be deployed. E.g. 'Microsoft.App/containerApps,Microsoft.Web/sites,Microsoft.CognitiveServices/accounts', etc.",
+          "type": "string"
+        },
+        "subscription": {
+          "description": "The Azure subscription GUID identifier or display name. If not specified, the Azure CLI profile default subscription or AZURE_SUBSCRIPTION_ID environment variable will be used.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "region",
+        "resource-types"
+      ],
+      "type": "object"
+    },
+    "name": "quota_usage_check"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "List Redis Resources"
+    },
+    "description": "List/show all Redis resources in a subscription. Returns details of all Azure Managed Redis, Azure Cache for Redis, and Azure Redis Enterprise resources. Use this command to explore and view which Redis resources are available in your subscription.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "subscription": {
+          "description": "The Azure subscription GUID identifier or display name. If not specified, the Azure CLI profile default subscription or AZURE_SUBSCRIPTION_ID environment variable will be used.",
+          "type": "string"
+        },
+        "tenant": {
+          "description": "The Microsoft Entra ID tenant GUID identifier or display name.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "redis_list"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Get/List Resource Availability Status"
+    },
+    "description": "Get the Azure Resource Health availability status for a specific resource or all resources in a subscription or resource group. Use this tool when asked about the availability status, health status, or Resource Health of an Azure resource (e.g. virtual machine, storage account). Reports whether a resource is Available, Unavailable, Degraded, or Unknown, including the reason and details. This is the correct tool for questions like 'What is the availability status of VM X?' or 'Is resource Y healthy?'.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "resource-group": {
+          "description": "The Azure resource group name.",
+          "type": "string"
+        },
+        "resourceId": {
+          "description": "The Azure resource ID to get health status for (e.g., /subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.Compute/virtualMachines/{vm}).",
+          "type": "string"
+        },
+        "subscription": {
+          "description": "The Azure subscription GUID identifier or display name. If not specified, the Azure CLI profile default subscription or AZURE_SUBSCRIPTION_ID environment variable will be used.",
+          "type": "string"
+        },
+        "tenant": {
+          "description": "The Microsoft Entra ID tenant GUID identifier or display name.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "resourcehealth_availability-status_get"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "List Service Health Events"
+    },
+    "description": "List Azure service health events to track service issues that occurred in recent timeframes (last 30 days, weeks, months). Query subscription for planned maintenance, past or ongoing service incidents, advisories, and security events. Provides detailed information about resource availability state, potential issues, and timestamps. Returns: trackingId, title, summary, eventType, status, startTime, endTime, impactedServices. Access Azure Service Health portal data programmatically.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "event-type": {
+          "description": "Filter by event type (ServiceIssue, PlannedMaintenance, HealthAdvisory, Security). If not specified, all event types are included.",
+          "type": "string"
+        },
+        "filter": {
+          "description": "Additional OData filter expression to apply to the service health events query.",
+          "type": "string"
+        },
+        "query-end-time": {
+          "description": "End time for the query in ISO 8601 format (e.g., 2024-01-31T23:59:59Z). Events up to this time will be included.",
+          "type": "string"
+        },
+        "query-start-time": {
+          "description": "Start time for the query in ISO 8601 format (e.g., 2024-01-01T00:00:00Z). Events from this time onwards will be included.",
+          "type": "string"
+        },
+        "status": {
+          "description": "Filter by status (Active, Resolved). If not specified, all statuses are included.",
+          "type": "string"
+        },
+        "subscription": {
+          "description": "The Azure subscription GUID identifier or display name. If not specified, the Azure CLI profile default subscription or AZURE_SUBSCRIPTION_ID environment variable will be used.",
+          "type": "string"
+        },
+        "tenant": {
+          "description": "The Microsoft Entra ID tenant GUID identifier or display name.",
+          "type": "string"
+        },
+        "tracking-id": {
+          "description": "Filter by tracking ID to get a specific service health event.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "resourcehealth_health-events_list"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Get Service Bus Queue Details"
+    },
+    "description": "Get details about a Service Bus queue. Returns queue properties and runtime information. Properties returned include\nlock duration, max message size, queue size, creation date, status, current message counts, etc.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "namespace": {
+          "description": "The fully qualified Service Bus namespace host name. (This is usually in the form <namespace>.servicebus.windows.net)",
+          "type": "string"
+        },
+        "queue": {
+          "description": "The queue name.",
+          "type": "string"
+        },
+        "tenant": {
+          "description": "The Microsoft Entra ID tenant GUID identifier or display name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "namespace",
+        "queue"
+      ],
+      "type": "object"
+    },
+    "name": "servicebus_queue_details"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Get Service Bus Topic Details"
+    },
+    "description": "Retrieves details about a Service Bus topic. Returns runtime information and topic properties including number of subscriptions, max message size, max topic size, number of scheduled messages, etc.\nRequired arguments are namespace: The fully qualified Service Bus namespace host name (usually in the form <namespace>.servicebus.windows.net) and topic: Topic name to get information about.\nDo not use this to get details on Service Bus subscription- instead use servicebus_topic_subscription_details.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "namespace": {
+          "description": "The fully qualified Service Bus namespace host name. (This is usually in the form <namespace>.servicebus.windows.net)",
+          "type": "string"
+        },
+        "tenant": {
+          "description": "The Microsoft Entra ID tenant GUID identifier or display name.",
+          "type": "string"
+        },
+        "topic": {
+          "description": "The name of the topic containing the subscription.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "namespace",
+        "topic"
+      ],
+      "type": "object"
+    },
+    "name": "servicebus_topic_details"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Get Service Bus Topic Subscription Details"
+    },
+    "description": "Get details about a Service Bus subscription. Returns subscription runtime properties including message counts, delivery settings, and other metadata.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "namespace": {
+          "description": "The fully qualified Service Bus namespace host name. (This is usually in the form <namespace>.servicebus.windows.net)",
+          "type": "string"
+        },
+        "subscription-name": {
+          "description": "The Service Bus subscription name.",
+          "type": "string"
+        },
+        "tenant": {
+          "description": "The Microsoft Entra ID tenant GUID identifier or display name.",
+          "type": "string"
+        },
+        "topic": {
+          "description": "The name of the topic containing the subscription.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "subscription-name",
+        "namespace",
+        "topic"
+      ],
+      "type": "object"
+    },
+    "name": "servicebus_topic_subscription_details"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Get SQL Database"
+    },
+    "description": "Show, get, or list Azure SQL databases in a SQL Server. Shows details for a specific Azure SQL database\nby name, or lists all Azure SQL databases in the specified SQL Server. Equivalent to 'az sql db show'\n(show one Azure SQL database) or 'az sql db list' (list all Azure SQL databases in a server).\nReturns database information including configuration details and current status.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "database": {
+          "description": "The Azure SQL Database name.",
+          "type": "string"
+        },
+        "resource-group": {
+          "description": "The Azure resource group name.",
+          "type": "string"
+        },
+        "server": {
+          "description": "The Azure SQL Server name.",
+          "type": "string"
+        },
+        "subscription": {
+          "description": "The Azure subscription GUID identifier or display name. If not specified, the Azure CLI profile default subscription or AZURE_SUBSCRIPTION_ID environment variable will be used.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "server",
+        "resource-group"
+      ],
+      "type": "object"
+    },
+    "name": "sql_db_get"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "List SQL Elastic Pools"
+    },
+    "description": "Lists all SQL elastic pools in an Azure SQL Server with their SKU, capacity, state, and database limits.\nUse when you need to: view elastic pool inventory, check pool utilization, compare pool configurations,\nor find available pools for database placement.\nReturns: JSON array of elastic pools with complete configuration details.\nEquivalent to 'az sql elastic-pool list'.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "resource-group": {
+          "description": "The Azure resource group name.",
+          "type": "string"
+        },
+        "server": {
+          "description": "The Azure SQL Server name.",
+          "type": "string"
+        },
+        "subscription": {
+          "description": "The Azure subscription GUID identifier or display name. If not specified, the Azure CLI profile default subscription or AZURE_SUBSCRIPTION_ID environment variable will be used.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "server",
+        "resource-group"
+      ],
+      "type": "object"
+    },
+    "name": "sql_elastic-pool_list"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "List SQL Server Entra ID Administrators"
+    },
+    "description": "Gets a list of all Microsoft Entra ID administrators for a SQL server, including their display names,\nobject IDs, and tenant information. Returns an array of Entra ID administrator objects with their properties.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "resource-group": {
+          "description": "The Azure resource group name.",
+          "type": "string"
+        },
+        "server": {
+          "description": "The Azure SQL Server name.",
+          "type": "string"
+        },
+        "subscription": {
+          "description": "The Azure subscription GUID identifier or display name. If not specified, the Azure CLI profile default subscription or AZURE_SUBSCRIPTION_ID environment variable will be used.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "server",
+        "resource-group"
+      ],
+      "type": "object"
+    },
+    "name": "sql_server_entra-admin_list"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "List SQL Server Firewall Rules"
+    },
+    "description": "Gets/retrieves a list of all firewall rules configured for a SQL server, including their IP address ranges\nand rule names. Returns an array of firewall rule objects with their properties.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "resource-group": {
+          "description": "The Azure resource group name.",
+          "type": "string"
+        },
+        "server": {
+          "description": "The Azure SQL Server name.",
+          "type": "string"
+        },
+        "subscription": {
+          "description": "The Azure subscription GUID identifier or display name. If not specified, the Azure CLI profile default subscription or AZURE_SUBSCRIPTION_ID environment variable will be used.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "server",
+        "resource-group"
+      ],
+      "type": "object"
+    },
+    "name": "sql_server_firewall-rule_list"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Get SQL Server"
+    },
+    "description": "Show, get, or list Azure SQL servers in a resource group. Shows details for a specific Azure SQL server\nby name, or lists all Azure SQL servers in the specified resource group. Use to show, display, or\nretrieve Azure SQL server information. Equivalent to 'az sql server show' (show one Azure SQL server) or\n'az sql server list' (list all Azure SQL servers in a resource group). Returns server information\nincluding configuration details and current state.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "resource-group": {
+          "description": "The Azure resource group name.",
+          "type": "string"
+        },
+        "server": {
+          "description": "The Azure SQL Server name.",
+          "type": "string"
+        },
+        "subscription": {
+          "description": "The Azure subscription GUID identifier or display name. If not specified, the Azure CLI profile default subscription or AZURE_SUBSCRIPTION_ID environment variable will be used.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "resource-group"
+      ],
+      "type": "object"
+    },
+    "name": "sql_server_get"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Get Storage Account Details"
+    },
+    "description": "Retrieves detailed information about Azure Storage accounts, including account name, location, SKU, kind, hierarchical namespace status, HTTPS-only settings, and blob public access configuration. If a specific account name is not provided, the command will return details for all accounts in a subscription. Note: this queries Azure Resource Graph, which can lag a few minutes behind the actual resource state - a storage account created immediately beforehand may not appear yet.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "account": {
+          "description": "The name of the Azure Storage account. This is the unique name you chose for your storage account (e.g., 'mystorageaccount').",
+          "type": "string"
+        },
+        "resource-group": {
+          "description": "The Azure resource group name.",
+          "type": "string"
+        },
+        "subscription": {
+          "description": "The Azure subscription GUID identifier or display name. If not specified, the Azure CLI profile default subscription or AZURE_SUBSCRIPTION_ID environment variable will be used.",
+          "type": "string"
+        },
+        "tenant": {
+          "description": "The Microsoft Entra ID tenant GUID identifier or display name.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "storage_account_get"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Get Storage Container Details"
+    },
+    "description": "Show/list containers in a storage account. Use this tool to list all blob containers in the storage account or\nshow details for a specific Storage container. If no container specified, shows all containers in the storage\naccount, optionally filtering on a prefix. The prefix is ignored if a container is specified.\n\nRequired: --account\nOptional: --container, --tenant, --prefix\n\nReturns: container name, lastModified, leaseStatus, publicAccess, metadata, and container properties.\nDo not use this tool to list blobs in a container.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "account": {
+          "description": "The name of the Azure Storage account. This is the unique name you chose for your storage account (e.g., 'mystorageaccount').",
+          "type": "string"
+        },
+        "container": {
+          "description": "The name of the container to access within the storage account.",
+          "type": "string"
+        },
+        "prefix": {
+          "description": "The prefix to filter containers when listing containers in a storage account. Only containers whose names start with the specified prefix will be listed.",
+          "type": "string"
+        },
+        "tenant": {
+          "description": "The Microsoft Entra ID tenant GUID identifier or display name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "account"
+      ],
+      "type": "object"
+    },
+    "name": "storage_blob_container_get"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Get Storage Blob Details"
+    },
+    "description": "List/get/show blobs in a blob container in Storage account. Use this tool to list the blobs in a container or\nget details for a specific blob. If no blob specified, lists all blobs present in the container, optionally\nfiltering on a prefix. The prefix is ignored if a blob is specified.\n\nRequired: --account, --container\nOptional: --blob, --tenant, --prefix\n\nReturns: blob name, size, lastModified, contentType, contentHash, metadata, and blob properties.\nDo not use this tool to list containers in the storage account.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "account": {
+          "description": "The name of the Azure Storage account. This is the unique name you chose for your storage account (e.g., 'mystorageaccount').",
+          "type": "string"
+        },
+        "blob": {
+          "description": "The name of the blob to access within the container. This should be the full path within the container (e.g., 'file.txt' or 'folder/file.txt').",
+          "type": "string"
+        },
+        "container": {
+          "description": "The name of the container to access within the storage account.",
+          "type": "string"
+        },
+        "prefix": {
+          "description": "The prefix to filter blobs when listing blobs in a container. Only blobs whose names start with the specified prefix will be listed.",
+          "type": "string"
+        },
+        "tenant": {
+          "description": "The Microsoft Entra ID tenant GUID identifier or display name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "account",
+        "container"
+      ],
+      "type": "object"
+    },
+    "name": "storage_blob_get"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "List Tables in Azure Storage"
+    },
+    "description": "List all tables in an Azure Storage account. Shows table names for the specified storage account. Required: account. Optional: tenant. Returns: table names. Do not use this tool for Cosmos DB tables or Kusto/Data Explorer tables.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "account": {
+          "description": "The name of the Azure Storage account. This is the unique name you chose for your storage account (e.g., 'mystorageaccount').",
+          "type": "string"
+        },
+        "tenant": {
+          "description": "The Microsoft Entra ID tenant GUID identifier or display name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "account"
+      ],
+      "type": "object"
+    },
+    "name": "storage_table_list"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "List Azure Subscriptions"
+    },
+    "description": "List all Azure subscriptions for the current account. Returns subscriptionId, displayName, state, tenantId, and isDefault for each subscription. The isDefault field indicates the user's default subscription as resolved from the Azure CLI profile (configured via 'az account set') or, if not set there, from the AZURE_SUBSCRIPTION_ID environment variable. When the user has not specified a subscription, prefer the subscription where isDefault is true. If no default can be determined from either source and multiple subscriptions exist, ask the user which subscription to use.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "tenant": {
+          "description": "The Microsoft Entra ID tenant GUID identifier or display name.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "subscription_list"
+  }
+]

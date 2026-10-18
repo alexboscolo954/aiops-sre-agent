@@ -42,6 +42,27 @@ with open("/usr/local/bin/mcp-grafana", "wb") as f:
     f.write(binary)
 os.chmod("/usr/local/bin/mcp-grafana", 0o755)
 EOF
+# azmcp, the Azure vendor: the official Azure MCP server's single-file binary from
+# its npm package for this architecture, verified against npm's sha512 integrity.
+ARG AZURE_MCP_VERSION=3.0.0
+RUN python - <<'EOF'
+import base64, hashlib, io, os, tarfile, urllib.request
+arch, version = os.environ["TARGETARCH"], os.environ["AZURE_MCP_VERSION"]
+name, sha512 = {
+    "amd64": ("linux-x64", "btMwN0Vo2n8Qhk6yK5neC8QxbfXcZhgZcc2rugzvzaokBjQw3lbR1pAzQAnleetH4OGENbVgKNlCpHEUiVXfbQ=="),
+    "arm64": ("linux-arm64", "h8hNNWCSwqReDj9yNxO5vLOJCLNdCRLe915Q6rRLyykNhz47DTWXU31GfCypX2PeSBEXx3hEngqDeg8pqNq9QQ=="),
+}[arch]
+url = f"https://registry.npmjs.org/@azure/mcp-{name}/-/mcp-{name}-{version}.tgz"
+data = urllib.request.urlopen(url, timeout=120).read()
+if base64.b64encode(hashlib.sha512(data).digest()).decode() != sha512:
+    raise SystemExit(f"azmcp {version} {arch}: integrity mismatch")
+with tarfile.open(fileobj=io.BytesIO(data)) as tar:
+    binary = tar.extractfile("package/dist/azmcp").read()
+os.makedirs("/opt/azmcp")
+with open("/opt/azmcp/azmcp", "wb") as f:
+    f.write(binary)
+os.chmod("/opt/azmcp/azmcp", 0o755)
+EOF
 WORKDIR /app
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
 COPY pyproject.toml uv.lock README.md ./
@@ -55,6 +76,7 @@ WORKDIR /app
 COPY --from=build /app/.venv /app/.venv
 COPY --from=build /usr/local/bin/sops /usr/local/bin/sops
 COPY --from=build /usr/local/bin/mcp-grafana /usr/local/bin/mcp-grafana
+COPY --from=build /opt/azmcp /opt/azmcp
 ENV PATH=/app/.venv/bin:$PATH PYTHONUNBUFFERED=1
 USER 10001
 EXPOSE 8080

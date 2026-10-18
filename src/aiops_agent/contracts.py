@@ -139,6 +139,11 @@ class Vendor(Strict):
                 f"vendor {self.vendor!r} takes only these variables: "
                 f"{', '.join(sorted(allowed)) or 'none'}; refused: {', '.join(refused)}"
             )
+        if plain := sorted(set(self.env) & VENDORS[self.vendor].secret_env):
+            raise ValueError(
+                f"{', '.join(plain)} hold credentials: set them in env_secrets "
+                "(a name in secrets.sops.yaml), never in plain env"
+            )
         if self.probe and self.tools.get(self.probe.tool) != "read":
             raise ValueError(f"probe tool {self.probe.tool!r} must be listed in tools as read")
         return self
