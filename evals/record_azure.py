@@ -28,6 +28,7 @@ from typing import Any
 import yaml
 from fastmcp import Client
 from pydantic import SecretStr
+from scrub import refuse_leaks, scrubber  # evals/scrub.py, next to this file
 
 from aiops_agent import agent, contracts
 from aiops_agent.config import Settings
@@ -63,7 +64,7 @@ def result(r: Any) -> Any:
         return text
 
 
-def scrubber(rg: str, app: str) -> tuple[dict[str, str], Any]:
+def fakes_and_scrub(rg: str, app: str) -> tuple[dict[str, str], Any]:
     fakes = {
         os.environ["AZURE_SUBSCRIPTION_ID"]: SUBSCRIPTION,
         os.environ["AZURE_TENANT_ID"]: TENANT,
@@ -72,26 +73,11 @@ def scrubber(rg: str, app: str) -> tuple[dict[str, str], Any]:
         app: APP,
         **json.loads(os.environ.get("AIOPS_SCRUB", "{}")),
     }
-    # Longest first, so an email goes whole before its user name does.
-    pattern = re.compile(
-        "|".join(re.escape(k) for k in sorted(fakes, key=len, reverse=True)), re.IGNORECASE
-    )
-    lower = {k.lower(): v for k, v in fakes.items()}
-
-    def scrub(value: Any) -> Any:
-        if isinstance(value, dict):
-            return {scrub(k): scrub(v) for k, v in value.items() if k not in DROPPED}
-        if isinstance(value, list):
-            return [scrub(v) for v in value]
-        if isinstance(value, str):
-            return pattern.sub(lambda m: lower[m[0].lower()], value)
-        return value
-
-    return fakes, scrub
+    return fakes, scrubber(fakes, DROPPED)
 
 
 async def record(rg: str, app: str) -> None:
-    fakes, scrub = scrubber(rg, app)
+    fakes, scrub = fakes_and_scrub(rg, app)
     azure = {
         "name": "azure",
         "vendor": "azure",
@@ -155,8 +141,7 @@ async def record(rg: str, app: str) -> None:
         "tools": tools,
     }
     text = yaml.safe_dump(body, sort_keys=False, width=100, allow_unicode=True)
-    if leaked := [k for k in fakes if k.lower() in text.lower()]:
-        sys.exit(f"not written: {len(leaked)} real value(s) survived the scrub")
+    refuse_leaks(text, fakes)
     path = OUT / "azure-appservice-bad-startup.yaml"
     path.write_text(text)
     print(f"wrote {path} ({path.stat().st_size // 1024} KiB)", file=sys.stderr)

@@ -210,7 +210,11 @@ as "projects/{GOOGLE_CLOUD_PROJECT}" (resourceNames, parent, name) or
 "{GOOGLE_CLOUD_PROJECT}" (projectId). Logs: {name}_list_log_entries with a filter
 that bounds the time and narrows the resource, such as timestamp>="<start>" AND
 severity>=ERROR AND resource.type="cloud_run_revision", orderBy "timestamp desc" and
-a small pageSize. Metrics: {name}_query_range with PromQL, or {name}_list_timeseries.
+a small pageSize. Metrics: {name}_query_range with location "global" (it fails with
+no reason without it) and PromQL, where a metric name's dots and slash become
+underscores and a colon, and a Cloud Run one needs its resource:
+run_googleapis_com:request_count{{monitored_resource="cloud_run_revision"}}. Or
+{name}_list_timeseries with a filter such as metric.type="run.googleapis.com/request_count".
 Traces: {name}_list_traces over a time window, then {name}_get_trace on a slow one.
 """
 

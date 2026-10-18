@@ -2,10 +2,12 @@
 
 import importlib.util
 import json
+import sys
 from pathlib import Path
 
 import pytest
 
+sys.path.insert(0, str(Path(__file__).parent.parent / "evals"))  # its `import scrub`
 spec = importlib.util.spec_from_file_location(
     "record_azure", Path(__file__).parent.parent / "evals" / "record_azure.py"
 )
@@ -21,7 +23,7 @@ def test_scrub(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AZURE_TENANT_ID", TENANT)
     monkeypatch.setenv("AZURE_CLIENT_ID", CLIENT)
     monkeypatch.setenv("AIOPS_SCRUB", json.dumps({"jo@mail.test": "oncall@example.com", "jo": "x"}))
-    fakes, scrub = record_azure.scrubber("real-rg", "real-app-1")
+    fakes, scrub = record_azure.fakes_and_scrub("real-rg", "real-app-1")
     got = scrub(
         {
             "id": f"/subscriptions/{SUB.upper()}/resourceGroups/REAL-RG/sites/real-app-1",
@@ -42,3 +44,12 @@ def test_scrub(monkeypatch: pytest.MonkeyPatch) -> None:
         },
     }
     assert set(fakes) >= {SUB, TENANT, CLIENT, "real-rg", "real-app-1", "jo"}
+
+
+def test_a_recording_with_a_real_value_left_is_never_written() -> None:
+    import scrub  # evals/scrub.py, shared by the recorders
+
+    fakes = {"jo@mail.test": "oncall@example.com"}
+    scrub.refuse_leaks("caller: oncall@example.com", fakes)  # clean: no exit
+    with pytest.raises(SystemExit, match="1 real value"):
+        scrub.refuse_leaks("caller: JO@Mail.test", fakes)

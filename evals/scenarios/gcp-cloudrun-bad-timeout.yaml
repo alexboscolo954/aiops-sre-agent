@@ -1,0 +1,1651 @@
+description: 'A Contract with Google Cloud only: the checkout Cloud Run service worked until a new revision
+  set its inventory timeout to 1 ms, then answered 503. Recorded from a sandbox project (evals/record_gcp.py).'
+clusters: {}
+integrations:
+- name: gcp
+  vendor: gcp
+  tools:
+    list_log_names: read
+    list_log_entries: read
+    list_metric_descriptors: read
+    list_timeseries: read
+    query_range: read
+  env:
+    GOOGLE_CLOUD_PROJECT: shop-prod-4f2a
+alert:
+  status: firing
+  commonLabels:
+    alertname: CloudRunHigh5xx
+    service_name: checkout
+  alerts:
+  - status: firing
+    labels:
+      alertname: CloudRunHigh5xx
+      service_name: checkout
+      severity: critical
+    annotations:
+      summary: More than half of the requests to Cloud Run service checkout return 5xx.
+expect:
+  category:
+  - bad_config
+  - bad_rollout
+  keywords:
+  - timeout
+  - '00002'
+  max_tool_calls: 12
+tools:
+  gcp_list_log_names:
+  - match: {}
+    result:
+      logNames:
+      - projects/shop-prod-4f2a/logs/cloudaudit.googleapis.com%2Factivity
+      - projects/shop-prod-4f2a/logs/cloudaudit.googleapis.com%2Fsystem_event
+      - projects/shop-prod-4f2a/logs/run.googleapis.com%2Frequests
+      - projects/shop-prod-4f2a/logs/run.googleapis.com%2Fstdout
+      - projects/shop-prod-4f2a/logs/run.googleapis.com%2Fvarlog%2Fsystem
+  gcp_list_log_entries:
+  - match: {}
+    result:
+      entries:
+      - insertId: 6ad54977000016c1a972927f
+        jsonPayload:
+          message: 'inventory lookup failed after 1 ms: URLError: <urlopen error timed out>'
+          timeout_ms: 1
+          upstream: inventory
+        labels:
+          instanceId: 0010dd8607beff9faafc031a222e6f77b6e12b085fc69f3c0698ef9da6bd14abfca6270153e9b21e31f6081bf2f14edba3cd820a82945cf73e4ca4d98329ffcf2e15bc492cb801a2d7074f0c434e3096fa3463e61a375f80259fd2704e292f0253
+        logName: projects/shop-prod-4f2a/logs/run.googleapis.com%2Fstdout
+        receiveTimestamp: '2026-10-18T22:34:31.181032272Z'
+        resource:
+          labels:
+            configuration_name: checkout
+            location: us-central1
+            project_id: shop-prod-4f2a
+            revision_name: checkout-00002-nt5
+            service_name: checkout
+          type: cloud_run_revision
+        severity: ERROR
+        timestamp: '2026-10-18T22:34:31.005825Z'
+      - httpRequest:
+          latency: 0.024262480s
+          protocol: HTTP/1.1
+          requestMethod: GET
+          requestSize: '300'
+          requestUrl: https://checkout-100000000001.us-central1.run.app/
+          responseSize: '97'
+          status: 503
+        insertId: 6ad549770000189c698983f8
+        labels:
+          instanceId: 0010dd8607beff9faafc031a222e6f77b6e12b085fc69f3c0698ef9da6bd14abfca6270153e9b21e31f6081bf2f14edba3cd820a82945cf73e4ca4d98329ffcf2e15bc492cb801a2d7074f0c434e3096fa3463e61a375f80259fd2704e292f0253
+        logName: projects/shop-prod-4f2a/logs/run.googleapis.com%2Frequests
+        receiveTimestamp: '2026-10-18T22:34:31.178738068Z'
+        resource:
+          labels:
+            configuration_name: checkout
+            location: us-central1
+            project_id: shop-prod-4f2a
+            revision_name: checkout-00002-nt5
+            service_name: checkout
+          type: cloud_run_revision
+        severity: ERROR
+        spanId: 2f165d7ec6e36480
+        timestamp: '2026-10-18T22:34:30.980961Z'
+        trace: projects/shop-prod-4f2a/traces/b54e66e3e62b1d6b479bcb2c1192042b
+        traceSampled: true
+      - insertId: 6ad5497400098c4e64f4616c
+        jsonPayload:
+          message: 'inventory lookup failed after 1 ms: URLError: <urlopen error timed out>'
+          timeout_ms: 1
+          upstream: inventory
+        labels:
+          instanceId: 0010dd8607beff9faafc031a222e6f77b6e12b085fc69f3c0698ef9da6bd14abfca6270153e9b21e31f6081bf2f14edba3cd820a82945cf73e4ca4d98329ffcf2e15bc492cb801a2d7074f0c434e3096fa3463e61a375f80259fd2704e292f0253
+        logName: projects/shop-prod-4f2a/logs/run.googleapis.com%2Fstdout
+        receiveTimestamp: '2026-10-18T22:34:28.847616204Z'
+        resource:
+          labels:
+            configuration_name: checkout
+            location: us-central1
+            project_id: shop-prod-4f2a
+            revision_name: checkout-00002-nt5
+            service_name: checkout
+          type: cloud_run_revision
+        severity: ERROR
+        timestamp: '2026-10-18T22:34:28.625742Z'
+      - httpRequest:
+          latency: 0.024293441s
+          protocol: HTTP/1.1
+          requestMethod: GET
+          requestSize: '275'
+          requestUrl: https://checkout-100000000001.us-central1.run.app/
+          responseSize: '97'
+          status: 503
+        insertId: 6ad5497400098e805fc9b549
+        labels:
+          instanceId: 0010dd8607beff9faafc031a222e6f77b6e12b085fc69f3c0698ef9da6bd14abfca6270153e9b21e31f6081bf2f14edba3cd820a82945cf73e4ca4d98329ffcf2e15bc492cb801a2d7074f0c434e3096fa3463e61a375f80259fd2704e292f0253
+        logName: projects/shop-prod-4f2a/logs/run.googleapis.com%2Frequests
+        receiveTimestamp: '2026-10-18T22:34:28.847419154Z'
+        resource:
+          labels:
+            configuration_name: checkout
+            location: us-central1
+            project_id: shop-prod-4f2a
+            revision_name: checkout-00002-nt5
+            service_name: checkout
+          type: cloud_run_revision
+        severity: ERROR
+        spanId: 547ec318b935c2ca
+        timestamp: '2026-10-18T22:34:28.600992Z'
+        trace: projects/shop-prod-4f2a/traces/1ef3b72a0e4b1dfd31225bda32972bd1
+      - insertId: 6ad5497200018caf757dd829
+        jsonPayload:
+          message: 'inventory lookup failed after 1 ms: URLError: <urlopen error timed out>'
+          timeout_ms: 1
+          upstream: inventory
+        labels:
+          instanceId: 0010dd8607beff9faafc031a222e6f77b6e12b085fc69f3c0698ef9da6bd14abfca6270153e9b21e31f6081bf2f14edba3cd820a82945cf73e4ca4d98329ffcf2e15bc492cb801a2d7074f0c434e3096fa3463e61a375f80259fd2704e292f0253
+        logName: projects/shop-prod-4f2a/logs/run.googleapis.com%2Fstdout
+        receiveTimestamp: '2026-10-18T22:34:26.183212538Z'
+        resource:
+          labels:
+            configuration_name: checkout
+            location: us-central1
+            project_id: shop-prod-4f2a
+            revision_name: checkout-00002-nt5
+            service_name: checkout
+          type: cloud_run_revision
+        severity: ERROR
+        timestamp: '2026-10-18T22:34:26.101551Z'
+      - httpRequest:
+          latency: 0.027266812s
+          protocol: HTTP/1.1
+          requestMethod: GET
+          requestSize: '275'
+          requestUrl: https://checkout-100000000001.us-central1.run.app/
+          responseSize: '97'
+          status: 503
+        insertId: 6ad5497200018eab84258f1d
+        labels:
+          instanceId: 0010dd8607beff9faafc031a222e6f77b6e12b085fc69f3c0698ef9da6bd14abfca6270153e9b21e31f6081bf2f14edba3cd820a82945cf73e4ca4d98329ffcf2e15bc492cb801a2d7074f0c434e3096fa3463e61a375f80259fd2704e292f0253
+        logName: projects/shop-prod-4f2a/logs/run.googleapis.com%2Frequests
+        receiveTimestamp: '2026-10-18T22:34:26.184084562Z'
+        resource:
+          labels:
+            configuration_name: checkout
+            location: us-central1
+            project_id: shop-prod-4f2a
+            revision_name: checkout-00002-nt5
+            service_name: checkout
+          type: cloud_run_revision
+        severity: ERROR
+        spanId: 817d63a80a3cbf83
+        timestamp: '2026-10-18T22:34:26.073563Z'
+        trace: projects/shop-prod-4f2a/traces/3143ddedda2a953ce3b6d28aa752938b
+      - insertId: 6ad5496f000a8a8a2b3d61aa
+        jsonPayload:
+          message: 'inventory lookup failed after 1 ms: URLError: <urlopen error timed out>'
+          timeout_ms: 1
+          upstream: inventory
+        labels:
+          instanceId: 0010dd8607beff9faafc031a222e6f77b6e12b085fc69f3c0698ef9da6bd14abfca6270153e9b21e31f6081bf2f14edba3cd820a82945cf73e4ca4d98329ffcf2e15bc492cb801a2d7074f0c434e3096fa3463e61a375f80259fd2704e292f0253
+        logName: projects/shop-prod-4f2a/logs/run.googleapis.com%2Fstdout
+        receiveTimestamp: '2026-10-18T22:34:23.853614667Z'
+        resource:
+          labels:
+            configuration_name: checkout
+            location: us-central1
+            project_id: shop-prod-4f2a
+            revision_name: checkout-00002-nt5
+            service_name: checkout
+          type: cloud_run_revision
+        severity: ERROR
+        timestamp: '2026-10-18T22:34:23.690826Z'
+      - httpRequest:
+          latency: 0.027976863s
+          protocol: HTTP/1.1
+          requestMethod: GET
+          requestSize: '275'
+          requestUrl: https://checkout-100000000001.us-central1.run.app/
+          responseSize: '97'
+          status: 503
+        insertId: 6ad5496f000a9cb3b0d8d851
+        labels:
+          instanceId: 0010dd8607beff9faafc031a222e6f77b6e12b085fc69f3c0698ef9da6bd14abfca6270153e9b21e31f6081bf2f14edba3cd820a82945cf73e4ca4d98329ffcf2e15bc492cb801a2d7074f0c434e3096fa3463e61a375f80259fd2704e292f0253
+        logName: projects/shop-prod-4f2a/logs/run.googleapis.com%2Frequests
+        receiveTimestamp: '2026-10-18T22:34:23.853990924Z'
+        resource:
+          labels:
+            configuration_name: checkout
+            location: us-central1
+            project_id: shop-prod-4f2a
+            revision_name: checkout-00002-nt5
+            service_name: checkout
+          type: cloud_run_revision
+        severity: ERROR
+        spanId: 18aef6b9e2be37eb
+        timestamp: '2026-10-18T22:34:23.666381Z'
+        trace: projects/shop-prod-4f2a/traces/0fcc428a50efce6e0099df16f5c8b53e
+      - insertId: 6ad5496d0004952660368b25
+        jsonPayload:
+          message: 'inventory lookup failed after 1 ms: URLError: <urlopen error timed out>'
+          timeout_ms: 1
+          upstream: inventory
+        labels:
+          instanceId: 0010dd8607beff9faafc031a222e6f77b6e12b085fc69f3c0698ef9da6bd14abfca6270153e9b21e31f6081bf2f14edba3cd820a82945cf73e4ca4d98329ffcf2e15bc492cb801a2d7074f0c434e3096fa3463e61a375f80259fd2704e292f0253
+        logName: projects/shop-prod-4f2a/logs/run.googleapis.com%2Fstdout
+        receiveTimestamp: '2026-10-18T22:34:21.522741338Z'
+        resource:
+          labels:
+            configuration_name: checkout
+            location: us-central1
+            project_id: shop-prod-4f2a
+            revision_name: checkout-00002-nt5
+            service_name: checkout
+          type: cloud_run_revision
+        severity: ERROR
+        timestamp: '2026-10-18T22:34:21.300326Z'
+      - httpRequest:
+          latency: 0.024420949s
+          protocol: HTTP/1.1
+          requestMethod: GET
+          requestSize: '275'
+          requestUrl: https://checkout-100000000001.us-central1.run.app/
+          responseSize: '97'
+          status: 503
+        insertId: 6ad5496d0004976155a082d2
+        labels:
+          instanceId: 0010dd8607beff9faafc031a222e6f77b6e12b085fc69f3c0698ef9da6bd14abfca6270153e9b21e31f6081bf2f14edba3cd820a82945cf73e4ca4d98329ffcf2e15bc492cb801a2d7074f0c434e3096fa3463e61a375f80259fd2704e292f0253
+        logName: projects/shop-prod-4f2a/logs/run.googleapis.com%2Frequests
+        receiveTimestamp: '2026-10-18T22:34:21.520567525Z'
+        resource:
+          labels:
+            configuration_name: checkout
+            location: us-central1
+            project_id: shop-prod-4f2a
+            revision_name: checkout-00002-nt5
+            service_name: checkout
+          type: cloud_run_revision
+        severity: ERROR
+        spanId: cc1af0c28df5a1fc
+        timestamp: '2026-10-18T22:34:21.275432Z'
+        trace: projects/shop-prod-4f2a/traces/e8ba1f5b08b028bdf4393b8061f104fc
+      - insertId: -iaecydnpuk
+        logName: projects/shop-prod-4f2a/logs/cloudaudit.googleapis.com%2Fsystem_event
+        protoPayload:
+          '@type': type.googleapis.com/google.cloud.audit.AuditLog
+          methodName: /Services.ReplaceService
+          resourceName: namespaces/shop-prod-4f2a/revisions/checkout-00002-nt5
+          response:
+            '@type': type.googleapis.com/google.cloud.run.v1.Revision
+            apiVersion: serving.knative.dev/v1
+            kind: Revision
+            metadata:
+              annotations:
+                autoscaling.knative.dev/maxScale: '1'
+                run.googleapis.com/client-name: gcloud
+                run.googleapis.com/client-version: 589.0.0
+                run.googleapis.com/operation-id: 9bcbd8df-0fc8-416f-a0cf-6e15aa5e74bd
+                run.googleapis.com/startup-cpu-boost: 'true'
+                serving.knative.dev/creator: oncall@example.com
+              creationTimestamp: '2026-10-18T22:22:38.126235Z'
+              generation: 1
+              labels:
+                client.knative.dev/nonce: uwpyyhaoxb
+                cloud.googleapis.com/location: us-central1
+                run.googleapis.com/startupProbeType: Default
+                serving.knative.dev/configuration: checkout
+                serving.knative.dev/configurationGeneration: '2'
+                serving.knative.dev/route: checkout
+                serving.knative.dev/service: checkout
+                serving.knative.dev/serviceUid: 01912089-3ad0-496b-8e4c-369cfe0c9a4c
+              name: checkout-00002-nt5
+              namespace: '100000000001'
+              ownerReferences:
+              - apiVersion: serving.knative.dev/v1
+                blockOwnerDeletion: true
+                controller: true
+                kind: Configuration
+                name: checkout
+                uid: 2852c7a9-8c9d-4fa6-a4c1-4edfc32827b5
+              resourceVersion: AAZeJNu7bIk
+              selfLink: /apis/serving.knative.dev/v1/namespaces/100000000001/revisions/checkout-00002-nt5
+              uid: 0d3ff8b4-1067-46b2-a01c-2a1a4501b969
+            spec:
+              containerConcurrency: 80
+              containers:
+              - args:
+                - -c
+                - "import http.server, json, os, time, urllib.request\nT = int(os.environ.get(\"UPSTREAM_TIMEOUT_MS\"\
+                  , \"2000\"))\ndef log(severity, message, **fields):\n    print(json.dumps({\"severity\"\
+                  : severity, \"message\": message, **fields}), flush=True)\nclass H(http.server.BaseHTTPRequestHandler):\n\
+                  \    def do_GET(self):\n        try:\n            urllib.request.urlopen(\"https://www.google.com/generate_204\"\
+                  , timeout=T / 1000).read()\n            code, body = 200, b\"ok\"\n        except Exception\
+                  \ as e:\n            code, body = 503, b\"inventory unavailable\"\n            log(\"\
+                  ERROR\", f\"inventory lookup failed after {T} ms: {type(e).__name__}: {e}\", upstream=\"\
+                  inventory\", timeout_ms=T)\n        self.send_response(code)\n        self.end_headers()\n\
+                  \        self.wfile.write(body)\n    def log_message(self, *a):\n        pass\nlog(\"\
+                  INFO\", f\"checkout listening, inventory timeout {T} ms\", timeout_ms=T)\nhttp.server.ThreadingHTTPServer((\"\
+                  \", int(os.environ.get(\"PORT\", \"8080\"))), H).serve_forever()"
+                command:
+                - python
+                env:
+                - name: UPSTREAM_TIMEOUT_MS
+                  value: '1'
+                image: mirror.gcr.io/library/python@sha256:2b4f19dae3a777dfc3b76730bda1e82e1f66ab2a2686fa93ca78edbfb4f04ffe
+                name: python-1
+                ports:
+                - containerPort: 8080
+                  name: http1
+                resources:
+                  limits:
+                    cpu: '1'
+                    memory: 256Mi
+                startupProbe:
+                  failureThreshold: 1
+                  periodSeconds: 240
+                  tcpSocket:
+                    port: 8080
+                  timeoutSeconds: 240
+              serviceAccountName: 100000000001-compute@developer.gserviceaccount.com
+              timeoutSeconds: 300
+            status:
+              conditions:
+              - lastTransitionTime: '2026-10-18T22:24:18.590857Z'
+                message: Deploying revision succeeded in 1m40.46s.
+                status: 'True'
+                type: Ready
+              - lastTransitionTime: '2026-10-18T22:24:16.129649Z'
+                severity: Info
+                status: 'True'
+                type: Active
+              - lastTransitionTime: '2026-10-18T22:24:11.354813Z'
+                message: Containers became healthy.
+                status: 'True'
+                type: ContainerHealthy
+              - lastTransitionTime: '2026-10-18T22:22:38.569698Z'
+                message: Container image import completed.
+                status: 'True'
+                type: ContainerReady
+              - lastTransitionTime: '2026-10-18T22:24:11.273870Z'
+                message: Provisioning imported containers completed in 1m32.7s. Checking container health.
+                  This will wait for up to 4m for the configured startup probe, including an initial delay
+                  of 0s.
+                status: 'True'
+                type: ResourcesAvailable
+              containerStatuses:
+              - imageDigest: mirror.gcr.io/library/python@sha256:2b4f19dae3a777dfc3b76730bda1e82e1f66ab2a2686fa93ca78edbfb4f04ffe
+                name: python-1
+              imageDigest: mirror.gcr.io/library/python@sha256:2b4f19dae3a777dfc3b76730bda1e82e1f66ab2a2686fa93ca78edbfb4f04ffe
+              logUrl: https://console.cloud.google.com/logs/viewer?project=shop-prod-4f2a&resource=cloud_run_revision/service_name/checkout/revision_name/checkout-00002-nt5&advancedFilter=resource.type%3D%22cloud_run_revision%22%0Aresource.labels.service_name%3D%22checkout%22%0Aresource.labels.revision_name%3D%22checkout-00002-nt5%22
+              observedGeneration: 1
+          serviceName: run.googleapis.com
+          status:
+            message: 'Ready condition status changed to True for Revision checkout-00002-nt5 with message:
+              Deploying revision succeeded in 1m40.46s.'
+        receiveTimestamp: '2026-10-18T22:24:19.167996101Z'
+        resource:
+          labels:
+            configuration_name: checkout
+            location: us-central1
+            project_id: shop-prod-4f2a
+            revision_name: checkout-00002-nt5
+            service_name: checkout
+          type: cloud_run_revision
+        severity: INFO
+        timestamp: '2026-10-18T22:24:18.602185Z'
+      - insertId: 6dz59gd8cza
+        logName: projects/shop-prod-4f2a/logs/cloudaudit.googleapis.com%2Fsystem_event
+        protoPayload:
+          '@type': type.googleapis.com/google.cloud.audit.AuditLog
+          methodName: /Services.ReplaceService
+          resourceName: namespaces/shop-prod-4f2a/services/checkout
+          response:
+            '@type': type.googleapis.com/google.cloud.run.v1.Service
+            apiVersion: serving.knative.dev/v1
+            kind: Service
+            metadata:
+              annotations:
+                run.googleapis.com/client-name: gcloud
+                run.googleapis.com/client-version: 589.0.0
+                run.googleapis.com/ingress: all
+                run.googleapis.com/ingress-status: all
+                run.googleapis.com/maxScale: '20'
+                run.googleapis.com/operation-id: 9bcbd8df-0fc8-416f-a0cf-6e15aa5e74bd
+                run.googleapis.com/urls: '["https://checkout-100000000001.us-central1.run.app","https://checkout-rtd2yf6nfa-uc.a.run.app"]'
+                serving.knative.dev/creator: oncall@example.com
+                serving.knative.dev/lastModifier: oncall@example.com
+              creationTimestamp: '2026-10-18T22:17:05.019048Z'
+              generation: 2
+              labels:
+                cloud.googleapis.com/location: us-central1
+              name: checkout
+              namespace: '100000000001'
+              resourceVersion: AAZeJNu6V+0
+              selfLink: /apis/serving.knative.dev/v1/namespaces/100000000001/services/checkout
+              uid: 01912089-3ad0-496b-8e4c-369cfe0c9a4c
+            spec:
+              template:
+                metadata:
+                  annotations:
+                    autoscaling.knative.dev/maxScale: '1'
+                    run.googleapis.com/client-name: gcloud
+                    run.googleapis.com/client-version: 589.0.0
+                    run.googleapis.com/startup-cpu-boost: 'true'
+                  labels:
+                    client.knative.dev/nonce: uwpyyhaoxb
+                    run.googleapis.com/startupProbeType: Default
+                spec:
+                  containerConcurrency: 80
+                  containers:
+                  - args:
+                    - -c
+                    - "import http.server, json, os, time, urllib.request\nT = int(os.environ.get(\"UPSTREAM_TIMEOUT_MS\"\
+                      , \"2000\"))\ndef log(severity, message, **fields):\n    print(json.dumps({\"severity\"\
+                      : severity, \"message\": message, **fields}), flush=True)\nclass H(http.server.BaseHTTPRequestHandler):\n\
+                      \    def do_GET(self):\n        try:\n            urllib.request.urlopen(\"https://www.google.com/generate_204\"\
+                      , timeout=T / 1000).read()\n            code, body = 200, b\"ok\"\n        except\
+                      \ Exception as e:\n            code, body = 503, b\"inventory unavailable\"\n  \
+                      \          log(\"ERROR\", f\"inventory lookup failed after {T} ms: {type(e).__name__}:\
+                      \ {e}\", upstream=\"inventory\", timeout_ms=T)\n        self.send_response(code)\n\
+                      \        self.end_headers()\n        self.wfile.write(body)\n    def log_message(self,\
+                      \ *a):\n        pass\nlog(\"INFO\", f\"checkout listening, inventory timeout {T}\
+                      \ ms\", timeout_ms=T)\nhttp.server.ThreadingHTTPServer((\"\", int(os.environ.get(\"\
+                      PORT\", \"8080\"))), H).serve_forever()"
+                    command:
+                    - python
+                    env:
+                    - name: UPSTREAM_TIMEOUT_MS
+                      value: '1'
+                    image: docker.io/library/python:3.12-slim
+                    ports:
+                    - containerPort: 8080
+                      name: http1
+                    resources:
+                      limits:
+                        cpu: '1'
+                        memory: 256Mi
+                    startupProbe:
+                      failureThreshold: 1
+                      periodSeconds: 240
+                      tcpSocket:
+                        port: 8080
+                      timeoutSeconds: 240
+                  serviceAccountName: 100000000001-compute@developer.gserviceaccount.com
+                  timeoutSeconds: 300
+              traffic:
+              - latestRevision: true
+                percent: 100
+            status:
+              address:
+                url: https://checkout-rtd2yf6nfa-uc.a.run.app
+              conditions:
+              - lastTransitionTime: '2026-10-18T22:24:18.520045Z'
+                status: 'True'
+                type: Ready
+              - lastTransitionTime: '2026-10-18T22:22:38.660738Z'
+                status: 'True'
+                type: ConfigurationsReady
+              - lastTransitionTime: '2026-10-18T22:24:18.479441Z'
+                status: 'True'
+                type: RoutesReady
+              latestCreatedRevisionName: checkout-00002-nt5
+              latestReadyRevisionName: checkout-00002-nt5
+              observedGeneration: 2
+              traffic:
+              - latestRevision: true
+                percent: 100
+                revisionName: checkout-00002-nt5
+              url: https://checkout-rtd2yf6nfa-uc.a.run.app
+          serviceName: run.googleapis.com
+          status:
+            message: Ready condition status changed to True for Service checkout.
+        receiveTimestamp: '2026-10-18T22:24:18.675197516Z'
+        resource:
+          labels:
+            configuration_name: ''
+            location: us-central1
+            project_id: shop-prod-4f2a
+            revision_name: ''
+            service_name: checkout
+          type: cloud_run_revision
+        severity: INFO
+        timestamp: '2026-10-18T22:24:18.532071Z'
+      - insertId: vea2bvdag2i
+        logName: projects/shop-prod-4f2a/logs/cloudaudit.googleapis.com%2Fsystem_event
+        protoPayload:
+          '@type': type.googleapis.com/google.cloud.audit.AuditLog
+          methodName: /Services.ReplaceService
+          resourceName: namespaces/shop-prod-4f2a/revisions/checkout-00002-nt5
+          response:
+            '@type': type.googleapis.com/google.cloud.run.v1.Revision
+            apiVersion: serving.knative.dev/v1
+            kind: Revision
+            metadata:
+              annotations:
+                autoscaling.knative.dev/maxScale: '1'
+                run.googleapis.com/client-name: gcloud
+                run.googleapis.com/client-version: 589.0.0
+                run.googleapis.com/operation-id: 9bcbd8df-0fc8-416f-a0cf-6e15aa5e74bd
+                run.googleapis.com/startup-cpu-boost: 'true'
+                serving.knative.dev/creator: oncall@example.com
+              creationTimestamp: '2026-10-18T22:22:38.126235Z'
+              generation: 1
+              labels:
+                client.knative.dev/nonce: uwpyyhaoxb
+                cloud.googleapis.com/location: us-central1
+                run.googleapis.com/startupProbeType: Default
+                serving.knative.dev/configuration: checkout
+                serving.knative.dev/configurationGeneration: '2'
+                serving.knative.dev/route: checkout
+                serving.knative.dev/service: checkout
+                serving.knative.dev/serviceUid: 01912089-3ad0-496b-8e4c-369cfe0c9a4c
+              name: checkout-00002-nt5
+              namespace: '100000000001'
+              ownerReferences:
+              - apiVersion: serving.knative.dev/v1
+                blockOwnerDeletion: true
+                controller: true
+                kind: Configuration
+                name: checkout
+                uid: 2852c7a9-8c9d-4fa6-a4c1-4edfc32827b5
+              resourceVersion: AAZeJNuT3+U
+              selfLink: /apis/serving.knative.dev/v1/namespaces/100000000001/revisions/checkout-00002-nt5
+              uid: 0d3ff8b4-1067-46b2-a01c-2a1a4501b969
+            spec:
+              containerConcurrency: 80
+              containers:
+              - args:
+                - -c
+                - "import http.server, json, os, time, urllib.request\nT = int(os.environ.get(\"UPSTREAM_TIMEOUT_MS\"\
+                  , \"2000\"))\ndef log(severity, message, **fields):\n    print(json.dumps({\"severity\"\
+                  : severity, \"message\": message, **fields}), flush=True)\nclass H(http.server.BaseHTTPRequestHandler):\n\
+                  \    def do_GET(self):\n        try:\n            urllib.request.urlopen(\"https://www.google.com/generate_204\"\
+                  , timeout=T / 1000).read()\n            code, body = 200, b\"ok\"\n        except Exception\
+                  \ as e:\n            code, body = 503, b\"inventory unavailable\"\n            log(\"\
+                  ERROR\", f\"inventory lookup failed after {T} ms: {type(e).__name__}: {e}\", upstream=\"\
+                  inventory\", timeout_ms=T)\n        self.send_response(code)\n        self.end_headers()\n\
+                  \        self.wfile.write(body)\n    def log_message(self, *a):\n        pass\nlog(\"\
+                  INFO\", f\"checkout listening, inventory timeout {T} ms\", timeout_ms=T)\nhttp.server.ThreadingHTTPServer((\"\
+                  \", int(os.environ.get(\"PORT\", \"8080\"))), H).serve_forever()"
+                command:
+                - python
+                env:
+                - name: UPSTREAM_TIMEOUT_MS
+                  value: '1'
+                image: mirror.gcr.io/library/python@sha256:2b4f19dae3a777dfc3b76730bda1e82e1f66ab2a2686fa93ca78edbfb4f04ffe
+                name: python-1
+                ports:
+                - containerPort: 8080
+                  name: http1
+                resources:
+                  limits:
+                    cpu: '1'
+                    memory: 256Mi
+                startupProbe:
+                  failureThreshold: 1
+                  periodSeconds: 240
+                  tcpSocket:
+                    port: 8080
+                  timeoutSeconds: 240
+              serviceAccountName: 100000000001-compute@developer.gserviceaccount.com
+              timeoutSeconds: 300
+            status:
+              conditions:
+              - lastTransitionTime: '2026-10-18T22:24:15.998949Z'
+                message: Deploying revision succeeded in 1m37.87s.
+                status: 'True'
+                type: Ready
+              - lastTransitionTime: '2026-10-18T22:24:11.354813Z'
+                message: Containers became healthy.
+                status: 'True'
+                type: ContainerHealthy
+              - lastTransitionTime: '2026-10-18T22:22:38.569698Z'
+                message: Container image import completed.
+                status: 'True'
+                type: ContainerReady
+              - lastTransitionTime: '2026-10-18T22:24:11.273870Z'
+                message: Provisioning imported containers completed in 1m32.7s. Checking container health.
+                  This will wait for up to 4m for the configured startup probe, including an initial delay
+                  of 0s.
+                status: 'True'
+                type: ResourcesAvailable
+              containerStatuses:
+              - imageDigest: mirror.gcr.io/library/python@sha256:2b4f19dae3a777dfc3b76730bda1e82e1f66ab2a2686fa93ca78edbfb4f04ffe
+                name: python-1
+              imageDigest: mirror.gcr.io/library/python@sha256:2b4f19dae3a777dfc3b76730bda1e82e1f66ab2a2686fa93ca78edbfb4f04ffe
+              logUrl: https://console.cloud.google.com/logs/viewer?project=shop-prod-4f2a&resource=cloud_run_revision/service_name/checkout/revision_name/checkout-00002-nt5&advancedFilter=resource.type%3D%22cloud_run_revision%22%0Aresource.labels.service_name%3D%22checkout%22%0Aresource.labels.revision_name%3D%22checkout-00002-nt5%22
+              observedGeneration: 1
+          serviceName: run.googleapis.com
+          status:
+            message: 'Ready condition status changed to True for Revision checkout-00002-nt5 with message:
+              Deploying revision succeeded in 1m37.87s.'
+        receiveTimestamp: '2026-10-18T22:24:17.006111839Z'
+        resource:
+          labels:
+            configuration_name: checkout
+            location: us-central1
+            project_id: shop-prod-4f2a
+            revision_name: checkout-00002-nt5
+            service_name: checkout
+          type: cloud_run_revision
+        severity: INFO
+        timestamp: '2026-10-18T22:24:16.013166Z'
+      - insertId: 6ad547090002cae55c790b1b
+        jsonPayload:
+          message: checkout listening, inventory timeout 1 ms
+          timeout_ms: 1
+        labels:
+          instanceId: 0010dd8607beff9faafc031a222e6f77b6e12b085fc69f3c0698ef9da6bd14abfca6270153e9b21e31f6081bf2f14edba3cd820a82945cf73e4ca4d98329ffcf2e15bc492cb801a2d7074f0c434e3096fa3463e61a375f80259fd2704e292f0253
+        logName: projects/shop-prod-4f2a/logs/run.googleapis.com%2Fstdout
+        receiveTimestamp: '2026-10-18T22:24:09.190374591Z'
+        resource:
+          labels:
+            configuration_name: checkout
+            location: us-central1
+            project_id: shop-prod-4f2a
+            revision_name: checkout-00002-nt5
+            service_name: checkout
+          type: cloud_run_revision
+        severity: INFO
+        timestamp: '2026-10-18T22:24:09.183013Z'
+      - insertId: 3mf5mpd4ea8
+        logName: projects/shop-prod-4f2a/logs/cloudaudit.googleapis.com%2Fsystem_event
+        protoPayload:
+          '@type': type.googleapis.com/google.cloud.audit.AuditLog
+          methodName: /Services.ReplaceService
+          resourceName: namespaces/shop-prod-4f2a/revisions/checkout-00002-nt5
+          response:
+            '@type': type.googleapis.com/google.cloud.run.v1.Revision
+            apiVersion: serving.knative.dev/v1
+            kind: Revision
+            metadata:
+              annotations:
+                autoscaling.knative.dev/maxScale: '1'
+                run.googleapis.com/client-name: gcloud
+                run.googleapis.com/client-version: 589.0.0
+                run.googleapis.com/operation-id: 9bcbd8df-0fc8-416f-a0cf-6e15aa5e74bd
+                run.googleapis.com/startup-cpu-boost: 'true'
+                serving.knative.dev/creator: oncall@example.com
+              creationTimestamp: '2026-10-18T22:22:38.126235Z'
+              generation: 1
+              labels:
+                client.knative.dev/nonce: uwpyyhaoxb
+                cloud.googleapis.com/location: us-central1
+                run.googleapis.com/startupProbeType: Default
+                serving.knative.dev/configuration: checkout
+                serving.knative.dev/configurationGeneration: '2'
+                serving.knative.dev/service: checkout
+                serving.knative.dev/serviceUid: 01912089-3ad0-496b-8e4c-369cfe0c9a4c
+              name: checkout-00002-nt5
+              namespace: '100000000001'
+              ownerReferences:
+              - apiVersion: serving.knative.dev/v1
+                blockOwnerDeletion: true
+                controller: true
+                kind: Configuration
+                name: checkout
+                uid: 2852c7a9-8c9d-4fa6-a4c1-4edfc32827b5
+              resourceVersion: AAZeJNXF8E4
+              selfLink: /apis/serving.knative.dev/v1/namespaces/100000000001/revisions/checkout-00002-nt5
+              uid: 0d3ff8b4-1067-46b2-a01c-2a1a4501b969
+            spec:
+              containerConcurrency: 80
+              containers:
+              - args:
+                - -c
+                - "import http.server, json, os, time, urllib.request\nT = int(os.environ.get(\"UPSTREAM_TIMEOUT_MS\"\
+                  , \"2000\"))\ndef log(severity, message, **fields):\n    print(json.dumps({\"severity\"\
+                  : severity, \"message\": message, **fields}), flush=True)\nclass H(http.server.BaseHTTPRequestHandler):\n\
+                  \    def do_GET(self):\n        try:\n            urllib.request.urlopen(\"https://www.google.com/generate_204\"\
+                  , timeout=T / 1000).read()\n            code, body = 200, b\"ok\"\n        except Exception\
+                  \ as e:\n            code, body = 503, b\"inventory unavailable\"\n            log(\"\
+                  ERROR\", f\"inventory lookup failed after {T} ms: {type(e).__name__}: {e}\", upstream=\"\
+                  inventory\", timeout_ms=T)\n        self.send_response(code)\n        self.end_headers()\n\
+                  \        self.wfile.write(body)\n    def log_message(self, *a):\n        pass\nlog(\"\
+                  INFO\", f\"checkout listening, inventory timeout {T} ms\", timeout_ms=T)\nhttp.server.ThreadingHTTPServer((\"\
+                  \", int(os.environ.get(\"PORT\", \"8080\"))), H).serve_forever()"
+                command:
+                - python
+                env:
+                - name: UPSTREAM_TIMEOUT_MS
+                  value: '1'
+                image: mirror.gcr.io/library/python@sha256:2b4f19dae3a777dfc3b76730bda1e82e1f66ab2a2686fa93ca78edbfb4f04ffe
+                name: python-1
+                ports:
+                - containerPort: 8080
+                  name: http1
+                resources:
+                  limits:
+                    cpu: '1'
+                    memory: 256Mi
+                startupProbe:
+                  failureThreshold: 1
+                  periodSeconds: 240
+                  tcpSocket:
+                    port: 8080
+                  timeoutSeconds: 240
+              serviceAccountName: 100000000001-compute@developer.gserviceaccount.com
+              timeoutSeconds: 300
+            status:
+              conditions:
+              - lastTransitionTime: '2026-10-18T22:22:38.616654Z'
+                status: 'True'
+                type: Ready
+              - lastTransitionTime: '2026-10-18T22:22:38.569698Z'
+                message: Container image import completed.
+                status: 'True'
+                type: ContainerReady
+              - lastTransitionTime: '2026-10-18T22:22:38.616654Z'
+                message: System will retry after 00:05 from lastTransitionTime for attempt 0.
+                reason: WatchWaiting
+                severity: Info
+                status: 'True'
+                type: Retry
+              containerStatuses:
+              - imageDigest: mirror.gcr.io/library/python@sha256:2b4f19dae3a777dfc3b76730bda1e82e1f66ab2a2686fa93ca78edbfb4f04ffe
+                name: python-1
+              imageDigest: mirror.gcr.io/library/python@sha256:2b4f19dae3a777dfc3b76730bda1e82e1f66ab2a2686fa93ca78edbfb4f04ffe
+              logUrl: https://console.cloud.google.com/logs/viewer?project=shop-prod-4f2a&resource=cloud_run_revision/service_name/checkout/revision_name/checkout-00002-nt5&advancedFilter=resource.type%3D%22cloud_run_revision%22%0Aresource.labels.service_name%3D%22checkout%22%0Aresource.labels.revision_name%3D%22checkout-00002-nt5%22
+              observedGeneration: 1
+          serviceName: run.googleapis.com
+          status:
+            message: Ready condition status changed to True for Revision checkout-00002-nt5.
+        receiveTimestamp: '2026-10-18T22:22:39.059525894Z'
+        resource:
+          labels:
+            configuration_name: checkout
+            location: us-central1
+            project_id: shop-prod-4f2a
+            revision_name: checkout-00002-nt5
+            service_name: ''
+          type: cloud_run_revision
+        severity: INFO
+        timestamp: '2026-10-18T22:22:38.627770Z'
+      - insertId: 1yj1p7rdfyqs
+        logName: projects/shop-prod-4f2a/logs/cloudaudit.googleapis.com%2Factivity
+        protoPayload:
+          '@type': type.googleapis.com/google.cloud.audit.AuditLog
+          authenticationInfo:
+            oauthInfo:
+              oauthClientId: 32555940559.apps.googleusercontent.com
+            principalEmail: oncall@example.com
+            principalSubject: user:oncall@example.com
+          authorizationInfo:
+          - granted: true
+            permission: run.services.update
+            permissionType: ADMIN_WRITE
+            resource: namespaces/shop-prod-4f2a/services/checkout
+            resourceAttributes: {}
+          - granted: true
+            permission: run.services.update
+            permissionType: ADMIN_WRITE
+            resource: namespaces/shop-prod-4f2a/services/checkout
+            resourceAttributes:
+              name: namespaces/shop-prod-4f2a/services/checkout
+              service: run.googleapis.com/
+              type: run.googleapis.com/Service
+          methodName: google.cloud.run.v1.Services.ReplaceService
+          request:
+            '@type': type.googleapis.com/google.cloud.run.v1.ReplaceServiceRequest
+            name: namespaces/shop-prod-4f2a/services/checkout
+            service:
+              apiVersion: serving.knative.dev/v1
+              kind: Service
+              metadata:
+                annotations:
+                  run.googleapis.com/client-name: gcloud
+                  run.googleapis.com/client-version: 589.0.0
+                  run.googleapis.com/ingress: all
+                  run.googleapis.com/ingress-status: all
+                  run.googleapis.com/maxScale: '20'
+                  run.googleapis.com/operation-id: a2c494ce-12d5-4b4f-b31c-2f70931ab0ee
+                  run.googleapis.com/urls: '["https://checkout-100000000001.us-central1.run.app","https://checkout-rtd2yf6nfa-uc.a.run.app"]'
+                  serving.knative.dev/creator: oncall@example.com
+                  serving.knative.dev/lastModifier: oncall@example.com
+                creationTimestamp: '2026-10-18T22:17:05.019048Z'
+                generation: 1
+                labels:
+                  cloud.googleapis.com/location: us-central1
+                name: checkout
+                namespace: '100000000001'
+                resourceVersion: AAZeJMKZxCg
+                selfLink: /apis/serving.knative.dev/v1/namespaces/100000000001/services/checkout
+                uid: 01912089-3ad0-496b-8e4c-369cfe0c9a4c
+              spec:
+                template:
+                  metadata:
+                    annotations:
+                      autoscaling.knative.dev/maxScale: '1'
+                      run.googleapis.com/client-name: gcloud
+                      run.googleapis.com/client-version: 589.0.0
+                      run.googleapis.com/startup-cpu-boost: 'true'
+                    labels:
+                      client.knative.dev/nonce: uwpyyhaoxb
+                      run.googleapis.com/startupProbeType: Default
+                  spec:
+                    containerConcurrency: 80
+                    containers:
+                    - image: docker.io/library/python:3.12-slim
+                      resources:
+                        limits:
+                          cpu: '1'
+                          memory: 256Mi
+                    serviceAccountName: 100000000001-compute@developer.gserviceaccount.com
+                    timeoutSeconds: 300
+                traffic:
+                - latestRevision: true
+                  percent: 100
+              status:
+                conditions:
+                - lastTransitionTime: '2026-10-18T22:17:16.954664Z'
+                  status: 'True'
+                  type: Ready
+                - lastTransitionTime: '2026-10-18T22:17:06.857125Z'
+                  status: 'True'
+                  type: ConfigurationsReady
+                - lastTransitionTime: '2026-10-18T22:17:16.915390Z'
+                  status: 'True'
+                  type: RoutesReady
+                latestCreatedRevisionName: checkout-00001-ldp
+                latestReadyRevisionName: checkout-00001-ldp
+                observedGeneration: 1
+                traffic:
+                - latestRevision: true
+                  percent: 100
+                  revisionName: checkout-00001-ldp
+                url: https://checkout-rtd2yf6nfa-uc.a.run.app
+          resourceLocation:
+            currentLocations:
+            - us-central1
+          resourceName: namespaces/shop-prod-4f2a/services/checkout
+          serviceName: run.googleapis.com
+          status: {}
+        receiveTimestamp: '2026-10-18T22:22:38.782493815Z'
+        resource:
+          labels:
+            configuration_name: ''
+            location: us-central1
+            project_id: shop-prod-4f2a
+            revision_name: ''
+            service_name: checkout
+          type: cloud_run_revision
+        severity: NOTICE
+        timestamp: '2026-10-18T22:22:37.931973Z'
+      - insertId: q59nc8d6hki
+        logName: projects/shop-prod-4f2a/logs/cloudaudit.googleapis.com%2Fsystem_event
+        protoPayload:
+          '@type': type.googleapis.com/google.cloud.audit.AuditLog
+          methodName: /Services.CreateService
+          resourceName: namespaces/shop-prod-4f2a/services/checkout
+          response:
+            '@type': type.googleapis.com/google.cloud.run.v1.Service
+            apiVersion: serving.knative.dev/v1
+            kind: Service
+            metadata:
+              annotations:
+                run.googleapis.com/client-name: gcloud
+                run.googleapis.com/client-version: 589.0.0
+                run.googleapis.com/ingress: all
+                run.googleapis.com/ingress-status: all
+                run.googleapis.com/maxScale: '20'
+                run.googleapis.com/operation-id: a2c494ce-12d5-4b4f-b31c-2f70931ab0ee
+                run.googleapis.com/urls: '["https://checkout-100000000001.us-central1.run.app","https://checkout-rtd2yf6nfa-uc.a.run.app"]'
+                serving.knative.dev/creator: oncall@example.com
+                serving.knative.dev/lastModifier: oncall@example.com
+              creationTimestamp: '2026-10-18T22:17:05.019048Z'
+              generation: 1
+              labels:
+                cloud.googleapis.com/location: us-central1
+              name: checkout
+              namespace: '100000000001'
+              resourceVersion: AAZeJMKZxCg
+              selfLink: /apis/serving.knative.dev/v1/namespaces/100000000001/services/checkout
+              uid: 01912089-3ad0-496b-8e4c-369cfe0c9a4c
+            spec:
+              template:
+                metadata:
+                  annotations:
+                    autoscaling.knative.dev/maxScale: '1'
+                    run.googleapis.com/client-name: gcloud
+                    run.googleapis.com/client-version: 589.0.0
+                    run.googleapis.com/startup-cpu-boost: 'true'
+                  labels:
+                    client.knative.dev/nonce: zjmaujfyop
+                    run.googleapis.com/startupProbeType: Default
+                spec:
+                  containerConcurrency: 80
+                  containers:
+                  - args:
+                    - -c
+                    - "import http.server, json, os, time, urllib.request\nT = int(os.environ.get(\"UPSTREAM_TIMEOUT_MS\"\
+                      , \"2000\"))\ndef log(severity, message, **fields):\n    print(json.dumps({\"severity\"\
+                      : severity, \"message\": message, **fields}), flush=True)\nclass H(http.server.BaseHTTPRequestHandler):\n\
+                      \    def do_GET(self):\n        try:\n            urllib.request.urlopen(\"https://www.google.com/generate_204\"\
+                      , timeout=T / 1000).read()\n            code, body = 200, b\"ok\"\n        except\
+                      \ Exception as e:\n            code, body = 503, b\"inventory unavailable\"\n  \
+                      \          log(\"ERROR\", f\"inventory lookup failed after {T} ms: {type(e).__name__}:\
+                      \ {e}\", upstream=\"inventory\", timeout_ms=T)\n        self.send_response(code)\n\
+                      \        self.end_headers()\n        self.wfile.write(body)\n    def log_message(self,\
+                      \ *a):\n        pass\nlog(\"INFO\", f\"checkout listening, inventory timeout {T}\
+                      \ ms\", timeout_ms=T)\nhttp.server.ThreadingHTTPServer((\"\", int(os.environ.get(\"\
+                      PORT\", \"8080\"))), H).serve_forever()"
+                    command:
+                    - python
+                    env:
+                    - name: UPSTREAM_TIMEOUT_MS
+                      value: '2000'
+                    image: docker.io/library/python:3.12-slim
+                    ports:
+                    - containerPort: 8080
+                      name: http1
+                    resources:
+                      limits:
+                        cpu: '1'
+                        memory: 256Mi
+                    startupProbe:
+                      failureThreshold: 1
+                      periodSeconds: 240
+                      tcpSocket:
+                        port: 8080
+                      timeoutSeconds: 240
+                  serviceAccountName: 100000000001-compute@developer.gserviceaccount.com
+                  timeoutSeconds: 300
+              traffic:
+              - latestRevision: true
+                percent: 100
+            status:
+              address:
+                url: https://checkout-rtd2yf6nfa-uc.a.run.app
+              conditions:
+              - lastTransitionTime: '2026-10-18T22:17:16.954664Z'
+                status: 'True'
+                type: Ready
+              - lastTransitionTime: '2026-10-18T22:17:06.857125Z'
+                status: 'True'
+                type: ConfigurationsReady
+              - lastTransitionTime: '2026-10-18T22:17:16.915390Z'
+                status: 'True'
+                type: RoutesReady
+              latestCreatedRevisionName: checkout-00001-ldp
+              latestReadyRevisionName: checkout-00001-ldp
+              observedGeneration: 1
+              traffic:
+              - latestRevision: true
+                percent: 100
+                revisionName: checkout-00001-ldp
+              url: https://checkout-rtd2yf6nfa-uc.a.run.app
+          serviceName: run.googleapis.com
+          status:
+            message: Ready condition status changed to True for Service checkout.
+        receiveTimestamp: '2026-10-18T22:17:17.202989755Z'
+        resource:
+          labels:
+            configuration_name: ''
+            location: us-central1
+            project_id: shop-prod-4f2a
+            revision_name: ''
+            service_name: checkout
+          type: cloud_run_revision
+        severity: INFO
+        timestamp: '2026-10-18T22:17:16.971338Z'
+      - insertId: -y2otrndamfi
+        logName: projects/shop-prod-4f2a/logs/cloudaudit.googleapis.com%2Fsystem_event
+        protoPayload:
+          '@type': type.googleapis.com/google.cloud.audit.AuditLog
+          methodName: /Services.CreateService
+          resourceName: namespaces/shop-prod-4f2a/revisions/checkout-00001-ldp
+          response:
+            '@type': type.googleapis.com/google.cloud.run.v1.Revision
+            apiVersion: serving.knative.dev/v1
+            kind: Revision
+            metadata:
+              annotations:
+                autoscaling.knative.dev/maxScale: '1'
+                run.googleapis.com/client-name: gcloud
+                run.googleapis.com/client-version: 589.0.0
+                run.googleapis.com/operation-id: a2c494ce-12d5-4b4f-b31c-2f70931ab0ee
+                run.googleapis.com/startup-cpu-boost: 'true'
+                serving.knative.dev/creator: oncall@example.com
+              creationTimestamp: '2026-10-18T22:17:05.199995Z'
+              generation: 1
+              labels:
+                client.knative.dev/nonce: zjmaujfyop
+                cloud.googleapis.com/location: us-central1
+                run.googleapis.com/startupProbeType: Default
+                serving.knative.dev/configuration: checkout
+                serving.knative.dev/configurationGeneration: '1'
+                serving.knative.dev/route: checkout
+                serving.knative.dev/service: checkout
+                serving.knative.dev/serviceUid: 01912089-3ad0-496b-8e4c-369cfe0c9a4c
+              name: checkout-00001-ldp
+              namespace: '100000000001'
+              ownerReferences:
+              - apiVersion: serving.knative.dev/v1
+                blockOwnerDeletion: true
+                controller: true
+                kind: Configuration
+                name: checkout
+                uid: 2852c7a9-8c9d-4fa6-a4c1-4edfc32827b5
+              resourceVersion: AAZeJMKDZJQ
+              selfLink: /apis/serving.knative.dev/v1/namespaces/100000000001/revisions/checkout-00001-ldp
+              uid: f6aaabfd-08be-4585-9e08-6b7ec6964005
+            spec:
+              containerConcurrency: 80
+              containers:
+              - args:
+                - -c
+                - "import http.server, json, os, time, urllib.request\nT = int(os.environ.get(\"UPSTREAM_TIMEOUT_MS\"\
+                  , \"2000\"))\ndef log(severity, message, **fields):\n    print(json.dumps({\"severity\"\
+                  : severity, \"message\": message, **fields}), flush=True)\nclass H(http.server.BaseHTTPRequestHandler):\n\
+                  \    def do_GET(self):\n        try:\n            urllib.request.urlopen(\"https://www.google.com/generate_204\"\
+                  , timeout=T / 1000).read()\n            code, body = 200, b\"ok\"\n        except Exception\
+                  \ as e:\n            code, body = 503, b\"inventory unavailable\"\n            log(\"\
+                  ERROR\", f\"inventory lookup failed after {T} ms: {type(e).__name__}: {e}\", upstream=\"\
+                  inventory\", timeout_ms=T)\n        self.send_response(code)\n        self.end_headers()\n\
+                  \        self.wfile.write(body)\n    def log_message(self, *a):\n        pass\nlog(\"\
+                  INFO\", f\"checkout listening, inventory timeout {T} ms\", timeout_ms=T)\nhttp.server.ThreadingHTTPServer((\"\
+                  \", int(os.environ.get(\"PORT\", \"8080\"))), H).serve_forever()"
+                command:
+                - python
+                env:
+                - name: UPSTREAM_TIMEOUT_MS
+                  value: '2000'
+                image: mirror.gcr.io/library/python@sha256:2b4f19dae3a777dfc3b76730bda1e82e1f66ab2a2686fa93ca78edbfb4f04ffe
+                name: python-1
+                ports:
+                - containerPort: 8080
+                  name: http1
+                resources:
+                  limits:
+                    cpu: '1'
+                    memory: 256Mi
+                startupProbe:
+                  failureThreshold: 1
+                  periodSeconds: 240
+                  tcpSocket:
+                    port: 8080
+                  timeoutSeconds: 240
+              serviceAccountName: 100000000001-compute@developer.gserviceaccount.com
+              timeoutSeconds: 300
+            status:
+              conditions:
+              - lastTransitionTime: '2026-10-18T22:17:15.488404Z'
+                message: Deploying revision succeeded in 10.29s.
+                status: 'True'
+                type: Ready
+              - lastTransitionTime: '2026-10-18T22:17:15.441144Z'
+                message: Containers became healthy in 1.37s.
+                status: 'True'
+                type: ContainerHealthy
+              - lastTransitionTime: '2026-10-18T22:17:06.771989Z'
+                message: Container image import completed in 1.23s.
+                status: 'True'
+                type: ContainerReady
+              - lastTransitionTime: '2026-10-18T22:17:08.737603Z'
+                message: Provisioning imported containers completed in 1.96s. Checking container health.
+                  This will wait for up to 4m for the configured startup probe, including an initial delay
+                  of 0s.
+                status: 'True'
+                type: ResourcesAvailable
+              containerStatuses:
+              - imageDigest: mirror.gcr.io/library/python@sha256:2b4f19dae3a777dfc3b76730bda1e82e1f66ab2a2686fa93ca78edbfb4f04ffe
+                name: python-1
+              imageDigest: mirror.gcr.io/library/python@sha256:2b4f19dae3a777dfc3b76730bda1e82e1f66ab2a2686fa93ca78edbfb4f04ffe
+              logUrl: https://console.cloud.google.com/logs/viewer?project=shop-prod-4f2a&resource=cloud_run_revision/service_name/checkout/revision_name/checkout-00001-ldp&advancedFilter=resource.type%3D%22cloud_run_revision%22%0Aresource.labels.service_name%3D%22checkout%22%0Aresource.labels.revision_name%3D%22checkout-00001-ldp%22
+              observedGeneration: 1
+          serviceName: run.googleapis.com
+          status:
+            message: 'Ready condition status changed to True for Revision checkout-00001-ldp with message:
+              Deploying revision succeeded in 10.29s.'
+        receiveTimestamp: '2026-10-18T22:17:16.457157885Z'
+        resource:
+          labels:
+            configuration_name: checkout
+            location: us-central1
+            project_id: shop-prod-4f2a
+            revision_name: checkout-00001-ldp
+            service_name: checkout
+          type: cloud_run_revision
+        severity: INFO
+        timestamp: '2026-10-18T22:17:15.497442Z'
+      - insertId: 6ad5456b0005cbf0781026d8
+        jsonPayload:
+          message: checkout listening, inventory timeout 2000 ms
+          timeout_ms: 2000
+        labels:
+          instanceId: 0010dd8607acbfc185263adabd02fdcf946d910a8ea94954d007d825a2e178456a4d2085c63e79264c0f6b586bfd66bbb0989e6363562c4e12cf0dad87d3285d90d5fb401c9331ee2665b239ca107c66458dcd3058e11d06ad
+        logName: projects/shop-prod-4f2a/logs/run.googleapis.com%2Fstdout
+        receiveTimestamp: '2026-10-18T22:17:15.384700186Z'
+        resource:
+          labels:
+            configuration_name: checkout
+            location: us-central1
+            project_id: shop-prod-4f2a
+            revision_name: checkout-00001-ldp
+            service_name: checkout
+          type: cloud_run_revision
+        severity: INFO
+        timestamp: '2026-10-18T22:17:15.379888Z'
+      - insertId: fjk7p9d803g
+        logName: projects/shop-prod-4f2a/logs/cloudaudit.googleapis.com%2Factivity
+        protoPayload:
+          '@type': type.googleapis.com/google.cloud.audit.AuditLog
+          authenticationInfo:
+            oauthInfo:
+              oauthClientId: 32555940559.apps.googleusercontent.com
+            principalEmail: oncall@example.com
+            principalSubject: user:oncall@example.com
+          authorizationInfo:
+          - granted: true
+            permission: run.services.setIamPolicy
+            permissionType: ADMIN_WRITE
+            resource: projects/shop-prod-4f2a/locations/us-central1/services/checkout
+            resourceAttributes: {}
+          - granted: true
+            permission: run.services.setIamPolicy
+            permissionType: ADMIN_WRITE
+            resourceAttributes: {}
+          methodName: google.cloud.run.v1.Services.SetIamPolicy
+          request:
+            '@type': type.googleapis.com/google.iam.v1.SetIamPolicyRequest
+            policy:
+              bindings:
+              - members:
+                - allUsers
+                role: roles/run.invoker
+              etag: ACAB
+            resource: projects/shop-prod-4f2a/locations/us-central1/services/checkout
+          resourceLocation:
+            currentLocations:
+            - us-central1
+          resourceName: projects/shop-prod-4f2a/locations/us-central1/services/checkout
+          serviceName: run.googleapis.com
+          status: {}
+        receiveTimestamp: '2026-10-18T22:17:08.756697412Z'
+        resource:
+          labels:
+            configuration_name: ''
+            location: us-central1
+            project_id: shop-prod-4f2a
+            revision_name: ''
+            service_name: ''
+          type: cloud_run_revision
+        severity: NOTICE
+        timestamp: '2026-10-18T22:17:08.025081Z'
+      - insertId: -sl1bkdo37s
+        logName: projects/shop-prod-4f2a/logs/cloudaudit.googleapis.com%2Fsystem_event
+        protoPayload:
+          '@type': type.googleapis.com/google.cloud.audit.AuditLog
+          methodName: /Services.CreateService
+          resourceName: namespaces/shop-prod-4f2a/revisions/checkout-00001-ldp
+          response:
+            '@type': type.googleapis.com/google.cloud.run.v1.Revision
+            apiVersion: serving.knative.dev/v1
+            kind: Revision
+            metadata:
+              annotations:
+                autoscaling.knative.dev/maxScale: '1'
+                run.googleapis.com/client-name: gcloud
+                run.googleapis.com/client-version: 589.0.0
+                run.googleapis.com/operation-id: a2c494ce-12d5-4b4f-b31c-2f70931ab0ee
+                run.googleapis.com/startup-cpu-boost: 'true'
+                serving.knative.dev/creator: oncall@example.com
+              creationTimestamp: '2026-10-18T22:17:05.199995Z'
+              generation: 1
+              labels:
+                client.knative.dev/nonce: zjmaujfyop
+                cloud.googleapis.com/location: us-central1
+                run.googleapis.com/startupProbeType: Default
+                serving.knative.dev/configuration: checkout
+                serving.knative.dev/configurationGeneration: '1'
+                serving.knative.dev/service: checkout
+                serving.knative.dev/serviceUid: 01912089-3ad0-496b-8e4c-369cfe0c9a4c
+              name: checkout-00001-ldp
+              namespace: '100000000001'
+              ownerReferences:
+              - apiVersion: serving.knative.dev/v1
+                blockOwnerDeletion: true
+                controller: true
+                kind: Configuration
+                name: checkout
+                uid: 2852c7a9-8c9d-4fa6-a4c1-4edfc32827b5
+              resourceVersion: AAZeJMH/Gfk
+              selfLink: /apis/serving.knative.dev/v1/namespaces/100000000001/revisions/checkout-00001-ldp
+              uid: f6aaabfd-08be-4585-9e08-6b7ec6964005
+            spec:
+              containerConcurrency: 80
+              containers:
+              - args:
+                - -c
+                - "import http.server, json, os, time, urllib.request\nT = int(os.environ.get(\"UPSTREAM_TIMEOUT_MS\"\
+                  , \"2000\"))\ndef log(severity, message, **fields):\n    print(json.dumps({\"severity\"\
+                  : severity, \"message\": message, **fields}), flush=True)\nclass H(http.server.BaseHTTPRequestHandler):\n\
+                  \    def do_GET(self):\n        try:\n            urllib.request.urlopen(\"https://www.google.com/generate_204\"\
+                  , timeout=T / 1000).read()\n            code, body = 200, b\"ok\"\n        except Exception\
+                  \ as e:\n            code, body = 503, b\"inventory unavailable\"\n            log(\"\
+                  ERROR\", f\"inventory lookup failed after {T} ms: {type(e).__name__}: {e}\", upstream=\"\
+                  inventory\", timeout_ms=T)\n        self.send_response(code)\n        self.end_headers()\n\
+                  \        self.wfile.write(body)\n    def log_message(self, *a):\n        pass\nlog(\"\
+                  INFO\", f\"checkout listening, inventory timeout {T} ms\", timeout_ms=T)\nhttp.server.ThreadingHTTPServer((\"\
+                  \", int(os.environ.get(\"PORT\", \"8080\"))), H).serve_forever()"
+                command:
+                - python
+                env:
+                - name: UPSTREAM_TIMEOUT_MS
+                  value: '2000'
+                image: mirror.gcr.io/library/python@sha256:2b4f19dae3a777dfc3b76730bda1e82e1f66ab2a2686fa93ca78edbfb4f04ffe
+                name: python-1
+                ports:
+                - containerPort: 8080
+                  name: http1
+                resources:
+                  limits:
+                    cpu: '1'
+                    memory: 256Mi
+                startupProbe:
+                  failureThreshold: 1
+                  periodSeconds: 240
+                  tcpSocket:
+                    port: 8080
+                  timeoutSeconds: 240
+              serviceAccountName: 100000000001-compute@developer.gserviceaccount.com
+              timeoutSeconds: 300
+            status:
+              conditions:
+              - lastTransitionTime: '2026-10-18T22:17:06.818553Z'
+                status: 'True'
+                type: Ready
+              - lastTransitionTime: '2026-10-18T22:17:06.771989Z'
+                message: Container image import completed in 1.23s.
+                status: 'True'
+                type: ContainerReady
+              - lastTransitionTime: '2026-10-18T22:17:06.818553Z'
+                message: System will retry after 00:05 from lastTransitionTime for attempt 0.
+                reason: WatchWaiting
+                severity: Info
+                status: 'True'
+                type: Retry
+              containerStatuses:
+              - imageDigest: mirror.gcr.io/library/python@sha256:2b4f19dae3a777dfc3b76730bda1e82e1f66ab2a2686fa93ca78edbfb4f04ffe
+                name: python-1
+              imageDigest: mirror.gcr.io/library/python@sha256:2b4f19dae3a777dfc3b76730bda1e82e1f66ab2a2686fa93ca78edbfb4f04ffe
+              logUrl: https://console.cloud.google.com/logs/viewer?project=shop-prod-4f2a&resource=cloud_run_revision/service_name/checkout/revision_name/checkout-00001-ldp&advancedFilter=resource.type%3D%22cloud_run_revision%22%0Aresource.labels.service_name%3D%22checkout%22%0Aresource.labels.revision_name%3D%22checkout-00001-ldp%22
+              observedGeneration: 1
+          serviceName: run.googleapis.com
+          status:
+            message: Ready condition status changed to True for Revision checkout-00001-ldp.
+        receiveTimestamp: '2026-10-18T22:17:07.765340581Z'
+        resource:
+          labels:
+            configuration_name: checkout
+            location: us-central1
+            project_id: shop-prod-4f2a
+            revision_name: checkout-00001-ldp
+            service_name: ''
+          type: cloud_run_revision
+        severity: INFO
+        timestamp: '2026-10-18T22:17:06.827764Z'
+      - insertId: 1bia2m9dca03
+        logName: projects/shop-prod-4f2a/logs/cloudaudit.googleapis.com%2Factivity
+        protoPayload:
+          '@type': type.googleapis.com/google.cloud.audit.AuditLog
+          authenticationInfo:
+            oauthInfo:
+              oauthClientId: 32555940559.apps.googleusercontent.com
+            principalEmail: oncall@example.com
+            principalSubject: user:oncall@example.com
+          authorizationInfo:
+          - granted: true
+            permission: run.services.create
+            permissionType: ADMIN_WRITE
+            resource: namespaces/shop-prod-4f2a/services/checkout
+            resourceAttributes: {}
+          - granted: true
+            permission: run.services.create
+            permissionType: ADMIN_WRITE
+            resource: namespaces/shop-prod-4f2a/services/checkout
+            resourceAttributes:
+              name: namespaces/shop-prod-4f2a/services/checkout
+              service: run.googleapis.com/
+              type: run.googleapis.com/Service
+          methodName: google.cloud.run.v1.Services.CreateService
+          request:
+            '@type': type.googleapis.com/google.cloud.run.v1.CreateServiceRequest
+            parent: namespaces/shop-prod-4f2a
+            service:
+              apiVersion: serving.knative.dev/v1
+              kind: Service
+              metadata:
+                annotations:
+                  run.googleapis.com/client-name: gcloud
+                  run.googleapis.com/client-version: 589.0.0
+                name: checkout
+                namespace: shop-prod-4f2a
+              spec:
+                template:
+                  metadata:
+                    annotations:
+                      autoscaling.knative.dev/maxScale: '1'
+                      run.googleapis.com/client-name: gcloud
+                      run.googleapis.com/client-version: 589.0.0
+                      run.googleapis.com/startup-cpu-boost: 'True'
+                    labels:
+                      client.knative.dev/nonce: zjmaujfyop
+                  spec:
+                    containers:
+                    - image: docker.io/library/python:3.12-slim
+                      name: ''
+                      resources:
+                        limits:
+                          cpu: '1'
+                          memory: 256Mi
+              status: {}
+          resourceLocation:
+            currentLocations:
+            - us-central1
+          resourceName: namespaces/shop-prod-4f2a/services/checkout
+          serviceName: run.googleapis.com
+          status: {}
+        receiveTimestamp: '2026-10-18T22:17:05.198904139Z'
+        resource:
+          labels:
+            configuration_name: ''
+            location: us-central1
+            project_id: shop-prod-4f2a
+            revision_name: ''
+            service_name: checkout
+          type: cloud_run_revision
+        severity: NOTICE
+        timestamp: '2026-10-18T22:17:04.854822Z'
+  gcp_list_metric_descriptors:
+  - match: {}
+    result:
+      metricDescriptors:
+      - description: Number of requests reaching the revision. Excludes requests that are not reaching
+          your container instances (for example, unauthorized requests or when maximum number of instances
+          is reached). Captured at the end of the request lifecycle.
+        displayName: Request Count
+        labels:
+        - description: Response code of a request.
+          key: response_code
+        - description: Response code class of a request.
+          key: response_code_class
+        - description: Always empty.
+          key: route
+        launchStage: GA
+        metadata:
+          ingestDelay: 120s
+          launchStage: GA
+          samplePeriod: 60s
+          timeSeriesResourceHierarchyLevel:
+          - PROJECT
+        metricKind: DELTA
+        monitoredResourceTypes:
+        - cloud_run_instance
+        - cloud_run_revision
+        name: projects/shop-prod-4f2a/metricDescriptors/run.googleapis.com/request_count
+        type: run.googleapis.com/request_count
+        unit: '1'
+        valueType: INT64
+      - description: Distribution of request latency in milliseconds reaching the revision. Latency is
+          measured from when the request reaches the running container to when it exits. Notably, it does
+          not include container startup latency.
+        displayName: Request Latency
+        labels:
+        - description: Response code of a request.
+          key: response_code
+        - description: Response code class of a request.
+          key: response_code_class
+        - description: Always empty.
+          key: route
+        launchStage: GA
+        metadata:
+          ingestDelay: 120s
+          launchStage: GA
+          samplePeriod: 60s
+          timeSeriesResourceHierarchyLevel:
+          - PROJECT
+        metricKind: DELTA
+        monitoredResourceTypes:
+        - cloud_run_instance
+        - cloud_run_revision
+        name: projects/shop-prod-4f2a/metricDescriptors/run.googleapis.com/request_latencies
+        type: run.googleapis.com/request_latencies
+        unit: ms
+        valueType: DISTRIBUTION
+      - description: Distribution of request latencies in milliseconds measured from when the request
+          enters Google Cloud's network to when Cloud Run sends the response.
+        displayName: End to End Request Latency
+        labels:
+        - description: Response code of a request.
+          key: response_code
+        - description: Response code class of a request.
+          key: response_code_class
+        launchStage: BETA
+        metadata:
+          ingestDelay: 120s
+          launchStage: BETA
+          samplePeriod: 60s
+          timeSeriesResourceHierarchyLevel:
+          - PROJECT
+        metricKind: DELTA
+        monitoredResourceTypes:
+        - cloud_run_instance
+        - cloud_run_revision
+        name: projects/shop-prod-4f2a/metricDescriptors/run.googleapis.com/request_latency/e2e_latencies
+        type: run.googleapis.com/request_latency/e2e_latencies
+        unit: ms
+        valueType: DISTRIBUTION
+      - description: Distribution of request latencies in milliseconds measured from when the request
+          enters Google Cloud's network to when the request reaches the cloud region.
+        displayName: Ingress to Region Request Latency
+        labels:
+        - description: Response code of a request.
+          key: response_code
+        - description: Response code class of a request.
+          key: response_code_class
+        launchStage: BETA
+        metadata:
+          ingestDelay: 120s
+          launchStage: BETA
+          samplePeriod: 60s
+          timeSeriesResourceHierarchyLevel:
+          - PROJECT
+        metricKind: DELTA
+        monitoredResourceTypes:
+        - cloud_run_instance
+        - cloud_run_revision
+        name: projects/shop-prod-4f2a/metricDescriptors/run.googleapis.com/request_latency/ingress_to_region
+        type: run.googleapis.com/request_latency/ingress_to_region
+        unit: ms
+        valueType: DISTRIBUTION
+      - description: Distribution of request latencies in milliseconds measured from when the request
+          reaches Cloud Run to when the request is sent to an instance. Includes time spent waiting for
+          a slot on an existing instance, or for a new instance to start (startup latency).
+        displayName: Pending Request Latency
+        labels:
+        - description: Response code of a request.
+          key: response_code
+        - description: Response code class of a request.
+          key: response_code_class
+        launchStage: BETA
+        metadata:
+          ingestDelay: 120s
+          launchStage: BETA
+          samplePeriod: 60s
+          timeSeriesResourceHierarchyLevel:
+          - PROJECT
+        metricKind: DELTA
+        monitoredResourceTypes:
+        - cloud_run_instance
+        - cloud_run_revision
+        name: projects/shop-prod-4f2a/metricDescriptors/run.googleapis.com/request_latency/pending
+        type: run.googleapis.com/request_latency/pending
+        unit: ms
+        valueType: DISTRIBUTION
+      - description: Distribution of response latencies in milliseconds measured from when the container
+          finished processing the request to when Cloud Run sends the response.
+        displayName: Response Egress Request Latency
+        labels:
+        - description: Response code of a request.
+          key: response_code
+        - description: Response code class of a request.
+          key: response_code_class
+        launchStage: BETA
+        metadata:
+          ingestDelay: 120s
+          launchStage: BETA
+          samplePeriod: 60s
+          timeSeriesResourceHierarchyLevel:
+          - PROJECT
+        metricKind: DELTA
+        monitoredResourceTypes:
+        - cloud_run_instance
+        - cloud_run_revision
+        name: projects/shop-prod-4f2a/metricDescriptors/run.googleapis.com/request_latency/response_egress
+        type: run.googleapis.com/request_latency/response_egress
+        unit: ms
+        valueType: DISTRIBUTION
+      - description: Distribution of request latencies in milliseconds measured from when the request
+          reaches the cloud region to when the request reaches Cloud Run.
+        displayName: Routing Request Latency
+        labels:
+        - description: Response code of a request.
+          key: response_code
+        - description: Response code class of a request.
+          key: response_code_class
+        launchStage: BETA
+        metadata:
+          ingestDelay: 120s
+          launchStage: BETA
+          samplePeriod: 60s
+          timeSeriesResourceHierarchyLevel:
+          - PROJECT
+        metricKind: DELTA
+        monitoredResourceTypes:
+        - cloud_run_instance
+        - cloud_run_revision
+        name: projects/shop-prod-4f2a/metricDescriptors/run.googleapis.com/request_latency/routing
+        type: run.googleapis.com/request_latency/routing
+        unit: ms
+        valueType: DISTRIBUTION
+      - description: Distribution of request latencies in milliseconds measured from when the request
+          reaches a running instance to when it exits. Only includes time spent in user container.
+        displayName: User Execution Request Latency
+        labels:
+        - description: Response code of a request.
+          key: response_code
+        - description: Response code class of a request.
+          key: response_code_class
+        launchStage: BETA
+        metadata:
+          ingestDelay: 120s
+          launchStage: BETA
+          samplePeriod: 60s
+          timeSeriesResourceHierarchyLevel:
+          - PROJECT
+        metricKind: DELTA
+        monitoredResourceTypes:
+        - cloud_run_instance
+        - cloud_run_revision
+        name: projects/shop-prod-4f2a/metricDescriptors/run.googleapis.com/request_latency/user_execution
+        type: run.googleapis.com/request_latency/user_execution
+        unit: ms
+        valueType: DISTRIBUTION
+  gcp_list_timeseries:
+  - match: {}
+    result:
+      timeSeries:
+      - metric:
+          labels:
+            response_code: '200'
+            response_code_class: 2xx
+            route: ''
+          type: run.googleapis.com/request_count
+        metricKind: DELTA
+        points:
+        - interval:
+            endTime: '2026-10-18T22:34:27Z'
+            startTime: '2026-10-18T22:29:27Z'
+          value:
+            int64Value: '0'
+        - interval:
+            endTime: '2026-10-18T22:29:27Z'
+            startTime: '2026-10-18T22:24:27Z'
+          value:
+            int64Value: '0'
+        - interval:
+            endTime: '2026-10-18T22:24:27Z'
+            startTime: '2026-10-18T22:19:27Z'
+          value:
+            int64Value: '83'
+        - interval:
+            endTime: '2026-10-18T22:19:27Z'
+            startTime: '2026-10-18T22:14:27Z'
+          value:
+            int64Value: '37'
+        resource:
+          labels:
+            configuration_name: checkout
+            location: us-central1
+            project_id: shop-prod-4f2a
+            revision_name: checkout-00001-ldp
+            service_name: checkout
+          type: cloud_run_revision
+        valueType: INT64
+      - metric:
+          labels:
+            response_code: '503'
+            response_code_class: 5xx
+            route: ''
+          type: run.googleapis.com/request_count
+        metricKind: DELTA
+        points:
+        - interval:
+            endTime: '2026-10-18T22:34:27Z'
+            startTime: '2026-10-18T22:29:27Z'
+          value:
+            int64Value: '100'
+        - interval:
+            endTime: '2026-10-18T22:29:27Z'
+            startTime: '2026-10-18T22:24:27Z'
+          value:
+            int64Value: '113'
+        resource:
+          labels:
+            configuration_name: checkout
+            location: us-central1
+            project_id: shop-prod-4f2a
+            revision_name: checkout-00002-nt5
+            service_name: checkout
+          type: cloud_run_revision
+        valueType: INT64
+      unit: '1'
+  gcp_query_range:
+  - match: {}
+    result:
+      data:
+        result:
+        - metric:
+            response_code_class: 2xx
+            revision_name: checkout-00001-ldp
+          values:
+          - - 1792361967
+            - '47.79977999633327'
+          - - 1792362267
+            - '72.20022000366673'
+          - - 1792362567
+            - '0'
+          - - 1792362867
+            - '0'
+        - metric:
+            response_code_class: 5xx
+            revision_name: checkout-00002-nt5
+          values:
+          - - 1792362267
+            - '7.199853330888848'
+          - - 1792362567
+            - '117.04991749862498'
+          - - 1792362867
+            - '124'
+        resultType: matrix
+      status: success
