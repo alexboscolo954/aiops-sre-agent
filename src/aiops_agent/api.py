@@ -39,9 +39,11 @@ from pydantic import BaseModel
 
 from aiops_agent import agent, console, contracts
 from aiops_agent.config import Settings
+from aiops_agent.contracts import Jira
 from aiops_agent.models import AlertGroup, GrafanaAlertGroup, Investigation
 from aiops_agent.observability import PENDING_APPROVALS, TRIAGE_SECONDS, TRIAGES
 from aiops_agent.safety import redact_capped
+from aiops_agent.servers import jira
 from aiops_agent.slack import (
     STATUS,
     Slack,
@@ -149,6 +151,7 @@ def create_app(
     async def lifespan(app: FastAPI) -> Any:
         async with connect(database_url) as pool, slack_http or httpx.AsyncClient() as http:
             db["slack"] = Slack(settings.slack_bot_token, http)
+            db["http"] = http  # no default headers: each caller sets its own auth
             db["store"] = Store(pool)
             await store().migrate()
             db["checkpointer"] = AsyncPostgresSaver(pool, serde=agent.CHECKPOINT_SERDE)
@@ -200,7 +203,7 @@ def create_app(
                 status = reply_text(t) or f"{STATUS[t.status]} · `{t.id}`"
                 await slack.post(channel, status, thread_ts=t.slack_ts)
             return
-        blocks = parent_blocks(t, buttons, client_channel(t))
+        blocks = parent_blocks(t, buttons, client_channel(t), jira_project(t))
         if t.slack_ts is None:
             ts = await slack.post(channel, parent_text(t), blocks=blocks)
             if ts and await store().set_slack_thread(t.id, channel, ts):
@@ -406,6 +409,56 @@ def create_app(
         contract = by_id.get(t.contract_id)
         return contract.slack.client_channel if contract and contract.slack else None
 
+    def jira_of(t: Investigation) -> Jira | None:
+        """From the loaded Contract, never from a click."""
+        contract = by_id.get(t.contract_id)
+        found = [i for i in contract.integrations if isinstance(i, Jira)] if contract else []
+        return found[0] if found else None
+
+    def jira_project(t: Investigation) -> str | None:
+        j = jira_of(t)
+        return j.project if j else None
+
+    async def file_jira(t: Investigation, by: str, who: str) -> tuple[str | None, str]:
+        """The Report as an issue in the Contract's Jira project, once, from the Slack
+        button or the console: claim, create, record. A refusal frees the claim for a
+        retry; no answer keeps it, since Jira may have created the issue. Then the
+        Slack thread, if any, shows it. Returns (key, what to tell the Operator).
+        ponytail: an unknown outcome keeps the claim for good (no duplicate issue);
+        clearing jira_at in the database is the only reset, after checking Jira."""
+        j = jira_of(t)
+        at = await store().claim_jira(t.id, by) if j and t.report else None
+        if j is None or t.report is None or at is None:
+            return None, "Already filed (or being filed), or nothing to file."
+        token = by_id[t.contract_id].secret(j.token_secret)
+        summary = jira.issue_summary(t.report)
+        document = jira.report_document(t.report, t.executed_actions, t.id)
+        try:
+            key = await jira.create_issue(
+                db["http"], j.url, j.email, token, j.project, j.issue_type, summary, document
+            )
+        except jira.Refused as e:
+            await store().release_jira(t.id, at)
+            return None, f"Jira refused the issue ({clean(str(e), 500)}): nothing was created."
+        except jira.Unknown as e:
+            log.warning("investigation %s: Jira create got no answer: %s", t.id, e)
+            return None, (
+                f"Jira didn't answer ({e}): it may have created the issue. "
+                f"Check project {j.project} before filing it by hand."
+            )
+        await store().set_jira_issue(t.id, at, key)
+        t.jira_issue, t.jira_by, t.jira_at = key, by, at
+        log.info("investigation %s filed as %s by %s", t.id, key, by)
+        if t.slack_channel and t.slack_ts and settings.slack_bot_token:
+            slack: Slack = db["slack"]
+            blocks = parent_blocks(t, buttons, client_channel(t), j.project)
+            await slack.update(t.slack_channel, t.slack_ts, parent_text(t), blocks)
+            url = f"{j.url.rstrip('/')}/browse/{key}"
+            await slack.post(
+                t.slack_channel, f":ticket: Filed as {key} by {who}: {url}", t.slack_ts
+            )
+        return key, f"Filed as {key}."
+
     async def send_to_client(t: Investigation, channel: str, user: str) -> None:
         """The Client report, once: claim, post as plain text (no blocks, so no
         controls), then take the button away. ponytail: a crash between the claim
@@ -423,7 +476,8 @@ def create_app(
         t.client_sent_at, t.client_sent_by = at, f"slack:{user}"
         log.info("investigation %s client report sent by %s", t.id, t.client_sent_by)
         assert t.slack_ts is not None  # the click came from this thread's parent
-        await slack.update(channel, t.slack_ts, parent_text(t), parent_blocks(t, buttons, client))
+        blocks = parent_blocks(t, buttons, client, jira_project(t))
+        await slack.update(channel, t.slack_ts, parent_text(t), blocks)
         await slack.post(channel, f":outbox_tray: Sent to the client by <@{user}>.", t.slack_ts)
 
     async def interaction(p: dict[str, Any]) -> None:
@@ -448,6 +502,11 @@ def create_app(
             return
         if action["action_id"] == "send_to_client":
             await send_to_client(t, channel, user)
+            return
+        if action["action_id"] == "create_jira":
+            key, message = await file_jira(t, f"slack:{user}", f"<@{user}>")
+            if key is None:
+                await slack.ephemeral(channel, user, message)
             return
         deadline = pause["deadline"]
         by, who = f"slack:{user}", f"<@{user}>"
@@ -714,6 +773,9 @@ def create_app(
             detail = redact_capped(f"{type(e).__name__}: {e}", 300)
             return [{"name": "tools", "ok": False, "ms": 0, "detail": detail}]
 
+    async def console_file_jira(t: Investigation, login: str) -> tuple[str | None, str]:
+        return await file_jira(t, f"console:{login}", login)
+
     if settings.console_operators:  # off by default: 404, not a login page
         app.include_router(
             console.router(
@@ -725,6 +787,8 @@ def create_app(
                 health,
                 shown_settings(settings),
                 approver_token,
+                console_file_jira,
+                jira_of,
             )
         )
 

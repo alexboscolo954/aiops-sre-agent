@@ -92,6 +92,7 @@ class Jira(Strict):
     email: str  # the API token's owner
     token_secret: str
     project: str = Field(pattern=r"^[A-Z][A-Z0-9_]+$")  # every search stays inside it
+    issue_type: str = "Task"  # for the Create Jira issue button: as the project names it
 
 
 class Runbooks(Strict):

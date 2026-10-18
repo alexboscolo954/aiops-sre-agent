@@ -49,7 +49,11 @@ def mrkdwn(markdown: str) -> str:
 
 def parent_text(t: Investigation) -> str:
     sent = " · :outbox_tray: sent to the client" if t.client_sent_at else ""
-    return f"*[{clean(t.contract_id)}] {clean(t.title, 300)}*\n{STATUS[t.status]} · `{t.id}`{sent}"
+    filed = f" · :ticket: {clean(t.jira_issue, 40)}" if t.jira_issue else ""
+    return (
+        f"*[{clean(t.contract_id)}] {clean(t.title, 300)}*\n"
+        f"{STATUS[t.status]} · `{t.id}`{sent}{filed}"
+    )
 
 
 def client_text(t: Investigation) -> str:
@@ -72,14 +76,16 @@ def client_text(t: Investigation) -> str:
 
 
 def parent_blocks(
-    t: Investigation, buttons: bool, client: str | None = None
+    t: Investigation, buttons: bool, client: str | None = None, jira: str | None = None
 ) -> list[dict[str, Any]]:
     """Always sent in full, so no stale buttons survive an update. Each button
     names its pause (the deadline): a late click can't decide a later pause.
-    client: the Contract's client channel, for the Send to client button."""
+    client: the Contract's client channel, for the Send to client button.
+    jira: the Contract's Jira project, for the Create Jira issue button."""
     blocks: list[dict[str, Any]] = [
         {"type": "section", "text": {"type": "mrkdwn", "text": parent_text(t)}}
     ]
+    done: list[dict[str, Any]] = []  # buttons on a finished Report
     if buttons and client and t.report and not t.client_sent_at:  # a Report: done
         send = {
             "type": "button",
@@ -96,7 +102,26 @@ def parent_blocks(
                 "deny": {"type": "plain_text", "text": "Cancel"},
             },
         }
-        blocks.append({"type": "actions", "elements": [send]})
+        done.append(send)
+    if buttons and jira and t.report and t.status == "done" and not t.jira_at:
+        file = {
+            "type": "button",
+            "action_id": "create_jira",
+            "text": {"type": "plain_text", "text": "Create Jira issue"},
+            "value": json.dumps({"id": t.id}),
+            "confirm": {
+                "title": {"type": "plain_text", "text": "Create a Jira issue?"},
+                "text": {
+                    "type": "plain_text",
+                    "text": f"The full Report, with Evidence, goes to Jira project {jira}.",
+                },
+                "confirm": {"type": "plain_text", "text": "Create"},
+                "deny": {"type": "plain_text", "text": "Cancel"},
+            },
+        }
+        done.append(file)
+    if done:
+        blocks.append({"type": "actions", "elements": done})
     if buttons and t.status == "awaiting_approval":
         value = json.dumps({"id": t.id, "deadline": t.deadline})
         names = ", ".join(sorted({p["name"] for p in t.pending}))

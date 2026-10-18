@@ -180,6 +180,9 @@ class Investigation(BaseModel):
     # When the Client report was sent, and by whom (never set by a Run).
     client_sent_at: float | None = None
     client_sent_by: str | None = None
+    jira_issue: str | None = None  # its key in the Contract's Jira project
+    jira_by: str | None = None
+    jira_at: float | None = None  # claimed; with no key yet: being filed, or unknown
     # A Question's last @mention (Slack ts): a follow-up must be newer.
     last_mention_ts: str | None = None
     # What started it, as received (written once): the Alert group, or

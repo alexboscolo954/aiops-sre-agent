@@ -285,6 +285,8 @@ integrations:
 
 The agent gets two read tools: `jira_search_issues` (words from a service or an error, newest first) and `jira_get_issue` (one issue's description, resolution and latest comments). The Hub writes every JQL query itself, inside `project`; the model passes only words, so a search can't reach another project the token can see, and `jira_get_issue` refuses an issue that isn't in the project. Make the API token for an account that can browse that project and nothing else you'd mind the agent reading.
 
+**Create Jira issue.** A finished Report has a **Create Jira issue** button on its Slack thread and its console page (the token must be allowed to create issues in `project`; `issue_type`, default `Task`, names the type as the project calls it). It files the full Report, Evidence and executed actions included, redacted like Slack, as an issue labelled `aiops`; the text is built as plain text nodes, so markup in tool output stays text, and only links the Hub kept become links. Only the Operator can file, once per Investigation: the Hub claims it first, so a double click or a redelivered click files nothing more. If Jira refuses (a wrong issue type, say), the message says why and the button works again. If Jira doesn't answer, it may have created the issue, so the Hub keeps the claim and asks you to check the project before filing by hand. The thread and the console then show the issue's key and link. The agent never files: creating is Hub code behind the button, not a tool.
+
 **Vendor integrations.** Besides the builtins, a Contract can turn on a vendor MCP server the Hub knows:
 
 ```yaml

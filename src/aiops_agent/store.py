@@ -26,7 +26,7 @@ MIGRATION_LOCK = 4_242_001  # pg_advisory_xact_lock key: one Hub migrates at a t
 COLUMNS = (
     "id, kind, contract_id, title, group_key, group_resolved, status, started, report, "
     "pending, executed_actions, error, deadline, slack_channel, slack_ts, client_sent_at, "
-    "client_sent_by, answer, last_mention_ts, input"
+    "client_sent_by, answer, last_mention_ts, input, jira_issue, jira_by, jira_at"
 )
 
 
@@ -99,7 +99,8 @@ class Store:
     async def insert(self, t: Investigation) -> None:
         await self._exec(
             f"insert into investigations ({COLUMNS}) values "  # noqa: S608 - fixed columns
-            "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
+            "%s, %s, %s)",
             (
                 t.id,
                 t.kind,
@@ -121,6 +122,9 @@ class Store:
                 Jsonb(t.answer.model_dump(mode="json")) if t.answer else None,
                 t.last_mention_ts,
                 Jsonb(t.input) if t.input is not None else None,
+                t.jira_issue,
+                t.jira_by,
+                t.jira_at,
             ),
         )
 
@@ -150,6 +154,32 @@ class Store:
         await self._exec(
             "update investigations set client_sent_at = null, client_sent_by = null "
             "where id = %s and client_sent_at = %s",
+            (investigation_id, at),
+        )
+
+    async def claim_jira(self, investigation_id: str, by: str) -> float | None:
+        """Take the one Jira issue of a finished Report: its time, or None when it
+        was already claimed (filed, being filed, or unknown) or isn't finished."""
+        at = now()
+        row = await self._one(
+            "update investigations set jira_at = %s, jira_by = %s "
+            "where id = %s and status = 'done' and report is not null "
+            "and jira_at is null returning id",
+            (at, by, investigation_id),
+        )
+        return at if row else None
+
+    async def set_jira_issue(self, investigation_id: str, at: float, key: str) -> None:
+        await self._exec(
+            "update investigations set jira_issue = %s where id = %s and jira_at = %s",
+            (key, investigation_id, at),
+        )
+
+    async def release_jira(self, investigation_id: str, at: float) -> None:
+        """Jira refused it: free the claim for a retry, unless it was claimed again."""
+        await self._exec(
+            "update investigations set jira_at = null, jira_by = null "
+            "where id = %s and jira_at = %s and jira_issue is null",
             (investigation_id, at),
         )
 

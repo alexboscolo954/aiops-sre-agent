@@ -27,7 +27,8 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from jinja2 import Environment, FileSystemLoader
 
 from aiops_agent import evals
-from aiops_agent.contracts import Contract
+from aiops_agent.contracts import Contract, Jira
+from aiops_agent.models import Investigation
 from aiops_agent.safety import redact
 from aiops_agent.store import Store, now
 
@@ -52,6 +53,8 @@ Ask = Callable[[str, str, str | None], Awaitable[str | None]]
 QUESTION_LIMIT = 4000
 # health(contract) -> one {name, ok, ms, detail} per integration check
 Health = Callable[[Contract], Awaitable[list[dict[str, Any]]]]
+# (investigation, the Operator's login) -> (the issue key, or None and why)
+FileJira = Callable[[Investigation, str], Awaitable[tuple[str | None, str]]]
 
 
 def action_key(approver_token: str) -> str:
@@ -82,6 +85,8 @@ def router(
     health: Health,
     hub_config: dict[str, Any],
     approver_token: str,
+    file_jira: FileJira,
+    jira_of: Callable[[Investigation], Jira | None],
 ) -> APIRouter:
     key = action_key(approver_token)
 
@@ -152,6 +157,7 @@ def router(
             "investigation.html",
             login=login,
             t=t,
+            jira=jira_of(t),
             usage=await store().investigation_usage(t.id),
             tool_calls=await store().tool_calls(t.id),
             decisions=await store().decisions(t.id),
@@ -193,6 +199,16 @@ def router(
         approve = f.get("approve") == "1"
         if not await decide(investigation_id, deadline, approve, f.get("reason", ""), login):
             raise HTTPException(409, "already decided or Stale: nothing to decide")
+        return RedirectResponse(f"/console/investigations/{investigation_id}", 303)
+
+    @console.post("/investigations/{investigation_id}/jira")
+    async def jira_issue(investigation_id: str, login: str = Depends(acting)) -> RedirectResponse:
+        t = await store().get(investigation_id)
+        if t is None:
+            raise HTTPException(404, "unknown investigation")
+        key, message = await file_jira(t, login)
+        if key is None:
+            raise HTTPException(409, message)
         return RedirectResponse(f"/console/investigations/{investigation_id}", 303)
 
     @console.post("/questions")

@@ -14,6 +14,7 @@ import pytest
 from kubernetes import client as k
 from langchain.messages import AIMessage, ToolCall
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+from pydantic import SecretStr
 
 from aiops_agent import agent, contracts
 from aiops_agent.config import Settings
@@ -58,6 +59,7 @@ def make_contract(
     webhook_token: str | None = None,
     slack_channel: str | None = None,
     client_channel: str | None = None,
+    secrets: dict[str, str] | None = None,
     **extra: Any,
 ) -> contracts.Contract:
     """A Contract in memory: by default one cluster "test" allowing namespace "shop"."""
@@ -75,7 +77,8 @@ def make_contract(
         data["webhook_token_sha256"] = contracts.token_hash(webhook_token)
     if slack_channel:
         data["slack"] = {"operator_channel": slack_channel, "client_channel": client_channel}
-    return contracts.build({**data, **extra}, runbook_dirs=runbook_dirs)
+    values = {k: SecretStr(v) for k, v in (secrets or {}).items()}
+    return contracts.build({**data, **extra}, secrets=values, runbook_dirs=runbook_dirs)
 
 
 def toolbox(settings: Settings, fake_cluster: Any, **contract: Any) -> agent.Toolbox:

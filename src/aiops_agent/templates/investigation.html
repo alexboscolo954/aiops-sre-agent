@@ -33,6 +33,17 @@
 </form>
 {% endif %}
 
+{% if jira and t.report and t.status == "done" %}
+<p>Jira:
+{% if t.jira_issue %}<a href="{{ jira.url.rstrip('/') }}/browse/{{ t.jira_issue }}">{{ t.jira_issue }}</a>, filed by {{ t.jira_by }}.
+{% elif t.jira_at %}being filed by {{ t.jira_by }} since {{ t.jira_at | when }}, or Jira didn't answer: check project {{ jira.project }} before filing it by hand.
+{% else %}</p>
+<form method="post" action="/console/investigations/{{ t.id }}/jira">
+  <button type="submit">Create Jira issue</button> The full Report, with Evidence, goes to Jira project {{ jira.project }}.
+</form>
+<p>{% endif %}</p>
+{% endif %}
+
 {% if t.report %}
 <h2>Report</h2>
 <pre>{{ t.report.to_markdown(t.executed_actions) }}</pre>
