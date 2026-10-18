@@ -1,0 +1,801 @@
+description: 'A Contract with Azure only: a Linux App Service web app worked until its startup command
+  was changed, then served 5xx. Recorded from a sandbox subscription (evals/record_azure.py).'
+clusters: {}
+integrations:
+- name: azure
+  vendor: azure
+  tools:
+    group_resource_list: read
+    appservice_webapp_get: read
+    monitor_activitylog_list: read
+    monitor_metrics_definitions: read
+    monitor_metrics_query: read
+    resourcehealth_availability-status_get: read
+alert:
+  status: firing
+  commonLabels:
+    alertname: AppServiceHttp5xx
+    app: shop-web
+  alerts:
+  - status: firing
+    labels:
+      alertname: AppServiceHttp5xx
+      resource_group: shop-prod-rg
+      app: shop-web
+      severity: critical
+    annotations:
+      summary: More than half of the requests to App Service shop-web return 5xx.
+expect:
+  category:
+  - bad_config
+  - bad_rollout
+  keywords:
+  - config
+  - '15:50'
+  max_tool_calls: 12
+tools:
+  azure_group_resource_list:
+  - match:
+      resource-group: shop-prod-rg
+    result:
+      status: 200
+      message: Success
+      results:
+        resources:
+        - name: aiops-plan
+          id: /subscriptions/00000000-0000-0000-0000-00000000a001/resourceGroups/shop-prod-rg/providers/Microsoft.Web/serverFarms/aiops-plan
+          type: Microsoft.Web/serverFarms
+          location: centralus
+        - name: shop-web
+          id: /subscriptions/00000000-0000-0000-0000-00000000a001/resourceGroups/shop-prod-rg/providers/Microsoft.Web/sites/shop-web
+          type: Microsoft.Web/sites
+          location: centralus
+      duration: 0
+  azure_appservice_webapp_get:
+  - match:
+      app: shop-web
+    result:
+      status: 200
+      message: Success
+      results:
+        Webapps:
+        - name: shop-web
+          type: Microsoft.Web/sites
+          location: centralus
+          kind: app,linux
+          enabled: true
+          state: Running
+          resourceGroup: shop-prod-rg
+          hostNames:
+          - shop-web.azurewebsites.net
+          lastModifiedTimeUtc: '2026-10-18T15:50:55.8833333+00:00'
+          sku: Basic
+      duration: 0
+  azure_monitor_activitylog_list:
+  - match:
+      resource-name: shop-web
+    result:
+      status: 200
+      message: Success
+      results:
+        activityLogs:
+        - description: ''
+          resourceId: /subscriptions/00000000-0000-0000-0000-00000000a001/resourcegroups/shop-prod-rg/providers/Microsoft.Web/sites/shop-web
+          operationName:
+            localizedValue: Update website
+            value: Microsoft.Web/sites/write
+          level: Informational
+          eventTimestamp: '2026-10-18T15:54:36.7323824Z'
+          properties:
+            eventCategory: Administrative
+            entity: /subscriptions/00000000-0000-0000-0000-00000000a001/resourcegroups/shop-prod-rg/providers/Microsoft.Web/sites/shop-web
+            message: Microsoft.Web/sites/write
+            hierarchy: 00000000-0000-0000-0000-00000000a002/00000000-0000-0000-0000-00000000a001
+          caller: oncall@example.com
+          correlationId: 34d49e3f-5559-438a-8b6f-63747c8acae7
+          category:
+            localizedValue: Administrative
+            value: Administrative
+          operationId: ffd89ae8-63f0-43fc-9a13-56f00f0511aa
+          resourceGroupName: shop-prod-rg
+          resourceProviderName:
+            localizedValue: Azure Web Sites
+            value: Microsoft.Web
+          status:
+            localizedValue: Succeeded
+            value: Succeeded
+          subStatus:
+            localizedValue: ''
+            value: ''
+          subscriptionId: 00000000-0000-0000-0000-00000000a001
+        - description: ''
+          resourceId: /subscriptions/00000000-0000-0000-0000-00000000a001/resourceGroups/shop-prod-rg/providers/Microsoft.Web/sites/shop-web/config/web
+          operationName:
+            localizedValue: Update web sites config
+            value: Microsoft.Web/sites/config/write
+          level: Informational
+          eventTimestamp: '2026-10-18T15:50:56.2686962Z'
+          properties:
+            statusCode: OK
+            serviceRequestId: null
+            eventCategory: Administrative
+            entity: /subscriptions/00000000-0000-0000-0000-00000000a001/resourceGroups/shop-prod-rg/providers/Microsoft.Web/sites/shop-web/config/web
+            message: Microsoft.Web/sites/config/write
+            hierarchy: 00000000-0000-0000-0000-00000000a002/00000000-0000-0000-0000-00000000a001
+          caller: oncall@example.com
+          correlationId: 1c74213a-b88f-4657-aedd-99dee0d3fe1c
+          category:
+            localizedValue: Administrative
+            value: Administrative
+          operationId: 1c74213a-b88f-4657-aedd-99dee0d3fe1c
+          resourceGroupName: shop-prod-rg
+          resourceProviderName:
+            localizedValue: Azure Web Sites
+            value: Microsoft.Web
+          status:
+            localizedValue: Succeeded
+            value: Succeeded
+          subStatus:
+            localizedValue: 'OK (HTTP Status Code: 200)'
+            value: OK
+          subscriptionId: 00000000-0000-0000-0000-00000000a001
+        - description: WebSite shop-web has an operation Update and the status is Succeeded
+          resourceId: /SUBSCRIPTIONS/00000000-0000-0000-0000-00000000a001/RESOURCEGROUPS/shop-prod-rg/PROVIDERS/MICROSOFT.WEB/SITES/shop-web
+          operationName:
+            localizedValue: UpdateWebSite
+            value: UpdateWebSite
+          level: Informational
+          eventTimestamp: '2026-10-18T15:50:56Z'
+          properties:
+            Message: ''
+          caller: null
+          correlationId: 7d7e6166-f894-4846-b895-6041caf05fca
+          category:
+            localizedValue: Administrative
+            value: Administrative
+          operationId: ''
+          resourceGroupName: shop-prod-rg
+          resourceProviderName:
+            localizedValue: Azure Web Sites
+            value: MICROSOFT.WEB
+          status:
+            localizedValue: Succeeded
+            value: Succeeded
+          subStatus:
+            localizedValue: ''
+            value: ''
+          subscriptionId: 00000000-0000-0000-0000-00000000a001
+        - description: WebSite shop-web has an operation Update and the status is Started
+          resourceId: /SUBSCRIPTIONS/00000000-0000-0000-0000-00000000a001/RESOURCEGROUPS/shop-prod-rg/PROVIDERS/MICROSOFT.WEB/SITES/shop-web
+          operationName:
+            localizedValue: UpdateWebSite
+            value: UpdateWebSite
+          level: Informational
+          eventTimestamp: '2026-10-18T15:50:55Z'
+          properties:
+            Message: ''
+          caller: null
+          correlationId: 7d7e6166-f894-4846-b895-6041caf05fca
+          category:
+            localizedValue: Administrative
+            value: Administrative
+          operationId: ''
+          resourceGroupName: shop-prod-rg
+          resourceProviderName:
+            localizedValue: Azure Web Sites
+            value: MICROSOFT.WEB
+          status:
+            localizedValue: Started
+            value: Started
+          subStatus:
+            localizedValue: ''
+            value: ''
+          subscriptionId: 00000000-0000-0000-0000-00000000a001
+        - description: ''
+          resourceId: /subscriptions/00000000-0000-0000-0000-00000000a001/resourceGroups/shop-prod-rg/providers/Microsoft.Web/sites/shop-web/config/web
+          operationName:
+            localizedValue: Update web sites config
+            value: Microsoft.Web/sites/config/write
+          level: Informational
+          eventTimestamp: '2026-10-18T15:50:54.7218053Z'
+          properties:
+            eventCategory: Administrative
+            entity: /subscriptions/00000000-0000-0000-0000-00000000a001/resourceGroups/shop-prod-rg/providers/Microsoft.Web/sites/shop-web/config/web
+            message: Microsoft.Web/sites/config/write
+            hierarchy: 00000000-0000-0000-0000-00000000a002/00000000-0000-0000-0000-00000000a001
+          caller: oncall@example.com
+          correlationId: 1c74213a-b88f-4657-aedd-99dee0d3fe1c
+          category:
+            localizedValue: Administrative
+            value: Administrative
+          operationId: 1c74213a-b88f-4657-aedd-99dee0d3fe1c
+          resourceGroupName: shop-prod-rg
+          resourceProviderName:
+            localizedValue: Azure Web Sites
+            value: Microsoft.Web
+          status:
+            localizedValue: Started
+            value: Started
+          subStatus:
+            localizedValue: ''
+            value: ''
+          subscriptionId: 00000000-0000-0000-0000-00000000a001
+        - description: ''
+          resourceId: /subscriptions/00000000-0000-0000-0000-00000000a001/resourceGroups/shop-prod-rg/providers/Microsoft.Web/sites/shop-web
+          operationName:
+            localizedValue: Get Web App Publishing Profile
+            value: Microsoft.Web/sites/publishxml/action
+          level: Informational
+          eventTimestamp: '2026-10-18T15:44:59.4256944Z'
+          properties:
+            statusCode: OK
+            serviceRequestId: null
+            eventCategory: Administrative
+            entity: /subscriptions/00000000-0000-0000-0000-00000000a001/resourceGroups/shop-prod-rg/providers/Microsoft.Web/sites/shop-web
+            message: Microsoft.Web/sites/publishxml/action
+            hierarchy: 00000000-0000-0000-0000-00000000a002/00000000-0000-0000-0000-00000000a001
+          caller: oncall@example.com
+          correlationId: 68cc7bd3-8cfc-4375-b0ec-792096b3d632
+          category:
+            localizedValue: Administrative
+            value: Administrative
+          operationId: 68cc7bd3-8cfc-4375-b0ec-792096b3d632
+          resourceGroupName: shop-prod-rg
+          resourceProviderName:
+            localizedValue: Azure Web Sites
+            value: Microsoft.Web
+          status:
+            localizedValue: Succeeded
+            value: Succeeded
+          subStatus:
+            localizedValue: 'OK (HTTP Status Code: 200)'
+            value: OK
+          subscriptionId: 00000000-0000-0000-0000-00000000a001
+        - description: ''
+          resourceId: /subscriptions/00000000-0000-0000-0000-00000000a001/resourceGroups/shop-prod-rg/providers/Microsoft.Web/sites/shop-web
+          operationName:
+            localizedValue: Get Web App Publishing Profile
+            value: Microsoft.Web/sites/publishxml/action
+          level: Informational
+          eventTimestamp: '2026-10-18T15:44:59.3163204Z'
+          properties:
+            eventCategory: Administrative
+            entity: /subscriptions/00000000-0000-0000-0000-00000000a001/resourceGroups/shop-prod-rg/providers/Microsoft.Web/sites/shop-web
+            message: Microsoft.Web/sites/publishxml/action
+            hierarchy: 00000000-0000-0000-0000-00000000a002/00000000-0000-0000-0000-00000000a001
+          caller: oncall@example.com
+          correlationId: 68cc7bd3-8cfc-4375-b0ec-792096b3d632
+          category:
+            localizedValue: Administrative
+            value: Administrative
+          operationId: 68cc7bd3-8cfc-4375-b0ec-792096b3d632
+          resourceGroupName: shop-prod-rg
+          resourceProviderName:
+            localizedValue: Azure Web Sites
+            value: Microsoft.Web
+          status:
+            localizedValue: Started
+            value: Started
+          subStatus:
+            localizedValue: ''
+            value: ''
+          subscriptionId: 00000000-0000-0000-0000-00000000a001
+        - description: ''
+          resourceId: /subscriptions/00000000-0000-0000-0000-00000000a001/resourceGroups/shop-prod-rg/providers/Microsoft.Web/sites/shop-web
+          operationName:
+            localizedValue: Update website
+            value: Microsoft.Web/sites/write
+          level: Informational
+          eventTimestamp: '2026-10-18T15:44:58.9364959Z'
+          properties:
+            statusCode: OK
+            serviceRequestId: null
+            eventCategory: Administrative
+            entity: /subscriptions/00000000-0000-0000-0000-00000000a001/resourceGroups/shop-prod-rg/providers/Microsoft.Web/sites/shop-web
+            message: Microsoft.Web/sites/write
+            hierarchy: 00000000-0000-0000-0000-00000000a002/00000000-0000-0000-0000-00000000a001
+          caller: oncall@example.com
+          correlationId: 34d49e3f-5559-438a-8b6f-63747c8acae7
+          category:
+            localizedValue: Administrative
+            value: Administrative
+          operationId: 34d49e3f-5559-438a-8b6f-63747c8acae7
+          resourceGroupName: shop-prod-rg
+          resourceProviderName:
+            localizedValue: Azure Web Sites
+            value: Microsoft.Web
+          status:
+            localizedValue: Succeeded
+            value: Succeeded
+          subStatus:
+            localizedValue: 'OK (HTTP Status Code: 200)'
+            value: OK
+          subscriptionId: 00000000-0000-0000-0000-00000000a001
+        - description: WebSite shop-web has an operation Create and the status is Succeeded
+          resourceId: /SUBSCRIPTIONS/00000000-0000-0000-0000-00000000a001/RESOURCEGROUPS/shop-prod-rg/PROVIDERS/MICROSOFT.WEB/SITES/shop-web
+          operationName:
+            localizedValue: CreateWebSite
+            value: CreateWebSite
+          level: Informational
+          eventTimestamp: '2026-10-18T15:44:58Z'
+          properties:
+            Message: ''
+          caller: null
+          correlationId: 7808abb8-6f72-4d50-9657-c93e1b2d2b20
+          category:
+            localizedValue: Administrative
+            value: Administrative
+          operationId: ''
+          resourceGroupName: shop-prod-rg
+          resourceProviderName:
+            localizedValue: Azure Web Sites
+            value: MICROSOFT.WEB
+          status:
+            localizedValue: Succeeded
+            value: Succeeded
+          subStatus:
+            localizedValue: ''
+            value: ''
+          subscriptionId: 00000000-0000-0000-0000-00000000a001
+        - description: ''
+          resourceId: /subscriptions/00000000-0000-0000-0000-00000000a001/resourceGroups/shop-prod-rg/providers/Microsoft.Web/sites/shop-web
+          operationName:
+            localizedValue: Update website
+            value: Microsoft.Web/sites/write
+          level: Informational
+          eventTimestamp: '2026-10-18T15:44:36.3410979Z'
+          properties:
+            eventCategory: Administrative
+            entity: /subscriptions/00000000-0000-0000-0000-00000000a001/resourceGroups/shop-prod-rg/providers/Microsoft.Web/sites/shop-web
+            message: Microsoft.Web/sites/write
+            hierarchy: 00000000-0000-0000-0000-00000000a002/00000000-0000-0000-0000-00000000a001
+          caller: oncall@example.com
+          correlationId: 34d49e3f-5559-438a-8b6f-63747c8acae7
+          category:
+            localizedValue: Administrative
+            value: Administrative
+          operationId: 34d49e3f-5559-438a-8b6f-63747c8acae7
+          resourceGroupName: shop-prod-rg
+          resourceProviderName:
+            localizedValue: Azure Web Sites
+            value: Microsoft.Web
+          status:
+            localizedValue: Started
+            value: Started
+          subStatus:
+            localizedValue: ''
+            value: ''
+          subscriptionId: 00000000-0000-0000-0000-00000000a001
+        - description: WebSite shop-web has an operation Create and the status is Started
+          resourceId: /SUBSCRIPTIONS/00000000-0000-0000-0000-00000000a001/RESOURCEGROUPS/shop-prod-rg/PROVIDERS/MICROSOFT.WEB/SITES/shop-web
+          operationName:
+            localizedValue: CreateWebSite
+            value: CreateWebSite
+          level: Informational
+          eventTimestamp: '2026-10-18T15:44:36Z'
+          properties:
+            Message: ''
+          caller: null
+          correlationId: 7808abb8-6f72-4d50-9657-c93e1b2d2b20
+          category:
+            localizedValue: Administrative
+            value: Administrative
+          operationId: ''
+          resourceGroupName: shop-prod-rg
+          resourceProviderName:
+            localizedValue: Azure Web Sites
+            value: MICROSOFT.WEB
+          status:
+            localizedValue: Started
+            value: Started
+          subStatus:
+            localizedValue: ''
+            value: ''
+          subscriptionId: 00000000-0000-0000-0000-00000000a001
+      duration: 0
+  azure_monitor_metrics_definitions:
+  - match:
+      resource: shop-web
+    result:
+      status: 200
+      message: Results truncated to 10 of 24 metric definitions. Use --search-string to filter results
+        for more specific metrics or increase --limit to see more results.
+      results:
+        results:
+        - name: CpuTime
+          category: null
+          description: The amount of CPU consumed by the app, in seconds. For more information about this
+            metric. Please see https://aka.ms/website-monitor-cpu-time-vs-cpu-percentage (CPU time vs
+            CPU percentage). For WebApps only.
+          unit: Seconds
+          defaultAggregation: Total
+          supportedAggregationTypes:
+          - Count
+          - Total
+          - Minimum
+          - Maximum
+          isDimensionRequiredWhenQuerying: false
+          metricNamespace: Microsoft.Web/sites
+          allowedIntervals:
+          - P1D
+          - PT12H
+          - PT15M
+          - PT1H
+          - PT1M
+          - PT30M
+          - PT5M
+          - PT6H
+          dimensions:
+          - Instance
+        - name: Requests
+          category: null
+          description: The total number of requests regardless of their resulting HTTP status code. For
+            WebApps and FunctionApps.
+          unit: Count
+          defaultAggregation: Total
+          supportedAggregationTypes:
+          - None
+          - Average
+          - Minimum
+          - Maximum
+          - Total
+          - Count
+          isDimensionRequiredWhenQuerying: false
+          metricNamespace: Microsoft.Web/sites
+          allowedIntervals:
+          - P1D
+          - PT12H
+          - PT15M
+          - PT1H
+          - PT1M
+          - PT30M
+          - PT5M
+          - PT6H
+          dimensions:
+          - Instance
+        - name: BytesReceived
+          category: null
+          description: The amount of incoming bandwidth consumed by the app, in MiB. For WebApps and FunctionApps.
+          unit: Bytes
+          defaultAggregation: Total
+          supportedAggregationTypes:
+          - None
+          - Average
+          - Minimum
+          - Maximum
+          - Total
+          - Count
+          isDimensionRequiredWhenQuerying: false
+          metricNamespace: Microsoft.Web/sites
+          allowedIntervals:
+          - P1D
+          - PT12H
+          - PT15M
+          - PT1H
+          - PT1M
+          - PT30M
+          - PT5M
+          - PT6H
+          dimensions:
+          - Instance
+        - name: BytesSent
+          category: null
+          description: The amount of outgoing bandwidth consumed by the app, in MiB. For WebApps and FunctionApps.
+          unit: Bytes
+          defaultAggregation: Total
+          supportedAggregationTypes:
+          - None
+          - Average
+          - Minimum
+          - Maximum
+          - Total
+          - Count
+          isDimensionRequiredWhenQuerying: false
+          metricNamespace: Microsoft.Web/sites
+          allowedIntervals:
+          - P1D
+          - PT12H
+          - PT15M
+          - PT1H
+          - PT1M
+          - PT30M
+          - PT5M
+          - PT6H
+          dimensions:
+          - Instance
+        - name: Http101
+          category: null
+          description: The count of requests resulting in an HTTP status code 101. For WebApps and FunctionApps.
+          unit: Count
+          defaultAggregation: Total
+          supportedAggregationTypes:
+          - None
+          - Average
+          - Minimum
+          - Maximum
+          - Total
+          - Count
+          isDimensionRequiredWhenQuerying: false
+          metricNamespace: Microsoft.Web/sites
+          allowedIntervals:
+          - P1D
+          - PT12H
+          - PT15M
+          - PT1H
+          - PT1M
+          - PT30M
+          - PT5M
+          - PT6H
+          dimensions:
+          - Instance
+        - name: Http2xx
+          category: null
+          description: The count of requests resulting in an HTTP status code >= 200 but < 300. For WebApps
+            and FunctionApps.
+          unit: Count
+          defaultAggregation: Total
+          supportedAggregationTypes:
+          - None
+          - Average
+          - Minimum
+          - Maximum
+          - Total
+          - Count
+          isDimensionRequiredWhenQuerying: false
+          metricNamespace: Microsoft.Web/sites
+          allowedIntervals:
+          - P1D
+          - PT12H
+          - PT15M
+          - PT1H
+          - PT1M
+          - PT30M
+          - PT5M
+          - PT6H
+          dimensions:
+          - Instance
+        - name: Http3xx
+          category: null
+          description: The count of requests resulting in an HTTP status code >= 300 but < 400. For WebApps
+            and FunctionApps.
+          unit: Count
+          defaultAggregation: Total
+          supportedAggregationTypes:
+          - None
+          - Average
+          - Minimum
+          - Maximum
+          - Total
+          - Count
+          isDimensionRequiredWhenQuerying: false
+          metricNamespace: Microsoft.Web/sites
+          allowedIntervals:
+          - P1D
+          - PT12H
+          - PT15M
+          - PT1H
+          - PT1M
+          - PT30M
+          - PT5M
+          - PT6H
+          dimensions:
+          - Instance
+        - name: Http401
+          category: null
+          description: The count of requests resulting in HTTP 401 status code. For WebApps and FunctionApps.
+          unit: Count
+          defaultAggregation: Total
+          supportedAggregationTypes:
+          - None
+          - Average
+          - Minimum
+          - Maximum
+          - Total
+          - Count
+          isDimensionRequiredWhenQuerying: false
+          metricNamespace: Microsoft.Web/sites
+          allowedIntervals:
+          - P1D
+          - PT12H
+          - PT15M
+          - PT1H
+          - PT1M
+          - PT30M
+          - PT5M
+          - PT6H
+          dimensions:
+          - Instance
+        - name: Http403
+          category: null
+          description: The count of requests resulting in HTTP 403 status code. For WebApps and FunctionApps.
+          unit: Count
+          defaultAggregation: Total
+          supportedAggregationTypes:
+          - None
+          - Average
+          - Minimum
+          - Maximum
+          - Total
+          - Count
+          isDimensionRequiredWhenQuerying: false
+          metricNamespace: Microsoft.Web/sites
+          allowedIntervals:
+          - P1D
+          - PT12H
+          - PT15M
+          - PT1H
+          - PT1M
+          - PT30M
+          - PT5M
+          - PT6H
+          dimensions:
+          - Instance
+        - name: Http404
+          category: null
+          description: The count of requests resulting in HTTP 404 status code. For WebApps and FunctionApps.
+          unit: Count
+          defaultAggregation: Total
+          supportedAggregationTypes:
+          - None
+          - Average
+          - Minimum
+          - Maximum
+          - Total
+          - Count
+          isDimensionRequiredWhenQuerying: false
+          metricNamespace: Microsoft.Web/sites
+          allowedIntervals:
+          - P1D
+          - PT12H
+          - PT15M
+          - PT1H
+          - PT1M
+          - PT30M
+          - PT5M
+          - PT6H
+          dimensions:
+          - Instance
+        status: Results truncated to 10 of 24 metric definitions. Use --search-string to filter results
+          for more specific metrics or increase --limit to see more results.
+      duration: 0
+  azure_monitor_metrics_query:
+  - match:
+      resource: shop-web
+    result:
+      status: 200
+      message: Success
+      results:
+        results:
+        - name: Requests
+          unit: Count
+          timeSeries:
+          - metadata: {}
+            start: '2026-10-18T14:03:00Z'
+            end: '2026-10-18T15:58:00Z'
+            interval: PT5M
+            totalBuckets:
+            - 0
+            - 0
+            - 0
+            - 0
+            - 0
+            - 0
+            - 0
+            - 0
+            - 0
+            - 0
+            - 0
+            - 0
+            - 0
+            - 0
+            - 0
+            - 0
+            - 0
+            - 0
+            - 0
+            - 0
+            - 20
+            - 110
+            - 64
+            - 84
+        - name: Http2xx
+          unit: Count
+          timeSeries:
+          - metadata: {}
+            start: '2026-10-18T14:03:00Z'
+            end: '2026-10-18T15:58:00Z'
+            interval: PT5M
+            totalBuckets:
+            - 0
+            - 0
+            - 0
+            - 0
+            - 0
+            - 0
+            - 0
+            - 0
+            - 0
+            - 0
+            - 0
+            - 0
+            - 0
+            - 0
+            - 0
+            - 0
+            - 0
+            - 0
+            - 0
+            - 0
+            - 20
+            - 110
+            - 3
+            - 0
+        - name: Http5xx
+          unit: Count
+          timeSeries:
+          - metadata: {}
+            start: '2026-10-18T14:03:00Z'
+            end: '2026-10-18T15:58:00Z'
+            interval: PT5M
+            totalBuckets:
+            - 0
+            - 0
+            - 0
+            - 0
+            - 0
+            - 0
+            - 0
+            - 0
+            - 0
+            - 0
+            - 0
+            - 0
+            - 0
+            - 0
+            - 0
+            - 0
+            - 0
+            - 0
+            - 0
+            - 0
+            - 0
+            - 0
+            - 61
+            - 84
+      duration: 0
+  azure_resourcehealth_availability-status_get:
+  - match: {}
+    result:
+      status: 200
+      message: Success
+      results:
+        statuses:
+        - resourceId: /subscriptions/00000000-0000-0000-0000-00000000a001/resourcegroups/shop-prod-rg/providers/microsoft.web/serverfarms/aiops-plan/providers/Microsoft.ResourceHealth/availabilityStatuses/current
+          availabilityState: Available
+          summary: The App Service plan is running normally.
+          detailedStatus: null
+          reasonType: ''
+          occurredTime: '2026-10-18T15:51:21+00:00'
+          reportedTime: '2026-10-18T16:03:56.9603749+00:00'
+          causeType: Transient
+          rootCauseAttributionTime: null
+          category: null
+          title: Available
+          location: centralus
+          firstDiscoveredTime: null
+          lastDiscoveredTime: null
+        - resourceId: /subscriptions/00000000-0000-0000-0000-00000000a001/resourcegroups/shop-prod-rg/providers/microsoft.web/sites/shop-web/providers/Microsoft.ResourceHealth/availabilityStatuses/current
+          availabilityState: Available
+          summary: The Web app is running normally.
+          detailedStatus: null
+          reasonType: ''
+          occurredTime: '2026-10-18T15:51:21+00:00'
+          reportedTime: '2026-10-18T16:03:56.9532924+00:00'
+          causeType: Transient
+          rootCauseAttributionTime: null
+          category: null
+          title: Available
+          location: centralus
+          firstDiscoveredTime: null
+          lastDiscoveredTime: null
+      duration: 0
