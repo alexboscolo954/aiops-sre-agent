@@ -65,9 +65,15 @@ json=(-H 'Content-Type: application/json' --data-binary @"$root/examples/alert-c
 id=$(curl -sfk -X POST "$alert" -H "Authorization: Bearer $token" "${json[@]}" |
   python3 -c 'import json,sys; print(json.load(sys.stdin)["investigation"])') || fail "alert refused"
 echo "ok   alert accepted through Caddy: $id"
+grafana=(-H 'Content-Type: application/json' --data-binary @"$root/tests/fixtures/grafana-firing.json")
+[[ $(code -X POST "$public/contracts/demo-shop/grafana" -H 'Authorization: Bearer wrong' \
+  "${grafana[@]}") == 401 ]] || fail "Grafana route: wrong token"
+curl -sfk -X POST "$public/contracts/demo-shop/grafana" -H "Authorization: Bearer $token" \
+  "${grafana[@]}" | grep -q '"accepted"' || fail "Grafana alert refused"
+echo "ok   Grafana Alerting webhook accepted through Caddy"
 
 for path in /investigations "/investigations/$id" /metrics /healthz /docs /openapi.json \
-  /contracts/demo-shop/alertmanager/x; do
+  /contracts/demo-shop/alertmanager/x /contracts/demo-shop/grafana/x; do
   [[ $(code -H 'Authorization: Bearer smoke-approver' "$public$path") == 404 ]] || fail "GET $path is public"
 done
 [[ $(code -X POST "$public/investigations/$id/decision" -H 'Authorization: Bearer smoke-approver' \

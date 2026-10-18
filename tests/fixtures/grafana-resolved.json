@@ -1,0 +1,55 @@
+{
+  "receiver": "aiops",
+  "status": "resolved",
+  "alerts": [
+    {
+      "status": "resolved",
+      "labels": {
+        "alertname": "PaymentsChargeErrors",
+        "grafana_folder": "Shop",
+        "service_name": "payments",
+        "severity": "warning"
+      },
+      "annotations": {
+        "description": "Charge errors in the last minute: 75",
+        "grafana_state_reason": "Updated",
+        "summary": "payments charges are failing"
+      },
+      "startsAt": "2026-10-18T01:08:40Z",
+      "endsAt": "2026-10-18T01:09:20.012994631Z",
+      "generatorURL": "http://localhost:3000/alerting/grafana/payments-errors/view?orgId=1",
+      "fingerprint": "49af58bc90a92a6d",
+      "silenceURL": "http://localhost:3000/alerting/silence/new?alertmanager=grafana&matcher=__alert_rule_uid__%3Dpayments-errors&matcher=service_name%3Dpayments&matcher=severity%3Dwarning&orgId=1",
+      "dashboardURL": "",
+      "panelURL": "",
+      "ruleUID": "payments-errors",
+      "values": null,
+      "valueString": "[ var='B' labels={} type='reduce' value=75 ], [ var='C' labels={} type='threshold' value=1 ]",
+      "orgId": 1
+    }
+  ],
+  "groupLabels": {
+    "alertname": "PaymentsChargeErrors",
+    "grafana_folder": "Shop"
+  },
+  "commonLabels": {
+    "alertname": "PaymentsChargeErrors",
+    "grafana_folder": "Shop",
+    "service_name": "payments",
+    "severity": "warning"
+  },
+  "commonAnnotations": {
+    "description": "Charge errors in the last minute: 75",
+    "grafana_state_reason": "Updated",
+    "summary": "payments charges are failing"
+  },
+  "externalURL": "http://localhost:3000/",
+  "appVersion": "13.2.2",
+  "version": "1",
+  "groupKey": "{}:{alertname=\"PaymentsChargeErrors\", grafana_folder=\"Shop\"}",
+  "truncatedAlerts": 0,
+  "orgId": 1,
+  "title": "[RESOLVED] PaymentsChargeErrors Shop (payments warning)",
+  "state": "ok",
+  "message": "**Resolved**\n\nValue: [no value]\nLabels:\n - alertname = PaymentsChargeErrors\n - grafana_folder = Shop\n - service_name = payments\n - severity = warning\nAnnotations:\n - description = Charge errors in the last minute: 75\n - grafana_state_reason = Updated\n - summary = payments charges are failing\nSource: http://localhost:3000/alerting/grafana/payments-errors/view?orgId=1\nSilence: http://localhost:3000/alerting/silence/new?alertmanager=grafana&matcher=__alert_rule_uid__%3Dpayments-errors&matcher=service_name%3Dpayments&matcher=severity%3Dwarning&orgId=1\n"
+}

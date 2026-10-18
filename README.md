@@ -110,9 +110,9 @@ The Hub runs every Contract from one VM you own: [`deploy/hub`](deploy/hub) is a
 4. **Settings:** copy `env.example` to `.env` (Postgres password, domain) and `hub.env.example` to `hub.env` (approver token, model key).
 5. **Start:** `docker compose up -d --wait`. Caddy gets a certificate for your domain.
 6. **Operator access:** `tailscale serve --bg 8080` publishes the API, which listens only on `127.0.0.1:8080`, to your tailnet over HTTPS. Never publish port 8080 another way: ports Docker publishes bypass host firewalls.
-7. **Alertmanagers:** each Contract's Alertmanager posts to `https://<domain>/contracts/<id>/alertmanager` with that Contract's token.
+7. **Alert sources:** each Contract's Alertmanager posts to `https://<domain>/contracts/<id>/alertmanager`, and its Grafana Alerting to `https://<domain>/contracts/<id>/grafana`, both with that Contract's token.
 
-**What is public:** only `POST /contracts/<id>/alertmanager`, with bodies up to 1 MB ([`Caddyfile`](deploy/hub/Caddyfile)). Investigations, decisions, metrics and the API docs answer only on `127.0.0.1`.
+**What is public:** only `POST /contracts/<id>/alertmanager` and `POST /contracts/<id>/grafana`, with bodies up to 1 MB ([`Caddyfile`](deploy/hub/Caddyfile)). Investigations, decisions, metrics and the API docs answer only on `127.0.0.1`.
 
 **Updating Contracts:** `./update-contracts.sh` pulls the contracts repo and validates every Contract inside the image before restarting the Hub. If any Contract is invalid, it rolls the clone back and leaves the running Hub alone, because one bad Contract would otherwise stop alerts for all of them.
 
@@ -172,9 +172,12 @@ The image is published to GHCR on version tags. To use your own build, `cd deplo
 This in-cluster deploy serves one Contract, `in-cluster` ([`deploy/base/contract.yaml`](deploy/base/contract.yaml)), mounted from a ConfigMap. For several Contracts, run the Hub on a VM instead ([Running the Hub](#running-the-hub)).
 Point Alertmanager at it with [`deploy/alertmanager-receiver.yaml`](deploy/alertmanager-receiver.yaml).
 
+**Grafana Alerting** is a second alert source. In the client's Grafana, add a contact point of type Webhook with URL `https://<domain>/contracts/<id>/grafana`, Authorization header scheme `Bearer` and the Contract's webhook token as its credentials, and leave "Disable resolved message" off, so a resolved alert makes its proposed actions stale. Route the alerts you want triaged to it with a notification policy. Grafana's notification is Alertmanager's payload plus each rule's query values; the Hub keeps those as the alert's `query_values` annotation, drops Grafana's rendered title and message (they repeat the labels and annotations), and from there handles it like an Alertmanager group: same token, dedup and resolve rules. The test payloads were captured from Grafana 13.2 ([`tests/fixtures/grafana-firing.json`](tests/fixtures/grafana-firing.json)).
+
 | Endpoint | Token | |
 |---|---|---|
 | `POST /contracts/{id}/alertmanager` | that Contract's webhook token | Starts a triage when an alert not seen before is firing in the group. An unknown Contract gets the same 401 as a wrong token. Duplicates are checked per Contract, so two Contracts can send the same group key. Anything else within 30 min (a repeat, or a group that shrank) returns the existing triage. A resolved group makes its proposed actions stale. |
+| `POST /contracts/{id}/grafana` | that Contract's webhook token | Grafana Alerting's webhook contact point, normalized into the same Alert group, then exactly as above |
 | `GET /investigations`, `GET /investigations/{id}` | approver | Status, kind (`triage` for now), Contract, report, proposed and executed actions |
 | `POST /investigations/{id}/decision` | approver | `{"approve": true}` or `{"approve": false, "message": "..."}` |
 | `GET /metrics`, `GET /healthz` | none | `aiops_triages_total`, `aiops_triage_seconds`, `aiops_tool_calls_total`, `aiops_pending_approvals` |

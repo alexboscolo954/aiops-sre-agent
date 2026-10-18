@@ -1,6 +1,8 @@
 """Alertmanager webhook receiver for every Contract.
 
 POST /contracts/{id}/alertmanager  That Contract's Alertmanager (its own webhook token).
+POST /contracts/{id}/grafana       That Contract's Grafana Alerting, same token, normalized
+                                   into the same Alert group.
                                 Starts a triage, or makes a resolved group's
                                 proposed actions stale. Unknown id = wrong token = 401.
 GET  /investigations[/{id}]     Status, report, pending actions (approver token).
@@ -37,7 +39,7 @@ from pydantic import BaseModel
 
 from aiops_agent import agent, console, contracts
 from aiops_agent.config import Settings
-from aiops_agent.models import AlertGroup, Investigation
+from aiops_agent.models import AlertGroup, GrafanaAlertGroup, Investigation
 from aiops_agent.observability import PENDING_APPROVALS, TRIAGE_SECONDS, TRIAGES
 from aiops_agent.safety import redact_capped
 from aiops_agent.slack import (
@@ -605,6 +607,16 @@ def create_app(
             return {"status": "refused", "investigation": t.id, "reason": reason}
         spawn(run(t, lambda a: agent.start(a, group, t.id)))
         return {"status": "accepted", "investigation": t.id}
+
+    @app.post("/contracts/{contract_id}/grafana", status_code=202)
+    async def grafana(
+        contract_id: str,
+        payload: GrafanaAlertGroup,
+        creds: HTTPAuthorizationCredentials = Depends(bearer),  # noqa: B008
+    ) -> dict[str, Any]:
+        """Grafana Alerting's webhook contact point, with the Contract's webhook token as
+        its Bearer credentials: from here on the same path as Alertmanager's."""
+        return await alertmanager(contract_id, payload.normalized(), creds)
 
     @app.get("/investigations", dependencies=[Depends(approver_auth)])
     async def list_investigations() -> list[Investigation]:

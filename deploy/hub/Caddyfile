@@ -1,4 +1,4 @@
-# The Hub's only public route: each Contract's Alertmanager posting alerts.
+# The Hub's only public route: each Contract's Alertmanager or Grafana posting alerts.
 # Investigations, decisions, metrics and the API docs stay on 127.0.0.1, reached
 # through `tailscale serve`. Anything else gets a 404 here and never reaches the Hub.
 {$AIOPS_DOMAIN:localhost} {
@@ -8,7 +8,7 @@
 	}
 	@alerts {
 		method POST
-		path_regexp ^/contracts/[a-z0-9-]+/alertmanager$
+		path_regexp ^/contracts/[a-z0-9-]+/(alertmanager|grafana)$
 	}
 	handle @alerts {
 		reverse_proxy hub:8080

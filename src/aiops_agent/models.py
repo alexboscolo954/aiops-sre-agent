@@ -1,5 +1,5 @@
-"""Alert input (Alertmanager webhook v4), the triage report the agent returns, and the
-Investigation record the Hub keeps."""
+"""Alert input (Alertmanager webhook v4, or Grafana Alerting's webhook), the triage
+report the agent returns, and the Investigation record the Hub keeps."""
 
 from datetime import datetime
 from typing import Any, Literal
@@ -38,6 +38,36 @@ class AlertGroup(BaseModel):
     @property
     def firing(self) -> list[Alert]:
         return [a for a in self.alerts if a.status == "firing"]
+
+
+class GrafanaAlert(Alert):
+    valueString: str = ""  # the rule's query values when it was evaluated
+
+
+class GrafanaAlertGroup(AlertGroup):
+    """Grafana Alerting's webhook contact point: Alertmanager's payload (same group
+    key, fingerprints and resolved notifications) plus each rule's query values.
+    Its rendered `title` and `message` repeat the labels and annotations: dropped."""
+
+    alerts: list[GrafanaAlert]  # type: ignore[assignment]
+
+    def normalized(self) -> AlertGroup:
+        """An Alert group as Alertmanager would send it, its group key marked as
+        Grafana's. The query values, the one thing it adds, stay visible to the agent
+        as the `query_values` annotation."""
+        alerts = [
+            Alert(
+                **a.model_dump(exclude={"valueString", "annotations"}),
+                annotations={"query_values": a.valueString, **a.annotations}
+                if a.valueString
+                else a.annotations,
+            )
+            for a in self.alerts
+        ]
+        # Its own group keys: an Alertmanager grouping by the same labels would send
+        # the same key, and one source resolving must not stale the other's actions.
+        fields = self.model_dump(exclude={"alerts", "groupKey"})
+        return AlertGroup(**fields, groupKey=f"grafana:{self.groupKey}", alerts=alerts)
 
 
 # Root cause class, not failure mode (docs/adr/0001-category-is-root-cause-class.md).
