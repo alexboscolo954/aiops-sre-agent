@@ -41,11 +41,19 @@ from langgraph.types import Command
 from pydantic import BaseModel
 
 from aiops_agent.config import Settings
-from aiops_agent.contracts import Contract, Integration, Kubernetes, Prometheus, Runbooks, Vendor
+from aiops_agent.contracts import (
+    Contract,
+    Integration,
+    Jira,
+    Kubernetes,
+    Prometheus,
+    Runbooks,
+    Vendor,
+)
 from aiops_agent.models import AlertGroup, Answer, TriageReport
 from aiops_agent.observability import AuditMiddleware
 from aiops_agent.safety import redact, redact_capped, redact_strings, truncate
-from aiops_agent.servers import Access, kubernetes, prometheus, runbooks, vendors
+from aiops_agent.servers import Access, jira, kubernetes, prometheus, runbooks, vendors
 
 log = logging.getLogger("aiops.agent")
 
@@ -228,6 +236,8 @@ def build_mcp(
     for i in contract.integrations:
         server = integration_server(contract, i, settings, k8s_apis, snapshots)
         mount(root, access, i.name, *server)
+        if isinstance(i, Jira):
+            guides.append(jira.GUIDE)
         if isinstance(i, Vendor):
             spec = vendors.VENDORS[i.vendor]
             if spec.guide:
@@ -255,6 +265,8 @@ def probes(contract: Contract) -> list[tuple[str, str | None, dict[str, Any]]]:
             checks.append(("prometheus", "prometheus_query", {"promql": "vector(1)"}))
         elif isinstance(i, Runbooks):
             checks.append(("runbooks", "runbooks_search_runbooks", {"keywords": "health"}))
+        elif isinstance(i, Jira):
+            checks.append(("jira", "jira_search_issues", {"text": "health", "days": 1, "limit": 1}))
         elif i.probe:
             checks.append((i.name, f"{i.name}_{i.probe.tool}", i.probe.args))
         else:
@@ -278,6 +290,10 @@ def integration_server(
         return prometheus.build_server(integration.url, token), prometheus.ACCESS
     if isinstance(integration, Runbooks):
         return runbooks.build_server(contract.runbook_dirs), runbooks.ACCESS
+    if isinstance(integration, Jira):
+        token = contract.secret(integration.token_secret)
+        server = jira.build_server(integration.url, integration.email, token, integration.project)
+        return server, jira.ACCESS
     if isinstance(integration, Vendor):
         if snapshots:
             server = vendors.snapshot_server(integration.vendor, integration.name)

@@ -232,9 +232,10 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
 - Part b, checked first: the snapshot was taken with Grafana unreachable, and mcp-grafana reads `/api/frontend/settings` at startup. Captured with the registry flags and `GRAFANA_URL` at the demo Grafana: identical to `grafana.json`, so the snapshot taken with no Grafana holds.
 - *Done when:* two new recorded Scenarios pass, one with the root cause in log patterns and one in traces.
 
-**4.4 Jira.**
+**4.4 Jira.** Part a done (search as Evidence); part b next (the "Create Jira issue" button).
 - A "Create Jira issue" button in Slack and the console puts the Report into the Contract's project. Searching past issues becomes an Evidence source.
-- *Decide at slice time:* Atlassian's remote MCP (OAuth) or a small builtin server (API token).
+- *Decided (the Operator, 2026-10-17):* a small builtin server with an API token, not Atlassian's remote MCP. Any Jira Cloud user can make a token, with no client admin step (the remote MCP's API-token access must be enabled by each client's org admin), it fits the Contract's static SOPS secrets, and it needs no remote-HTTP vendor transport.
+- Part a, as built: integration `{name: jira, url (https), email, token_secret, project}`; tools `jira_search_issues` and `jira_get_issue`, read-only, on REST v3 (`POST /rest/api/3/search/jql`). The server writes the JQL (`project = "<KEY>" AND text ~ "<words>"`), the model passes words only (non-word characters become spaces); `get_issue` checks the project of the issue that comes back. A prompt guide is added only when the Contract has Jira; health searches one day; Save as Scenario and replay handle it. Tested against synthetic responses in the documented shapes; no live Jira yet.
 
 ### Phase 5: Clouds, read-only (3 slices)
 
@@ -302,4 +303,4 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
 
 ## Next
 
-Phase 4 first (the Operator's choice: no Contract needs a Relay yet). Next: slice 4.4, Jira.
+Phase 4 first (the Operator's choice: no Contract needs a Relay yet). Next: slice 4.4 part b, the "Create Jira issue" button.

@@ -21,6 +21,7 @@ import yaml
 from fastmcp.server.middleware import Middleware, MiddlewareContext
 from fastmcp.tools import ToolResult
 from mcp.types import TextContent
+from pydantic import SecretStr
 
 from aiops_agent import agent, contracts
 from aiops_agent.config import Settings
@@ -113,6 +114,16 @@ def scenario_contract(
             built.append({"name": name, "enable_actions": enable_actions})
         elif name == "prometheus":
             built.append({"name": name, "url": "http://replay.invalid"})  # never reached
+        elif name == "jira":  # placeholder: never reached
+            built.append(
+                {
+                    "name": name,
+                    "url": "https://replay.invalid",
+                    "email": "replay@replay.invalid",
+                    "token_secret": "replay",
+                    "project": "REPLAY",
+                }
+            )
         elif name == "runbooks":
             if any(d.is_dir() for d in dirs):
                 built.append({"name": name})
@@ -123,7 +134,8 @@ def scenario_contract(
     spaces = {EVAL_CLUSTER: [namespace]} if clusters is None else clusters  # {}: none
     cluster_list = [{"name": c, "context": "replay", "namespaces": ns} for c, ns in spaces.items()]
     data = {"id": "eval", "name": "Eval", "clusters": cluster_list, "integrations": built}
-    return contracts.build(data, runbook_dirs=dirs)
+    # A placeholder for any integration's token_secret ("replay"): never used.
+    return contracts.build(data, secrets={"replay": SecretStr("replay")}, runbook_dirs=dirs)
 
 
 def replay_server(

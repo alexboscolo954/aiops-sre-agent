@@ -272,6 +272,19 @@ Eight scenarios is a smoke test, not a benchmark. Add scenarios by recording new
 The agent is moving from one global config to several Contracts, one per client engagement. The plan is in [`docs/roadmap.md`](docs/roadmap.md).
 A Contract is a directory in your **private** contracts repo, never in this one ([ADR 0003](docs/adr/0003-contract-data-in-private-git.md)). It holds `contract.yaml`, a SOPS-encrypted `secrets.sops.yaml` with one age key per Contract, and its own `runbooks/`. Runbooks in `shared/runbooks/` are Shared knowledge for every Contract; a Contract's own Runbook wins on a name clash.
 A kubeconfig whose user runs a credential plugin (`exec`, as EKS, AKS kubelogin and GKE use, or an `auth-provider`) is refused unless that cluster sets `allow_exec: true`. The plugin would run on the Hub next to every other Contract's secrets ([ADR 0002](docs/adr/0002-hub-and-relay.md)).
+**Jira.** A builtin integration gives the agent the Contract's past Jira issues as Evidence: an earlier issue with the same cause, and how it was resolved.
+
+```yaml
+integrations:
+  - name: jira
+    url: https://acme.atlassian.net        # Jira Cloud; https only (Basic auth)
+    email: sre-bot@acme.example            # the API token's owner
+    token_secret: jira-token               # a name in secrets.sops.yaml
+    project: OPS                           # every search stays inside this project
+```
+
+The agent gets two read tools: `jira_search_issues` (words from a service or an error, newest first) and `jira_get_issue` (one issue's description, resolution and latest comments). The Hub writes every JQL query itself, inside `project`; the model passes only words, so a search can't reach another project the token can see, and `jira_get_issue` refuses an issue that isn't in the project. Make the API token for an account that can browse that project and nothing else you'd mind the agent reading.
+
 **Vendor integrations.** Besides the builtins, a Contract can turn on a vendor MCP server the Hub knows:
 
 ```yaml

@@ -84,6 +84,16 @@ class Prometheus(Strict):
     token_secret: str | None = None
 
 
+class Jira(Strict):
+    """The Contract's Jira Cloud: its past issues as Evidence, its project for new ones."""
+
+    name: Literal["jira"]
+    url: str = Field(pattern=r"^https://[^/\s]+/?$")  # Basic auth: never over plain http
+    email: str  # the API token's owner
+    token_secret: str
+    project: str = Field(pattern=r"^[A-Z][A-Z0-9_]+$")  # every search stays inside it
+
+
 class Runbooks(Strict):
     name: Literal["runbooks"]  # reads <contract dir>/runbooks
 
@@ -133,7 +143,7 @@ class Vendor(Strict):
         return self
 
 
-BUILTINS = ("kubernetes", "prometheus", "runbooks")
+BUILTINS = ("kubernetes", "prometheus", "runbooks", "jira")
 
 
 def _kind(value: Any) -> str:
@@ -145,6 +155,7 @@ Integration = Annotated[
     Annotated[Kubernetes, Tag("kubernetes")]
     | Annotated[Prometheus, Tag("prometheus")]
     | Annotated[Runbooks, Tag("runbooks")]
+    | Annotated[Jira, Tag("jira")]
     | Annotated[Vendor, Tag("vendor")],
     Discriminator(_kind),
 ]
