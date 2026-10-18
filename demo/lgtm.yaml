@@ -1,0 +1,96 @@
+# Grafana's LGTM stack (Loki, Grafana, Tempo, Mimir/Prometheus, an OTel collector)
+# in one container, for the Grafana Scenarios: `make lgtm`. Not part of `make demo`
+# or CI: replay needs no Grafana. Demo only, no persistence, anonymous Grafana.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: observability
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lgtm
+  namespace: observability
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: lgtm}
+  template:
+    metadata:
+      labels: {app: lgtm}
+    spec:
+      containers:
+        - name: lgtm
+          image: grafana/otel-lgtm:0.35.0
+          env:
+            # Loki serves log patterns only with its pattern ingester on, and
+            - name: LOKI_EXTRA_ARGS  # flush chunks within minutes, so log stats see them; no WAL (nothing persists)
+              value: "-pattern-ingester.enabled=true -ingester.chunks-idle-period=1m -ingester.max-chunk-age=2m -ingester.flush-check-period=10s -ingester.wal-enabled=false"
+            # What the docs ask a Contract's service account to be.
+            - {name: GF_AUTH_ANONYMOUS_ORG_ROLE, value: Viewer}
+          ports:
+            - {name: grafana, containerPort: 3000}
+            - {name: otlp-http, containerPort: 4318}
+          readinessProbe:
+            httpGet: {path: /api/health, port: 3000}
+            periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lgtm
+  namespace: observability
+spec:
+  selector: {app: lgtm}
+  ports:
+    - {name: grafana, port: 3000}
+    - {name: otlp-http, port: 4318}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: shop
+---
+# payments and storefront send synthetic logs and traces (demo/telemetry.py):
+# `make lgtm` creates the ConfigMap from that file.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payments
+  namespace: shop
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: payments}
+  template:
+    metadata:
+      labels: {app: payments}
+    spec:
+      containers:
+        - name: app
+          image: python:3.12-alpine
+          command: ["python", "/app/telemetry.py"]
+          env: [{name: MODE, value: payments}]
+          volumeMounts: [{name: app, mountPath: /app}]
+      volumes: [{name: app, configMap: {name: telemetry}}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: storefront
+  namespace: shop
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: storefront}
+  template:
+    metadata:
+      labels: {app: storefront}
+    spec:
+      containers:
+        - name: app
+          image: python:3.12-alpine
+          command: ["python", "/app/telemetry.py"]
+          env: [{name: MODE, value: storefront}]
+          volumeMounts: [{name: app, mountPath: /app}]
+      volumes: [{name: app, configMap: {name: telemetry}}]

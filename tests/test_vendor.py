@@ -16,14 +16,14 @@ import yaml
 from fastapi.testclient import TestClient
 from fastmcp import Client
 from langchain.mcp import MCPAdapter
-from pydantic import SecretStr
+from pydantic import Field, SecretStr
 
 from aiops_agent import agent, cli, contracts, evals
 from aiops_agent.api import create_app
 from aiops_agent.config import Settings
 from aiops_agent.models import Investigation, TriageReport
 from aiops_agent.servers import vendors
-from tests.conftest import REPORT, call, scripted
+from tests.conftest import REPORT, ScriptedModel, call, scripted
 from tests.test_agent import ALERT, LIST, fixture_spec, vendor_contract
 from tests.test_console import OPERATOR, VIEW
 
@@ -401,3 +401,39 @@ def test_snapshot_out_dash_prints_only_the_snapshot(
     capfd.readouterr()
     assert cli.main(["integrations", "snapshot", "fixture", "--out", "-"]) == 0
     assert capfd.readouterr().out == (SNAPSHOTS / "fixture.json").read_text()
+
+
+class Seeing(ScriptedModel):
+    """A scripted model that keeps the messages it was given."""
+
+    seen: list[Any] = Field(default_factory=list)
+
+    def _generate(self, messages: Any, *args: Any, **kwargs: Any) -> Any:
+        self.seen.append(messages)
+        return super()._generate(messages, *args, **kwargs)
+
+
+@pytest.mark.anyio
+async def test_the_grafana_guide_reaches_the_model_only_with_grafana(
+    settings: Settings, snapshots: Path
+) -> None:
+    """A vendor's guide is added under the Contract's own name for it; without one
+    the prompt is byte for byte what it was, so the Kubernetes Scenarios see no change."""
+    vendor = {"name": "obs", "vendor": "grafana", "tools": {"query_loki_patterns": "read"}}
+    with_grafana = evals.scenario_contract("", False, [Path("no-runbooks")], {}, [vendor])
+    k8s_only = evals.scenario_contract("shop", False, [Path("no-runbooks")])
+
+    async def system(contract: contracts.Contract) -> str:
+        model = Seeing(messages=iter([call("TriageReport", "r", **REPORT)]))
+        toolbox = evals.replay_server(contract, settings, {})
+        async with agent.open_agent(settings, toolbox, model) as a:
+            await agent.start(a, ALERT, "g")
+        return str(model.seen[0][0].content)
+
+    assert await system(k8s_only) == agent.SYSTEM_PROMPT
+    text = await system(with_grafana)
+    assert text.startswith(agent.SYSTEM_PROMPT)
+    assert "obs_query_loki_patterns" in text and "grafana_" not in text
+    toolbox = evals.replay_server(with_grafana, settings, {})
+    assert agent.prompt("question", toolbox).startswith(agent.QUESTION_PROMPT)
+    assert "obs_search_tempo_traces" in agent.prompt("question", toolbox)

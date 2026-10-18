@@ -247,9 +247,20 @@ Between runs 1 and 3 the pass/fail checks never changed. What changed was the to
 - **The Question budgets (12 and 15) were set after these runs,** from what each question needs plus room: one call answers the rollout question, and three workloads take about 8. They still fail the 14–27-call loops of run 1. Runs 4–5 were scored at the first budgets (8 and 12), and their raw `results.json` still says so; at the current budgets they pass.
 - **Known replay gap:** the recording has no pod labels, so `list_pods` with a `label_selector` returns every pod, and the model sometimes asks again. Re-recording with labels would fix it.
 
+**Grafana (2026-10-17, Haiku).** Two Scenarios run on a Contract with Grafana only, no Kubernetes access, so the root cause can only come from Grafana. They are recorded from the kind demo's LGTM stack (`make lgtm`, then [`evals/record_grafana.py`](evals/record_grafana.py)), where [`demo/telemetry.py`](demo/telemetry.py) sends synthetic logs and traces. In `grafana-log-patterns`, payments charges fail and only the logs name the dependency that refuses connections, among noisier lines. In `grafana-slow-traces`, product pages are slow, the logs say only that, and a trace shows the span that waits on a database row lock. When a Grafana vendor is offered, the prompt adds how to use it: log stats and patterns before raw lines, slow traces then the slowest span. A Contract without Grafana gets the same prompt as before, so the Scenarios above need no rerun. Model `anthropic/claude-haiku-5.5`, one run each; raw output in [`evals/results/2026-10-17/grafana-haiku-run-1`](evals/results/2026-10-17/grafana-haiku-run-1). These are Haiku results, not comparable with the Sonnet runs above.
+
+| Scenario | Run 1 | Calls | First Grafana tools called |
+|---|---|---|---|
+| grafana-log-patterns | pass | 10 of 10 | patterns, then logs |
+| grafana-slow-traces | pass | 8 of 10 | trace search, then the trace |
+
+The log run used its whole budget: it repeated pattern and log queries, and once called a tool that doesn't exist (`grafana_query_loki_label_values`).
+
+- **Known replay gap:** each Grafana tool keeps one recorded result, matched on its datasource only, so any LogQL or TraceQL gets the recorded service's data. In the log run the model asked for `{service_namespace="risk"}` and got payments' stats (1908 entries), which production would have answered with none; one Evidence line cites it. The root cause came from the real pattern and log results. Matching the query text exactly would make replay brittle instead.
+
 **Save as Scenario.** A finished Investigation's console page has **Save as Scenario**: a YAML download with what started it (the alert, or a Question's first message), every tool result recorded during its Runs, the Contract's clusters and integrations, and a draft Expectation (the Report's category or the Answer's cited tools, a budget, any approved actions as allowed ones). Strings from the alert or question are redacted, as the tool results already were. Add the keywords a correct result must contain, then commit it to `<contracts-repo>/<contract>/scenarios/`, never to this public repo. The Hub only offers the download: it has no write access to the contracts repo. Replay a Contract's Scenarios with its Runbooks: `uv run aiops eval <contracts-repo>/acme/scenarios --runbooks <contracts-repo>/shared/runbooks --runbooks <contracts-repo>/acme/runbooks`. Runbook tools aren't recorded; replay reads the real files. Limits: a call made twice with different results replays the first, a replayed call must pass every argument the recording did, and only Investigations started after this feature have their input stored.
 
-Six scenarios is a smoke test, not a benchmark. Add scenarios by recording new failures on kind (`AIOPS_RECORD_DIR=recordings make integration`).
+Eight scenarios is a smoke test, not a benchmark. Add scenarios by recording new failures on kind (`AIOPS_RECORD_DIR=recordings make integration`).
 
 ## Contracts
 

@@ -28,6 +28,7 @@ from mcp.types import ToolAnnotations
 class Spec:
     command: tuple[str, ...]  # command[0] an absolute path: PATH can't redirect it
     env: frozenset[str]  # the only variables a Contract may set for it
+    guide: str = ""  # how to investigate with it, added to the prompt; {name}: the integration
 
     def __post_init__(self) -> None:
         if not Path(self.command[0]).is_absolute():
@@ -48,6 +49,16 @@ VENDORS: dict[str, Spec] = {
             "dashboard,navigation",
         ),
         frozenset({"GRAFANA_URL", "GRAFANA_SERVICE_ACCOUNT_TOKEN", "GRAFANA_ORG_ID"}),
+        """\
+Grafana ({name}_ tools): take datasource uids from {name}_list_datasources. For
+logs, look at volume and the most frequent line patterns ({name}_query_loki_stats,
+{name}_query_loki_patterns) before reading raw lines ({name}_query_loki_logs): a
+pattern with a high count often names the failure. For slowness, find slow traces
+({name}_search_tempo_traces, TraceQL such as
+{{resource.service.name="checkout" && duration > 2s}}) and open one
+({name}_get_tempo_trace): the span that takes the time, and its attributes, show
+the cause.
+""",
     ),
 }
 START_SECONDS = 30  # a vendor that never finishes MCP's handshake fails the Run

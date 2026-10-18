@@ -2,7 +2,7 @@ CLUSTER := aiops
 CTX     := kind-$(CLUSTER)
 PG      := postgres:17.10
 
-.PHONY: lint test db cluster demo integration image snapshots deploy-smoke hub-smoke rbac-check down
+.PHONY: lint test db cluster demo lgtm integration image snapshots deploy-smoke hub-smoke rbac-check down
 
 lint:
 	uv run ruff check .
@@ -25,6 +25,14 @@ demo: ## broken workloads in namespace demo; checkout breaks via a rollout
 	kubectl --context $(CTX) -n demo rollout status deploy/checkout --timeout=5m
 	kubectl --context $(CTX) -n demo set env deploy/checkout DATABASE_URL-
 	./demo/wait-broken.sh $(CTX)
+
+lgtm: ## Grafana LGTM + synthetic logs and traces (Grafana Scenarios; not in CI)
+	kubectl --context $(CTX) apply -f demo/lgtm.yaml
+	kubectl --context $(CTX) -n shop create configmap telemetry --from-file=demo/telemetry.py \
+	  --dry-run=client -o yaml | kubectl --context $(CTX) apply -f -
+	kubectl --context $(CTX) -n observability rollout status deploy/lgtm --timeout=10m
+	kubectl --context $(CTX) -n shop rollout restart deploy/payments deploy/storefront
+	kubectl --context $(CTX) -n shop rollout status deploy/payments deploy/storefront --timeout=5m
 
 integration: ## real MCP tools on the kind demo, as the demo Contracts (kind contexts only)
 	uv run pytest -m integration -v

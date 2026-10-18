@@ -1,0 +1,610 @@
+description: 'A Contract with Grafana only: payments charges fail, and only the logs say why, among noisier
+  lines. Recorded from the kind demo''s LGTM stack (make lgtm).'
+clusters: {}
+integrations:
+- name: grafana
+  vendor: grafana
+  tools:
+    list_datasources: read
+    list_loki_label_names: read
+    list_loki_label_values: read
+    query_loki_stats: read
+    query_loki_patterns: read
+    query_loki_logs: read
+alert:
+  status: firing
+  commonLabels:
+    alertname: PaymentsHighErrorRate
+    service_name: payments
+  alerts:
+  - status: firing
+    labels:
+      alertname: PaymentsHighErrorRate
+      service_name: payments
+      severity: warning
+    annotations:
+      summary: 8% of POST /charge requests return 5xx over the last 10 minutes.
+expect:
+  category:
+  - dependency_failure
+  keywords:
+  - fraud-check
+  max_tool_calls: 10
+tools:
+  grafana_list_datasources:
+  - match: {}
+    result:
+      datasources:
+      - id: 3
+        uid: loki
+        name: Loki
+        type: loki
+        isDefault: false
+      - id: 1
+        uid: prometheus
+        name: Prometheus
+        type: prometheus
+        isDefault: true
+      - id: 4
+        uid: pyroscope
+        name: Pyroscope
+        type: grafana-pyroscope-datasource
+        isDefault: false
+      - id: 2
+        uid: tempo
+        name: Tempo
+        type: tempo
+        isDefault: false
+      total: 4
+      hasMore: false
+  grafana_list_loki_label_names:
+  - match:
+      datasourceUid: loki
+    result:
+    - service_name
+    - service_namespace
+  grafana_list_loki_label_values:
+  - match:
+      datasourceUid: loki
+    result:
+    - payments
+    - storefront
+  grafana_query_loki_stats:
+  - match:
+      datasourceUid: loki
+    result:
+      streams: 1
+      chunks: 1
+      entries: 1908
+      bytes: 194560
+  grafana_query_loki_patterns:
+  - match:
+      datasourceUid: loki
+    result:
+    - pattern: charge order=<_> status=200 latency_ms=<_>
+      totalCount: 636
+    - pattern: settlement batch <_> queued
+      totalCount: 179
+    - pattern: cache refresh key=<_> ttl=300s
+      totalCount: 167
+    - pattern: webhook delivered merchant=<_> attempt=1
+      totalCount: 166
+    - pattern: pool stats active=<_> idle=<_>
+      totalCount: 165
+    - pattern: feature flag smart-retry evaluated=<_>
+      totalCount: 159
+    - pattern: slow serializer <_> for receipt <_>
+      totalCount: 153
+    - pattern: 'charge order=<_> failed status=502: risk check unavailable: dial tcp fraud-check.risk.svc.cluster.local:8443:
+        connect: connection refused'
+      totalCount: 135
+  grafana_query_loki_logs:
+  - match:
+      datasourceUid: loki
+    result:
+      data:
+      - timestamp: '1792282856496941134'
+        line: settlement batch b-1486 queued
+        labels:
+          service_name: payments
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+      - timestamp: '1792282856446941134'
+        line: feature flag smart-retry evaluated=on
+        labels:
+          service_name: payments
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: debug
+          severity_number: '5'
+          severity_text: DEBUG
+      - timestamp: '1792282856396941134'
+        line: cache refresh key=card-bin:455619 ttl=300s
+        labels:
+          service_name: payments
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: debug
+          severity_number: '5'
+          severity_text: DEBUG
+      - timestamp: '1792282856346941134'
+        line: pool stats active=9 idle=0
+        labels:
+          service_name: payments
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: debug
+          severity_number: '5'
+          severity_text: DEBUG
+      - timestamp: '1792282856296941134'
+        line: slow serializer 70ms for receipt r-8626ab
+        labels:
+          service_name: payments
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: warn
+          severity_number: '13'
+          severity_text: WARN
+      - timestamp: '1792282856246941134'
+        line: settlement batch b-9108 queued
+        labels:
+          service_name: payments
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+      - timestamp: '1792282856196941134'
+        line: settlement batch b-3559 queued
+        labels:
+          service_name: payments
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+      - timestamp: '1792282856146941134'
+        line: slow serializer 82ms for receipt r-70c0e0
+        labels:
+          service_name: payments
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: warn
+          severity_number: '13'
+          severity_text: WARN
+      - timestamp: '1792282856096941134'
+        line: charge order=o-aa4aea67 status=200 latency_ms=85
+        labels:
+          service_name: payments
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: f31fca48c3372fc2
+          trace_id: b8f9d1abaaa5faf4d8f47e6aff9034a2
+      - timestamp: '1792282856046941134'
+        line: 'charge order=o-c75499fd failed status=502: risk check unavailable: dial tcp fraud-check.risk.svc.cluster.local:8443:
+          connect: connection refused'
+        labels:
+          service_name: payments
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: error
+          severity_number: '17'
+          severity_text: ERROR
+          span_id: d535a228e978aa7d
+          trace_id: fb954a35bf708d397bd3ca19b85ee09a
+      - timestamp: '1792282855996941134'
+        line: charge order=o-028e9641 status=200 latency_ms=73
+        labels:
+          service_name: payments
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: 5ee37e5c30118ada
+          trace_id: b58c0e65f2194fa7fe8cbb3922e6948d
+      - timestamp: '1792282855946941134'
+        line: settlement batch b-9299 queued
+        labels:
+          service_name: payments
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+      - timestamp: '1792282855491224092'
+        line: charge order=o-5a26762d status=200 latency_ms=117
+        labels:
+          service_name: payments
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: f2a362575d9eb527
+          trace_id: 88c31e6960e3ec2ae44ac257d1b9f720
+      - timestamp: '1792282855441224092'
+        line: feature flag smart-retry evaluated=on
+        labels:
+          service_name: payments
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: debug
+          severity_number: '5'
+          severity_text: DEBUG
+      - timestamp: '1792282855391224092'
+        line: charge order=o-745f01ce status=200 latency_ms=41
+        labels:
+          service_name: payments
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: 3243870f088b05ab
+          trace_id: a8c853682eb1c9549a65dd3928a1fa86
+      - timestamp: '1792282855341224092'
+        line: slow serializer 90ms for receipt r-b2ef88
+        labels:
+          service_name: payments
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: warn
+          severity_number: '13'
+          severity_text: WARN
+      - timestamp: '1792282855291224092'
+        line: 'charge order=o-e022b341 failed status=502: risk check unavailable: dial tcp fraud-check.risk.svc.cluster.local:8443:
+          connect: connection refused'
+        labels:
+          service_name: payments
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: error
+          severity_number: '17'
+          severity_text: ERROR
+          span_id: 4ad3892f3120a2a5
+          trace_id: 694c9b5f4d04e3f966e5dac8b6aa0a55
+      - timestamp: '1792282855241224092'
+        line: charge order=o-104923fd status=200 latency_ms=74
+        labels:
+          service_name: payments
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: 2f8e5c700387a1de
+          trace_id: f282f58d9640b5e5b2f377ad096cca3e
+      - timestamp: '1792282855191224092'
+        line: settlement batch b-6476 queued
+        labels:
+          service_name: payments
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+      - timestamp: '1792282855141224092'
+        line: feature flag smart-retry evaluated=on
+        labels:
+          service_name: payments
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: debug
+          severity_number: '5'
+          severity_text: DEBUG
+      - timestamp: '1792282855091224092'
+        line: feature flag smart-retry evaluated=on
+        labels:
+          service_name: payments
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: debug
+          severity_number: '5'
+          severity_text: DEBUG
+      - timestamp: '1792282855041224092'
+        line: webhook delivered merchant=m-221 attempt=1
+        labels:
+          service_name: payments
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+      - timestamp: '1792282854991224092'
+        line: slow serializer 74ms for receipt r-d24ad5
+        labels:
+          service_name: payments
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: warn
+          severity_number: '13'
+          severity_text: WARN
+      - timestamp: '1792282854941224092'
+        line: settlement batch b-9473 queued
+        labels:
+          service_name: payments
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+      - timestamp: '1792282854484876133'
+        line: 'charge order=o-2eebc721 failed status=502: risk check unavailable: dial tcp fraud-check.risk.svc.cluster.local:8443:
+          connect: connection refused'
+        labels:
+          service_name: payments
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: error
+          severity_number: '17'
+          severity_text: ERROR
+          span_id: 548a1ac3ad291f63
+          trace_id: 83774d5fb1a1dab64f3535072dd7b284
+      - timestamp: '1792282854434876133'
+        line: webhook delivered merchant=m-450 attempt=1
+        labels:
+          service_name: payments
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+      - timestamp: '1792282854384876133'
+        line: 'charge order=o-7cfb5d56 failed status=502: risk check unavailable: dial tcp fraud-check.risk.svc.cluster.local:8443:
+          connect: connection refused'
+        labels:
+          service_name: payments
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: error
+          severity_number: '17'
+          severity_text: ERROR
+          span_id: f175c025ce8ff339
+          trace_id: 5ea70aa62a22164fbb07206d3179b081
+      - timestamp: '1792282854334876133'
+        line: charge order=o-95a02820 status=200 latency_ms=42
+        labels:
+          service_name: payments
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: 031bbe52314837d0
+          trace_id: a4e58e037f4b1bbd1fd8261e71e2d41f
+      - timestamp: '1792282854284876133'
+        line: pool stats active=3 idle=5
+        labels:
+          service_name: payments
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: debug
+          severity_number: '5'
+          severity_text: DEBUG
+      - timestamp: '1792282854234876133'
+        line: cache refresh key=card-bin:410636 ttl=300s
+        labels:
+          service_name: payments
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: debug
+          severity_number: '5'
+          severity_text: DEBUG
+      - timestamp: '1792282854184876133'
+        line: charge order=o-1a1f0d07 status=200 latency_ms=108
+        labels:
+          service_name: payments
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: 282112a08284f3e4
+          trace_id: 5ae717362a3985614c3866e5f375039d
+      - timestamp: '1792282854134876133'
+        line: charge order=o-0b2da5e7 status=200 latency_ms=90
+        labels:
+          service_name: payments
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: b9c6bbbd56bc20b9
+          trace_id: dbed63e9da2f1d5a5154d0e83cbd0f54
+      - timestamp: '1792282854084876133'
+        line: charge order=o-795ed197 status=200 latency_ms=56
+        labels:
+          service_name: payments
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: 9d1f00f181acee3b
+          trace_id: 77dec327b21ceeeed1f17556815f74ab
+      - timestamp: '1792282854034876133'
+        line: slow serializer 57ms for receipt r-890e5a
+        labels:
+          service_name: payments
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: warn
+          severity_number: '13'
+          severity_text: WARN
+      - timestamp: '1792282853984876133'
+        line: charge order=o-63a6362c status=200 latency_ms=138
+        labels:
+          service_name: payments
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: 8faf3eb579f1e41d
+          trace_id: 227fe36ea4b85afc29a6ef39970f89c9
+      - timestamp: '1792282853934876133'
+        line: settlement batch b-9236 queued
+        labels:
+          service_name: payments
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+      - timestamp: '1792282853470861633'
+        line: cache refresh key=card-bin:499369 ttl=300s
+        labels:
+          service_name: payments
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: debug
+          severity_number: '5'
+          severity_text: DEBUG
+      - timestamp: '1792282853420861633'
+        line: slow serializer 62ms for receipt r-a18c0a
+        labels:
+          service_name: payments
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: warn
+          severity_number: '13'
+          severity_text: WARN
+      - timestamp: '1792282853370861633'
+        line: charge order=o-43cd2e9e status=200 latency_ms=48
+        labels:
+          service_name: payments
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: c0fed2b23aa2b97d
+          trace_id: b9f57c2d232798ef319ffc636c693abe
+      - timestamp: '1792282853320861633'
+        line: charge order=o-874adc7b status=200 latency_ms=34
+        labels:
+          service_name: payments
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: 170cb8c13a42a7ac
+          trace_id: a1b9d3f41eb6f664bc069db0a70b9da1
+      - timestamp: '1792282853270861633'
+        line: webhook delivered merchant=m-676 attempt=1
+        labels:
+          service_name: payments
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+      - timestamp: '1792282853220861633'
+        line: settlement batch b-9699 queued
+        labels:
+          service_name: payments
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+      - timestamp: '1792282853170861633'
+        line: slow serializer 70ms for receipt r-41ead7
+        labels:
+          service_name: payments
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: warn
+          severity_number: '13'
+          severity_text: WARN
+      - timestamp: '1792282853120861633'
+        line: webhook delivered merchant=m-196 attempt=1
+        labels:
+          service_name: payments
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+      - timestamp: '1792282853070861633'
+        line: cache refresh key=card-bin:455052 ttl=300s
+        labels:
+          service_name: payments
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: debug
+          severity_number: '5'
+          severity_text: DEBUG
+      - timestamp: '1792282853020861633'
+        line: cache refresh key=card-bin:416509 ttl=300s
+        labels:
+          service_name: payments
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: debug
+          severity_number: '5'
+          severity_text: DEBUG
+      - timestamp: '1792282852970861633'
+        line: charge order=o-ef3942dc status=200 latency_ms=38
+        labels:
+          service_name: payments
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: db4c42224c060e53
+          trace_id: a7406f3bb228bf80501148d1525e2859
+      - timestamp: '1792282852920861633'
+        line: 'charge order=o-a66e9b14 failed status=502: risk check unavailable: dial tcp fraud-check.risk.svc.cluster.local:8443:
+          connect: connection refused'
+        labels:
+          service_name: payments
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: error
+          severity_number: '17'
+          severity_text: ERROR
+          span_id: b9600d425f708982
+          trace_id: 1642bd2667249da1e1cab748aa59c989
+      - timestamp: '1792282852466565216'
+        line: feature flag smart-retry evaluated=off
+        labels:
+          service_name: payments
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: debug
+          severity_number: '5'
+          severity_text: DEBUG
+      - timestamp: '1792282852416565216'
+        line: feature flag smart-retry evaluated=off
+        labels:
+          service_name: payments
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: debug
+          severity_number: '5'
+          severity_text: DEBUG
+      hints:
+        summary: This query used the default 1-hour lookback window because startRfc3339 and endRfc3339
+          were not provided.
+        possibleCauses: []
+        suggestedActions:
+        - If results seem incomplete or you need data from a wider time range, provide explicit startRfc3339
+          and endRfc3339 parameters.
+      metadata:
+        linesReturned: 50
+        maxLinesAllowed: 50
+        resultsTruncated: true
+        totalLinesScanned: 2088
+        startTime: '2026-10-17T20:20:57-03:00'
+        endTime: '2026-10-17T21:20:57-03:00'

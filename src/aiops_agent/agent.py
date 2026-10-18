@@ -119,6 +119,7 @@ class Toolbox:
 
     mcp: FastMCP
     access: dict[str, Access]
+    guides: list[str] = field(default_factory=list)  # vendors' prompt additions
 
 
 def read_only(tool: BaseTool) -> bool:
@@ -193,12 +194,14 @@ def build_mcp(
     root. Nothing of another Contract is reachable from it.
     k8s_apis: cluster name -> (CoreV1Api, AppsV1Api) instead of connecting, for tests.
     snapshots: vendors' tools from their schema snapshots, never started (replay)."""
-    root, access = FastMCP(f"aiops-{contract.id}"), dict[str, Access]()
+    root, access, guides = FastMCP(f"aiops-{contract.id}"), dict[str, Access](), []
     for i in contract.integrations:
         server = integration_server(contract, i, settings, k8s_apis, snapshots)
         mount(root, access, i.name, *server)
+        if isinstance(i, Vendor) and (guide := vendors.VENDORS[i.vendor].guide):
+            guides.append(guide.format(name=i.name))
     root.add_middleware(AuditMiddleware(contract.id))
-    return Toolbox(root, access)
+    return Toolbox(root, access, guides)
 
 
 def probes(contract: Contract) -> list[tuple[str, str | None, dict[str, Any]]]:
@@ -371,6 +374,12 @@ def record_usage(sink: UsageSink) -> Any:
     return track
 
 
+def prompt(kind: Kind, toolbox: Toolbox) -> str:
+    """The kind's prompt, plus how to use each vendor offered that has a guide."""
+    base = QUESTION_PROMPT if kind == "question" else SYSTEM_PROMPT
+    return base + "".join("\n" + g for g in toolbox.guides)
+
+
 @asynccontextmanager
 async def open_agent(
     settings: Settings,
@@ -394,7 +403,7 @@ async def open_agent(
         yield create_agent(
             model or build_model(settings),
             tools,
-            system_prompt=QUESTION_PROMPT if kind == "question" else SYSTEM_PROMPT,
+            system_prompt=prompt(kind, toolbox),
             response_format=output_format(settings, kind),
             middleware=[
                 HumanInTheLoopMiddleware(

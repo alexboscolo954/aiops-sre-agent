@@ -101,9 +101,19 @@ async def test_allowed_proposal_is_rejected_and_scored(settings: Settings) -> No
 
 
 @pytest.mark.parametrize("path", sorted(SCENARIOS.glob("*.yaml")), ids=lambda p: p.stem)
-def test_scenarios_are_well_formed(path: Path) -> None:
+def test_scenarios_are_well_formed(path: Path, settings: Settings) -> None:
     s = yaml.safe_load(path.read_text())
-    assert s["tools"] and (s.get("namespace") or s.get("clusters"))
+    assert s["tools"] and ("namespace" in s or "clusters" in s)  # clusters {}: none
+    # Every recording answers a tool the Scenario's Contract offers (a vendor's from
+    # its snapshot): a renamed or unlisted tool would never be called.
+    contract = evals.scenario_contract(
+        s.get("namespace", ""),
+        s.get("enable_actions", False),
+        [Path("no-runbooks")],
+        s.get("clusters"),
+        s.get("integrations"),
+    )
+    assert set(s["tools"]) <= set(evals.replay_server(contract, settings, {}).access)
     if "question" in s:  # an Answer: keywords and the Evidence it must cite
         assert "alert" not in s and s["question"].strip() and s["expect"]["keywords"]
         assert set(s["expect"]["evidence"]) <= set(s["tools"])

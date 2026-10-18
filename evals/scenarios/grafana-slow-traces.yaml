@@ -1,0 +1,1696 @@
+description: 'A Contract with Grafana only: product pages are slow, the logs say only that, and the traces
+  show which span takes the time. Recorded from the kind demo (make lgtm).'
+clusters: {}
+integrations:
+- name: grafana
+  vendor: grafana
+  tools:
+    list_datasources: read
+    list_loki_label_names: read
+    list_loki_label_values: read
+    query_loki_stats: read
+    query_loki_patterns: read
+    query_loki_logs: read
+    search_tempo_traces: read
+    get_tempo_trace: read
+    list_tempo_attribute_values: read
+alert:
+  status: firing
+  commonLabels:
+    alertname: StorefrontHighLatency
+    service_name: storefront
+  alerts:
+  - status: firing
+    labels:
+      alertname: StorefrontHighLatency
+      service_name: storefront
+      severity: warning
+    annotations:
+      summary: p99 latency of GET /product/{sku} is above 2s.
+expect:
+  category:
+  - dependency_failure
+  - app_error
+  - capacity
+  keywords:
+  - inventory
+  max_tool_calls: 10
+tools:
+  grafana_list_datasources:
+  - match: {}
+    result:
+      datasources:
+      - id: 3
+        uid: loki
+        name: Loki
+        type: loki
+        isDefault: false
+      - id: 1
+        uid: prometheus
+        name: Prometheus
+        type: prometheus
+        isDefault: true
+      - id: 4
+        uid: pyroscope
+        name: Pyroscope
+        type: grafana-pyroscope-datasource
+        isDefault: false
+      - id: 2
+        uid: tempo
+        name: Tempo
+        type: tempo
+        isDefault: false
+      total: 4
+      hasMore: false
+  grafana_list_loki_label_names:
+  - match:
+      datasourceUid: loki
+    result:
+    - service_name
+    - service_namespace
+  grafana_list_loki_label_values:
+  - match:
+      datasourceUid: loki
+    result:
+    - payments
+    - storefront
+  grafana_query_loki_stats:
+  - match:
+      datasourceUid: loki
+    result:
+      streams: 1
+      chunks: 1
+      entries: 313
+      bytes: 37888
+  grafana_query_loki_patterns:
+  - match:
+      datasourceUid: loki
+    result:
+    - pattern: GET <_> 200 <_> <_>
+      totalCount: 346
+  grafana_query_loki_logs:
+  - match:
+      datasourceUid: loki
+    result:
+      data:
+      - timestamp: '1792282856570580010'
+        line: GET /product/sku-1010 200 2606ms slow
+        labels:
+          service_name: storefront
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: 2cf532f27c6365d8
+          trace_id: 5419ad27b50d1c77e87db047ef63e6f1
+      - timestamp: '1792282856068053468'
+        line: GET /product/sku-1017 200 61ms ok
+        labels:
+          service_name: storefront
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: 208b86b4f6bf3ea4
+          trace_id: 719be4f2abc4f48771a5366b273a376d
+      - timestamp: '1792282855565521384'
+        line: GET /product/sku-1043 200 62ms ok
+        labels:
+          service_name: storefront
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: 6b266f1064f7d128
+          trace_id: 8759f5f29fb1a2ca9afd9d9f8d944064
+      - timestamp: '1792282855062004467'
+        line: GET /product/sku-1072 200 2507ms slow
+        labels:
+          service_name: storefront
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: 2e8bac2f352da3e1
+          trace_id: ccb69729ddaa9040943f46494d1c87cf
+      - timestamp: '1792282854555042425'
+        line: GET /product/sku-1046 200 56ms ok
+        labels:
+          service_name: storefront
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: 17e1a139b9166f31
+          trace_id: 9850ed4a8494264b2a02ffdfd7ac640c
+      - timestamp: '1792282854047147884'
+        line: GET /product/sku-1046 200 57ms ok
+        labels:
+          service_name: storefront
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: 0d0ffd58e72d6647
+          trace_id: dcfebbf570d96e4e43c5d2c0c6fc6dc0
+      - timestamp: '1792282853537183300'
+        line: GET /product/sku-1095 200 61ms ok
+        labels:
+          service_name: storefront
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: 9e926aad8a629083
+          trace_id: 31eb01611008bf090e88a59e4000084d
+      - timestamp: '1792282853030131216'
+        line: GET /product/sku-1088 200 2834ms slow
+        labels:
+          service_name: storefront
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: f14fc89edd0efd24
+          trace_id: 1e24fced0b1f9f24db23229b7f0a35d9
+      - timestamp: '1792282852524231008'
+        line: GET /product/sku-1054 200 62ms ok
+        labels:
+          service_name: storefront
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: e9b35300ab0ee892
+          trace_id: 29caa957ccd6c8c0e171154c1f4290fe
+      - timestamp: '1792282852017766883'
+        line: GET /product/sku-1074 200 57ms ok
+        labels:
+          service_name: storefront
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: 5900efc89ed0f7bd
+          trace_id: dda99fc819ad36a5419b5467cd543f94
+      - timestamp: '1792282851511699591'
+        line: GET /product/sku-1077 200 3131ms slow
+        labels:
+          service_name: storefront
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: 6bbd197554055111
+          trace_id: b6cff74f48f4388e758ae27f7888ca3d
+      - timestamp: '1792282851006680465'
+        line: GET /product/sku-1027 200 55ms ok
+        labels:
+          service_name: storefront
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: d4b0d382e93fa09d
+          trace_id: bba8da4cce5a0e31b843b5dbfd72ce23
+      - timestamp: '1792282850502407174'
+        line: GET /product/sku-1027 200 55ms ok
+        labels:
+          service_name: storefront
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: 16dffc1454775c53
+          trace_id: 217a198d17894b02e4976cbc555e413f
+      - timestamp: '1792282849996397257'
+        line: GET /product/sku-1081 200 58ms ok
+        labels:
+          service_name: storefront
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: bea36d9bc3ded053
+          trace_id: dff9665cffd7d79d74722c393182b7dd
+      - timestamp: '1792282849486033590'
+        line: GET /product/sku-1023 200 56ms ok
+        labels:
+          service_name: storefront
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: 1aa4b1f69e614805
+          trace_id: 500dadb610f1fca24f9b40e45c871466
+      - timestamp: '1792282848980365964'
+        line: GET /product/sku-1005 200 58ms ok
+        labels:
+          service_name: storefront
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: 5a98456e3d9bb19b
+          trace_id: 09780f3a903df36602f9fb87c5a25df6
+      - timestamp: '1792282848469457839'
+        line: GET /product/sku-1016 200 60ms ok
+        labels:
+          service_name: storefront
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: 7fd11e56fff77222
+          trace_id: 02f97facb392853105ae0e70cb549862
+      - timestamp: '1792282847963241881'
+        line: GET /product/sku-1092 200 57ms ok
+        labels:
+          service_name: storefront
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: 1a4ce7319b1dc69d
+          trace_id: db2c4062ef8f83aa6caa9d03016469d8
+      - timestamp: '1792282847456269964'
+        line: GET /product/sku-1093 200 3018ms slow
+        labels:
+          service_name: storefront
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: 71fa7d8d33280149
+          trace_id: 87d1f20bfcc7f8d747c8608a2c570ca1
+      - timestamp: '1792282846951063838'
+        line: GET /product/sku-1050 200 58ms ok
+        labels:
+          service_name: storefront
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: c2d04813345db5b5
+          trace_id: a77c978bd3095490fc44b3fc88dfe32a
+      - timestamp: '1792282846445128922'
+        line: GET /product/sku-1013 200 57ms ok
+        labels:
+          service_name: storefront
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: 9cecee586a7e1c8d
+          trace_id: e753b397a6f700f22a904ab23aa3bd32
+      - timestamp: '1792282845936747546'
+        line: GET /product/sku-1006 200 60ms ok
+        labels:
+          service_name: storefront
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: 65d511b82a9a514e
+          trace_id: 24b498d37e3b02fd908b03b53202c93f
+      - timestamp: '1792282845424502838'
+        line: GET /product/sku-1036 200 55ms ok
+        labels:
+          service_name: storefront
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: 06c389757f9d9d8d
+          trace_id: ad78a5861748873556b9d5cc98120262
+      - timestamp: '1792282844919103004'
+        line: GET /product/sku-1036 200 58ms ok
+        labels:
+          service_name: storefront
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: c761385264582f07
+          trace_id: 7e4d35cf1ca17976075560a9b02d8115
+      - timestamp: '1792282844415159879'
+        line: GET /product/sku-1047 200 58ms ok
+        labels:
+          service_name: storefront
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: df5966d0ea12aa44
+          trace_id: 10b67321cce29230d221f76ffc31e463
+      - timestamp: '1792282843906349212'
+        line: GET /product/sku-1052 200 58ms ok
+        labels:
+          service_name: storefront
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: 01f176bb7e817852
+          trace_id: 1c75c6442b3cb6a4f078b4512eefacec
+      - timestamp: '1792282843401778628'
+        line: GET /product/sku-1043 200 56ms ok
+        labels:
+          service_name: storefront
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: 8b6356f8c45521a0
+          trace_id: d0e11b69e6064adf53677b30a7af27a9
+      - timestamp: '1792282842893634587'
+        line: GET /product/sku-1033 200 56ms ok
+        labels:
+          service_name: storefront
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: f88c21a9edff6a13
+          trace_id: 27f3f92f1d4b50ddce45b09cfd39e985
+      - timestamp: '1792282842388576086'
+        line: GET /product/sku-1075 200 3173ms slow
+        labels:
+          service_name: storefront
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: cc30f45a65b38579
+          trace_id: a68da4fae342a2a861225c6298150dfb
+      - timestamp: '1792282841882053461'
+        line: GET /product/sku-1089 200 61ms ok
+        labels:
+          service_name: storefront
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: d6eb5c46a04f9923
+          trace_id: 72f6e39873f2239441cd1a0e023bfa5b
+      - timestamp: '1792282841378228252'
+        line: GET /product/sku-1016 200 3000ms slow
+        labels:
+          service_name: storefront
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: 11f576bd47e32ccc
+          trace_id: 9755efadbbffd9087ef9a638a798d1e8
+      - timestamp: '1792282840871368961'
+        line: GET /product/sku-1002 200 3008ms slow
+        labels:
+          service_name: storefront
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: e9d35f1740722dea
+          trace_id: ff3f21df19ba5549cd84dc0d1bc14f94
+      - timestamp: '1792282840367037460'
+        line: GET /product/sku-1024 200 2515ms slow
+        labels:
+          service_name: storefront
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: 3194d299a74388de
+          trace_id: 6dc4a94a34e053e1e6008e7e5d422da2
+      - timestamp: '1792282839859928710'
+        line: GET /product/sku-1023 200 58ms ok
+        labels:
+          service_name: storefront
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: 0b4495c8772d7646
+          trace_id: 24c390cd862490b4822ad537742fe6d4
+      - timestamp: '1792282839355484835'
+        line: GET /product/sku-1098 200 55ms ok
+        labels:
+          service_name: storefront
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: d11ce30062957fb8
+          trace_id: 2aa7d77388cc110ea91c44f0b157177b
+      - timestamp: '1792282838847747293'
+        line: GET /product/sku-1017 200 57ms ok
+        labels:
+          service_name: storefront
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: d2d84a09dd1e0cd6
+          trace_id: 00510c3e0cf89d42eb1f75983508bac8
+      - timestamp: '1792282838344350334'
+        line: GET /product/sku-1032 200 58ms ok
+        labels:
+          service_name: storefront
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: 72d1cbaf79e1b74f
+          trace_id: db0fd3377cca6f6ee00eec633f804727
+      - timestamp: '1792282837837698417'
+        line: GET /product/sku-1012 200 56ms ok
+        labels:
+          service_name: storefront
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: 12104ea4eb25cfe3
+          trace_id: 30a575aeb7f5e066fa4500d0e7cf5d4e
+      - timestamp: '1792282837331577959'
+        line: GET /product/sku-1046 200 55ms ok
+        labels:
+          service_name: storefront
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: 4cc1d18164ca6a52
+          trace_id: b4cdc2155f8fda6e43cf07cf58de312d
+      - timestamp: '1792282836825841542'
+        line: GET /product/sku-1079 200 56ms ok
+        labels:
+          service_name: storefront
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: 11502fab18e3dc87
+          trace_id: d0f0981c0c16af3bff2d0058b2400312
+      - timestamp: '1792282836319835458'
+        line: GET /product/sku-1084 200 60ms ok
+        labels:
+          service_name: storefront
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: 2668312f177c1d51
+          trace_id: 83697815867338f5f5893adac4b64d61
+      - timestamp: '1792282835810329875'
+        line: GET /product/sku-1026 200 55ms ok
+        labels:
+          service_name: storefront
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: fa6383408ec72ef8
+          trace_id: cf315f8e649140407f332644d4b9f6a6
+      - timestamp: '1792282835303034708'
+        line: GET /product/sku-1017 200 56ms ok
+        labels:
+          service_name: storefront
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: 312d378197b018ef
+          trace_id: 940d9a7f8a3d9697880acd5e3f91e69d
+      - timestamp: '1792282834795377097'
+        line: GET /product/sku-1035 200 3027ms slow
+        labels:
+          service_name: storefront
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: f4221ad102fb8609
+          trace_id: eb6f532989da06789c82d48444b0e881
+      - timestamp: '1792282834286472722'
+        line: GET /product/sku-1065 200 58ms ok
+        labels:
+          service_name: storefront
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: 4d93f35688be3613
+          trace_id: e34575bfef69199e044370ca8113d8f8
+      - timestamp: '1792282833781136722'
+        line: GET /product/sku-1036 200 59ms ok
+        labels:
+          service_name: storefront
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: b495e9ab8314e679
+          trace_id: 570fa63cb8dc136b1dbd10747068b108
+      - timestamp: '1792282833277542221'
+        line: GET /product/sku-1082 200 3115ms slow
+        labels:
+          service_name: storefront
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: 984703daaf2779d1
+          trace_id: 671832b5d70fcc4b6eee59b71c54ae1e
+      - timestamp: '1792282832770170554'
+        line: GET /product/sku-1052 200 3325ms slow
+        labels:
+          service_name: storefront
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: 3913e271cc73390a
+          trace_id: 4f9e386145920dc62c72b22a2bacd1da
+      - timestamp: '1792282832261706846'
+        line: GET /product/sku-1003 200 60ms ok
+        labels:
+          service_name: storefront
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: 40691deba80ddd22
+          trace_id: 4f19d1d807645247f744681b209894d9
+      - timestamp: '1792282831755814262'
+        line: GET /product/sku-1031 200 3316ms slow
+        labels:
+          service_name: storefront
+          service_namespace: shop
+        structuredMetadata:
+          detected_level: info
+          severity_number: '9'
+          severity_text: INFO
+          span_id: bbc9e2a5880887d1
+          trace_id: 63dc1061d777575c5deb87ecfa8ea2ca
+      hints:
+        summary: This query used the default 1-hour lookback window because startRfc3339 and endRfc3339
+          were not provided.
+        possibleCauses: []
+        suggestedActions:
+        - If results seem incomplete or you need data from a wider time range, provide explicit startRfc3339
+          and endRfc3339 parameters.
+      metadata:
+        linesReturned: 50
+        maxLinesAllowed: 50
+        resultsTruncated: true
+        totalLinesScanned: 345
+        startTime: '2026-10-17T20:20:57-03:00'
+        endTime: '2026-10-17T21:20:57-03:00'
+  grafana_search_tempo_traces:
+  - match:
+      datasourceUid: tempo
+    result:
+      traces:
+      - traceID: 45d31a48f074c35561c0353b3bdfe298
+        rootServiceName: storefront
+        rootTraceName: GET /product/{sku}
+        startTimeUnixNano: '1792282764836679301'
+        durationMs: 3103
+        spanSet:
+          spans:
+          - spanID: 0d6609eacd1af646
+            startTimeUnixNano: '1792282764836679301'
+            durationNanos: '3103000000'
+            attributes:
+            - key: service.name
+              value:
+                stringValue: storefront
+          matched: 1
+        spanSets:
+        - spans:
+          - spanID: 0d6609eacd1af646
+            startTimeUnixNano: '1792282764836679301'
+            durationNanos: '3103000000'
+            attributes:
+            - key: service.name
+              value:
+                stringValue: storefront
+          matched: 1
+        serviceStats:
+          catalog:
+            spanCount: 1
+          inventory:
+            spanCount: 2
+          pricing:
+            spanCount: 1
+          storefront:
+            spanCount: 1
+      - traceID: aa889c27b4277ffe35150f32673a376f
+        rootServiceName: storefront
+        rootTraceName: GET /product/{sku}
+        startTimeUnixNano: '1792282763823375092'
+        durationMs: 2523
+        spanSet:
+          spans:
+          - spanID: a823dc044db991d8
+            startTimeUnixNano: '1792282763823375092'
+            durationNanos: '2523000000'
+            attributes:
+            - key: service.name
+              value:
+                stringValue: storefront
+          matched: 1
+        spanSets:
+        - spans:
+          - spanID: a823dc044db991d8
+            startTimeUnixNano: '1792282763823375092'
+            durationNanos: '2523000000'
+            attributes:
+            - key: service.name
+              value:
+                stringValue: storefront
+          matched: 1
+        serviceStats:
+          catalog:
+            spanCount: 1
+          inventory:
+            spanCount: 2
+          pricing:
+            spanCount: 1
+          storefront:
+            spanCount: 1
+      - traceID: 548bfadd006d13fa63223461b3fadad0
+        rootServiceName: storefront
+        rootTraceName: GET /product/{sku}
+        startTimeUnixNano: '1792282761787108174'
+        durationMs: 2750
+        spanSet:
+          spans:
+          - spanID: bf7a1111815efa0c
+            startTimeUnixNano: '1792282761787108174'
+            durationNanos: '2750000000'
+            attributes:
+            - key: service.name
+              value:
+                stringValue: storefront
+          matched: 1
+        spanSets:
+        - spans:
+          - spanID: bf7a1111815efa0c
+            startTimeUnixNano: '1792282761787108174'
+            durationNanos: '2750000000'
+            attributes:
+            - key: service.name
+              value:
+                stringValue: storefront
+          matched: 1
+        serviceStats:
+          catalog:
+            spanCount: 1
+          inventory:
+            spanCount: 2
+          pricing:
+            spanCount: 1
+          storefront:
+            spanCount: 1
+      - traceID: bad73f39a3606faf3bc49e92dab81c25
+        rootServiceName: storefront
+        rootTraceName: GET /product/{sku}
+        startTimeUnixNano: '1792282761281252132'
+        durationMs: 3121
+        spanSet:
+          spans:
+          - spanID: 8671856b2846714e
+            startTimeUnixNano: '1792282761281252132'
+            durationNanos: '3121000000'
+            attributes:
+            - key: service.name
+              value:
+                stringValue: storefront
+          matched: 1
+        spanSets:
+        - spans:
+          - spanID: 8671856b2846714e
+            startTimeUnixNano: '1792282761281252132'
+            durationNanos: '3121000000'
+            attributes:
+            - key: service.name
+              value:
+                stringValue: storefront
+          matched: 1
+        serviceStats:
+          catalog:
+            spanCount: 1
+          inventory:
+            spanCount: 2
+          pricing:
+            spanCount: 1
+          storefront:
+            spanCount: 1
+      - traceID: 28c2eeb5dc37f6284b19494e3f96840e
+        rootServiceName: storefront
+        rootTraceName: GET /product/{sku}
+        startTimeUnixNano: '1792282760271540007'
+        durationMs: 3060
+        spanSet:
+          spans:
+          - spanID: 548feadddd7f3187
+            startTimeUnixNano: '1792282760271540007'
+            durationNanos: '3060000000'
+            attributes:
+            - key: service.name
+              value:
+                stringValue: storefront
+          matched: 1
+        spanSets:
+        - spans:
+          - spanID: 548feadddd7f3187
+            startTimeUnixNano: '1792282760271540007'
+            durationNanos: '3060000000'
+            attributes:
+            - key: service.name
+              value:
+                stringValue: storefront
+          matched: 1
+        serviceStats:
+          catalog:
+            spanCount: 1
+          inventory:
+            spanCount: 2
+          pricing:
+            spanCount: 1
+          storefront:
+            spanCount: 1
+      - traceID: a0447546a25ec155ba26f542b93928fd
+        rootServiceName: storefront
+        rootTraceName: GET /product/{sku}
+        startTimeUnixNano: '1792282759260075673'
+        durationMs: 2502
+        spanSet:
+          spans:
+          - spanID: b68ef958b1f0e502
+            startTimeUnixNano: '1792282759260075673'
+            durationNanos: '2502000000'
+            attributes:
+            - key: service.name
+              value:
+                stringValue: storefront
+          matched: 1
+        spanSets:
+        - spans:
+          - spanID: b68ef958b1f0e502
+            startTimeUnixNano: '1792282759260075673'
+            durationNanos: '2502000000'
+            attributes:
+            - key: service.name
+              value:
+                stringValue: storefront
+          matched: 1
+        serviceStats:
+          catalog:
+            spanCount: 1
+          inventory:
+            spanCount: 2
+          pricing:
+            spanCount: 1
+          storefront:
+            spanCount: 1
+      - traceID: b05c74f44f9f14d2b7d3205503d84f8a
+        rootServiceName: storefront
+        rootTraceName: GET /product/{sku}
+        startTimeUnixNano: '1792282758240035881'
+        durationMs: 2601
+        spanSet:
+          spans:
+          - spanID: 0ddb26c3ec2a74c9
+            startTimeUnixNano: '1792282758240035881'
+            durationNanos: '2601000000'
+            attributes:
+            - key: service.name
+              value:
+                stringValue: storefront
+          matched: 1
+        spanSets:
+        - spans:
+          - spanID: 0ddb26c3ec2a74c9
+            startTimeUnixNano: '1792282758240035881'
+            durationNanos: '2601000000'
+            attributes:
+            - key: service.name
+              value:
+                stringValue: storefront
+          matched: 1
+        serviceStats:
+          catalog:
+            spanCount: 1
+          inventory:
+            spanCount: 2
+          pricing:
+            spanCount: 1
+          storefront:
+            spanCount: 1
+      - traceID: 2ff0822c948e0d320eadcd7f13e6ceb7
+        rootServiceName: storefront
+        rootTraceName: GET /product/{sku}
+        startTimeUnixNano: '1792282755193907213'
+        durationMs: 2985
+        spanSet:
+          spans:
+          - spanID: d93bfe464e0c0309
+            startTimeUnixNano: '1792282755193907213'
+            durationNanos: '2985000000'
+            attributes:
+            - key: service.name
+              value:
+                stringValue: storefront
+          matched: 1
+        spanSets:
+        - spans:
+          - spanID: d93bfe464e0c0309
+            startTimeUnixNano: '1792282755193907213'
+            durationNanos: '2985000000'
+            attributes:
+            - key: service.name
+              value:
+                stringValue: storefront
+          matched: 1
+        serviceStats:
+          catalog:
+            spanCount: 1
+          inventory:
+            spanCount: 2
+          pricing:
+            spanCount: 1
+          storefront:
+            spanCount: 1
+      - traceID: 7da6dea75f8b67c754eb72575a84ece3
+        rootServiceName: storefront
+        rootTraceName: GET /product/{sku}
+        startTimeUnixNano: '1792282754181692587'
+        durationMs: 2483
+        spanSet:
+          spans:
+          - spanID: 49d7495dfc0e1169
+            startTimeUnixNano: '1792282754181692587'
+            durationNanos: '2483000000'
+            attributes:
+            - key: service.name
+              value:
+                stringValue: storefront
+          matched: 1
+        spanSets:
+        - spans:
+          - spanID: 49d7495dfc0e1169
+            startTimeUnixNano: '1792282754181692587'
+            durationNanos: '2483000000'
+            attributes:
+            - key: service.name
+              value:
+                stringValue: storefront
+          matched: 1
+        serviceStats:
+          catalog:
+            spanCount: 1
+          inventory:
+            spanCount: 2
+          pricing:
+            spanCount: 1
+          storefront:
+            spanCount: 1
+      - traceID: 9c44528f8a843750cbbbde89d77624f2
+        rootServiceName: storefront
+        rootTraceName: GET /product/{sku}
+        startTimeUnixNano: '1792282753167629503'
+        durationMs: 3284
+        spanSet:
+          spans:
+          - spanID: c702647c8bc7a2a8
+            startTimeUnixNano: '1792282753167629503'
+            durationNanos: '3284000000'
+            attributes:
+            - key: service.name
+              value:
+                stringValue: storefront
+          matched: 1
+        spanSets:
+        - spans:
+          - spanID: c702647c8bc7a2a8
+            startTimeUnixNano: '1792282753167629503'
+            durationNanos: '3284000000'
+            attributes:
+            - key: service.name
+              value:
+                stringValue: storefront
+          matched: 1
+        serviceStats:
+          catalog:
+            spanCount: 1
+          inventory:
+            spanCount: 2
+          pricing:
+            spanCount: 1
+          storefront:
+            spanCount: 1
+      - traceID: 6fb24767f3afb7ba5b5433675202a72d
+        rootServiceName: storefront
+        rootTraceName: GET /product/{sku}
+        startTimeUnixNano: '1792282752153339253'
+        durationMs: 2952
+        spanSet:
+          spans:
+          - spanID: 9b247825a5b4a22c
+            startTimeUnixNano: '1792282752153339253'
+            durationNanos: '2952000000'
+            attributes:
+            - key: service.name
+              value:
+                stringValue: storefront
+          matched: 1
+        spanSets:
+        - spans:
+          - spanID: 9b247825a5b4a22c
+            startTimeUnixNano: '1792282752153339253'
+            durationNanos: '2952000000'
+            attributes:
+            - key: service.name
+              value:
+                stringValue: storefront
+          matched: 1
+        serviceStats:
+          catalog:
+            spanCount: 1
+          inventory:
+            spanCount: 2
+          pricing:
+            spanCount: 1
+          storefront:
+            spanCount: 1
+      - traceID: b3ada3c70bcf49fd8afd3f0478a37ff1
+        rootServiceName: storefront
+        rootTraceName: GET /product/{sku}
+        startTimeUnixNano: '1792282751643273086'
+        durationMs: 3322
+        spanSet:
+          spans:
+          - spanID: 5a158aa6d4cea879
+            startTimeUnixNano: '1792282751643273086'
+            durationNanos: '3322000000'
+            attributes:
+            - key: service.name
+              value:
+                stringValue: storefront
+          matched: 1
+        spanSets:
+        - spans:
+          - spanID: 5a158aa6d4cea879
+            startTimeUnixNano: '1792282751643273086'
+            durationNanos: '3322000000'
+            attributes:
+            - key: service.name
+              value:
+                stringValue: storefront
+          matched: 1
+        serviceStats:
+          catalog:
+            spanCount: 1
+          inventory:
+            spanCount: 2
+          pricing:
+            spanCount: 1
+          storefront:
+            spanCount: 1
+      - traceID: 5bbca90f4c770536f66640d31b520d5c
+        rootServiceName: storefront
+        rootTraceName: GET /product/{sku}
+        startTimeUnixNano: '1792282747582768501'
+        durationMs: 2709
+        spanSet:
+          spans:
+          - spanID: cfc84ded46554874
+            startTimeUnixNano: '1792282747582768501'
+            durationNanos: '2709000000'
+            attributes:
+            - key: service.name
+              value:
+                stringValue: storefront
+          matched: 1
+        spanSets:
+        - spans:
+          - spanID: cfc84ded46554874
+            startTimeUnixNano: '1792282747582768501'
+            durationNanos: '2709000000'
+            attributes:
+            - key: service.name
+              value:
+                stringValue: storefront
+          matched: 1
+        serviceStats:
+          catalog:
+            spanCount: 1
+          inventory:
+            spanCount: 2
+          pricing:
+            spanCount: 1
+          storefront:
+            spanCount: 1
+      - traceID: 11ad1da1a402c592fec27f608f28285f
+        rootServiceName: storefront
+        rootTraceName: GET /product/{sku}
+        startTimeUnixNano: '1792282747073773917'
+        durationMs: 2892
+        spanSet:
+          spans:
+          - spanID: af945738ff534a91
+            startTimeUnixNano: '1792282747073773917'
+            durationNanos: '2892000000'
+            attributes:
+            - key: service.name
+              value:
+                stringValue: storefront
+          matched: 1
+        spanSets:
+        - spans:
+          - spanID: af945738ff534a91
+            startTimeUnixNano: '1792282747073773917'
+            durationNanos: '2892000000'
+            attributes:
+            - key: service.name
+              value:
+                stringValue: storefront
+          matched: 1
+        serviceStats:
+          catalog:
+            spanCount: 1
+          inventory:
+            spanCount: 2
+          pricing:
+            spanCount: 1
+          storefront:
+            spanCount: 1
+      - traceID: 6c75ec4b345220f0e6a2971396949abb
+        rootServiceName: storefront
+        rootTraceName: GET /product/{sku}
+        startTimeUnixNano: '1792282744540899097'
+        durationMs: 2768
+        spanSet:
+          spans:
+          - spanID: 3080dbcee9e8d458
+            startTimeUnixNano: '1792282744540899097'
+            durationNanos: '2768000000'
+            attributes:
+            - key: service.name
+              value:
+                stringValue: storefront
+          matched: 1
+        spanSets:
+        - spans:
+          - spanID: 3080dbcee9e8d458
+            startTimeUnixNano: '1792282744540899097'
+            durationNanos: '2768000000'
+            attributes:
+            - key: service.name
+              value:
+                stringValue: storefront
+          matched: 1
+        serviceStats:
+          catalog:
+            spanCount: 1
+          inventory:
+            spanCount: 2
+          pricing:
+            spanCount: 1
+          storefront:
+            spanCount: 1
+      - traceID: a8ffd0ef738400c75e2cba36e41688e0
+        rootServiceName: storefront
+        rootTraceName: GET /product/{sku}
+        startTimeUnixNano: '1792282742502425679'
+        durationMs: 2984
+        spanSet:
+          spans:
+          - spanID: 174133efe2515fca
+            startTimeUnixNano: '1792282742502425679'
+            durationNanos: '2984000000'
+            attributes:
+            - key: service.name
+              value:
+                stringValue: storefront
+          matched: 1
+        spanSets:
+        - spans:
+          - spanID: 174133efe2515fca
+            startTimeUnixNano: '1792282742502425679'
+            durationNanos: '2984000000'
+            attributes:
+            - key: service.name
+              value:
+                stringValue: storefront
+          matched: 1
+        serviceStats:
+          catalog:
+            spanCount: 1
+          inventory:
+            spanCount: 2
+          pricing:
+            spanCount: 1
+          storefront:
+            spanCount: 1
+      - traceID: b210f9f8007c8e9cd07104ca018d6d2a
+        rootServiceName: storefront
+        rootTraceName: GET /product/{sku}
+        startTimeUnixNano: '1792282740818377220'
+        durationMs: 3200
+        spanSet:
+          spans:
+          - spanID: a0fcf92f65a03ac4
+            startTimeUnixNano: '1792282740818377220'
+            durationNanos: '3200000000'
+            attributes:
+            - key: service.name
+              value:
+                stringValue: storefront
+          matched: 1
+        spanSets:
+        - spans:
+          - spanID: a0fcf92f65a03ac4
+            startTimeUnixNano: '1792282740818377220'
+            durationNanos: '3200000000'
+            attributes:
+            - key: service.name
+              value:
+                stringValue: storefront
+          matched: 1
+        serviceStats:
+          catalog:
+            spanCount: 1
+          inventory:
+            spanCount: 2
+          pricing:
+            spanCount: 1
+          storefront:
+            spanCount: 1
+      - traceID: a744614ad884ea92c067a2f304b16052
+        rootServiceName: storefront
+        rootTraceName: GET /product/{sku}
+        startTimeUnixNano: '1792282738957472386'
+        durationMs: 2782
+        spanSet:
+          spans:
+          - spanID: ab64d989fe6e271e
+            startTimeUnixNano: '1792282738957472386'
+            durationNanos: '2782000000'
+            attributes:
+            - key: service.name
+              value:
+                stringValue: storefront
+          matched: 1
+        spanSets:
+        - spans:
+          - spanID: ab64d989fe6e271e
+            startTimeUnixNano: '1792282738957472386'
+            durationNanos: '2782000000'
+            attributes:
+            - key: service.name
+              value:
+                stringValue: storefront
+          matched: 1
+        serviceStats:
+          catalog:
+            spanCount: 1
+          inventory:
+            spanCount: 2
+          pricing:
+            spanCount: 1
+          storefront:
+            spanCount: 1
+      - traceID: 493900a0d412eee21ce6f026e63dc4d3
+        rootServiceName: storefront
+        rootTraceName: GET /product/{sku}
+        startTimeUnixNano: '1792282738283675511'
+        durationMs: 3016
+        spanSet:
+          spans:
+          - spanID: 4ca10c7642609c0b
+            startTimeUnixNano: '1792282738283675511'
+            durationNanos: '3016000000'
+            attributes:
+            - key: service.name
+              value:
+                stringValue: storefront
+          matched: 1
+        spanSets:
+        - spans:
+          - spanID: 4ca10c7642609c0b
+            startTimeUnixNano: '1792282738283675511'
+            durationNanos: '3016000000'
+            attributes:
+            - key: service.name
+              value:
+                stringValue: storefront
+          matched: 1
+        serviceStats:
+          catalog:
+            spanCount: 1
+          inventory:
+            spanCount: 2
+          pricing:
+            spanCount: 1
+          storefront:
+            spanCount: 1
+      - traceID: 330f4bd2d5473f8fa3fd35845494be9d
+        rootServiceName: storefront
+        rootTraceName: GET /product/{sku}
+        startTimeUnixNano: '1792282737939205760'
+        durationMs: 2736
+        spanSet:
+          spans:
+          - spanID: 7ff5ca3dc72817dd
+            startTimeUnixNano: '1792282737939205760'
+            durationNanos: '2736000000'
+            attributes:
+            - key: service.name
+              value:
+                stringValue: storefront
+          matched: 1
+        spanSets:
+        - spans:
+          - spanID: 7ff5ca3dc72817dd
+            startTimeUnixNano: '1792282737939205760'
+            durationNanos: '2736000000'
+            attributes:
+            - key: service.name
+              value:
+                stringValue: storefront
+          matched: 1
+        serviceStats:
+          catalog:
+            spanCount: 1
+          inventory:
+            spanCount: 2
+          pricing:
+            spanCount: 1
+          storefront:
+            spanCount: 1
+      metrics:
+        inspectedBytes: '68030'
+        completedJobs: 3
+        totalJobs: 3
+  grafana_list_tempo_attribute_values:
+  - match:
+      datasourceUid: tempo
+    result:
+      tagValues:
+        string:
+        - pricing
+        - inventory
+        - storefront
+        - catalog
+      metrics:
+        inspectedBytes: 79796
+  grafana_get_tempo_trace:
+  - match:
+      datasourceUid: tempo
+      trace_id: 45d31a48f074c35561c0353b3bdfe298
+    result:
+      traceId: 45d31a48f074c35561c0353b3bdfe298
+      datasourceUid: tempo
+      grafanaUrl: http://localhost:3000/explore?panes=%7B%22a%22%3A%7B%22datasource%22%3A%22tempo%22%2C%22queries%22%3A%5B%7B%22datasource%22%3A%7B%22uid%22%3A%22tempo%22%7D%2C%22query%22%3A%2245d31a48f074c35561c0353b3bdfe298%22%2C%22queryType%22%3A%22traceId%22%2C%22refId%22%3A%22A%22%7D%5D%2C%22range%22%3A%7B%22from%22%3A%221792282704836%22%2C%22to%22%3A%221792282827940%22%7D%7D%7D&schemaVersion=1
+      spans:
+      - id: 0d6609eacd1af646
+        name: GET /product/{sku}
+        serviceName: storefront
+        startTimeMs: 1792282764836.6794
+        durationMs: 3103
+        status: ok
+        attributes:
+          http.response.status_code: 200
+          http.route: /product/{sku}
+          resource.service.namespace: shop
+        events: []
+      - id: 68fc69dc989e890f
+        parentId: 0d6609eacd1af646
+        name: GET /items/{sku}
+        serviceName: catalog
+        startTimeMs: 1792282764838.6792
+        durationMs: 14
+        status: ok
+        attributes:
+          http.route: /items/{sku}
+          resource.service.namespace: shop
+        events: []
+      - id: 7ce6fe09a5f493d8
+        parentId: 0d6609eacd1af646
+        name: GET /quote
+        serviceName: pricing
+        startTimeMs: 1792282764854.6792
+        durationMs: 21
+        status: ok
+        attributes:
+          http.route: /quote
+          resource.service.namespace: shop
+        events: []
+      - id: f16bb5a247f9e146
+        parentId: 0d6609eacd1af646
+        name: GET /stock/{sku}
+        serviceName: inventory
+        startTimeMs: 1792282764877.6794
+        durationMs: 3056
+        status: ok
+        attributes:
+          http.route: /stock/{sku}
+          resource.service.namespace: shop
+        events: []
+      - id: e0d3ac6f6cbc929d
+        parentId: f16bb5a247f9e146
+        name: SELECT stock
+        serviceName: inventory
+        startTimeMs: 1792282764880.6794
+        durationMs: 3050
+        status: ok
+        attributes:
+          db.namespace: inventory
+          db.query.text: SELECT qty FROM stock WHERE sku = $1 FOR UPDATE
+          db.system: postgresql
+          db.wait_event: Lock:tuple
+          resource.service.namespace: shop
+          server.address: inventory-db.shop.svc
+        events: []
+  - match:
+      datasourceUid: tempo
+      trace_id: aa889c27b4277ffe35150f32673a376f
+    result:
+      traceId: aa889c27b4277ffe35150f32673a376f
+      datasourceUid: tempo
+      grafanaUrl: http://localhost:3000/explore?panes=%7B%22a%22%3A%7B%22datasource%22%3A%22tempo%22%2C%22queries%22%3A%5B%7B%22datasource%22%3A%7B%22uid%22%3A%22tempo%22%7D%2C%22query%22%3A%22aa889c27b4277ffe35150f32673a376f%22%2C%22queryType%22%3A%22traceId%22%2C%22refId%22%3A%22A%22%7D%5D%2C%22range%22%3A%7B%22from%22%3A%221792282703823%22%2C%22to%22%3A%221792282826347%22%7D%7D%7D&schemaVersion=1
+      spans:
+      - id: a823dc044db991d8
+        name: GET /product/{sku}
+        serviceName: storefront
+        startTimeMs: 1792282763823.375
+        durationMs: 2523
+        status: ok
+        attributes:
+          http.response.status_code: 200
+          http.route: /product/{sku}
+          resource.service.namespace: shop
+        events: []
+      - id: bd3a0cfd94401f60
+        parentId: a823dc044db991d8
+        name: GET /items/{sku}
+        serviceName: catalog
+        startTimeMs: 1792282763825.375
+        durationMs: 14
+        status: ok
+        attributes:
+          http.route: /items/{sku}
+          resource.service.namespace: shop
+        events: []
+      - id: 71b1ef410ea0816a
+        parentId: a823dc044db991d8
+        name: GET /quote
+        serviceName: pricing
+        startTimeMs: 1792282763841.375
+        durationMs: 21
+        status: ok
+        attributes:
+          http.route: /quote
+          resource.service.namespace: shop
+        events: []
+      - id: 942c7cd4c9964341
+        parentId: a823dc044db991d8
+        name: GET /stock/{sku}
+        serviceName: inventory
+        startTimeMs: 1792282763864.375
+        durationMs: 2476
+        status: ok
+        attributes:
+          http.route: /stock/{sku}
+          resource.service.namespace: shop
+        events: []
+      - id: 9663eb65e541a4c5
+        parentId: 942c7cd4c9964341
+        name: SELECT stock
+        serviceName: inventory
+        startTimeMs: 1792282763867.375
+        durationMs: 2470
+        status: ok
+        attributes:
+          db.namespace: inventory
+          db.query.text: SELECT qty FROM stock WHERE sku = $1 FOR UPDATE
+          db.system: postgresql
+          db.wait_event: Lock:tuple
+          resource.service.namespace: shop
+          server.address: inventory-db.shop.svc
+        events: []
+  - match:
+      datasourceUid: tempo
+      trace_id: 548bfadd006d13fa63223461b3fadad0
+    result:
+      traceId: 548bfadd006d13fa63223461b3fadad0
+      datasourceUid: tempo
+      grafanaUrl: http://localhost:3000/explore?panes=%7B%22a%22%3A%7B%22datasource%22%3A%22tempo%22%2C%22queries%22%3A%5B%7B%22datasource%22%3A%7B%22uid%22%3A%22tempo%22%7D%2C%22query%22%3A%22548bfadd006d13fa63223461b3fadad0%22%2C%22queryType%22%3A%22traceId%22%2C%22refId%22%3A%22A%22%7D%5D%2C%22range%22%3A%7B%22from%22%3A%221792282701787%22%2C%22to%22%3A%221792282824538%22%7D%7D%7D&schemaVersion=1
+      spans:
+      - id: bf7a1111815efa0c
+        name: GET /product/{sku}
+        serviceName: storefront
+        startTimeMs: 1792282761787.1082
+        durationMs: 2750
+        status: ok
+        attributes:
+          http.response.status_code: 200
+          http.route: /product/{sku}
+          resource.service.namespace: shop
+        events: []
+      - id: b6ec8397ada1229d
+        parentId: bf7a1111815efa0c
+        name: GET /items/{sku}
+        serviceName: catalog
+        startTimeMs: 1792282761789.1082
+        durationMs: 14
+        status: ok
+        attributes:
+          http.route: /items/{sku}
+          resource.service.namespace: shop
+        events: []
+      - id: 9fd714151ec80e67
+        parentId: bf7a1111815efa0c
+        name: GET /quote
+        serviceName: pricing
+        startTimeMs: 1792282761805.1082
+        durationMs: 21
+        status: ok
+        attributes:
+          http.route: /quote
+          resource.service.namespace: shop
+        events: []
+      - id: ab4f79690b425b2c
+        parentId: bf7a1111815efa0c
+        name: GET /stock/{sku}
+        serviceName: inventory
+        startTimeMs: 1792282761828.1084
+        durationMs: 2703
+        status: ok
+        attributes:
+          http.route: /stock/{sku}
+          resource.service.namespace: shop
+        events: []
+      - id: a00bd7bc0305c696
+        parentId: ab4f79690b425b2c
+        name: SELECT stock
+        serviceName: inventory
+        startTimeMs: 1792282761831.1082
+        durationMs: 2697
+        status: ok
+        attributes:
+          db.namespace: inventory
+          db.query.text: SELECT qty FROM stock WHERE sku = $1 FOR UPDATE
+          db.system: postgresql
+          db.wait_event: Lock:tuple
+          resource.service.namespace: shop
+          server.address: inventory-db.shop.svc
+        events: []
+  - match:
+      datasourceUid: tempo
+      trace_id: bad73f39a3606faf3bc49e92dab81c25
+    result:
+      traceId: bad73f39a3606faf3bc49e92dab81c25
+      datasourceUid: tempo
+      grafanaUrl: http://localhost:3000/explore?panes=%7B%22a%22%3A%7B%22datasource%22%3A%22tempo%22%2C%22queries%22%3A%5B%7B%22datasource%22%3A%7B%22uid%22%3A%22tempo%22%7D%2C%22query%22%3A%22bad73f39a3606faf3bc49e92dab81c25%22%2C%22queryType%22%3A%22traceId%22%2C%22refId%22%3A%22A%22%7D%5D%2C%22range%22%3A%7B%22from%22%3A%221792282701281%22%2C%22to%22%3A%221792282824403%22%7D%7D%7D&schemaVersion=1
+      spans:
+      - id: 8671856b2846714e
+        name: GET /product/{sku}
+        serviceName: storefront
+        startTimeMs: 1792282761281.2522
+        durationMs: 3121
+        status: ok
+        attributes:
+          http.response.status_code: 200
+          http.route: /product/{sku}
+          resource.service.namespace: shop
+        events: []
+      - id: d5ad8fbac71cf082
+        parentId: 8671856b2846714e
+        name: GET /items/{sku}
+        serviceName: catalog
+        startTimeMs: 1792282761283.2522
+        durationMs: 14
+        status: ok
+        attributes:
+          http.route: /items/{sku}
+          resource.service.namespace: shop
+        events: []
+      - id: ec50cb5465db90d6
+        parentId: 8671856b2846714e
+        name: GET /quote
+        serviceName: pricing
+        startTimeMs: 1792282761299.2522
+        durationMs: 21
+        status: ok
+        attributes:
+          http.route: /quote
+          resource.service.namespace: shop
+        events: []
+      - id: c49add95707188d0
+        parentId: 8671856b2846714e
+        name: GET /stock/{sku}
+        serviceName: inventory
+        startTimeMs: 1792282761322.252
+        durationMs: 3074
+        status: ok
+        attributes:
+          http.route: /stock/{sku}
+          resource.service.namespace: shop
+        events: []
+      - id: a320eec8690fcec3
+        parentId: c49add95707188d0
+        name: SELECT stock
+        serviceName: inventory
+        startTimeMs: 1792282761325.2522
+        durationMs: 3068
+        status: ok
+        attributes:
+          db.namespace: inventory
+          db.query.text: SELECT qty FROM stock WHERE sku = $1 FOR UPDATE
+          db.system: postgresql
+          db.wait_event: Lock:tuple
+          resource.service.namespace: shop
+          server.address: inventory-db.shop.svc
+        events: []
+  - match:
+      datasourceUid: tempo
+      trace_id: 28c2eeb5dc37f6284b19494e3f96840e
+    result:
+      traceId: 28c2eeb5dc37f6284b19494e3f96840e
+      datasourceUid: tempo
+      grafanaUrl: http://localhost:3000/explore?panes=%7B%22a%22%3A%7B%22datasource%22%3A%22tempo%22%2C%22queries%22%3A%5B%7B%22datasource%22%3A%7B%22uid%22%3A%22tempo%22%7D%2C%22query%22%3A%2228c2eeb5dc37f6284b19494e3f96840e%22%2C%22queryType%22%3A%22traceId%22%2C%22refId%22%3A%22A%22%7D%5D%2C%22range%22%3A%7B%22from%22%3A%221792282700271%22%2C%22to%22%3A%221792282823332%22%7D%7D%7D&schemaVersion=1
+      spans:
+      - id: 548feadddd7f3187
+        name: GET /product/{sku}
+        serviceName: storefront
+        startTimeMs: 1792282760271.54
+        durationMs: 3060
+        status: ok
+        attributes:
+          http.response.status_code: 200
+          http.route: /product/{sku}
+          resource.service.namespace: shop
+        events: []
+      - id: eb081a728ed5ac15
+        parentId: 548feadddd7f3187
+        name: GET /items/{sku}
+        serviceName: catalog
+        startTimeMs: 1792282760273.54
+        durationMs: 14
+        status: ok
+        attributes:
+          http.route: /items/{sku}
+          resource.service.namespace: shop
+        events: []
+      - id: 5ec63e4021854c18
+        parentId: 548feadddd7f3187
+        name: GET /quote
+        serviceName: pricing
+        startTimeMs: 1792282760289.54
+        durationMs: 21
+        status: ok
+        attributes:
+          http.route: /quote
+          resource.service.namespace: shop
+        events: []
+      - id: efff93a62901210e
+        parentId: 548feadddd7f3187
+        name: GET /stock/{sku}
+        serviceName: inventory
+        startTimeMs: 1792282760312.5398
+        durationMs: 3013
+        status: ok
+        attributes:
+          http.route: /stock/{sku}
+          resource.service.namespace: shop
+        events: []
+      - id: 8712d89bfa975163
+        parentId: efff93a62901210e
+        name: SELECT stock
+        serviceName: inventory
+        startTimeMs: 1792282760315.54
+        durationMs: 3007
+        status: ok
+        attributes:
+          db.namespace: inventory
+          db.query.text: SELECT qty FROM stock WHERE sku = $1 FOR UPDATE
+          db.system: postgresql
+          db.wait_event: Lock:tuple
+          resource.service.namespace: shop
+          server.address: inventory-db.shop.svc
+        events: []
