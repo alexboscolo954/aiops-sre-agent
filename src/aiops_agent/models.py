@@ -114,7 +114,11 @@ class TriageReport(BaseModel):
         "memory leaks. resource_limits: limits too low for a healthy workload. "
         "image_unavailable: tag or registry problem. capacity: the cluster can't fit the workload."
     )
-    probable_root_cause: str
+    probable_root_cause: str = Field(
+        description="Why it broke, with the deciding facts from the evidence: the value, "
+        "limit, version, revision or time that proves it (e.g. memory limit 64Mi against "
+        "a heap that needs about 200Mi), not only a summary of the change"
+    )
     confidence: Literal["high", "medium", "low"] = Field(
         description="high: direct evidence (e.g. the error in logs); low: inferred"
     )

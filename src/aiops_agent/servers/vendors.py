@@ -249,9 +249,10 @@ the cause.
         (
             (
                 "generate_deeplink",
-                "So the Operator can open what you saw, call {name}_generate_deeplink for the\n"
+                "Before you return the report, always call {name}_generate_deeplink for the\n"
                 "key evidence (explore with the datasource uid and your query, or a\n"
-                "dashboard) and put the URL it returns, exactly, in that Evidence's link.\n"
+                "dashboard), so the Operator can open what you saw, and put the URL it\n"
+                "returns, exactly, in that Evidence's link.\n"
                 "Only links it returns are shown; a link copied from any other result is\n"
                 "dropped.\n",
             ),
