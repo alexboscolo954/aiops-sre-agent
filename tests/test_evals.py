@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from typing import Any
 
@@ -8,6 +9,7 @@ from aiops_agent import agent, evals
 from aiops_agent.config import Settings
 from aiops_agent.models import AlertGroup
 from tests.conftest import REPORT, call, scripted
+from tests.test_agent import ALERT
 
 SCENARIOS = Path(__file__).parent.parent / "evals" / "scenarios"
 
@@ -155,3 +157,31 @@ async def test_an_answer_is_scored_on_keywords_and_real_evidence(settings: Setti
         {"expect": {}}, outcome
     )
     assert evals.score_answer({"expect": {}}, agent.Outcome("t")) == ["no answer"]
+
+
+@pytest.mark.anyio
+async def test_the_outcome_logs_each_calls_arguments_and_errors(settings: Settings) -> None:
+    """What a failed Scenario needs to be diagnosed: which arguments each call sent,
+    redacted, and which got an error (here: nothing recorded for them)."""
+    recordings = {"kubernetes_list_pods": [{"match": {"namespace": "shop"}, "result": []}]}
+    model = scripted(
+        call(
+            "kubernetes_list_pods",
+            "c1",
+            cluster="kind",
+            namespace="shop",
+            label_selector="token=hunter2hunter2",
+        ),
+        call("kubernetes_get_events", "c2", cluster="kind", namespace="shop"),
+        call("TriageReport", "c3", **REPORT),
+    )
+    async with agent.open_agent(settings, replay(settings, recordings), model) as a:
+        outcome = await agent.start(a, ALERT, "e1")
+    first, second = outcome.call_log[:2]
+    assert first["name"] == "kubernetes_list_pods" and first["error"] is False
+    assert first["args"]["namespace"] == "shop" and "hunter2" not in json.dumps(first["args"])
+    assert second == {
+        "name": "kubernetes_get_events",
+        "args": {"cluster": "kind", "namespace": "shop"},
+        "error": True,
+    }

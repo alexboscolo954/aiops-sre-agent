@@ -186,7 +186,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.out:
             args.out.mkdir(parents=True, exist_ok=True)
             for r in results:
-                calls = "\n".join(f"{i}. `{c}`" for i, c in enumerate(r["calls"], 1))
+                calls = "\n".join(
+                    f"{i}. `{c['name']}` {json.dumps(c['args'])[:300]}"
+                    + (" (error)" if c["error"] else "")
+                    for i, c in enumerate(r["call_log"], 1)
+                )
                 body = f"{r.get('answer') or r['report']}\n\n**Tool calls**\n{calls}\n"
                 (args.out / f"{r['scenario']}.md").write_text(body)
         print(json.dumps(results, indent=2) if args.json else evals.table(results))

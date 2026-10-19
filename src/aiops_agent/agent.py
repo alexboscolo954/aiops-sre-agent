@@ -475,9 +475,9 @@ def spill_tool_output(limit: int) -> Any:
         result_id = "r" + hashlib.sha256(call_id.encode()).hexdigest()[:6]
         stored = redact_capped(text, SPILL_LIMIT)
         note = (
-            f"[this is the start of result {result_id}. For the rest, don't repeat the call: "
-            f"{READ_MORE}(result_id='{result_id}', grep='<word>') returns only the records "
-            "that contain it; fields=[...] and start=... also work]"
+            f"[this is the start of result {result_id}; the same call again returns the same "
+            f"start. {READ_MORE}(result_id='{result_id}', grep='<word>') returns only the "
+            "records of it that contain the word; fields=[...] and start=... also work]"
         )
         # The cap's own marker takes about 50 characters more.
         message.content = redact_capped(text, max(limit // 2, limit - len(note) - 64)) + note
@@ -619,6 +619,8 @@ class Outcome:
     answer: Answer | None = None
     pending: list[dict[str, Any]] = field(default_factory=list)  # proposed actions
     tool_calls: list[str] = field(default_factory=list)
+    # Each call's redacted arguments and whether it errored, in order: for evals.
+    call_log: list[dict[str, Any]] = field(default_factory=list)
     executed_actions: list[str] = field(default_factory=list)
     dropped_links: int = 0  # Evidence links no link tool returned, removed
 
@@ -644,19 +646,36 @@ def alert_prompt(group: AlertGroup) -> str:
 
 def _outcome(thread_id: str, result: Any) -> Outcome:
     messages = result.value.get("messages", [])
-    calls = [c["name"] for m in messages for c in getattr(m, "tool_calls", None) or []]
+    requested = [c for m in messages for c in getattr(m, "tool_calls", None) or []]
+    calls = [c["name"] for c in requested]
+    failed = {
+        m.tool_call_id for m in messages if isinstance(m, ToolMessage) and m.status == "error"
+    }
+    log_ = [
+        {"name": c["name"], "args": redact_strings(c["args"]), "error": c.get("id") in failed}
+        for c in requested
+    ]
     executed = result.value.get("executed_actions", [])
     if result.interrupts:
         pending = [a for i in result.interrupts for a in i.value["action_requests"]]
-        return Outcome(thread_id, pending=pending, tool_calls=calls, executed_actions=executed)
+        return Outcome(
+            thread_id, pending=pending, executed_actions=executed, tool_calls=calls, call_log=log_
+        )
     found = result.value.get("structured_response")
     if found is None:
         raise TriageError("agent stopped without a report (call limit reached?)")
     dropped = drop_unreturned_links(found, set(result.value.get("links", [])))
     if isinstance(found, Answer):
-        return Outcome(thread_id, answer=found, tool_calls=calls, dropped_links=dropped)
+        return Outcome(
+            thread_id, answer=found, dropped_links=dropped, tool_calls=calls, call_log=log_
+        )
     return Outcome(
-        thread_id, report=found, tool_calls=calls, executed_actions=executed, dropped_links=dropped
+        thread_id,
+        report=found,
+        executed_actions=executed,
+        dropped_links=dropped,
+        tool_calls=calls,
+        call_log=log_,
     )
 
 

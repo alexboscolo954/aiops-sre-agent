@@ -274,9 +274,10 @@ async def run(
                     outcome, proposed = await triage(a, group, thread, scenario["expect"])
                     failures = score(scenario, outcome)
             calls, report, answer = outcome.tool_calls, outcome.report, outcome.answer
-            dropped = outcome.dropped_links
+            dropped, call_log = outcome.dropped_links, outcome.call_log
         except agent.TriageError as e:
             failures, calls, report, answer, proposed, dropped = [str(e)], [], None, None, [], 0
+            call_log = []
         results.append(
             {
                 "scenario": path.stem,
@@ -286,6 +287,7 @@ async def run(
                 "tool_calls": len(calls),
                 "seconds": round(time.monotonic() - start, 1),
                 "calls": calls,
+                "call_log": call_log,  # each call's arguments and whether it errored
                 "proposed": [p["name"] for p in proposed],
                 "dropped_links": dropped,
                 "report": report.to_markdown() if report else None,
