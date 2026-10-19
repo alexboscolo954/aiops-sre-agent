@@ -1,0 +1,949 @@
+description: 'A Contract with AWS only: the checkout Lambda function worked until its timeout was cut
+  from 10 s to 1 s, below its 1.2 s inventory lookup; then every call timed out. Recorded from a sandbox
+  account (evals/record_aws.py).'
+clusters: {}
+integrations:
+- aws
+alert:
+  status: firing
+  commonLabels:
+    alertname: checkout-errors
+    function_name: checkout
+  alerts:
+  - status: firing
+    labels:
+      alertname: checkout-errors
+      function_name: checkout
+      severity: critical
+    annotations:
+      summary: Lambda function checkout reports errors (CloudWatch alarm checkout-errors).
+expect:
+  category:
+  - bad_config
+  - bad_rollout
+  keywords:
+  - timeout
+  - '1.2'
+  max_tool_calls: 12
+tools:
+  aws_describe_alarms:
+  - match: {}
+    result:
+    - AlarmName: checkout-errors
+      StateValue: ALARM
+      StateReason: 'Threshold Crossed: 1 datapoint [1.0 (19/10/26 02:48:00)] was greater than the threshold
+        (0.0).'
+      StateUpdatedTimestamp: 1792378151.9
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+      - Name: FunctionName
+        Value: checkout
+      Statistic: Sum
+      Period: 60
+      Threshold: 0.0
+      ComparisonOperator: GreaterThanThreshold
+  aws_list_metrics:
+  - match: {}
+    result:
+    - Dimensions:
+      - Name: FunctionName
+        Value: checkout
+      MetricName: Invocations
+      Namespace: AWS/Lambda
+    - Dimensions:
+      - Name: FunctionName
+        Value: checkout
+      MetricName: Throttles
+      Namespace: AWS/Lambda
+    - Dimensions:
+      - Name: FunctionName
+        Value: checkout
+      MetricName: Duration
+      Namespace: AWS/Lambda
+    - Dimensions:
+      - Name: FunctionName
+        Value: checkout
+      MetricName: Errors
+      Namespace: AWS/Lambda
+    - Dimensions:
+      - Name: FunctionName
+        Value: checkout
+      MetricName: ConcurrentExecutions
+      Namespace: AWS/Lambda
+    - Dimensions:
+      - Name: FunctionName
+        Value: checkout
+      - Name: Resource
+        Value: checkout
+      MetricName: Invocations
+      Namespace: AWS/Lambda
+    - Dimensions:
+      - Name: FunctionName
+        Value: checkout
+      - Name: Resource
+        Value: checkout
+      MetricName: Duration
+      Namespace: AWS/Lambda
+    - Dimensions:
+      - Name: FunctionName
+        Value: checkout
+      - Name: Resource
+        Value: checkout
+      MetricName: Errors
+      Namespace: AWS/Lambda
+    - Dimensions:
+      - Name: FunctionName
+        Value: checkout
+      - Name: Resource
+        Value: checkout
+      MetricName: ConcurrentExecutions
+      Namespace: AWS/Lambda
+    - Dimensions:
+      - Name: FunctionName
+        Value: checkout
+      - Name: Resource
+        Value: checkout
+      MetricName: Throttles
+      Namespace: AWS/Lambda
+  aws_get_metric_data:
+  - match:
+      metric_name: Errors
+    result:
+      metric: AWS/Lambda Errors Sum per 60s
+      status: Complete
+      points:
+      - - '2026-10-19T02:43:00Z'
+        - 0.0
+      - - '2026-10-19T02:44:00Z'
+        - 0.0
+      - - '2026-10-19T02:45:00Z'
+        - 0.0
+      - - '2026-10-19T02:46:00Z'
+        - 0.0
+      - - '2026-10-19T02:47:00Z'
+        - 0.0
+      - - '2026-10-19T02:48:00Z'
+        - 3.0
+      - - '2026-10-19T02:49:00Z'
+        - 18.0
+      - - '2026-10-19T02:50:00Z'
+        - 18.0
+      - - '2026-10-19T02:51:00Z'
+        - 18.0
+      - - '2026-10-19T02:52:00Z'
+        - 18.0
+      - - '2026-10-19T02:53:00Z'
+        - 17.0
+      - - '2026-10-19T02:54:00Z'
+        - 18.0
+      - - '2026-10-19T02:55:00Z'
+        - 18.0
+      - - '2026-10-19T02:56:00Z'
+        - 18.0
+      - - '2026-10-19T02:57:00Z'
+        - 18.0
+      - - '2026-10-19T02:58:00Z'
+        - 17.0
+  - match:
+      metric_name: Invocations
+    result:
+      metric: AWS/Lambda Invocations Sum per 60s
+      status: Complete
+      points:
+      - - '2026-10-19T02:43:00Z'
+        - 5.0
+      - - '2026-10-19T02:44:00Z'
+        - 16.0
+      - - '2026-10-19T02:45:00Z'
+        - 17.0
+      - - '2026-10-19T02:46:00Z'
+        - 15.0
+      - - '2026-10-19T02:47:00Z'
+        - 17.0
+      - - '2026-10-19T02:48:00Z'
+        - 16.0
+      - - '2026-10-19T02:49:00Z'
+        - 18.0
+      - - '2026-10-19T02:50:00Z'
+        - 18.0
+      - - '2026-10-19T02:51:00Z'
+        - 18.0
+      - - '2026-10-19T02:52:00Z'
+        - 18.0
+      - - '2026-10-19T02:53:00Z'
+        - 17.0
+      - - '2026-10-19T02:54:00Z'
+        - 18.0
+      - - '2026-10-19T02:55:00Z'
+        - 18.0
+      - - '2026-10-19T02:56:00Z'
+        - 18.0
+      - - '2026-10-19T02:57:00Z'
+        - 18.0
+      - - '2026-10-19T02:58:00Z'
+        - 17.0
+  - match:
+      metric_name: Duration
+    result:
+      metric: AWS/Lambda Duration Maximum per 60s
+      status: Complete
+      points:
+      - - '2026-10-19T02:43:00Z'
+        - 1202.69
+      - - '2026-10-19T02:44:00Z'
+        - 1202.34
+      - - '2026-10-19T02:45:00Z'
+        - 1202.38
+      - - '2026-10-19T02:46:00Z'
+        - 1202.7
+      - - '2026-10-19T02:47:00Z'
+        - 1202.25
+      - - '2026-10-19T02:48:00Z'
+        - 1202.33
+      - - '2026-10-19T02:49:00Z'
+        - 1000.0
+      - - '2026-10-19T02:50:00Z'
+        - 1000.0
+      - - '2026-10-19T02:51:00Z'
+        - 1000.0
+      - - '2026-10-19T02:52:00Z'
+        - 1000.0
+      - - '2026-10-19T02:53:00Z'
+        - 1000.0
+      - - '2026-10-19T02:54:00Z'
+        - 1000.0
+      - - '2026-10-19T02:55:00Z'
+        - 1000.0
+      - - '2026-10-19T02:56:00Z'
+        - 1000.0
+      - - '2026-10-19T02:57:00Z'
+        - 1000.0
+      - - '2026-10-19T02:58:00Z'
+        - 1000.0
+  aws_describe_log_groups:
+  - match: {}
+    result:
+    - logGroupName: /aws/lambda/checkout
+      storedBytes: 0
+  aws_query_logs:
+  - match: {}
+    result:
+      status: Complete
+      rows:
+      - '@timestamp': '2026-10-19 02:59:37.781'
+        '@message': 'END RequestId: 96aa9d9e-7760-4edc-9d8c-fc1d39ca1bd4
+
+          '
+      - '@timestamp': '2026-10-19 02:59:37.781'
+        '@message': "REPORT RequestId: 96aa9d9e-7760-4edc-9d8c-fc1d39ca1bd4\tDuration: 1000.00 ms\tBilled\
+          \ Duration: 1000 ms\tMemory Size: 128 MB\tMax Memory Used: 37 MB\tStatus: timeout\n"
+      - '@timestamp': '2026-10-19 02:59:33.379'
+        '@message': 'START RequestId: 6f11ebe0-c9d8-4c6e-8b17-648d7031a710 Version: $LATEST
+
+          '
+      - '@timestamp': '2026-10-19 02:59:30.894'
+        '@message': 'END RequestId: 6419ebef-791b-41c4-86e1-13b0a64331b0
+
+          '
+      - '@timestamp': '2026-10-19 02:59:30.894'
+        '@message': "REPORT RequestId: 6419ebef-791b-41c4-86e1-13b0a64331b0\tDuration: 1000.00 ms\tBilled\
+          \ Duration: 1000 ms\tMemory Size: 128 MB\tMax Memory Used: 37 MB\tStatus: timeout\n"
+      - '@timestamp': '2026-10-19 02:59:29.864'
+        '@message': 'START RequestId: 6419ebef-791b-41c4-86e1-13b0a64331b0 Version: $LATEST
+
+          '
+      - '@timestamp': '2026-10-19 02:59:27.473'
+        '@message': 'END RequestId: 60904243-18d3-4839-ab4b-c2fd592e3fdb
+
+          '
+      - '@timestamp': '2026-10-19 02:59:27.473'
+        '@message': "REPORT RequestId: 60904243-18d3-4839-ab4b-c2fd592e3fdb\tDuration: 1000.00 ms\tBilled\
+          \ Duration: 1000 ms\tMemory Size: 128 MB\tMax Memory Used: 37 MB\tStatus: timeout\n"
+      - '@timestamp': '2026-10-19 02:59:26.460'
+        '@message': 'START RequestId: 60904243-18d3-4839-ab4b-c2fd592e3fdb Version: $LATEST
+
+          '
+      - '@timestamp': '2026-10-19 02:59:24.274'
+        '@message': 'END RequestId: 6abe1a4a-e70a-49ca-9af9-c383049a733d
+
+          '
+      - '@timestamp': '2026-10-19 02:59:24.274'
+        '@message': "REPORT RequestId: 6abe1a4a-e70a-49ca-9af9-c383049a733d\tDuration: 1000.00 ms\tBilled\
+          \ Duration: 1000 ms\tMemory Size: 128 MB\tMax Memory Used: 37 MB\tStatus: timeout\n"
+      - '@timestamp': '2026-10-19 02:59:23.258'
+        '@message': 'START RequestId: 6abe1a4a-e70a-49ca-9af9-c383049a733d Version: $LATEST
+
+          '
+      - '@timestamp': '2026-10-19 02:59:21.020'
+        '@message': 'END RequestId: 6cae79d8-f2d1-411a-87fb-ad0a7d81a12a
+
+          '
+      - '@timestamp': '2026-10-19 02:59:21.020'
+        '@message': "REPORT RequestId: 6cae79d8-f2d1-411a-87fb-ad0a7d81a12a\tDuration: 1000.00 ms\tBilled\
+          \ Duration: 1000 ms\tMemory Size: 128 MB\tMax Memory Used: 37 MB\tStatus: timeout\n"
+      - '@timestamp': '2026-10-19 02:59:20.009'
+        '@message': 'START RequestId: 6cae79d8-f2d1-411a-87fb-ad0a7d81a12a Version: $LATEST
+
+          '
+      - '@timestamp': '2026-10-19 02:59:16.494'
+        '@message': 'END RequestId: 4b2c4318-598a-4c8a-8309-9475063db904
+
+          '
+      - '@timestamp': '2026-10-19 02:59:16.494'
+        '@message': "REPORT RequestId: 4b2c4318-598a-4c8a-8309-9475063db904\tDuration: 1000.00 ms\tBilled\
+          \ Duration: 1000 ms\tMemory Size: 128 MB\tMax Memory Used: 37 MB\tStatus: timeout\n"
+      - '@timestamp': '2026-10-19 02:59:15.479'
+        '@message': 'START RequestId: 4b2c4318-598a-4c8a-8309-9475063db904 Version: $LATEST
+
+          '
+      - '@timestamp': '2026-10-19 02:59:13.059'
+        '@message': 'END RequestId: 21c2b457-16af-4d36-bfa2-6e147772131d
+
+          '
+      - '@timestamp': '2026-10-19 02:59:13.059'
+        '@message': "REPORT RequestId: 21c2b457-16af-4d36-bfa2-6e147772131d\tDuration: 1000.00 ms\tBilled\
+          \ Duration: 1000 ms\tMemory Size: 128 MB\tMax Memory Used: 37 MB\tStatus: timeout\n"
+      - '@timestamp': '2026-10-19 02:59:12.038'
+        '@message': 'START RequestId: 21c2b457-16af-4d36-bfa2-6e147772131d Version: $LATEST
+
+          '
+      - '@timestamp': '2026-10-19 02:59:09.601'
+        '@message': 'END RequestId: 3a415226-a24b-47ef-8b99-50dc61b1ee09
+
+          '
+      - '@timestamp': '2026-10-19 02:59:09.601'
+        '@message': "REPORT RequestId: 3a415226-a24b-47ef-8b99-50dc61b1ee09\tDuration: 1000.00 ms\tBilled\
+          \ Duration: 1000 ms\tMemory Size: 128 MB\tMax Memory Used: 37 MB\tStatus: timeout\n"
+      - '@timestamp': '2026-10-19 02:59:08.590'
+        '@message': 'START RequestId: 3a415226-a24b-47ef-8b99-50dc61b1ee09 Version: $LATEST
+
+          '
+      - '@timestamp': '2026-10-19 02:59:04.582'
+        '@message': 'END RequestId: 3e5e8dd5-7ffc-4b16-bef7-4ee531998ef5
+
+          '
+      - '@timestamp': '2026-10-19 02:59:04.582'
+        '@message': "REPORT RequestId: 3e5e8dd5-7ffc-4b16-bef7-4ee531998ef5\tDuration: 1000.00 ms\tBilled\
+          \ Duration: 1000 ms\tMemory Size: 128 MB\tMax Memory Used: 37 MB\tStatus: timeout\n"
+      - '@timestamp': '2026-10-19 02:59:03.572'
+        '@message': 'START RequestId: 3e5e8dd5-7ffc-4b16-bef7-4ee531998ef5 Version: $LATEST
+
+          '
+      - '@timestamp': '2026-10-19 02:59:01.194'
+        '@message': 'END RequestId: e59bf7cc-26b8-4269-9e94-56ad4e050886
+
+          '
+      - '@timestamp': '2026-10-19 02:59:01.194'
+        '@message': "REPORT RequestId: e59bf7cc-26b8-4269-9e94-56ad4e050886\tDuration: 1000.00 ms\tBilled\
+          \ Duration: 1000 ms\tMemory Size: 128 MB\tMax Memory Used: 37 MB\tStatus: timeout\n"
+      - '@timestamp': '2026-10-19 02:59:00.176'
+        '@message': 'START RequestId: e59bf7cc-26b8-4269-9e94-56ad4e050886 Version: $LATEST
+
+          '
+      - '@timestamp': '2026-10-19 02:58:57.733'
+        '@message': 'END RequestId: d9a2d77b-6c1e-41f2-ab3d-ecde3c49713a
+
+          '
+      - '@timestamp': '2026-10-19 02:58:57.733'
+        '@message': "REPORT RequestId: d9a2d77b-6c1e-41f2-ab3d-ecde3c49713a\tDuration: 1000.00 ms\tBilled\
+          \ Duration: 1000 ms\tMemory Size: 128 MB\tMax Memory Used: 37 MB\tStatus: timeout\n"
+      - '@timestamp': '2026-10-19 02:58:56.721'
+        '@message': 'START RequestId: d9a2d77b-6c1e-41f2-ab3d-ecde3c49713a Version: $LATEST
+
+          '
+      - '@timestamp': '2026-10-19 02:58:54.342'
+        '@message': 'END RequestId: acb1c453-8ae6-4de5-bcda-92e93aa31d41
+
+          '
+      - '@timestamp': '2026-10-19 02:58:54.342'
+        '@message': "REPORT RequestId: acb1c453-8ae6-4de5-bcda-92e93aa31d41\tDuration: 1000.00 ms\tBilled\
+          \ Duration: 1000 ms\tMemory Size: 128 MB\tMax Memory Used: 37 MB\tStatus: timeout\n"
+      - '@timestamp': '2026-10-19 02:58:53.331'
+        '@message': 'START RequestId: acb1c453-8ae6-4de5-bcda-92e93aa31d41 Version: $LATEST
+
+          '
+      - '@timestamp': '2026-10-19 02:58:50.995'
+        '@message': 'END RequestId: 0895430d-83b5-441b-964a-6ec0d2cb0e15
+
+          '
+      - '@timestamp': '2026-10-19 02:58:50.995'
+        '@message': "REPORT RequestId: 0895430d-83b5-441b-964a-6ec0d2cb0e15\tDuration: 1000.00 ms\tBilled\
+          \ Duration: 1000 ms\tMemory Size: 128 MB\tMax Memory Used: 37 MB\tStatus: timeout\n"
+      - '@timestamp': '2026-10-19 02:58:49.984'
+        '@message': 'START RequestId: 0895430d-83b5-441b-964a-6ec0d2cb0e15 Version: $LATEST
+
+          '
+      - '@timestamp': '2026-10-19 02:58:47.697'
+        '@message': 'END RequestId: 9ff0460d-3143-4309-b2b7-0151357d4baf
+
+          '
+      - '@timestamp': '2026-10-19 02:58:47.697'
+        '@message': "REPORT RequestId: 9ff0460d-3143-4309-b2b7-0151357d4baf\tDuration: 1000.00 ms\tBilled\
+          \ Duration: 1000 ms\tMemory Size: 128 MB\tMax Memory Used: 37 MB\tStatus: timeout\n"
+      - '@timestamp': '2026-10-19 02:58:46.685'
+        '@message': 'START RequestId: 9ff0460d-3143-4309-b2b7-0151357d4baf Version: $LATEST
+
+          '
+      - '@timestamp': '2026-10-19 02:58:44.314'
+        '@message': 'END RequestId: 66279cf7-1161-42c8-acda-65e49d83a6d8
+
+          '
+      - '@timestamp': '2026-10-19 02:58:44.314'
+        '@message': "REPORT RequestId: 66279cf7-1161-42c8-acda-65e49d83a6d8\tDuration: 1000.00 ms\tBilled\
+          \ Duration: 1000 ms\tMemory Size: 128 MB\tMax Memory Used: 37 MB\tStatus: timeout\n"
+      - '@timestamp': '2026-10-19 02:58:43.302'
+        '@message': 'START RequestId: 66279cf7-1161-42c8-acda-65e49d83a6d8 Version: $LATEST
+
+          '
+      - '@timestamp': '2026-10-19 02:58:41.033'
+        '@message': 'END RequestId: c83e8202-7e12-4320-a735-90823fd80e2b
+
+          '
+      - '@timestamp': '2026-10-19 02:58:41.033'
+        '@message': "REPORT RequestId: c83e8202-7e12-4320-a735-90823fd80e2b\tDuration: 1000.00 ms\tBilled\
+          \ Duration: 1000 ms\tMemory Size: 128 MB\tMax Memory Used: 37 MB\tStatus: timeout\n"
+      - '@timestamp': '2026-10-19 02:58:40.017'
+        '@message': 'START RequestId: c83e8202-7e12-4320-a735-90823fd80e2b Version: $LATEST
+
+          '
+      - '@timestamp': '2026-10-19 02:58:37.541'
+        '@message': 'END RequestId: 3bd544f9-7fb7-4dc8-b690-9908167cbe02
+
+          '
+      - '@timestamp': '2026-10-19 02:58:37.541'
+        '@message': "REPORT RequestId: 3bd544f9-7fb7-4dc8-b690-9908167cbe02\tDuration: 1000.00 ms\tBilled\
+          \ Duration: 1000 ms\tMemory Size: 128 MB\tMax Memory Used: 37 MB\tStatus: timeout\n"
+      - '@timestamp': '2026-10-19 02:58:36.528'
+        '@message': 'START RequestId: 3bd544f9-7fb7-4dc8-b690-9908167cbe02 Version: $LATEST
+
+          '
+      - '@timestamp': '2026-10-19 02:58:34.314'
+        '@message': 'END RequestId: 688e14af-b7b2-4004-ba6d-9f209197808f
+
+          '
+      - '@timestamp': '2026-10-19 02:58:34.314'
+        '@message': "REPORT RequestId: 688e14af-b7b2-4004-ba6d-9f209197808f\tDuration: 1000.00 ms\tBilled\
+          \ Duration: 1000 ms\tMemory Size: 128 MB\tMax Memory Used: 37 MB\tStatus: timeout\n"
+      - '@timestamp': '2026-10-19 02:58:33.294'
+        '@message': 'START RequestId: 688e14af-b7b2-4004-ba6d-9f209197808f Version: $LATEST
+
+          '
+      - '@timestamp': '2026-10-19 02:58:30.974'
+        '@message': 'END RequestId: 53ab0391-6f52-4737-8712-ee03622ceebe
+
+          '
+      - '@timestamp': '2026-10-19 02:58:30.974'
+        '@message': "REPORT RequestId: 53ab0391-6f52-4737-8712-ee03622ceebe\tDuration: 1000.00 ms\tBilled\
+          \ Duration: 1000 ms\tMemory Size: 128 MB\tMax Memory Used: 37 MB\tStatus: timeout\n"
+      - '@timestamp': '2026-10-19 02:58:29.956'
+        '@message': 'START RequestId: 53ab0391-6f52-4737-8712-ee03622ceebe Version: $LATEST
+
+          '
+      - '@timestamp': '2026-10-19 02:58:27.378'
+        '@message': "REPORT RequestId: 3cc6c9cc-c45f-40d0-96b3-d11c0b010aba\tDuration: 1000.00 ms\tBilled\
+          \ Duration: 1000 ms\tMemory Size: 128 MB\tMax Memory Used: 37 MB\tStatus: timeout\n"
+      - '@timestamp': '2026-10-19 02:58:27.377'
+        '@message': 'END RequestId: 3cc6c9cc-c45f-40d0-96b3-d11c0b010aba
+
+          '
+      - '@timestamp': '2026-10-19 02:58:26.365'
+        '@message': 'START RequestId: 3cc6c9cc-c45f-40d0-96b3-d11c0b010aba Version: $LATEST
+
+          '
+      - '@timestamp': '2026-10-19 02:58:24.005'
+        '@message': 'END RequestId: 945455e7-3907-4b95-a4f4-56477bd19adb
+
+          '
+      - '@timestamp': '2026-10-19 02:58:24.005'
+        '@message': "REPORT RequestId: 945455e7-3907-4b95-a4f4-56477bd19adb\tDuration: 1000.00 ms\tBilled\
+          \ Duration: 1000 ms\tMemory Size: 128 MB\tMax Memory Used: 37 MB\tStatus: timeout\n"
+      - '@timestamp': '2026-10-19 02:58:22.993'
+        '@message': 'START RequestId: 945455e7-3907-4b95-a4f4-56477bd19adb Version: $LATEST
+
+          '
+      - '@timestamp': '2026-10-19 02:58:19.238'
+        '@message': 'END RequestId: 6266b615-45db-40fe-bbfc-e362cfc8ef8a
+
+          '
+      - '@timestamp': '2026-10-19 02:58:19.238'
+        '@message': "REPORT RequestId: 6266b615-45db-40fe-bbfc-e362cfc8ef8a\tDuration: 1000.00 ms\tBilled\
+          \ Duration: 1000 ms\tMemory Size: 128 MB\tMax Memory Used: 37 MB\tStatus: timeout\n"
+      - '@timestamp': '2026-10-19 02:58:18.227'
+        '@message': 'START RequestId: 6266b615-45db-40fe-bbfc-e362cfc8ef8a Version: $LATEST
+
+          '
+      - '@timestamp': '2026-10-19 02:58:15.873'
+        '@message': 'END RequestId: 1d835ad2-6bb1-4bbe-b522-73191a607aa4
+
+          '
+      - '@timestamp': '2026-10-19 02:58:15.873'
+        '@message': "REPORT RequestId: 1d835ad2-6bb1-4bbe-b522-73191a607aa4\tDuration: 1000.00 ms\tBilled\
+          \ Duration: 1000 ms\tMemory Size: 128 MB\tMax Memory Used: 37 MB\tStatus: timeout\n"
+      - '@timestamp': '2026-10-19 02:58:14.856'
+        '@message': 'START RequestId: 1d835ad2-6bb1-4bbe-b522-73191a607aa4 Version: $LATEST
+
+          '
+      - '@timestamp': '2026-10-19 02:58:12.613'
+        '@message': 'END RequestId: 903dafa9-9722-479e-b192-2038f3de6b75
+
+          '
+      - '@timestamp': '2026-10-19 02:58:12.613'
+        '@message': "REPORT RequestId: 903dafa9-9722-479e-b192-2038f3de6b75\tDuration: 1000.00 ms\tBilled\
+          \ Duration: 1000 ms\tMemory Size: 128 MB\tMax Memory Used: 37 MB\tStatus: timeout\n"
+      - '@timestamp': '2026-10-19 02:58:11.596'
+        '@message': 'START RequestId: 903dafa9-9722-479e-b192-2038f3de6b75 Version: $LATEST
+
+          '
+      - '@timestamp': '2026-10-19 02:58:09.333'
+        '@message': 'END RequestId: a16e7a65-da4d-4795-8427-640d5c71c114
+
+          '
+      - '@timestamp': '2026-10-19 02:58:09.333'
+        '@message': "REPORT RequestId: a16e7a65-da4d-4795-8427-640d5c71c114\tDuration: 1000.00 ms\tBilled\
+          \ Duration: 1000 ms\tMemory Size: 128 MB\tMax Memory Used: 37 MB\tStatus: timeout\n"
+      - '@timestamp': '2026-10-19 02:58:08.321'
+        '@message': 'START RequestId: a16e7a65-da4d-4795-8427-640d5c71c114 Version: $LATEST
+
+          '
+      - '@timestamp': '2026-10-19 02:58:06.093'
+        '@message': 'END RequestId: 213ce4e9-ddd3-4f05-b0a7-d4c1a30b805b
+
+          '
+      - '@timestamp': '2026-10-19 02:58:06.093'
+        '@message': "REPORT RequestId: 213ce4e9-ddd3-4f05-b0a7-d4c1a30b805b\tDuration: 1000.00 ms\tBilled\
+          \ Duration: 1000 ms\tMemory Size: 128 MB\tMax Memory Used: 37 MB\tStatus: timeout\n"
+      - '@timestamp': '2026-10-19 02:58:05.076'
+        '@message': 'START RequestId: 213ce4e9-ddd3-4f05-b0a7-d4c1a30b805b Version: $LATEST
+
+          '
+      - '@timestamp': '2026-10-19 02:58:02.765'
+        '@message': 'END RequestId: 1b18d9a6-52ff-4128-9db5-dbf0a71dbbbd
+
+          '
+      - '@timestamp': '2026-10-19 02:58:02.765'
+        '@message': "REPORT RequestId: 1b18d9a6-52ff-4128-9db5-dbf0a71dbbbd\tDuration: 1000.00 ms\tBilled\
+          \ Duration: 1000 ms\tMemory Size: 128 MB\tMax Memory Used: 37 MB\tStatus: timeout\n"
+      - '@timestamp': '2026-10-19 02:58:01.754'
+        '@message': 'START RequestId: 1b18d9a6-52ff-4128-9db5-dbf0a71dbbbd Version: $LATEST
+
+          '
+      - '@timestamp': '2026-10-19 02:57:59.533'
+        '@message': 'END RequestId: e0c1fb02-9794-4a2f-9118-a24a1e913d22
+
+          '
+      - '@timestamp': '2026-10-19 02:57:59.533'
+        '@message': "REPORT RequestId: e0c1fb02-9794-4a2f-9118-a24a1e913d22\tDuration: 1000.00 ms\tBilled\
+          \ Duration: 1000 ms\tMemory Size: 128 MB\tMax Memory Used: 37 MB\tStatus: timeout\n"
+      - '@timestamp': '2026-10-19 02:57:58.521'
+        '@message': 'START RequestId: e0c1fb02-9794-4a2f-9118-a24a1e913d22 Version: $LATEST
+
+          '
+      - '@timestamp': '2026-10-19 02:57:56.013'
+        '@message': 'END RequestId: 5c535840-f481-471e-a016-d7ade96c2da0
+
+          '
+      - '@timestamp': '2026-10-19 02:57:56.013'
+        '@message': "REPORT RequestId: 5c535840-f481-471e-a016-d7ade96c2da0\tDuration: 1000.00 ms\tBilled\
+          \ Duration: 1000 ms\tMemory Size: 128 MB\tMax Memory Used: 37 MB\tStatus: timeout\n"
+      - '@timestamp': '2026-10-19 02:57:54.994'
+        '@message': 'START RequestId: 5c535840-f481-471e-a016-d7ade96c2da0 Version: $LATEST
+
+          '
+      - '@timestamp': '2026-10-19 02:57:52.779'
+        '@message': 'END RequestId: 65666fa5-4571-4b5b-9c56-1da10b49ba54
+
+          '
+      - '@timestamp': '2026-10-19 02:57:52.779'
+        '@message': "REPORT RequestId: 65666fa5-4571-4b5b-9c56-1da10b49ba54\tDuration: 1000.00 ms\tBilled\
+          \ Duration: 1000 ms\tMemory Size: 128 MB\tMax Memory Used: 37 MB\tStatus: timeout\n"
+      - '@timestamp': '2026-10-19 02:57:51.767'
+        '@message': 'START RequestId: 65666fa5-4571-4b5b-9c56-1da10b49ba54 Version: $LATEST
+
+          '
+      - '@timestamp': '2026-10-19 02:57:49.353'
+        '@message': 'END RequestId: 4ab29b0a-af8b-433d-b310-dacbdbc1d9b7
+
+          '
+      - '@timestamp': '2026-10-19 02:57:49.353'
+        '@message': "REPORT RequestId: 4ab29b0a-af8b-433d-b310-dacbdbc1d9b7\tDuration: 1000.00 ms\tBilled\
+          \ Duration: 1000 ms\tMemory Size: 128 MB\tMax Memory Used: 37 MB\tStatus: timeout\n"
+      - '@timestamp': '2026-10-19 02:57:48.336'
+        '@message': 'START RequestId: 4ab29b0a-af8b-433d-b310-dacbdbc1d9b7 Version: $LATEST
+
+          '
+      - '@timestamp': '2026-10-19 02:57:45.974'
+        '@message': 'END RequestId: d3daddb9-8354-433e-b5ac-3ff67b38efb3
+
+          '
+      - '@timestamp': '2026-10-19 02:57:45.974'
+        '@message': "REPORT RequestId: d3daddb9-8354-433e-b5ac-3ff67b38efb3\tDuration: 1000.00 ms\tBilled\
+          \ Duration: 1000 ms\tMemory Size: 128 MB\tMax Memory Used: 37 MB\tStatus: timeout\n"
+      - '@timestamp': '2026-10-19 02:57:44.959'
+        '@message': 'START RequestId: d3daddb9-8354-433e-b5ac-3ff67b38efb3 Version: $LATEST
+
+          '
+      - '@timestamp': '2026-10-19 02:57:42.712'
+        '@message': 'END RequestId: f0558387-569a-43ae-84c9-3c1e33ad4a14
+
+          '
+      - '@timestamp': '2026-10-19 02:57:42.712'
+        '@message': "REPORT RequestId: f0558387-569a-43ae-84c9-3c1e33ad4a14\tDuration: 1000.00 ms\tBilled\
+          \ Duration: 1000 ms\tMemory Size: 128 MB\tMax Memory Used: 37 MB\tStatus: timeout\n"
+      - '@timestamp': '2026-10-19 02:57:41.697'
+        '@message': 'START RequestId: f0558387-569a-43ae-84c9-3c1e33ad4a14 Version: $LATEST
+
+          '
+      - '@timestamp': '2026-10-19 02:57:39.437'
+        '@message': 'END RequestId: 78dc582c-5a6c-42b7-b5ec-51fa34214c9c
+
+          '
+      - '@timestamp': '2026-10-19 02:48:47.372'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:48:43.940'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:48:40.517'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:48:37.135'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:48:33.428'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:48:29.666'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:48:25.657'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:48:22.044'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:48:18.439'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:48:14.789'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:48:11.058'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:48:07.592'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:48:04.032'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:48:00.499'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:47:56.891'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:47:53.370'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:47:49.787'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:47:46.248'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:47:42.802'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:47:39.252'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:47:35.668'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:47:32.167'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:47:28.639'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:47:25.066'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:47:21.554'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:47:18.160'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:47:14.545'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:47:11.085'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:47:07.475'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:47:03.341'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:46:58.451'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:46:54.635'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:46:50.831'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:46:46.736'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:46:42.933'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:46:39.191'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:46:35.577'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:46:31.083'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:46:26.700'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:46:22.871'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:46:18.804'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:46:14.776'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:46:10.895'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:46:06.852'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:46:02.731'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:45:59.245'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:45:55.770'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:45:52.022'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:45:48.680'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:45:45.301'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:45:41.981'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:45:38.519'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:45:35.126'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:45:31.543'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:45:28.117'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:45:24.677'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:45:21.355'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:45:17.981'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:45:14.539'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:45:11.168'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:45:07.894'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:45:04.531'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:45:01.168'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:44:55.907'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:44:51.967'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:44:48.578'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:44:43.045'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:44:39.665'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:44:36.230'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:44:32.870'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:44:27.956'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:44:24.618'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:44:21.188'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:44:17.836'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:44:14.335'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:44:10.942'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:44:07.585'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:44:04.150'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:44:00.776'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:43:57.428'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:43:54.064'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+      - '@timestamp': '2026-10-19 02:43:50.650'
+        '@message': '{"level": "INFO", "message": "inventory lookup took 1.2s"}
+
+          '
+  aws_lookup_events:
+  - match: {}
+    result:
+    - time: '2026-10-19T02:48:49Z'
+      event: UpdateFunctionConfiguration20150331v2
+      source: lambda.amazonaws.com
+      user: deployer
+      resources:
+      - checkout
+      error: null
+      request: '{"functionName": "checkout", "timeout": 1, "environment": {}}'
+    - time: '2026-10-19T02:43:31Z'
+      event: CreateFunction20150331
+      source: lambda.amazonaws.com
+      user: deployer
+      resources:
+      - checkout
+      error: null
+      request: '{"functionName": "checkout", "runtime": "python3.12", "role": "arn:aws:iam::123456789012:role/aiops-checkout-role",
+        "handler": "lambda_function.handler", "code": {}, "timeout": 10, "memorySize": 128, "publish":
+        false, "environment": {}}'

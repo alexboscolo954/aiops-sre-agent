@@ -29,6 +29,12 @@ def scrubber(fakes: dict[str, str], dropped: set[str]) -> Callable[[Any], Any]:
     return scrub
 
 
+def mask_aws_key_ids(text: str) -> str:
+    """Every AWS access key id, temporary ones too, as AWS's example: an id encodes
+    its account, and a recording can't know a session's ids in advance."""
+    return re.sub(r"\b(AKIA|ASIA)[A-Z0-9]{16}\b", r"\1IOSFODNN7EXAMPLE", text)
+
+
 def refuse_leaks(text: str, fakes: dict[str, str]) -> None:
     if leaked := [k for k in fakes if k.lower() in text.lower()]:
         sys.exit(f"not written: {len(leaked)} real value(s) survived the scrub")

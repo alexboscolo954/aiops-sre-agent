@@ -1,0 +1,20 @@
+[
+  {
+    "scenario": "aws-lambda-timeout-cut",
+    "passed": true,
+    "failures": [],
+    "category": "bad_config",
+    "tool_calls": 5,
+    "seconds": 21.7,
+    "calls": [
+      "aws_describe_alarms",
+      "aws_lookup_events",
+      "aws_query_logs",
+      "aws_get_metric_data",
+      "aws_get_metric_data"
+    ],
+    "proposed": [],
+    "dropped_links": 0,
+    "report": "## The checkout Lambda's error alarm fired because a configuration update at 02:48:49Z by user deployer cut the function timeout from 10s to 1s. Since then nearly every invocation has hit the 1000 ms limit (Status: timeout), and Errors runs at about 18 per minute. Before the change, the function's max duration was about 1.2 s, so a 1 s limit was always going to fail.\n\n**Root cause** (high confidence, `bad_config`): UpdateFunctionConfiguration on checkout at 02:48:49Z set timeout=1 (previously 10 s, set at creation at 02:43:31Z) and also sent environment={} (any prior environment variables appear to have been cleared). Invocations now exceed the 1 s limit and are killed; pre-change max Duration was about 1202 ms, which confirms the function needs more than 1 s. Memory is not the cause (Max Memory Used 37 MB of 128 MB).\n**Severity:** critical  \u00b7  **Affected:** lambda/aws-us-east-1/checkout\n\n**Evidence**\n- `aws_lookup_events`: 02:48:49Z UpdateFunctionConfiguration20150331v2 by deployer on checkout, request: timeout=1, environment={}. The preceding CreateFunction at 02:43:31Z used timeout=10.\n- `aws_get_metric_data (Lambda Errors, Sum/60s)`: Errors were 0 until 02:47, then 3 at 02:48 and 17-18 per minute from 02:49 through 02:58, matching the config change.\n- `aws_get_metric_data (Lambda Duration, Maximum/60s)`: Max duration was about 1202 ms until 02:48, then flat at exactly 1000 ms from 02:49, consistent with the 1 s timeout cutting off every run.\n- `aws_query_logs (/aws/lambda/checkout)`: REPORT lines show 'Duration: 1000.00 ms ... Max Memory Used: 37 MB ... Status: timeout' repeatedly from about 02:58 to 02:59. The logs show no application stack traces, so the failures are timeouts, not code exceptions.\n- `aws_describe_alarms`: checkout-errors is in ALARM: Errors Sum > 0 over 60 s, FunctionName=checkout, state updated after 02:48.\n\n**Recommendations**\n1. Roll back the timeout to 10 s (the value set at creation) with aws lambda update-function-configuration --function-name checkout --timeout 10. This needs human approval because it is a change.\n2. Check whether environment={} wiped variables the function depends on. Compare against the pre-02:48 configuration (CloudTrail request history or the IaC source) and restore any that are missing.\n3. Confirm checkout errors recover (Errors returns to 0 and Duration drops below about 1.2 s) after the rollback.\n4. Ask deployer and the team that owns the checkout config why timeout and environment changed outside the normal deploy pipeline, and add guardrails or IaC drift detection for this function.\n5. Once the function is stable, review whether the roughly 1.2 s typical duration needs a longer timeout or a performance fix, with some margin above that."
+  }
+]
