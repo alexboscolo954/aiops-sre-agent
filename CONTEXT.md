@@ -81,11 +81,15 @@ _Avoid_: Failed triage
 **Evidence**:
 A finding from a tool result that supports a conclusion. A claim in a Report or an Answer without Evidence is not allowed.
 
+**Change**:
+Something that modified a Contract's systems before an alert: a rollout, a Helm release, a GitOps sync or a cloud activity log entry. The agent looks for Changes across the Contract's allowed scope, because the cause is often a Change to a different resource than the one alerting.
+_Avoid_: Deploy (for a Change that isn't one)
+
 **Runbook**:
 A written procedure mapped to one or more alert names. One alert name can map to several Runbooks. A Runbook belongs to one Contract, or is part of Shared knowledge.
 
 **Category**:
-The class of the root cause, not the failure mode (the alert name already says how it fails). When a rollout introduced the fault after an earlier revision that worked, the Category is `bad_rollout`, even if the fault itself is bad config or a bad image. A workload broken since its first revision has no rollout to blame.
+The class of the root cause, not the failure mode (the alert name already says how it fails). When a rollout introduced the fault after an earlier revision that worked, the Category is `bad_rollout`, even if the fault itself is bad config or a bad image, and even when the rollout was of another workload the alerting one depends on. A workload broken since its first revision has no rollout to blame.
 Values: `bad_rollout`, `bad_config` (wrong or missing config, command or probe), `app_error` (a bug in the code, including memory leaks), `resource_limits` (limits too low for a healthy workload), `image_unavailable`, `capacity` (the cluster can't fit the workload), `node_problem`, `dependency_failure`, `unknown`.
 
 **Assessed severity**:

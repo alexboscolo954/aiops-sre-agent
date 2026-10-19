@@ -218,8 +218,9 @@ def missing_links(expect: dict[str, Any], evidence: list[Any]) -> list[str]:
 
 
 def score_answer(scenario: dict[str, Any], outcome: agent.Outcome) -> list[str]:
-    """A Question's checks: keywords in the Answer, the Evidence sources it must cite,
-    no cited source that never ran (invented Evidence), and the tool budget."""
+    """A Question's checks: keywords in the Answer, the Evidence sources it must cite
+    (an entry that is a list: any one of them), no cited source that never ran
+    (invented Evidence), and the tool budget."""
     expect, answer, failures = scenario["expect"], outcome.answer, []
     if answer is None:
         return ["no answer"]
@@ -228,7 +229,9 @@ def score_answer(scenario: dict[str, Any], outcome: agent.Outcome) -> list[str]:
     if missing:
         failures.append(f"answer misses {missing}")
     cited = {e.source for e in answer.evidence}
-    uncited = [t for t in expect.get("evidence", []) if t not in cited]
+    uncited = [
+        t for t in expect.get("evidence", []) if not cited & ({t} if isinstance(t, str) else set(t))
+    ]
     if uncited:
         failures.append(f"evidence doesn't cite {uncited}")
     invented = sorted(cited - set(outcome.tool_calls))

@@ -1,16 +1,19 @@
 import os
+from datetime import timedelta
+from pathlib import Path
 from typing import Any
 
 import pytest
 import yaml
 from fastmcp import Client, FastMCP
 from fastmcp.exceptions import ToolError
+from kubernetes import client as k
 from pydantic import SecretStr
 
-from aiops_agent import contracts
+from aiops_agent import agent, contracts, evals
 from aiops_agent.config import Settings
 from aiops_agent.servers import kubernetes
-from tests.conftest import EXEC_USER, kubeconfig, make_contract
+from tests.conftest import EXEC_USER, NOW, kubeconfig, make_contract
 
 
 def k8s(settings: Settings, fake_cluster: Any, actions: bool = False, **contract: Any) -> FastMCP:
@@ -299,3 +302,150 @@ def test_default_kubeconfig_is_checked_as_kubectl_merges_it(
     else:
         kubernetes.api_client(c.clusters[0], c)
         assert loaded == [{"config_file": None, "context": "p"}]
+
+
+def replica_set(
+    deployment: str,
+    revision: int,
+    minutes_ago: int,
+    image: str,
+    env: tuple[str, ...] = (),
+    chart: str | None = None,
+    annotations: dict[str, str] | None = None,
+    owner_kind: str = "Deployment",
+) -> k.V1ReplicaSet:
+    labels = {"app": deployment} | ({"helm.sh/chart": chart} if chart else {})
+    container = k.V1Container(
+        name="app", image=image, env=[k.V1EnvVar(name=n, value="v4lue") for n in env]
+    )
+    return k.V1ReplicaSet(
+        metadata=k.V1ObjectMeta(
+            name=f"{deployment}-r{revision}",
+            creation_timestamp=NOW - timedelta(minutes=minutes_ago),
+            annotations={"deployment.kubernetes.io/revision": str(revision)} | (annotations or {}),
+            owner_references=[
+                k.V1OwnerReference(
+                    api_version="apps/v1", kind=owner_kind, name=deployment, uid=f"uid-{deployment}"
+                )
+            ],
+        ),
+        spec=k.V1ReplicaSetSpec(
+            selector=k.V1LabelSelector(match_labels={"app": deployment}),
+            template=k.V1PodTemplateSpec(
+                metadata=k.V1ObjectMeta(labels=labels), spec=k.V1PodSpec(containers=[container])
+            ),
+        ),
+    )
+
+
+async def changes(server: FastMCP, **args: Any) -> list[dict[str, Any]]:
+    async with Client(server) as c:
+        result = await c.call_tool("recent_changes", {"cluster": "test", **args})
+    return list(result.structured_content["result"])
+
+
+@pytest.mark.anyio
+async def test_recent_changes_diffs_each_rollout_against_the_revision_before(
+    settings: Settings, fake_cluster: Any
+) -> None:
+    """A dependency's rollout shows up next to the alerting workload's, newest first,
+    with what it changed and never an env value."""
+    fake_cluster[1].list_namespaced_replica_set.return_value = k.V1ReplicaSetList(
+        items=[  # not in revision order: the API doesn't promise one
+            replica_set("orders", 2, 3, "py:3.12"),
+            replica_set("orders", 1, 30, "py:3.12", env=("DB",)),
+            replica_set("inventory", 1, 40, "inv:1.0", env=("PORT",), chart="inv-1.0"),
+            replica_set(
+                "inventory",
+                2,
+                4,
+                "inv:1.1",
+                env=("PORT", "API_VERSION"),
+                chart="inv-1.1",
+                annotations={
+                    "meta.helm.sh/release-name": "inv",
+                    "kubernetes.io/change-cause": "deploy token=hunter2hunter2",
+                },
+            ),
+        ]
+    )
+    out = await changes(k8s(settings, fake_cluster))
+    assert [(c["deployment"], c["revision"], c["change"]) for c in out] == [
+        ("orders", "2", "rollout"),
+        ("inventory", "2", "rollout"),
+        ("orders", "1", "created"),
+        ("inventory", "1", "created"),
+    ]
+    assert out[0]["diff"] == {"env_removed": {"app": ["DB"]}}
+    assert out[1]["diff"] == {
+        "images": {"app": {"from": "inv:1.0", "to": "inv:1.1"}},
+        "env_added": {"app": ["API_VERSION"]},
+        "helm_chart": {"from": "inv-1.0", "to": "inv-1.1"},
+    }
+    assert out[1]["helm_release"] == "inv"
+    assert out[1]["when"] == "4m" and out[1]["namespace"] == "shop"
+    assert "hunter2" not in out[1]["change_cause"]
+    assert out[3]["diff"] == {} and "helm_release" not in out[3]
+    assert "v4lue" not in str(out)
+
+
+@pytest.mark.anyio
+async def test_recent_changes_keeps_the_window_and_only_deployments(
+    settings: Settings, fake_cluster: Any
+) -> None:
+    fake_cluster[1].list_namespaced_replica_set.return_value = k.V1ReplicaSetList(
+        items=[
+            replica_set("old", 1, 600, "a:1"),
+            replica_set("gap", 7, 5, "b:2"),
+            replica_set("argo", 1, 5, "c:1", owner_kind="Rollout"),
+        ]
+    )
+    sidecar = replica_set("mesh", 2, 2, "a:1")
+    sidecar.spec.template.spec.containers.append(k.V1Container(name="proxy", image="envoy"))
+    fake_cluster[1].list_namespaced_replica_set.return_value.items += [
+        replica_set("mesh", 1, 9, "a:1"),
+        sidecar,
+    ]
+    out = await changes(k8s(settings, fake_cluster), since_minutes=60)
+    assert [(c["deployment"], c["change"]) for c in out] == [
+        ("mesh", "rollout"),
+        ("gap", "rollout (the revision before is no longer kept)"),
+        ("mesh", "created"),
+    ]
+    assert out[0]["diff"] == {"containers": {"proxy": "added"}}
+    assert out[1]["diff"] == {}
+    many = [replica_set(f"d{i}", 1, i, "a:1") for i in range(kubernetes.MAX_CHANGES + 5)]
+    fake_cluster[1].list_namespaced_replica_set.return_value = k.V1ReplicaSetList(items=many)
+    out = await changes(k8s(settings, fake_cluster))
+    assert len(out) == kubernetes.MAX_CHANGES and out[0]["deployment"] == "d0"
+
+
+@pytest.mark.anyio
+async def test_recent_changes_never_queries_outside_the_allowlist(
+    settings: Settings, fake_cluster: Any
+) -> None:
+    """Each allowed namespace on its own; no cluster-wide list, no other namespace."""
+    server = k8s(settings, fake_cluster, clusters={"test": ["shop", "pay"], "stg": ["shop-stg"]})
+    await changes(server)
+    apps = fake_cluster[1]
+    assert sorted(c.args[0] for c in apps.list_namespaced_replica_set.call_args_list) == [
+        "pay",
+        "shop",
+    ]
+    apps.list_replica_set_for_all_namespaces.assert_not_called()
+    apps.list_namespaced_replica_set.reset_mock()
+    async with Client(server) as c:
+        with pytest.raises(ToolError, match="not one of this Contract's clusters"):
+            await c.call_tool("recent_changes", {"cluster": "bank-kind"})
+    apps.list_namespaced_replica_set.assert_not_called()
+
+
+def test_the_changes_guide_comes_only_with_kubernetes(
+    settings: Settings, fake_cluster: Any
+) -> None:
+    """A Contract without clusters (Grafana, a cloud) never hears of a tool it lacks."""
+    with_k8s = agent.build_mcp(make_contract(), settings, {"test": fake_cluster})
+    assert any("kubernetes_recent_changes" in g for g in with_k8s.guides)
+    aws_only = evals.scenario_contract("", False, [Path("no-runbooks")], {}, ["aws"])
+    prompt = agent.prompt("triage", evals.replay_server(aws_only, settings, {}))
+    assert "recent_changes" not in prompt

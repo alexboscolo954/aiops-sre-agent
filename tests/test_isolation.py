@@ -51,6 +51,24 @@ async def test_naming_another_contracts_cluster_fails(
 
 
 @pytest.mark.anyio
+async def test_recent_changes_lists_only_the_contracts_own_namespaces(
+    two_contracts: Contracts, settings: Settings, fake_cluster: Any
+) -> None:
+    """demo-shop and demo-bank share one physical cluster: shop's timeline never lists
+    bank's namespace, and shop can't ask for bank's cluster."""
+    shop = tools_for(two_contracts["demo-shop"], settings, fake_cluster)
+    async with Client(shop.mcp) as client:
+        await client.call_tool("kubernetes_recent_changes", {"cluster": "kind"})
+        with pytest.raises(ToolError, match="not one of this Contract's clusters"):
+            await client.call_tool("kubernetes_recent_changes", {"cluster": "bank-kind"})
+    apps = fake_cluster[1]
+    listed = {c.args[0] for c in apps.list_namespaced_replica_set.call_args_list}
+    assert listed == set(two_contracts["demo-shop"].clusters[0].namespaces)
+    assert "bank" not in listed
+    apps.list_replica_set_for_all_namespaces.assert_not_called()
+
+
+@pytest.mark.anyio
 async def test_runbooks_never_cross_contracts(
     two_contracts: Contracts, settings: Settings, fake_cluster: Any
 ) -> None:

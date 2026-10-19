@@ -20,10 +20,12 @@ db: ## throwaway Postgres for the tests; each test gets its own database in it
 cluster:
 	kind get clusters | grep -qx $(CLUSTER) || kind create cluster --config demo/kind.yaml
 
-demo: ## broken workloads in namespace demo; checkout breaks via a rollout
+demo: ## broken workloads in namespaces demo and orders; checkout and inventory break via rollouts
 	kubectl --context $(CTX) apply -f demo/apps.yaml
 	kubectl --context $(CTX) -n demo rollout status deploy/checkout --timeout=5m
 	kubectl --context $(CTX) -n demo set env deploy/checkout DATABASE_URL-
+	kubectl --context $(CTX) -n orders rollout status deploy/inventory deploy/orders-api --timeout=5m
+	kubectl --context $(CTX) -n orders set env deploy/inventory API_VERSION=v2
 	./demo/wait-broken.sh $(CTX)
 
 lgtm: ## Grafana LGTM + synthetic logs and traces (Grafana Scenarios; not in CI)

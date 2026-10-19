@@ -141,6 +141,19 @@ async def test_agent_triage_through_real_tools(live: contracts.Contract) -> None
     assert len(outcome.tool_calls) == 4
 
 
+async def test_recent_changes_finds_the_dependency_rollout(live: contracts.Contract) -> None:
+    """The real API: inventory's rollout, what it changed, and only demo-shop's namespaces
+    (demo-bank's namespace sits on the same cluster)."""
+    async with Client(k8s(live)) as c:
+        changes = (await tool(c, "recent_changes", cluster="kind"))["result"]
+    rollout = next(
+        ch for ch in changes if ch["deployment"] == "inventory" and ch["change"] == "rollout"
+    )
+    assert rollout["namespace"] == "orders"
+    assert rollout["diff"] == {"env_added": {"app": ["API_VERSION"]}}
+    assert {ch["namespace"] for ch in changes} == {"demo", "orders"}
+
+
 async def test_record_eval_fixtures(live: contracts.Contract) -> None:
     """With AIOPS_RECORD_DIR set, save real tool outputs for the eval scenarios."""
     out = os.environ.get("AIOPS_RECORD_DIR")
@@ -149,34 +162,37 @@ async def test_record_eval_fixtures(live: contracts.Contract) -> None:
     import json
     from pathlib import Path
 
-    rec: dict[str, Any] = {}
-    async with Client(k8s(live)) as c:
-        pods = (await tool(c, "list_pods", cluster="kind", namespace="demo"))["result"]
+    async def namespace(c: Client, ns: str, deployments: tuple[str, ...]) -> dict[str, Any]:
+        rec: dict[str, Any] = {}
+        pods = (await tool(c, "list_pods", cluster="kind", namespace=ns))["result"]
         rec["kubernetes_list_pods"] = pods
         rec["kubernetes_list_deployments"] = await tool(
-            c, "list_deployments", cluster="kind", namespace="demo"
+            c, "list_deployments", cluster="kind", namespace=ns
         )
-        rec["kubernetes_get_events"] = await tool(c, "get_events", cluster="kind", namespace="demo")
-        for name in ("checkout", "reports", "frontend"):
+        rec["kubernetes_get_events"] = await tool(c, "get_events", cluster="kind", namespace=ns)
+        for name in deployments:
             rec[f"deploy:{name}"] = await tool(
-                c, "describe_deployment", cluster="kind", namespace="demo", name=name
+                c, "describe_deployment", cluster="kind", namespace=ns, name=name
             )
         for p in pods:
             rec[f"pod:{p['name']}"] = await tool(
-                c, "describe_pod", cluster="kind", namespace="demo", name=p["name"]
+                c, "describe_pod", cluster="kind", namespace=ns, name=p["name"]
             )
             for previous in (False, True):
                 r = await c.call_tool(
                     "pod_logs",
-                    {
-                        "cluster": "kind",
-                        "namespace": "demo",
-                        "name": p["name"],
-                        "previous": previous,
-                    },
+                    {"cluster": "kind", "namespace": ns, "name": p["name"], "previous": previous},
                     raise_on_error=False,
                 )
                 rec[f"logs:{p['name']}:{previous}"] = r.content[0].text
+        return rec
+
+    async with Client(k8s(live)) as c:
+        rec = await namespace(c, "demo", ("checkout", "reports", "frontend"))
+        rec["orders"] = await namespace(c, "orders", ("orders-api", "inventory"))
+        # Both namespaces in one call: build_scenarios keeps each Scenario's own.
+        changes = await tool(c, "recent_changes", cluster="kind")
+        rec["kubernetes_recent_changes"] = changes["result"]
     Path(out).mkdir(parents=True, exist_ok=True)
     data = json.dumps(rec, indent=2, default=str)
     (Path(out) / "recording.json").write_text(data)

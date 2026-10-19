@@ -103,7 +103,9 @@ class TriageReport(BaseModel):
     summary: str = Field(description="One or two sentences an on-call engineer reads first")
     category: Category = Field(
         description="Why it broke, not how it fails. bad_rollout: a new revision broke a "
-        "workload whose earlier revision worked (wins over the other classes). bad_config: "
+        "workload whose earlier revision worked, including a rollout of another workload "
+        "the alerting one depends on (wins over the other classes). dependency_failure: "
+        "something it depends on is failing, with no rollout to blame. bad_config: "
         "wrong or missing config, command or probe. app_error: bug in the code, including "
         "memory leaks. resource_limits: limits too low for a healthy workload. "
         "image_unavailable: tag or registry problem. capacity: the cluster can't fit the workload."

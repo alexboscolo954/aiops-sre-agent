@@ -236,6 +236,8 @@ def build_mcp(
     for i in contract.integrations:
         server = integration_server(contract, i, settings, k8s_apis, snapshots)
         mount(root, access, i.name, *server)
+        if isinstance(i, Kubernetes):
+            guides.append(kubernetes.GUIDE.format(name=i.name))
         if isinstance(i, Jira):
             guides.append(jira.GUIDE)
         if isinstance(i, Aws):

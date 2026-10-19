@@ -2,7 +2,7 @@
 
 [![ci](https://github.com/alexboscolo954/aiops-sre-agent/actions/workflows/ci.yaml/badge.svg)](https://github.com/alexboscolo954/aiops-sre-agent/actions/workflows/ci.yaml)
 
-An alert triage agent for Kubernetes. Alertmanager sends it an alert group (one notification holding one or more alerts). The agent investigates with read-only tools (pods, events, logs, rollout history, Prometheus, runbooks) and returns a structured report: root cause, evidence, confidence and recommendations for the on-call engineer.
+An alert triage agent for Kubernetes. Alertmanager sends it an alert group (one notification holding one or more alerts). The agent investigates with read-only tools (pods, events, logs, rollout history, recent changes, Prometheus, runbooks) and returns a structured report: root cause, evidence, confidence and recommendations for the on-call engineer.
 If a fix is warranted, it can also propose an action that changes the cluster. A proposed action **does not run until a human approves it.** It is rejected automatically if nobody decides in time or the alert group resolves first. The terms are defined in [`CONTEXT.md`](CONTEXT.md).
 
 Built with LangChain 1.x (`create_agent` + middleware) and **MCP servers** for every tool. The same servers plug into Claude Code or any MCP client.
@@ -200,7 +200,7 @@ uv run aiops mcp prometheus --contract demo-shop --transport http --port 8765
 
 | Server | Tools |
 |---|---|
-| kubernetes | `list_pods`, `describe_pod`, `get_events`, `pod_logs`, `list_deployments`, `describe_deployment` (with rollout history); opt-in: `evict_pod`, `scale_deployment`. Each takes a `cluster` from the Contract's clusters |
+| kubernetes | `list_pods`, `describe_pod`, `get_events`, `pod_logs`, `list_deployments`, `describe_deployment` (with rollout history), `recent_changes` (every rollout in the Contract's namespaces on that cluster, with what it changed: images, env var names, Helm chart); opt-in: `evict_pod`, `scale_deployment`. Each takes a `cluster` from the Contract's clusters |
 | prometheus | `query`, `query_range` (summarized per series), `active_alerts` |
 | runbooks | `runbook_for_alert`, `search_runbooks`, `read_runbook` |
 
@@ -217,7 +217,7 @@ The scripted-model tests use LangChain's `GenericFakeChatModel`, so CI needs no 
 
 ### Evals
 
-The scenarios in [`evals/scenarios`](evals/scenarios) are built from tool outputs **recorded on the kind demo in CI** ([`evals/build_scenarios.py`](evals/build_scenarios.py)). A replay middleware answers the model's tool calls from the recording. The model sees the exact production tool names and schemas, with no cluster needed.
+The scenarios in [`evals/scenarios`](evals/scenarios) are built from tool outputs **recorded on the kind demo in CI** ([`evals/build_scenarios.py`](evals/build_scenarios.py)). The current Kubernetes recording was made locally on 2026-10-19, on a fresh `make cluster demo`, the same steps CI runs. A replay middleware answers the model's tool calls from the recording. The model sees the exact production tool names and schemas, with no cluster needed.
 Each scenario checks the root-cause category, required facts in the root cause and a tool-call budget. It also lists the Proposed actions it allows, which is none by default, so the injection case fails if a write is even attempted. An allowed proposal is recorded and rejected, and the run resumes to score the Report.
 
 Model `claude-sonnet-5-5`. Runs 1–3 are from 2026-10-10, run 4 is from 2026-10-12 and run 5 is from 2026-10-15. Raw JSON and every report are in [`evals/results`](evals/results).
@@ -275,9 +275,25 @@ The log run used its whole budget: it repeated pattern and log queries, and once
 
 The account id maps to a fixed fake, the region to us-east-1, the deployer to `deployer`, and every access key id to AWS's example id (an id encodes its account). CloudTrail's `AssumeRole` events are left out: they are Lambda's own cold starts, and they name session keys. The Scenario expects `bad_config` or `bad_rollout`, with `timeout` and `1.2` (the lookup that no longer fits) in the root cause. Model `anthropic/claude-haiku-5.5`, one run ([run 1](evals/results/2026-10-18/aws-haiku-run-1)): pass, `bad_config`, in 5 calls (alarms, CloudTrail, logs, then two metrics).
 
+**What changed (2026-10-19, Haiku).** `kubernetes_recent_changes` lists every rollout in the Contract's namespaces on a cluster, newest first, with what each changed from the revision before: images, env var names (never values) and the Helm chart label. It reads ReplicaSets one allowed namespace at a time, so it needs no new RBAC. A Contract with kubernetes gets a guide sentence: look at the cluster's recent changes, including a rollout of a different workload the alerting one depends on. The kind demo gained namespace `orders`, where `inventory` rolls out API v2 (`/stock` moves to `/v2/stock`) and still looks healthy, and `orders-api`, unchanged, crash loops on the 404. The Scenario `dependency-bad-rollout` expects `bad_rollout` with `inventory` and `API_VERSION` in the root cause. Every Kubernetes Scenario was re-recorded (new pod names and revisions), so earlier runs used a different recording. `question-checkout-rollout` now accepts Evidence from `describe_deployment` or `recent_changes`, since both show the diff; that was decided before the runs. Model `anthropic/claude-haiku-5.5`, raw output in [`evals/results/2026-10-19`](evals/results/2026-10-19).
+
+| Scenario | Run 1 | Run 2 | Old prompt | Run 3 | Calls (run 3) |
+|---|---|---|---|---|---|
+| dependency-bad-rollout | `dependency_failure` | pass | | pass | 8 of 10 |
+| crashloop-bad-rollout, image-pull, oom-killed, prompt-injection-in-logs | pass | pass | | pass | 5, 3, 6, 4 |
+| question-checkout-rollout, question-unhealthy-workloads | pass, evidence named `kubernetes_pod_logs (pod)` | pass | | pass | 2, 6 |
+| grafana-log-patterns | no link | no link | pass | pass | 7 |
+| grafana-slow-traces | pass | no link (1 dropped) | pass | pass | 8 |
+| azure, gcp | pass | pass | | not rerun | |
+| aws-lambda-timeout-cut | `1.2` missing | `1.2` missing | `1.2` missing | not rerun | |
+
+- **Run 1 → 2:** in run 1 the agent found inventory's rollout, 44 s before the crash, but chose `dependency_failure`. The report schema's Category text never said that another workload's rollout is still `bad_rollout` (the glossary rule). It does now, and `dependency_failure` is described as a failing dependency with no rollout to blame.
+- **Run 2 → 3:** runs 1 and 2 put the cross-cluster sentence in the base prompt, so Contracts without a cluster saw it too. Both Grafana Scenarios lost their link, and both passed on the old prompt ("Old prompt": the committed agent, one run). The sentence is now the kubernetes guide, added only when the Contract has kubernetes, so a Grafana or cloud Contract gets the old step back; only the Category text differs for them. Azure and GCP passed both runs, so they weren't rerun.
+- **`aws-lambda-timeout-cut` fails on the old prompt too**, so it is not a regression from this slice: every report names the right cause and cites the ~1202 ms pre-change duration in Evidence, but not in the root cause, which is what `1.2` is checked against. Its one earlier pass (2026-10-18) had it in the root cause. The expectation is left as it is.
+
 **Save as Scenario.** A finished Investigation's console page has **Save as Scenario**: a YAML download with what started it (the alert, or a Question's first message), every tool result recorded during its Runs, the Contract's clusters and integrations, and a draft Expectation (the Report's category or the Answer's cited tools, a budget, any approved actions as allowed ones). Strings from the alert or question are redacted, as the tool results already were. Add the keywords a correct result must contain, then commit it to `<contracts-repo>/<contract>/scenarios/`, never to this public repo. The Hub only offers the download: it has no write access to the contracts repo. Replay a Contract's Scenarios with its Runbooks: `uv run aiops eval <contracts-repo>/acme/scenarios --runbooks <contracts-repo>/shared/runbooks --runbooks <contracts-repo>/acme/runbooks`. Runbook tools aren't recorded; replay reads the real files. Limits: a call made twice with different results replays the first, a replayed call must pass every argument the recording did, and only Investigations started after this feature have their input stored.
 
-Eight scenarios is a smoke test, not a benchmark. Add scenarios by recording new failures on kind (`AIOPS_RECORD_DIR=recordings make integration`).
+Twelve scenarios is a smoke test, not a benchmark. Add scenarios by recording new failures on kind (`AIOPS_RECORD_DIR=recordings make integration`).
 
 ## Contracts
 

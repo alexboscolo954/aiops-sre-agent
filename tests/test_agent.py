@@ -215,7 +215,7 @@ async def test_real_toolbox_shows_every_builtin_tool(settings: Settings, fake_cl
     async with MCPAdapter(tb.mcp) as adapter:
         tools = await agent.load_tools(adapter, tb.access)
     assert sorted(t.name for t in tools) == sorted(tb.access)
-    assert len(tools) == 14
+    assert len(tools) == 15
     assert agent.gated(tools, tb.access) == {
         "kubernetes_evict_pod",
         "kubernetes_scale_deployment",

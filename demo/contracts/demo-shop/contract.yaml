@@ -5,7 +5,7 @@ name: Demo shop
 clusters:
   - name: kind
     context: kind-aiops
-    namespaces: [demo]
+    namespaces: [demo, orders]
 integrations:
   - name: kubernetes
   - name: prometheus

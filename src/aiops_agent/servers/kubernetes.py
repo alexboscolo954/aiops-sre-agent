@@ -11,7 +11,7 @@ decide which calls need human approval; they are not the security boundary.
 """
 
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 
 import yaml
@@ -32,6 +32,13 @@ from aiops_agent.contracts import (
 from aiops_agent.safety import redact, redact_capped
 from aiops_agent.servers import Access
 
+GUIDE = """\
+What changed across the cluster ({name}_recent_changes): every rollout in the
+Contract's namespaces, with what each changed. A rollout shortly before the alert
+is a strong lead, including one of a different workload the alerting one depends on.
+"""
+REVISION = "deployment.kubernetes.io/revision"
+MAX_CHANGES = 30
 LOG_RACE = "unable to retrieve container logs"
 LOG_RETRY_SECONDS = 2.0
 READ = ToolAnnotations(read_only_hint=True, open_world_hint=False)
@@ -44,6 +51,7 @@ ACCESS: dict[str, Access] = {
     "pod_logs": "read",
     "list_deployments": "read",
     "describe_deployment": "read",
+    "recent_changes": "read",
     "evict_pod": "write",
     "scale_deployment": "write",
 }
@@ -134,6 +142,39 @@ def _probe(p: Any) -> str | None:
     return f"{target} delay={p.initial_delay_seconds or 0}s period={p.period_seconds or 10}s"
 
 
+def _revision(rs: Any) -> int:
+    return int((rs.metadata.annotations or {}).get(REVISION, 0))
+
+
+def _rollout_diff(rs: Any, prev: Any) -> dict[str, Any]:
+    """What one ReplicaSet's pod template changed from the revision before it:
+    images, env var names (never values) and the Helm chart label."""
+    if prev is None:
+        return {}
+    new = {c.name: c for c in rs.spec.template.spec.containers}
+    old = {c.name: c for c in prev.spec.template.spec.containers}
+    diff: dict[str, Any] = {}
+    for name in sorted(new.keys() | old.keys()):
+        n, o = new.get(name), old.get(name)
+        if n is None or o is None:
+            diff.setdefault("containers", {})[name] = "added" if o is None else "removed"
+            continue
+        if n.image != o.image:
+            diff.setdefault("images", {})[name] = {"from": o.image, "to": n.image}
+        ne, oe = _env_names(n), _env_names(o)
+        for key in ("env", "env_from"):
+            if added := sorted(set(ne[key]) - set(oe[key])):
+                diff.setdefault(f"{key}_added", {})[name] = added
+            if removed := sorted(set(oe[key]) - set(ne[key])):
+                diff.setdefault(f"{key}_removed", {})[name] = removed
+    chart = "helm.sh/chart"
+    new_chart = (rs.spec.template.metadata.labels or {}).get(chart)
+    old_chart = (prev.spec.template.metadata.labels or {}).get(chart)
+    if new_chart != old_chart:
+        diff["helm_chart"] = {"from": old_chart, "to": new_chart}
+    return diff
+
+
 def build_server(
     contract: Contract,
     k8s: Kubernetes,
@@ -166,11 +207,15 @@ def build_server(
     )
     mcp = FastMCP("kubernetes", instructions="Inspect pods, events, logs and deployments.")
 
-    def target(cluster: str, namespace: str) -> tuple[Any, Any]:
+    def allowed_in(cluster: str) -> set[str]:
         """The real check: the schema's enum is only a hint to the model."""
         if cluster not in targets:
             raise ToolError(f"cluster {cluster!r} is not one of this Contract's clusters: {names}")
-        core, apps, allowed = targets[cluster]
+        return set(targets[cluster][2])
+
+    def target(cluster: str, namespace: str) -> tuple[Any, Any]:
+        allowed = allowed_in(cluster)
+        core, apps, _ = targets[cluster]
         if namespace not in allowed:
             raise ToolError(
                 f"namespace {namespace!r} is not allowed in cluster {cluster!r}; "
@@ -376,8 +421,7 @@ def build_server(
             for rs in rsets
             if any(o.uid == d.metadata.uid for o in rs.metadata.owner_references or [])
         ]
-        rev = "deployment.kubernetes.io/revision"
-        owned.sort(key=lambda rs: int((rs.metadata.annotations or {}).get(rev, 0)), reverse=True)
+        owned.sort(key=lambda rs: _revision(rs), reverse=True)
         return {
             "name": d.metadata.name,
             "replicas": {"desired": d.spec.replicas, "ready": d.status.ready_replicas or 0},
@@ -392,7 +436,7 @@ def build_server(
             ],
             "rollout_history": [
                 {
-                    "revision": (rs.metadata.annotations or {}).get(rev),
+                    "revision": (rs.metadata.annotations or {}).get(REVISION),
                     "replicaset": rs.metadata.name,
                     "created": _age(rs.metadata.creation_timestamp),
                     "replicas": rs.status.replicas or 0,
@@ -403,6 +447,59 @@ def build_server(
                 for rs in owned[:5]
             ],
         }
+
+    @mcp.tool(annotations=READ)
+    def recent_changes(
+        cluster: Annotated[str, cluster_arg], since_minutes: int = 360
+    ) -> list[dict[str, Any]]:
+        """Deployment rollouts in every allowed namespace of the cluster, newest
+        first: when, which deployment, its revision, and what changed from the
+        revision before (images, env var names, Helm chart). The cause of an alert
+        is often a change to a different workload than the one alerting, such as
+        one it calls. Use describe_deployment for one deployment's full history."""
+        allowed = allowed_in(cluster)
+        apps = targets[cluster][1]
+        since = datetime.now(UTC) - timedelta(minutes=max(1, min(since_minutes, 10080)))
+        changes: list[tuple[datetime, dict[str, Any]]] = []
+        # One namespace at a time, only the allowed ones: never a cluster-wide list.
+        for namespace in sorted(allowed):
+            by_owner: dict[str, list[Any]] = {}
+            for rs in call(apps.list_namespaced_replica_set, namespace).items:
+                owner = next(
+                    (o for o in rs.metadata.owner_references or [] if o.kind == "Deployment"),
+                    None,
+                )
+                if owner is not None:
+                    by_owner.setdefault(owner.uid, []).append((owner.name, rs))
+            for owned in by_owner.values():
+                owned.sort(key=lambda o: _revision(o[1]))
+                for i, (deployment, rs) in enumerate(owned):
+                    # ponytail: a rollback reuses an old ReplicaSet, so its creation time
+                    # is the original rollout's; read the Deployment's conditions if that bites.
+                    created = rs.metadata.creation_timestamp
+                    if created is None or created < since:
+                        continue
+                    prev = owned[i - 1][1] if i else None
+                    annotations = rs.metadata.annotations or {}
+                    entry: dict[str, Any] = {
+                        "when": _age(created),
+                        "namespace": namespace,
+                        "deployment": deployment,
+                        "revision": annotations.get(REVISION),
+                        "change": "rollout"
+                        if prev is not None
+                        else "created"
+                        if _revision(rs) == 1
+                        else "rollout (the revision before is no longer kept)",
+                        "diff": _rollout_diff(rs, prev),
+                    }
+                    if release := annotations.get("meta.helm.sh/release-name"):
+                        entry["helm_release"] = release
+                    if cause := annotations.get("kubernetes.io/change-cause"):
+                        entry["change_cause"] = redact(cause)
+                    changes.append((created, entry))
+        changes.sort(key=lambda c: c[0], reverse=True)
+        return [entry for _, entry in changes[:MAX_CHANGES]]
 
     if not k8s.enable_actions:
         return mcp

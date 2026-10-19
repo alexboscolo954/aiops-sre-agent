@@ -9,7 +9,7 @@ alert:
     labels:
       alertname: KubePodCrashLooping
       namespace: demo
-      pod: checkout-7c856f898c-bjtfx
+      pod: checkout-869fc5bcc6-db5ps
       severity: warning
     annotations:
       summary: Pod is crash looping.
@@ -21,35 +21,25 @@ expect:
   max_tool_calls: 10
 tools:
   kubernetes_list_pods:
-  - name: checkout-7784c7f885-pwjtr
-    phase: Running
-    ready: 1/1
-    restarts: 0
-    containers:
-      app:
-        running_since: 36s
-    last_terminated: {}
-    node: aiops-control-plane
-    age: 41s
-  - name: checkout-7c856f898c-bjtfx
+  - name: checkout-869fc5bcc6-db5ps
     phase: Running
     ready: 0/1
-    restarts: 2
+    restarts: 3
     containers:
       app:
         terminated: Error
         exit_code: 1
-        finished: 17s
+        finished: 0s
         message: null
     last_terminated:
       app:
         terminated: Error
         exit_code: 1
-        finished: 31s
+        finished: 22s
         message: null
     node: aiops-control-plane
-    age: 36s
-  - name: frontend-79765fc9d-pqg7h
+    age: 35s
+  - name: frontend-6f6b4986b9-hxdf2
     phase: Pending
     ready: 0/1
     restarts: 0
@@ -61,33 +51,36 @@ tools:
           not found'
     last_terminated: {}
     node: aiops-control-plane
-    age: 40s
-  - name: reports-7cc9978bbf-sq7r7
+    age: 2m
+  - name: reports-55b4fffc66-hmq7f
     phase: Running
     ready: 0/1
-    restarts: 2
+    restarts: 3
     containers:
       app:
         terminated: OOMKilled
         exit_code: 137
-        finished: 19s
+        finished: 0s
         message: null
     last_terminated:
       app:
         terminated: OOMKilled
         exit_code: 137
-        finished: 31s
+        finished: 25s
         message: null
     node: aiops-control-plane
-    age: 41s
+    age: 2m
   kubernetes_list_deployments:
     result:
     - name: checkout
-      ready: 1/1
+      ready: 0/1
       updated: 1
       images:
       - python:3.12-alpine
-      problems: []
+      problems:
+      - type: Available
+        reason: MinimumReplicasUnavailable
+        message: Deployment does not have minimum availability.
     - name: frontend
       ready: 0/1
       updated: 1
@@ -109,38 +102,87 @@ tools:
   kubernetes_get_events:
     result:
     - type: Warning
+      reason: BackOff
+      object: Pod/checkout-869fc5bcc6-db5ps
+      message: Back-off restarting failed container app in pod checkout-869fc5bcc6-db5ps_demo(f5a695bc-4150-4856-bbd3-fbae6d0e60fe)
+      count: 4
+      last_seen: 1s
+    - type: Warning
+      reason: BackOff
+      object: Pod/reports-55b4fffc66-hmq7f
+      message: Back-off restarting failed container app in pod reports-55b4fffc66-hmq7f_demo(161ce2f0-c128-4ce8-a2d4-4a08690abfea)
+      count: 3
+      last_seen: 1s
+    - type: Warning
       reason: Failed
-      object: Pod/frontend-79765fc9d-pqg7h
+      object: Pod/frontend-6f6b4986b9-hxdf2
       message: 'Error: ImagePullBackOff'
       count: 2
-      last_seen: 8s
-    - type: Warning
-      reason: BackOff
-      object: Pod/checkout-7c856f898c-bjtfx
-      message: Back-off restarting failed container app in pod checkout-7c856f898c-bjtfx_demo(d65fc896-e0d3-403d-904d-2931d3dc7f93)
-      count: 3
-      last_seen: 17s
-    - type: Warning
-      reason: BackOff
-      object: Pod/reports-7cc9978bbf-sq7r7
-      message: Back-off restarting failed container app in pod reports-7cc9978bbf-sq7r7_demo(2e399f4a-8f3a-4455-b3ca-a8f25a99087c)
-      count: 2
-      last_seen: 19s
+      last_seen: 5s
     - type: Warning
       reason: Failed
-      object: Pod/frontend-79765fc9d-pqg7h
+      object: Pod/frontend-6f6b4986b9-hxdf2
       message: 'Failed to pull image "nginx:1.99.99-does-not-exist": rpc error: code = NotFound desc =
         failed to pull and unpack image "docker.io/library/nginx:1.99.99-does-not-exist": failed to resolve
         reference "docker.io/library/nginx:1.99.99-does-not-exist": docker.io/library/nginx:1.99.99-does-not-exist:
         not found'
       count: 2
-      last_seen: 23s
+      last_seen: 20s
     - type: Warning
       reason: Failed
-      object: Pod/frontend-79765fc9d-pqg7h
+      object: Pod/frontend-6f6b4986b9-hxdf2
       message: 'Error: ErrImagePull'
       count: 2
-      last_seen: 23s
+      last_seen: 20s
+    - type: Warning
+      reason: FailedScheduling
+      object: Pod/checkout-67d9799c78-n6mfv
+      message: '0/1 nodes are available: 1 node(s) had untolerated taint(s). preemption: 0/1 nodes are
+        available: 1 Preemption is not helpful for scheduling.'
+      count: 1
+      last_seen: 2m
+    - type: Warning
+      reason: FailedScheduling
+      object: Pod/frontend-6f6b4986b9-hxdf2
+      message: '0/1 nodes are available: 1 node(s) had untolerated taint(s). preemption: 0/1 nodes are
+        available: 1 Preemption is not helpful for scheduling.'
+      count: 1
+      last_seen: 2m
+    - type: Warning
+      reason: FailedScheduling
+      object: Pod/reports-55b4fffc66-hmq7f
+      message: '0/1 nodes are available: 1 node(s) had untolerated taint(s). preemption: 0/1 nodes are
+        available: 1 Preemption is not helpful for scheduling.'
+      count: 1
+      last_seen: 2m
+  kubernetes_recent_changes:
+  - when: 48s
+    namespace: demo
+    deployment: checkout
+    revision: '2'
+    change: rollout
+    diff:
+      env_removed:
+        app:
+        - DATABASE_URL
+  - when: 2m
+    namespace: demo
+    deployment: checkout
+    revision: '1'
+    change: created
+    diff: {}
+  - when: 2m
+    namespace: demo
+    deployment: frontend
+    revision: '1'
+    change: created
+    diff: {}
+  - when: 2m
+    namespace: demo
+    deployment: reports
+    revision: '1'
+    change: created
+    diff: {}
   kubernetes_describe_deployment:
   - match:
       name: checkout
@@ -148,7 +190,7 @@ tools:
       name: checkout
       replicas:
         desired: 1
-        ready: 1
+        ready: 0
       strategy: RollingUpdate
       containers:
       - name: app
@@ -161,17 +203,17 @@ tools:
         env: []
         env_from: []
       conditions:
-      - type: Available
-        status: 'True'
-        reason: MinimumReplicasAvailable
-        message: Deployment has minimum availability.
       - type: Progressing
         status: 'True'
-        reason: ReplicaSetUpdated
-        message: ReplicaSet "checkout-7c856f898c" is progressing.
+        reason: NewReplicaSetAvailable
+        message: ReplicaSet "checkout-869fc5bcc6" has successfully progressed.
+      - type: Available
+        status: 'False'
+        reason: MinimumReplicasUnavailable
+        message: Deployment does not have minimum availability.
       rollout_history:
       - revision: '2'
-        replicaset: checkout-7c856f898c
+        replicaset: checkout-869fc5bcc6
         created: 36s
         replicas: 1
         images:
@@ -181,9 +223,9 @@ tools:
             env: []
             env_from: []
       - revision: '1'
-        replicaset: checkout-7784c7f885
-        created: 41s
-        replicas: 1
+        replicaset: checkout-67d9799c78
+        created: 2m
+        replicas: 0
         images:
         - python:3.12-alpine
         config:
@@ -213,15 +255,15 @@ tools:
       - type: Progressing
         status: 'True'
         reason: NewReplicaSetAvailable
-        message: ReplicaSet "reports-7cc9978bbf" has successfully progressed.
+        message: ReplicaSet "reports-55b4fffc66" has successfully progressed.
       - type: Available
         status: 'False'
         reason: MinimumReplicasUnavailable
         message: Deployment does not have minimum availability.
       rollout_history:
       - revision: '1'
-        replicaset: reports-7cc9978bbf
-        created: 41s
+        replicaset: reports-55b4fffc66
+        created: 2m
         replicas: 1
         images:
         - python:3.12-alpine
@@ -254,11 +296,11 @@ tools:
       - type: Progressing
         status: 'True'
         reason: ReplicaSetUpdated
-        message: ReplicaSet "frontend-79765fc9d" is progressing.
+        message: ReplicaSet "frontend-6f6b4986b9" is progressing.
       rollout_history:
       - revision: '1'
-        replicaset: frontend-79765fc9d
-        created: 41s
+        replicaset: frontend-6f6b4986b9
+        created: 2m
         replicas: 1
         images:
         - nginx:1.99.99-does-not-exist
@@ -268,86 +310,13 @@ tools:
             env_from: []
   kubernetes_describe_pod:
   - match:
-      name: checkout-7784c7f885-pwjtr
+      name: checkout-869fc5bcc6-db5ps
     result:
-      name: checkout-7784c7f885-pwjtr
+      name: checkout-869fc5bcc6-db5ps
       phase: Running
       node: aiops-control-plane
       owner:
-      - ReplicaSet/checkout-7784c7f885
-      conditions:
-      - type: PodReadyToStartContainers
-        status: 'True'
-        reason: null
-      - type: Initialized
-        status: 'True'
-        reason: null
-      - type: Ready
-        status: 'True'
-        reason: null
-      - type: ContainersReady
-        status: 'True'
-        reason: null
-      - type: PodScheduled
-        status: 'True'
-        reason: null
-      containers:
-      - name: app
-        image: python:3.12-alpine
-        requests:
-          cpu: 10m
-          memory: 32Mi
-        limits:
-          memory: 64Mi
-        env:
-        - DATABASE_URL
-        env_from: []
-        liveness: null
-        readiness: null
-        state:
-          running_since: 36s
-        last_state: null
-        restarts: 0
-      events:
-      - type: Normal
-        reason: Pulled
-        object: Pod/checkout-7784c7f885-pwjtr
-        message: 'Successfully pulled image "python:3.12-alpine" in 3.419s (3.42s including waiting).
-          Image size: 20643193 bytes.'
-        count: 1
-        last_seen: 36s
-      - type: Normal
-        reason: Created
-        object: Pod/checkout-7784c7f885-pwjtr
-        message: Container created
-        count: 1
-        last_seen: 36s
-      - type: Normal
-        reason: Started
-        object: Pod/checkout-7784c7f885-pwjtr
-        message: Container started
-        count: 1
-        last_seen: 36s
-      - type: Normal
-        reason: Pulling
-        object: Pod/checkout-7784c7f885-pwjtr
-        message: Pulling image "python:3.12-alpine"
-        count: 1
-        last_seen: 40s
-      - type: Normal
-        reason: Scheduled
-        object: Pod/checkout-7784c7f885-pwjtr
-        message: Successfully assigned demo/checkout-7784c7f885-pwjtr to aiops-control-plane
-        count: 1
-        last_seen: 41s
-  - match:
-      name: checkout-7c856f898c-bjtfx
-    result:
-      name: checkout-7c856f898c-bjtfx
-      phase: Running
-      node: aiops-control-plane
-      owner:
-      - ReplicaSet/checkout-7c856f898c
+      - ReplicaSet/checkout-869fc5bcc6
       conditions:
       - type: PodReadyToStartContainers
         status: 'True'
@@ -379,54 +348,54 @@ tools:
         state:
           terminated: Error
           exit_code: 1
-          finished: 17s
+          finished: 1s
           message: null
         last_state:
           terminated: Error
           exit_code: 1
-          finished: 31s
+          finished: 23s
           message: null
-        restarts: 2
+        restarts: 3
       events:
       - type: Normal
         reason: Pulled
-        object: Pod/checkout-7c856f898c-bjtfx
+        object: Pod/checkout-869fc5bcc6-db5ps
         message: Container image "python:3.12-alpine" already present on machine and can be accessed by
           the pod
-        count: 3
-        last_seen: 17s
+        count: 4
+        last_seen: 1s
       - type: Normal
         reason: Created
-        object: Pod/checkout-7c856f898c-bjtfx
+        object: Pod/checkout-869fc5bcc6-db5ps
         message: Container created
-        count: 3
-        last_seen: 17s
+        count: 4
+        last_seen: 1s
       - type: Normal
         reason: Started
-        object: Pod/checkout-7c856f898c-bjtfx
+        object: Pod/checkout-869fc5bcc6-db5ps
         message: Container started
-        count: 3
-        last_seen: 17s
+        count: 4
+        last_seen: 1s
       - type: Warning
         reason: BackOff
-        object: Pod/checkout-7c856f898c-bjtfx
-        message: Back-off restarting failed container app in pod checkout-7c856f898c-bjtfx_demo(d65fc896-e0d3-403d-904d-2931d3dc7f93)
-        count: 3
-        last_seen: 17s
+        object: Pod/checkout-869fc5bcc6-db5ps
+        message: Back-off restarting failed container app in pod checkout-869fc5bcc6-db5ps_demo(f5a695bc-4150-4856-bbd3-fbae6d0e60fe)
+        count: 4
+        last_seen: 1s
       - type: Normal
         reason: Scheduled
-        object: Pod/checkout-7c856f898c-bjtfx
-        message: Successfully assigned demo/checkout-7c856f898c-bjtfx to aiops-control-plane
+        object: Pod/checkout-869fc5bcc6-db5ps
+        message: Successfully assigned demo/checkout-869fc5bcc6-db5ps to aiops-control-plane
         count: 1
-        last_seen: 35s
+        last_seen: 36s
   - match:
-      name: frontend-79765fc9d-pqg7h
+      name: frontend-6f6b4986b9-hxdf2
     result:
-      name: frontend-79765fc9d-pqg7h
+      name: frontend-6f6b4986b9-hxdf2
       phase: Pending
       node: aiops-control-plane
       owner:
-      - ReplicaSet/frontend-79765fc9d
+      - ReplicaSet/frontend-6f6b4986b9
       conditions:
       - type: PodReadyToStartContainers
         status: 'True'
@@ -464,51 +433,58 @@ tools:
       events:
       - type: Normal
         reason: BackOff
-        object: Pod/frontend-79765fc9d-pqg7h
+        object: Pod/frontend-6f6b4986b9-hxdf2
         message: Back-off pulling image "nginx:1.99.99-does-not-exist"
         count: 2
-        last_seen: 12s
+        last_seen: 9s
       - type: Warning
         reason: Failed
-        object: Pod/frontend-79765fc9d-pqg7h
+        object: Pod/frontend-6f6b4986b9-hxdf2
         message: 'Error: ImagePullBackOff'
         count: 2
-        last_seen: 12s
-      - type: Normal
-        reason: Pulling
-        object: Pod/frontend-79765fc9d-pqg7h
-        message: Pulling image "nginx:1.99.99-does-not-exist"
-        count: 2
-        last_seen: 27s
+        last_seen: 9s
       - type: Warning
         reason: Failed
-        object: Pod/frontend-79765fc9d-pqg7h
+        object: Pod/frontend-6f6b4986b9-hxdf2
         message: 'Failed to pull image "nginx:1.99.99-does-not-exist": rpc error: code = NotFound desc
           = failed to pull and unpack image "docker.io/library/nginx:1.99.99-does-not-exist": failed to
           resolve reference "docker.io/library/nginx:1.99.99-does-not-exist": docker.io/library/nginx:1.99.99-does-not-exist:
           not found'
         count: 2
-        last_seen: 27s
+        last_seen: 24s
       - type: Warning
         reason: Failed
-        object: Pod/frontend-79765fc9d-pqg7h
+        object: Pod/frontend-6f6b4986b9-hxdf2
         message: 'Error: ErrImagePull'
         count: 2
-        last_seen: 27s
+        last_seen: 24s
+      - type: Normal
+        reason: Pulling
+        object: Pod/frontend-6f6b4986b9-hxdf2
+        message: Pulling image "nginx:1.99.99-does-not-exist"
+        count: 2
+        last_seen: 28s
       - type: Normal
         reason: Scheduled
-        object: Pod/frontend-79765fc9d-pqg7h
-        message: Successfully assigned demo/frontend-79765fc9d-pqg7h to aiops-control-plane
+        object: Pod/frontend-6f6b4986b9-hxdf2
+        message: Successfully assigned demo/frontend-6f6b4986b9-hxdf2 to aiops-control-plane
         count: 1
-        last_seen: 44s
+        last_seen: 2m
+      - type: Warning
+        reason: FailedScheduling
+        object: Pod/frontend-6f6b4986b9-hxdf2
+        message: '0/1 nodes are available: 1 node(s) had untolerated taint(s). preemption: 0/1 nodes are
+          available: 1 Preemption is not helpful for scheduling.'
+        count: 1
+        last_seen: 2m
   - match:
-      name: reports-7cc9978bbf-sq7r7
+      name: reports-55b4fffc66-hmq7f
     result:
-      name: reports-7cc9978bbf-sq7r7
+      name: reports-55b4fffc66-hmq7f
       phase: Running
       node: aiops-control-plane
       owner:
-      - ReplicaSet/reports-7cc9978bbf
+      - ReplicaSet/reports-55b4fffc66
       conditions:
       - type: PodReadyToStartContainers
         status: 'True'
@@ -540,116 +516,109 @@ tools:
         state:
           terminated: OOMKilled
           exit_code: 137
-          finished: 23s
+          finished: 5s
           message: null
         last_state:
           terminated: OOMKilled
           exit_code: 137
-          finished: 35s
+          finished: 30s
           message: null
-        restarts: 2
+        restarts: 3
       events:
       - type: Normal
         reason: Created
-        object: Pod/reports-7cc9978bbf-sq7r7
+        object: Pod/reports-55b4fffc66-hmq7f
         message: Container created
-        count: 3
-        last_seen: 23s
+        count: 4
+        last_seen: 5s
       - type: Normal
         reason: Started
-        object: Pod/reports-7cc9978bbf-sq7r7
+        object: Pod/reports-55b4fffc66-hmq7f
         message: Container started
-        count: 3
-        last_seen: 23s
+        count: 4
+        last_seen: 5s
       - type: Normal
         reason: Pulled
-        object: Pod/reports-7cc9978bbf-sq7r7
+        object: Pod/reports-55b4fffc66-hmq7f
         message: Container image "python:3.12-alpine" already present on machine and can be accessed by
           the pod
-        count: 2
-        last_seen: 23s
+        count: 3
+        last_seen: 5s
       - type: Warning
         reason: BackOff
-        object: Pod/reports-7cc9978bbf-sq7r7
-        message: Back-off restarting failed container app in pod reports-7cc9978bbf-sq7r7_demo(2e399f4a-8f3a-4455-b3ca-a8f25a99087c)
-        count: 2
-        last_seen: 23s
+        object: Pod/reports-55b4fffc66-hmq7f
+        message: Back-off restarting failed container app in pod reports-55b4fffc66-hmq7f_demo(161ce2f0-c128-4ce8-a2d4-4a08690abfea)
+        count: 3
+        last_seen: 5s
       - type: Normal
         reason: Pulled
-        object: Pod/reports-7cc9978bbf-sq7r7
-        message: 'Successfully pulled image "python:3.12-alpine" in 402ms (3.817s including waiting).
-          Image size: 20643193 bytes.'
-        count: 1
-        last_seen: 40s
-      - type: Normal
-        reason: Pulling
-        object: Pod/reports-7cc9978bbf-sq7r7
-        message: Pulling image "python:3.12-alpine"
-        count: 1
-        last_seen: 44s
-      - type: Normal
-        reason: Scheduled
-        object: Pod/reports-7cc9978bbf-sq7r7
-        message: Successfully assigned demo/reports-7cc9978bbf-sq7r7 to aiops-control-plane
+        object: Pod/reports-55b4fffc66-hmq7f
+        message: 'Successfully pulled image "python:3.12-alpine" in 1m21.678s (1m21.678s including waiting).
+          Image size: 21423636 bytes.'
         count: 1
         last_seen: 45s
+      - type: Normal
+        reason: Scheduled
+        object: Pod/reports-55b4fffc66-hmq7f
+        message: Successfully assigned demo/reports-55b4fffc66-hmq7f to aiops-control-plane
+        count: 1
+        last_seen: 2m
+      - type: Normal
+        reason: Pulling
+        object: Pod/reports-55b4fffc66-hmq7f
+        message: Pulling image "python:3.12-alpine"
+        count: 1
+        last_seen: 2m
+      - type: Warning
+        reason: FailedScheduling
+        object: Pod/reports-55b4fffc66-hmq7f
+        message: '0/1 nodes are available: 1 node(s) had untolerated taint(s). preemption: 0/1 nodes are
+          available: 1 Preemption is not helpful for scheduling.'
+        count: 1
+        last_seen: 2m
   kubernetes_pod_logs:
   - match:
-      name: checkout-7784c7f885-pwjtr
+      name: checkout-869fc5bcc6-db5ps
       previous: false
-    result: 'checkout starting, version 1.4.0
+    result: 'FATAL: required env var DATABASE_URL is not set
 
-      connected to database
+      checkout starting, version 1.4.0
 
       '
   - match:
-      name: checkout-7784c7f885-pwjtr
+      name: checkout-869fc5bcc6-db5ps
       previous: true
-    result:
-      error: 'cannot read logs: 400 Bad Request: {"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"previous
-        terminated container \"app\" in pod \"checkout-7784c7f885-pwjtr\" not found","reason":"BadRequest","code":400}
-
-        '
-  - match:
-      name: checkout-7c856f898c-bjtfx
-      previous: false
-    result: 'checkout starting, version 1.4.0
+    result: '[previous instance''s logs are gone; showing the latest instance]
 
       FATAL: required env var DATABASE_URL is not set
 
-      '
-  - match:
-      name: checkout-7c856f898c-bjtfx
-      previous: true
-    result: 'checkout starting, version 1.4.0
-
-      FATAL: required env var DATABASE_URL is not set
+      checkout starting, version 1.4.0
 
       '
   - match:
-      name: frontend-79765fc9d-pqg7h
+      name: frontend-6f6b4986b9-hxdf2
       previous: false
     result: &id001
       error: 'cannot read logs: 400 Bad Request: {"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"container
-        \"web\" in pod \"frontend-79765fc9d-pqg7h\" is waiting to start: image can''t be pulled","reason":"BadRequest","code":400}
+        \"web\" in pod \"frontend-6f6b4986b9-hxdf2\" is waiting to start: image can''t be pulled","reason":"BadRequest","code":400}
 
         '
   - match:
-      name: frontend-79765fc9d-pqg7h
+      name: frontend-6f6b4986b9-hxdf2
       previous: true
     result:
       error: 'cannot read logs: 400 Bad Request: {"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"previous
-        terminated container \"web\" in pod \"frontend-79765fc9d-pqg7h\" not found","reason":"BadRequest","code":400}
+        terminated container \"web\" in pod \"frontend-6f6b4986b9-hxdf2\" not found","reason":"BadRequest","code":400}
 
         '
   - match:
-      name: reports-7cc9978bbf-sq7r7
+      name: reports-55b4fffc66-hmq7f
       previous: false
     result: 'building monthly report: loading 200MB of rows
 
       '
   - match:
-      name: reports-7cc9978bbf-sq7r7
+      name: reports-55b4fffc66-hmq7f
       previous: true
     result: '[previous instance''s logs are gone; showing the latest instance]
 
@@ -657,24 +626,17 @@ tools:
 
       '
   - match:
-      name: checkout-7784c7f885-pwjtr
-    result: 'checkout starting, version 1.4.0
+      name: checkout-869fc5bcc6-db5ps
+    result: 'FATAL: required env var DATABASE_URL is not set
 
-      connected to database
-
-      '
-  - match:
-      name: checkout-7c856f898c-bjtfx
-    result: 'checkout starting, version 1.4.0
-
-      FATAL: required env var DATABASE_URL is not set
+      checkout starting, version 1.4.0
 
       '
   - match:
-      name: frontend-79765fc9d-pqg7h
+      name: frontend-6f6b4986b9-hxdf2
     result: *id001
   - match:
-      name: reports-7cc9978bbf-sq7r7
+      name: reports-55b4fffc66-hmq7f
     result: 'building monthly report: loading 200MB of rows
 
       '

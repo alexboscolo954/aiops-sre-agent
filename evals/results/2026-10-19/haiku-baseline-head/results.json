@@ -1,0 +1,68 @@
+[
+  {
+    "scenario": "aws-lambda-timeout-cut",
+    "passed": false,
+    "failures": [
+      "root cause misses ['1.2']"
+    ],
+    "category": "bad_config",
+    "tool_calls": 5,
+    "seconds": 20.8,
+    "calls": [
+      "aws_describe_alarms",
+      "aws_get_metric_data",
+      "aws_lookup_events",
+      "aws_describe_log_groups",
+      "aws_query_logs"
+    ],
+    "proposed": [],
+    "dropped_links": 0,
+    "report": "## The checkout Lambda's timeout was cut from 10s to 1s at 02:48:49Z by user deployer, and every invocation since has ended with Status: timeout at exactly 1000 ms. The Errors alarm is a direct result of that change, not a code bug.\n\n**Root cause** (high confidence, `bad_config`): A CloudTrail UpdateFunctionConfiguration call at 02:48:49Z set checkout's timeout to 1 second (the function was created with 10s at 02:43:31Z). Invocations take longer than 1s, so Lambda kills them. Errors jumped from 0 to about 18 per minute right after the change. Max memory used is 37 MB of 128 MB, which rules out memory pressure.\n**Severity:** critical  \u00b7  **Affected:** aws/lambda/checkout (us-east-1)\n\n**Evidence**\n- `aws_lookup_events`: 2026-10-19T02:48:49Z UpdateFunctionConfiguration20150331v2 by user deployer on checkout, request body: timeout=1, environment={}.\n- `aws_lookup_events`: 2026-10-19T02:43:31Z CreateFunction20150331 on checkout with timeout=10, memorySize=128, runtime python3.12.\n- `aws_get_metric_data`: AWS/Lambda Errors Sum per 60s: 0 through 02:47, 3 at 02:48, then 17-18 per minute from 02:49 through 02:58 (still firing).\n- `aws_describe_alarms`: checkout-errors is in ALARM: 1 datapoint 1.0 at 02:48 crossed threshold 0.0 (GreaterThanThreshold).\n- `aws_query_logs (/aws/lambda/checkout)`: REPORT lines show Duration: 1000.00 ms, Billed Duration: 1000 ms, Max Memory Used: 37 MB, Status: timeout, repeated across many requests from 02:58 to 02:59. No ERROR or Traceback lines, so the code itself is not throwing.\n\n**Recommendations**\n1. Restore the checkout function timeout to its previous value of 10s (or the value the team intends). This is a config change, so get human approval before running it, e.g. aws lambda update-function-configuration --function-name checkout --timeout 10.\n2. Confirm with the deployer who made the 02:48:49Z change and why, and add guardrails so timeout changes need review.\n3. After the fix, watch the checkout-errors alarm and the Lambda Errors and Duration metrics to confirm recovery. If p99 duration sits near 10s, consider raising the timeout further.\n4. Check downstream checkout callers for failed or retried orders during 02:48-03:00Z and replay them if needed."
+  },
+  {
+    "scenario": "grafana-log-patterns",
+    "passed": true,
+    "failures": [],
+    "category": "dependency_failure",
+    "tool_calls": 11,
+    "seconds": 37.5,
+    "calls": [
+      "grafana_list_datasources",
+      "grafana_query_loki_patterns",
+      "grafana_query_loki_logs",
+      "grafana_query_loki_stats",
+      "grafana_query_loki_logs",
+      "grafana_query_loki_logs",
+      "grafana_query_loki_patterns",
+      "grafana_list_loki_label_values",
+      "grafana_query_loki_stats",
+      "grafana_query_loki_logs",
+      "grafana_generate_deeplink"
+    ],
+    "proposed": [],
+    "dropped_links": 0,
+    "report": "## About 8% of POST /charge requests are failing with 502s because payments cannot reach the fraud-check risk service at fraud-check.risk.svc.cluster.local:8443, which returns connection refused. The root cause sits in fraud-check or its networking, not in payments code.\n\n**Root cause** (medium confidence, `dependency_failure`): The fraud-check dependency in the risk namespace is refusing TCP connections on port 8443 (down, crashed, scaled to zero, or its Service has no ready endpoints). Payments fails closed and returns 502 on every charge that needs a risk check. Loki shows no logs from fraud-check itself, so the dependency's own health is unconfirmed.\n**Severity:** high  \u00b7  **Affected:** shop/Deployment/payments, risk/Deployment/fraud-check\n\n**Evidence**\n- `grafana_query_loki_patterns {service_name=\"payments\"} (last 30m)`: Pattern 'charge order=<_> failed status=502: risk check unavailable: dial tcp fraud-check.risk.svc.cluster.local:8443: connect: connection refused' occurs 135 times, against 636 successful 'charge ... status=200' lines in the same window (roughly 17% of charge outcomes in the window).\n- `grafana_query_loki_logs {service_name=\"payments\"} |~ error/5xx (last 30m)`: Error lines are consistently 'charge order=o-... failed status=502: risk check unavailable: dial tcp fraud-check.risk.svc.cluster.local:8443: connect: connection refused' with ERROR level, interleaved with normal 200 charges. The failure is continuous, not a single burst.\n- `grafana_list_loki_label_values service_name (namespaces set)`: Only 'payments' and 'storefront' emit logs with service_namespace set. No fraud-check or risk service logs appear in Loki for the last hour, so its health could not be checked from logs.\n- `grafana_query_loki_stats {service_name=\"fraud-check\"} (last 1h)`: Returned 1 stream, 1908 entries, 194560 bytes. These are identical to the payments stats, so the result may be a selector artifact and not evidence of fraud-check activity.\n- `grafana_generate_deeplink (explore, Loki)`: Explore link to payments logs for the last 30m. The generated expression is payments-only, so it does not filter to fraud-check failures. (http://localhost:3000/explore?panes=%7B%22a%22%3A%7B%22datasource%22%3A%22loki%22%2C%22queries%22%3A%5B%7B%22datasource%22%3A%7B%22uid%22%3A%22loki%22%7D%2C%22expr%22%3A%22%7Bservice_name%3D%5C%22payments%5C%22%7D%22%2C%22refId%22%3A%22A%22%7D%5D%2C%22range%22%3A%7B%22from%22%3A%22now-1h%22%7D%7D%7D&schemaVersion=1)\n\n**Recommendations**\n1. Check the fraud-check workload in the risk namespace: pod status, restarts, recent events, and whether the Service has ready endpoints (kubectl get pods,svc,endpoints -n risk). The tools here did not expose Kubernetes state, so this is unverified.\n2. Read fraud-check's own logs (current and previous container) to find why it stopped accepting connections on 8443, and check for a recent rollout or config change to it.\n3. If fraud-check is down, restore it first (rollback, restart, or scale up). Restarts and scaling need human approval.\n4. Only if fraud-check cannot be restored soon, decide with the payments owners whether to fail open on risk-check outage. That is a business and fraud-risk decision, not a default change.\n5. Once fraud-check is healthy, confirm the 502 count drops to zero in Loki and that the payments error rate falls below the alert threshold."
+  },
+  {
+    "scenario": "grafana-slow-traces",
+    "passed": true,
+    "failures": [],
+    "category": "dependency_failure",
+    "tool_calls": 9,
+    "seconds": 31.3,
+    "calls": [
+      "grafana_list_datasources",
+      "grafana_search_tempo_traces",
+      "grafana_query_loki_stats",
+      "grafana_get_tempo_trace",
+      "grafana_query_loki_patterns",
+      "grafana_query_loki_logs",
+      "grafana_query_loki_patterns",
+      "grafana_list_loki_label_values",
+      "grafana_generate_deeplink"
+    ],
+    "proposed": [],
+    "dropped_links": 1,
+    "report": "## p99 latency on GET /product/{sku} is high because storefront requests spend most of their time waiting on a row lock in the inventory database. The slow trace shows the inventory call running 'SELECT qty FROM stock WHERE sku = $1 FOR UPDATE' with wait event Lock:tuple for about 3.05s of a 3.1s request. Kubernetes state and rollout history were not available to me, so the lock holder and any recent change are unconfirmed.\n\n**Root cause** (medium confidence, `dependency_failure`): Row-lock contention in inventory-db on the stock table. The GET /stock/{sku} handler takes SELECT ... FOR UPDATE, and requests block on Lock:tuple, probably behind another long-running or idle-in-transaction session that holds the same SKU rows. Storefront's p99 rises because it waits on inventory. The lock holder has not been identified.\n**Severity:** high  \u00b7  **Affected:** shop/storefront (GET /product/{sku}), shop/inventory (GET /stock/{sku}, inventory-db)\n\n**Evidence**\n- `grafana_get_tempo_trace (trace 45d31a48f074c35561c0353b3bdfe298)`: Root span GET /product/{sku} took 3103ms. Child GET /stock/{sku} in inventory took 3056ms. Its child 'SELECT stock' took 3050ms with db.wait_event=Lock:tuple, db.query.text='SELECT qty FROM stock WHERE sku = $1 FOR UPDATE', server.address=inventory-db.shop.svc. Catalog (14ms) and pricing (21ms) were fast.\n- `grafana_search_tempo_traces ({resource.service.name=\"storefront\" && duration > 2s})`: Multiple recent storefront GET /product/{sku} traces over 2s (about 2.5s to 3.3s), all with the same shape: inventory span count 2, with the slow time in inventory. (http://localhost:3000/explore?panes=%7B%22a%22%3A%7B%22datasource%22%3A%22tempo%22%2C%22queries%22%3A%5B%7B%22datasource%22%3A%7B%22uid%22%3A%22tempo%22%7D%2C%22query%22%3A%22%7Bresource.service.name%3D%5C%22storefront%5C%22+%5Cu0026%5Cu0026+duration+%5Cu003e+2s%7D%22%2C%22queryType%22%3A%22traceql%22%2C%22refId%22%3A%22A%22%7D%5D%2C%22range%22%3A%7B%22from%22%3A%22now-1h%22%7D%7D%7D&schemaVersion=1)\n- `grafana_query_loki_patterns ({service_name=\"storefront\"}, last 1h)`: Storefront logs: one pattern 'GET <_> 200 <_> <_>' with 346 lines. Slow requests are logged as '200 ~2500-3100ms slow', and normal ones as '200 ~55-62ms ok'.\n- `grafana_list_loki_label_values (service_name)`: Only 'payments' and 'storefront' exist as service_name in Loki, so inventory logs were not queryable there. My inventory log queries returned storefront lines only, so there is no inventory-side log evidence.\n\n**Recommendations**\n1. On inventory-db, check pg_stat_activity and pg_locks for sessions blocked on Lock:tuple against the stock table, and find the blocking session and its query. Look especially for idle-in-transaction sessions or long transactions that hold FOR UPDATE locks on hot SKUs.\n2. If a long-running or stuck transaction is the blocker, end it after confirming it is safe. This is a database-changing action, so get human approval first.\n3. Check whether a recent deploy of inventory or a batch job changed the locking pattern, for example a new FOR UPDATE path or a longer transaction. Kubernetes rollout history was not checked here.\n4. Consider shortening lock wait time (lock_timeout) or adding retries/fallback in inventory for the stock read, so one hot SKU cannot stall the whole product page.\n5. Add log and metric coverage for inventory: the inventory service is not present under service_name in Loki, so its logs and DB wait metrics could not be checked."
+  }
+]

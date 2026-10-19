@@ -13,3 +13,5 @@ until_true "reports OOM killed" \
   "k get pods -l app=reports -o jsonpath='{.items[0].status.containerStatuses[0].lastState.terminated.reason}' | grep -q OOMKilled"
 until_true "frontend image pull failing" \
   "k get pods -l app=frontend -o jsonpath='{.items[0].status.containerStatuses[0].state.waiting.reason}' | grep -Eq 'ImagePullBackOff|ErrImagePull'"
+until_true "orders-api crash looping after inventory's rollout" \
+  "kubectl --context $ctx -n orders get pods -l app=orders-api -o jsonpath='{.items[0].status.containerStatuses[0].restartCount}' | awk '\$1>=2{f=1} END{exit !f}'"

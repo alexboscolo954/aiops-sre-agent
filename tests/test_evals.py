@@ -116,7 +116,8 @@ def test_scenarios_are_well_formed(path: Path, settings: Settings) -> None:
     assert set(s["tools"]) <= set(evals.replay_server(contract, settings, {}).access)
     if "question" in s:  # an Answer: keywords and the Evidence it must cite
         assert "alert" not in s and s["question"].strip() and s["expect"]["keywords"]
-        assert set(s["expect"]["evidence"]) <= set(s["tools"])
+        for source in s["expect"]["evidence"]:
+            assert ({source} if isinstance(source, str) else set(source)) <= set(s["tools"])
     else:
         AlertGroup.model_validate(s["alert"])
         assert s["expect"]["category"]
@@ -138,6 +139,8 @@ async def test_an_answer_is_scored_on_keywords_and_real_evidence(settings: Setti
     ) as a:
         outcome = await agent.ask(a, "Is checkout healthy?", "q1")
     expect: dict[str, Any] = {"keywords": ["checkout"], "evidence": ["kubernetes_list_pods"]}
+    assert evals.score_answer({"expect": expect}, outcome) == []
+    expect["evidence"] = [["kubernetes_pod_logs", "kubernetes_list_pods"]]  # any of them
     assert evals.score_answer({"expect": expect}, outcome) == []
 
     expect.update(keywords=["reports"], evidence=["kubernetes_pod_logs"], max_tool_calls=0)

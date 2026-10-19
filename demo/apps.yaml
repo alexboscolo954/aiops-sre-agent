@@ -1,5 +1,7 @@
 # Three workloads that fail in three classic ways. `make demo` applies them,
 # then breaks checkout with a config rollout so its history shows the change.
+# In namespace orders, a fourth breaks because a different workload changed:
+# `make demo` rolls inventory to API v2 and orders-api, which calls it, crash loops.
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -91,3 +93,91 @@ spec:
           image: nginx:1.99.99-does-not-exist
           resources:
             requests: {cpu: 10m, memory: 16Mi}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: orders
+---
+# 4. A dependency's rollout: inventory v2 moves /stock to /v2/stock and still looks
+# healthy (its probe is TCP); orders-api, unchanged, gets 404 and exits.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inventory
+  namespace: orders
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: inventory}
+  template:
+    metadata:
+      labels: {app: inventory}
+    spec:
+      containers:
+        - name: app
+          image: python:3.12-alpine
+          command: ["python", "-u", "-c"]
+          args:
+            - |
+              import http.server, os
+              path = "/v2/stock" if os.environ.get("API_VERSION") == "v2" else "/stock"
+              class H(http.server.BaseHTTPRequestHandler):
+                  def do_GET(self):
+                      found = self.path == path
+                      self.send_response(200 if found else 404); self.end_headers()
+                      self.wfile.write(b'{"sku-1": 12}' if found else b'{"error": "not found"}')
+                  def log_message(self, *args): pass
+              print("inventory serving", path)
+              http.server.HTTPServer(("", 8080), H).serve_forever()
+          ports: [{containerPort: 8080}]
+          readinessProbe: {tcpSocket: {port: 8080}, periodSeconds: 5}
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {memory: 32Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: inventory
+  namespace: orders
+spec:
+  selector: {app: inventory}
+  ports: [{port: 8080}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orders-api
+  namespace: orders
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: orders-api}
+  template:
+    metadata:
+      labels: {app: orders-api}
+    spec:
+      containers:
+        - name: app
+          image: python:3.12-alpine
+          command: ["python", "-u", "-c"]
+          args:
+            - |
+              import os, sys, time, urllib.error, urllib.request
+              url = os.environ["INVENTORY_URL"] + "/stock"
+              print("orders-api starting, version 2.3.0")
+              while True:
+                  try:
+                      urllib.request.urlopen(url, timeout=3).read()
+                  except urllib.error.HTTPError as e:
+                      print(f"FATAL: stock sync failed: GET {url}: {e}", file=sys.stderr)
+                      sys.exit(1)
+                  except OSError as e:  # inventory still starting
+                      print(f"stock sync retry: {e}"); time.sleep(2); continue
+                  print("stock synced"); time.sleep(5)
+          env:
+            - {name: INVENTORY_URL, value: "http://inventory.orders:8080"}
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {memory: 32Mi}

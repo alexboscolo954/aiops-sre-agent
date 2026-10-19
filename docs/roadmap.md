@@ -255,7 +255,7 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
 
 ### Phase 6: Investigation quality (4 slices)
 
-**6.1 What changed.**
+**6.1 What changed.** Part a done: `kubernetes_recent_changes` (rollouts with their diffs, Helm chart labels; release Secrets stay unreadable) and the `dependency-bad-rollout` Scenario. Next: part b (ArgoCD and Flux syncs, both, the Operator's choice) and part c (cloud activity logs in the prompt).
 - One timeline of rollouts, Helm releases, ArgoCD/Flux syncs and cloud activity logs before the alert.
 - *Done when:* Scenarios pass where the cause is a change to a different resource.
 
@@ -313,4 +313,4 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
 
 ## Next
 
-Phase 4 first (the Operator's choice: no Contract needs a Relay yet). Phase 4 is done. Phase 5 is done: Azure, AWS and GCP, each with a Scenario recorded from a sandbox. Next: Phase 3 (the Relay) or Phase 6 (Investigation quality), the Operator's choice.
+Phase 4 first (the Operator's choice: no Contract needs a Relay yet). Phase 4 is done. Phase 5 is done: Azure, AWS and GCP, each with a Scenario recorded from a sandbox. The Operator chose Phase 6 next; 6.1 is in progress.

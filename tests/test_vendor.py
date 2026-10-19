@@ -22,7 +22,7 @@ from aiops_agent import agent, cli, contracts, evals
 from aiops_agent.api import create_app
 from aiops_agent.config import Settings
 from aiops_agent.models import Investigation, TriageReport
-from aiops_agent.servers import vendors
+from aiops_agent.servers import kubernetes, vendors
 from tests.conftest import REPORT, ScriptedModel, call, scripted
 from tests.test_agent import ALERT, LIST, fixture_spec, vendor_contract
 from tests.test_console import OPERATOR, VIEW
@@ -418,7 +418,8 @@ async def test_the_grafana_guide_reaches_the_model_only_with_grafana(
     settings: Settings, snapshots: Path
 ) -> None:
     """A vendor's guide is added under the Contract's own name for it; without one
-    the prompt is byte for byte what it was, so the Kubernetes Scenarios see no change."""
+    the prompt is the base plus the kubernetes guide only, so the Kubernetes Scenarios
+    see no Grafana text."""
     vendor = {"name": "obs", "vendor": "grafana", "tools": {"query_loki_patterns": "read"}}
     with_grafana = evals.scenario_contract("", False, [Path("no-runbooks")], {}, [vendor])
     k8s_only = evals.scenario_contract("shop", False, [Path("no-runbooks")])
@@ -430,7 +431,8 @@ async def test_the_grafana_guide_reaches_the_model_only_with_grafana(
             await agent.start(a, ALERT, "g")
         return str(model.seen[0][0].content)
 
-    assert await system(k8s_only) == agent.SYSTEM_PROMPT
+    k8s_guide = kubernetes.GUIDE.format(name="kubernetes")
+    assert await system(k8s_only) == agent.SYSTEM_PROMPT + "\n" + k8s_guide
     text = await system(with_grafana)
     assert text.startswith(agent.SYSTEM_PROMPT)
     assert "obs_query_loki_patterns" in text and "grafana_" not in text
