@@ -1,0 +1,12 @@
+The checkout revision that is returning 503s, checkout-00002-nt5, was deployed by oncall@example.com. The audit log shows a google.cloud.run.v1.Services.ReplaceService call on services/checkout at 2026-10-18 22:22:37 UTC, about 12 minutes before the 503s I could see (22:34:23 to 22:34:31 UTC). Later ReplaceService calls at 22:24:16 and 22:24:18 also touched checkout-00002-nt5 and the service, but the audit entries for those do not show a principal, so the 22:22:37 call is the one attributed to oncall@example.com. The 503 log entries I pulled were all from checkout-00002-nt5 and the most recent ones date from 22:34, but I did not pin down the exact first 503, so the onset is only approximate. The same revision logs show repeated 'inventory lookup failed after 1 ms: URLError: timed out' errors with timeout_ms 1, which suggests the inventory call timeout in this revision is the likely cause; I did not verify that against the deploy's configuration. Recommend checking the diff between checkout-00001-ldp and checkout-00002-nt5, and considering a rollback to checkout-00001-ldp.
+
+**Evidence**
+- `gcp_list_log_entries`: Cloud Audit activity log (run.googleapis.com ReplaceService entries) shows google.cloud.run.v1.Services.ReplaceService on namespaces/shop-prod-4f2a/services/checkout at 2026-10-18T22:22:37.931973Z with protoPayload.authenticationInfo.principalEmail = oncall@example.com; the same window shows ReplaceService on revisions/checkout-00002-nt5 at 22:22:38.627770Z, 22:24:16.013166Z and 22:24:18.602185Z (no principal shown), and the service at 22:24:18.532071Z.
+- `gcp_list_log_entries`: Earlier audit entries show the original deploy: CreateService on services/checkout by oncall@example.com at 2026-10-18T22:17:04.854822Z creating revision checkout-00001-ldp, with a SetIamPolicy by oncall@example.com at 22:17:08Z.
+- `gcp_list_log_entries`: Cloud Run request logs for service checkout with httpRequest.status=503 show GET requests to checkout-100000000001.us-central1.run.app returning 503 from revision checkout-00002-nt5, with timestamps 2026-10-18T22:34:23Z to 22:34:30Z.
+- `gcp_list_log_entries`: Stdout logs for revision checkout-00002-nt5 show repeated ERROR 'inventory lookup failed after 1 ms: URLError: <urlopen error timed out>' with timeout_ms 1 and upstream inventory, from 22:34:23Z to 22:34:31Z.
+
+**Tool calls**
+1. `gcp_list_log_entries`
+2. `gcp_list_log_entries`
+3. `read_more`

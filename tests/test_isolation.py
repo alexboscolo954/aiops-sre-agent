@@ -243,3 +243,45 @@ async def test_a_vendor_process_sees_only_its_own_contracts_secrets(
         assert not any(name.startswith("AIOPS_") for name in env), env
         assert "hub-only-model-key" not in json.dumps(env)
     assert seen["demo-shop"]["TOKEN"] != seen["demo-bank"]["TOKEN"]
+
+
+@pytest.mark.anyio
+async def test_a_stored_result_is_readable_only_in_its_own_investigation(
+    two_contracts: Contracts, settings: Settings, fake_cluster: Any
+) -> None:
+    """One checkpoint store for every Contract, as in the Hub: demo-bank's Investigation
+    asking for demo-shop's stored result id gets nothing of it."""
+    from kubernetes import client as k
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    from tests.conftest import REPORT, call, crashlooping_pod, scripted
+    from tests.test_agent import ALERT, agent_result_id
+
+    pods = [crashlooping_pod() for _ in range(60)]  # a listing far over the limit
+    pods[-1].metadata.name = "shop-only-pod"
+    fake_cluster[0].list_namespaced_pod.return_value = k.V1PodList(items=pods)
+    settings.tool_output_limit = 1000
+    rid = agent_result_id("s1")
+    saver = InMemorySaver(serde=agent.CHECKPOINT_SERDE)
+    where = {"cluster": "kind", "namespace": "demo"}
+    shop = scripted(
+        call("kubernetes_list_pods", "s1", **where), call("TriageReport", "s2", **REPORT)
+    )
+    async with agent.open_agent(
+        settings, tools_for(two_contracts["demo-shop"], settings, fake_cluster), shop, saver
+    ) as a:
+        await agent.start(a, ALERT, "shop-1")
+        state = await a.aget_state({"configurable": {"thread_id": "shop-1"}})
+        assert "shop-only-pod" in state.values["spilled"][rid]
+    bank = scripted(
+        call("read_more", "b1", result_id=rid, grep="shop-only"),
+        call("TriageReport", "b2", **REPORT),
+    )
+    async with agent.open_agent(
+        settings, tools_for(two_contracts["demo-bank"], settings, fake_cluster), bank, saver
+    ) as a:
+        await agent.start(a, ALERT, "bank-1")
+        state = await a.aget_state({"configurable": {"thread_id": "bank-1"}})
+    answer = next(str(m.content) for m in state.values["messages"] if m.type == "tool")
+    assert answer == f"no stored result {rid!r} in this Investigation; ids: []"
+    assert "shop-only" not in json.dumps([str(m.content) for m in state.values["messages"]])

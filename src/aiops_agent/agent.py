@@ -7,6 +7,7 @@ Question: the Operator's question -> read tools only -> Answer. A follow-up is a
 new message on the same thread_id.
 """
 
+import hashlib
 import json
 import logging
 import operator
@@ -30,7 +31,7 @@ from langchain.agents.structured_output import ProviderStrategy
 from langchain.chat_models import init_chat_model
 from langchain.mcp import MCPAdapter
 from langchain.messages import AIMessage, ToolMessage
-from langchain.tools import BaseTool
+from langchain.tools import BaseTool, ToolRuntime, tool
 from langchain.tools.tool_node import ToolCallRequest
 from langchain_core.language_models import BaseChatModel
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -52,7 +53,7 @@ from aiops_agent.contracts import (
 )
 from aiops_agent.models import AlertGroup, Answer, TriageReport
 from aiops_agent.observability import AuditMiddleware
-from aiops_agent.safety import redact, redact_capped, redact_strings, truncate
+from aiops_agent.safety import redact, redact_capped, redact_strings
 from aiops_agent.servers import Access, aws, jira, kubernetes, prometheus, runbooks, vendors
 
 log = logging.getLogger("aiops.agent")
@@ -158,9 +159,33 @@ async def load_tools(adapter: MCPAdapter, access: dict[str, Access]) -> list[Bas
     return [t for t in tools if t.name in access]
 
 
+# ponytail: each checkpoint version stores the whole map again (5 results of 20k
+# came to 300k), and checkpoints are never pruned; so few, bounded copies. Move them
+# to a table keyed by Investigation if checkpoint size bites.
+MAX_SPILLED = 5
+SPILL_LIMIT = 100_000
+
+
+def keep_newest(old: dict[str, str], new: dict[str, str]) -> dict[str, str]:
+    """The stored results' reducer: the newest MAX_SPILLED, oldest out."""
+    merged = {**old, **new}
+    return dict(list(merged.items())[-MAX_SPILLED:])
+
+
 class TriageState(AgentState[BaseModel]):
     executed_actions: NotRequired[Annotated[list[str], operator.add]]
     links: NotRequired[Annotated[list[str], operator.add]]  # what link tools returned
+    # Oversized tool results, redacted, by id: what read_more reads. In the
+    # Investigation's own checkpointed state, so no other Investigation can reach them.
+    spilled: NotRequired[Annotated[dict[str, str], keep_newest]]
+
+
+def parts(result: Any) -> tuple[dict[str, Any], ToolMessage | None]:
+    """A tool wrapper's result as a state update and its ToolMessage: an inner wrapper
+    may already have turned the message into a Command."""
+    update = dict(result.update or {}) if isinstance(result, Command) else {"messages": [result]}
+    message = (update.get("messages") or [None])[0]
+    return update, message if isinstance(message, ToolMessage) else None
 
 
 def record_links(link_tools: set[str]) -> Any:
@@ -176,11 +201,8 @@ def record_links(link_tools: set[str]) -> Any:
         result = await handler(request)
         if request.tool_call["name"] not in link_tools:
             return result
-        update: dict[str, Any] = (
-            dict(result.update or {}) if isinstance(result, Command) else {"messages": [result]}
-        )
-        message = (update.get("messages") or [None])[0]
-        if not isinstance(message, ToolMessage) or message.status == "error":
+        update, message = parts(result)
+        if message is None or message.status == "error":
             return result
         link = message.text.strip()
         if not link.startswith(("https://", "http://")) or any(c.isspace() for c in link):
@@ -202,13 +224,14 @@ def record_executed_actions(gated_names: set[str]) -> Any:
     ) -> Any:
         result = await handler(request)
         call = request.tool_call
-        if call["name"] not in gated_names or not isinstance(result, ToolMessage):
+        update, message = parts(result)
+        if call["name"] not in gated_names or message is None:
             return result
         args = json.dumps(call["args"], sort_keys=True)
-        failed = "FAILED " if result.status == "error" else ""
+        failed = "FAILED " if message.status == "error" else ""
         # Goes to the API and Slack: redact, since third-party tool output isn't.
-        entry = f"{failed}{call['name']} {redact(args)}: {redact_capped(result.text, 200)}"
-        return Command(update={"messages": [result], "executed_actions": [entry]})
+        entry = f"{failed}{call['name']} {redact(args)}: {redact_capped(message.text, 200)}"
+        return Command(update={**update, "executed_actions": [entry]})
 
     return record
 
@@ -352,22 +375,115 @@ def build_model(settings: Settings) -> BaseChatModel:
     return model
 
 
-def cap_tool_output(limit: int) -> Any:
-    """Defense in depth: bound every tool result, including third-party servers."""
+READ_MORE = "read_more"
 
-    @wrap_tool_call
-    async def cap(
+
+def _items(text: str) -> list[Any] | None:
+    """A JSON result's records: the list itself, or its biggest top-level list
+    ({"entries": [...]}, {"result": [...]}). None when it isn't JSON with one."""
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return None
+    if isinstance(data, dict):
+        lists = [v for v in data.values() if isinstance(v, list)]
+        data = max(lists, key=len) if lists else None
+    return data if isinstance(data, list) else None
+
+
+def _pick(item: Any, fields: list[str]) -> Any:
+    """Only these keys of a record, a dotted path reaching into nested ones."""
+    if not isinstance(item, dict):
+        return item
+    out = {}
+    for path in fields:
+        value: Any = item
+        for key in path.split("."):
+            value = value.get(key) if isinstance(value, dict) else None
+        if value is not None:
+            out[path] = value
+    return out
+
+
+def read_stored(
+    text: str, start: int, grep: str | None, fields: list[str] | None, limit: int
+) -> tuple[str, int, int]:
+    """One page of a stored result: (page, its end, the total). grep keeps the records
+    (or, for plain text, the lines) that contain it, case-insensitive; fields keeps
+    those keys of each record. ponytail: substring match, never a model-written regex,
+    which could backtrack for ever on a big result."""
+    items = _items(text) if grep or fields else None
+    if items is not None:
+        needle = (grep or "").lower()
+        kept = [i for i in items if needle in json.dumps(i).lower()]
+        text = "\n".join(json.dumps(_pick(i, fields) if fields else i) for i in kept)
+    elif grep:
+        text = "\n".join(line for line in text.splitlines() if grep.lower() in line.lower())
+    start = max(0, start)
+    return text[start : start + limit], min(start + limit, len(text)), len(text)
+
+
+def spill_tool_output(limit: int) -> Any:
+    """Bound every tool result, third-party servers' included, without losing the rest:
+    a result over `limit` is kept, redacted, in the Investigation's state, and the
+    model gets its head and a read_more id. read_more pages and filters it."""
+    page = max(limit // 2, limit - 200)  # room for the note and read_more's header
+
+    @tool(READ_MORE)
+    def read_more(
+        result_id: str,
+        runtime: ToolRuntime,
+        start: int = 0,
+        grep: str | None = None,
+        fields: list[str] | None = None,
+    ) -> str:
+        """The rest of a result too large to show whole, by the id its preview gave.
+        Look for what you need with grep rather than paging through every page.
+        grep: only the records (JSON) or lines (text) containing it, case-insensitive.
+        start: the character to read from (each page says where the next starts).
+        fields: only these keys of each JSON record; a dotted path reaches into one,
+        e.g. protoPayload.methodName. As Evidence, cite the tool that produced the
+        result, never read_more."""
+        stored = (runtime.state.get("spilled") or {}).get(result_id)
+        if stored is None:
+            known = sorted(runtime.state.get("spilled") or {})
+            return f"no stored result {result_id!r} in this Investigation; ids: {known}"
+        body, end, total = read_stored(stored, start, grep, fields, page)
+        more = f"; next page: start={end}" if end < total else ""
+        what = " matching" if grep or fields else ""
+        return f"[{result_id}: chars {start}-{end} of {total}{what}{more}]\n" + redact(body)
+
+    @wrap_tool_call(state_schema=TriageState, tools=[read_more])
+    async def spill(
         request: ToolCallRequest, handler: Callable[[ToolCallRequest], Awaitable[Any]]
     ) -> Any:
         result = await handler(request)
-        if isinstance(result, ToolMessage):
-            content = result.content
-            size = len(content if isinstance(content, str) else json.dumps(content))
-            if size > limit:  # blocks count whole, so a big non-text block is bounded too
-                result.content = truncate(text_of(result), limit)
-        return result
+        update, message = parts(result)
+        if message is None:
+            return result
+        content = message.content
+        if isinstance(content, str):
+            size = len(content)
+        elif all(isinstance(b, dict) and b.get("type") == "text" for b in content):
+            size = len(message.text)  # the text, not its blocks' JSON with every \n escaped
+        else:
+            size = len(json.dumps(content))  # a non-text block counts whole, so it's bounded
+        if size <= limit:
+            return result
+        text = text_of(message)
+        call_id = request.tool_call.get("id") or json.dumps(request.tool_call, sort_keys=True)
+        result_id = "r" + hashlib.sha256(call_id.encode()).hexdigest()[:6]
+        stored = redact_capped(text, SPILL_LIMIT)
+        note = (
+            f"[this is the start of result {result_id}. For the rest, don't repeat the call: "
+            f"{READ_MORE}(result_id='{result_id}', grep='<word>') returns only the records "
+            "that contain it; fields=[...] and start=... also work]"
+        )
+        # The cap's own marker takes about 50 characters more.
+        message.content = redact_capped(text, max(limit // 2, limit - len(note) - 64)) + note
+        return Command(update={**update, "messages": [message], "spilled": {result_id: stored}})
 
-    return cap
+    return spill
 
 
 def text_of(result: ToolMessage) -> str:
@@ -399,7 +515,9 @@ def record_tool_results(sink: ToolSink) -> Any:
         request: ToolCallRequest, handler: Callable[[ToolCallRequest], Awaitable[Any]]
     ) -> Any:
         result = await handler(request)
-        if isinstance(result, ToolMessage):
+        # read_more re-reads a recorded result: recording it would put a tool no
+        # integration has into a Scenario made from this Investigation.
+        if isinstance(result, ToolMessage) and request.tool_call["name"] != READ_MORE:
             call = request.tool_call
             text = redact_capped(text_of(result), RAW_RESULT_LIMIT)
             try:
@@ -486,7 +604,7 @@ async def open_agent(
                 # see a recorder's Command instead of the ToolMessage and skip it.
                 record_links(toolbox.link_tools),
                 record_executed_actions(needs_approval),
-                cap_tool_output(settings.tool_output_limit),
+                spill_tool_output(settings.tool_output_limit),
                 *([record_tool_results(record)] if record else []),
                 *([record_usage(usage)] if usage else []),
             ],

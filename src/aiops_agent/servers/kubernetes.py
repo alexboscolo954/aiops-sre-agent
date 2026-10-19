@@ -48,6 +48,7 @@ GITOPS = (
 )
 IN_CLUSTER_SERVER = "https://kubernetes.default.svc"
 MAX_CHANGES = 30
+LOG_MARKER_ROOM = 64
 LOG_RACE = "unable to retrieve container logs"
 LOG_RETRY_SECONDS = 2.0
 READ = ToolAnnotations(read_only_hint=True, open_world_hint=False)
@@ -537,7 +538,9 @@ def build_server(
                 )
         if text is None:
             raise ToolError("logs unavailable: the container is being replaced; try again")
-        return redact_capped(text, limit, keep="tail")
+        # Room for the cap's marker: over `limit`, the Hub would store the log and
+        # show its start, and a crash is at its end.
+        return redact_capped(text, limit - LOG_MARKER_ROOM, keep="tail")
 
     @mcp.tool(annotations=READ)
     def list_deployments(

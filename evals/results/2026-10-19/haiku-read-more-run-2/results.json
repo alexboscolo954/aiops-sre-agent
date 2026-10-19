@@ -1,0 +1,131 @@
+[
+  {
+    "scenario": "aws-lambda-timeout-cut",
+    "passed": false,
+    "failures": [
+      "root cause misses ['1.2']"
+    ],
+    "category": "bad_config",
+    "tool_calls": 5,
+    "seconds": 17.0,
+    "calls": [
+      "aws_describe_alarms",
+      "aws_get_metric_data",
+      "aws_lookup_events",
+      "aws_describe_log_groups",
+      "aws_query_logs"
+    ],
+    "proposed": [],
+    "dropped_links": 0,
+    "report": "## The checkout Lambda is timing out on nearly every invocation because its timeout was cut to 1 second at 02:48:49Z, about a minute before the errors started. Its previous value was 10 seconds, and the function runs at about 1000 ms each time, so the fix is to restore the timeout.\n\n**Root cause** (high confidence, `bad_config`): A CloudTrail UpdateFunctionConfiguration event by user 'deployer' at 02:48:49Z set checkout's timeout to 1 second (request: {\"functionName\": \"checkout\", \"timeout\": 1, \"environment\": {}}). The function was created at 02:43:31Z with timeout 10. Every invocation after the change reports Duration 1000.00 ms with Status: timeout, and Max Memory Used is only 37 MB of 128 MB, so memory is not the cause. Errors went from 0 before 02:48 to 17-18 per minute from 02:49 onward, which matches the timing of the config change.\n**Severity:** critical  \u00b7  **Affected:** aws/lambda/checkout/function\n\n**Evidence**\n- `aws_describe_alarms`: Alarm checkout-errors is in ALARM: 1 datapoint of 1.0 at 02:48 was greater than threshold 0.0 (AWS/Lambda Errors, FunctionName=checkout).\n- `aws_get_metric_data`: AWS/Lambda Errors Sum per 60s: 0 from 02:43 to 02:47, then 3 at 02:48, then 17-18 per minute from 02:49 through 02:58.\n- `aws_lookup_events`: 02:48:49Z UpdateFunctionConfiguration20150331v2 by user 'deployer' on checkout with request timeout: 1. Earlier, at 02:43:31Z, CreateFunction20150331 by 'deployer' had timeout: 10, memorySize: 128, python3.12.\n- `aws_query_logs`: /aws/lambda/checkout logs show repeated REPORT lines with Duration: 1000.00 ms, Billed Duration 1000 ms, Memory Size 128 MB, Max Memory Used 37 MB, Status: timeout (for example at 02:59:37 and 02:58:57). The logs contain no ERROR lines, so the failures are timeouts, not application exceptions.\n\n**Recommendations**\n1. Restore the checkout Lambda timeout to its previous value of 10 seconds (or whatever the intended value is). This needs human approval because it is a configuration change: aws lambda update-function-configuration --function-name checkout --timeout 10.\n2. Confirm the 1-second timeout was an accident by checking with whoever ran the 'deployer' change at 02:48:49Z. Also check whether the environment was intentionally cleared in the same request (environment: {}).\n3. After the fix, watch the checkout-errors alarm and the Errors and Duration metrics until they return to zero, and confirm the logs show Status: success.\n4. Add a guard, such as a CloudWatch alarm on Lambda timeouts or a change review for timeout values below the function's normal duration, so a timeout this low cannot be applied without review."
+  },
+  {
+    "scenario": "azure-appservice-bad-startup",
+    "passed": true,
+    "failures": [],
+    "category": "bad_config",
+    "tool_calls": 6,
+    "seconds": 26.7,
+    "calls": [
+      "azure_group_resource_list",
+      "azure_appservice_webapp_get",
+      "azure_monitor_activitylog_list",
+      "azure_monitor_metrics_query",
+      "read_more",
+      "read_more"
+    ],
+    "proposed": [],
+    "dropped_links": 0,
+    "report": "## shop-web started returning 5xx at about 15:53 UTC, right after a configuration write to the app (Microsoft.Web/sites/config/write at 15:50:54 to 15:50:56, caller oncall@example.com). By the last bucket, 5xx made up all 84 of 84 requests, and 2xx had dropped to zero. The config values changed are not visible in the activity log, so the exact cause inside the config is not confirmed.\n\n**Root cause** (medium confidence, `bad_config`): A configuration change to the shop-web site was saved at 15:50:54 to 15:50:56 UTC by oncall@example.com. Traffic was healthy before it: the 15:43 and 15:48 buckets had 110 requests with 2xx responses and no 5xx. The 15:53 bucket returned 61 5xx against 3 2xx out of 64 requests, and the 15:58 bucket returned 84 5xx and 0 2xx. A full site update (Microsoft.Web/sites/write) followed at 15:54:36 and did not restore service. The activity log shows operation names and callers only, not the changed values, so the specific bad setting cannot be identified from these tools. The timing strongly points to the config write, but it is an inference, so confidence is medium.\n**Severity:** critical  \u00b7  **Affected:** shop-prod-rg/Microsoft.Web/sites/shop-web\n\n**Evidence**\n- `azure_monitor_activitylog_list`: Microsoft.Web/sites/config/write ('Update web sites config', config/web) at 2026-10-18T15:50:54 to 15:50:56Z, status Succeeded, caller oncall@example.com. Then UpdateWebSite Started at 15:50:55 and Succeeded at 15:50:56. Microsoft.Web/sites/write ('Update website') at 15:54:36Z, Succeeded, same caller.\n- `azure_monitor_metrics_query`: Http5xx and Requests at PT5M from 14:03Z. Buckets 14:03 to 15:48 show Requests 0 until 15:43, then 20 and 110 requests, all 2xx (Http2xx 20 and 110). The 15:53 bucket shows Requests 64, Http2xx 3, Http5xx 61. The 15:58 bucket shows Requests 84, Http2xx 0, Http5xx 84.\n- `azure_appservice_webapp_get`: shop-web is Running and enabled, kind app,linux, Basic SKU, in shop-prod-rg (centralus). lastModifiedTimeUtc is 2026-10-18T15:50:55.88Z, which matches the config write.\n\n**Recommendations**\n1. Compare the current shop-web configuration (app settings, connection strings, startup command, runtime stack, and the site's configuration) with the version before 15:50 UTC. The Azure portal's activity log entry 'Update web sites config' at 15:50:54 may show the change details.\n2. Check the App Service log stream or Application Insights for the exception or stack trace behind the 5xx responses, starting at about 15:53 UTC, to confirm which setting is failing.\n3. Confirm with oncall@example.com whether the 15:50 config change and the 15:54 site update were intended. If the bad setting is confirmed, revert it to the previous values. This is a change and needs human approval before it is made.\n4. After the revert, confirm that Http5xx drops and Http2xx returns to the roughly 110 requests per 5 minutes seen before 15:50."
+  },
+  {
+    "scenario": "gcp-cloudrun-bad-timeout",
+    "passed": true,
+    "failures": [],
+    "category": "bad_rollout",
+    "tool_calls": 7,
+    "seconds": 23.7,
+    "calls": [
+      "gcp_list_log_entries",
+      "gcp_list_log_entries",
+      "gcp_query_range",
+      "gcp_list_log_entries",
+      "gcp_list_log_entries",
+      "read_more",
+      "read_more"
+    ],
+    "proposed": [],
+    "dropped_links": 0,
+    "report": "## Checkout Cloud Run service is returning 5xx on the new revision checkout-00002-nt5, which every request now reaches. Its inventory lookups fail with a 1 ms timeout, and the failures began right after oncall@example.com replaced the service at about 22:22-22:24 UTC on 2026-10-18.\n\n**Root cause** (medium confidence, `bad_rollout`): Revision checkout-00002-nt5, deployed by a ReplaceService call from oncall@example.com at 22:22:37-22:24:18 UTC, makes inventory calls with timeout_ms=1. Each lookup fails with 'URLError: urlopen error timed out' after about 1 ms, and the handler then returns HTTP 503 in about 25 ms. The previous revision checkout-00001-ldp was still serving 2xx until the traffic shift. Prometheus shows its 2xx rate falling to 0 while checkout-00002-nt5 5xx rises to about 124 requests per 5 minutes, so the bad revision now takes all traffic. The 1 ms timeout is the likely config fault, but I did not read the revision spec to confirm it, so the exact cause of the bad value is unverified.\n**Severity:** critical  \u00b7  **Affected:** shop-prod-4f2a/Service/checkout, shop-prod-4f2a/Revision/checkout-00002-nt5\n\n**Evidence**\n- `gcp_list_log_entries`: Errors on revision checkout-00002-nt5 from 22:34:21 to 22:34:31 UTC: stdout 'inventory lookup failed after 1 ms: URLError: <urlopen error timed out>' with timeout_ms 1, and requests logs with status 503 on GET / for the same revision.\n- `gcp_list_log_entries`: Audit log: google.cloud.run.v1.Services.ReplaceService on namespaces/shop-prod-4f2a/services/checkout at 22:22:37.9 UTC by oncall@example.com, followed by ReplaceService on revision checkout-00002-nt5 at 22:22:38.6, 22:24:16.0 and 22:24:18.6 UTC. Earlier create of checkout-00001-ldp at 22:17 was the working revision.\n- `gcp_query_range`: request_count by response_code_class and revision: checkout-00001-ldp 2xx drops from about 72 req/5m to 0 by the last two buckets; checkout-00002-nt5 5xx goes from 7.2 to 117 to 124 req/5m over the same window.\n\n**Recommendations**\n1. Ask for approval to shift 100% of checkout traffic back to checkout-00001-ldp, which was serving 2xx before the change, to stop the 5xx.\n2. Read the checkout-00002-nt5 revision spec (for example with gcloud run revisions describe) and confirm the inventory timeout is set to 1 ms and what the intended value is.\n3. Fix the inventory timeout in configuration and redeploy as a new revision, canary it on a small traffic share, and confirm 5xx stays near zero before shifting all traffic.\n4. Check the inventory service health, since timeouts can also come from a slow dependency, and confirm the 1 ms value is the only cause before closing the incident.\n5. Review the 22:22-22:24 deploy by oncall@example.com for what else changed in that replace, and add a pre-deploy check that rejects timeouts below a sane minimum."
+  },
+  {
+    "scenario": "gcp-who-deployed",
+    "passed": true,
+    "failures": [],
+    "category": null,
+    "tool_calls": 4,
+    "seconds": 19.8,
+    "calls": [
+      "gcp_list_log_entries",
+      "gcp_list_log_entries",
+      "gcp_list_log_entries",
+      "read_more"
+    ],
+    "proposed": [],
+    "dropped_links": 0,
+    "report": null,
+    "answer": "The checkout revision that is returning 503s, checkout-00002-nt5, was deployed by oncall@example.com at 2026-10-18 22:22:37 UTC. The audit log shows a google.cloud.run.v1.Services.ReplaceService call on namespaces/shop-prod-4f2a/services/checkout at that time, and the system event for revision checkout-00002-nt5 followed at 22:22:38. This was an update to the existing service, not the first deploy: the service was created at 22:17:04 by the same user, creating checkout-00001-ldp. A permissions change (SetIamPolicy) on the service was also made by oncall@example.com at 22:17:08.\n\nThe 503s are on checkout-00002-nt5. The 503 entries I read (newest first, starting at about 22:34:30 UTC) all show the same upstream failure: 'inventory lookup failed after 1 ms: URLError: timed out', with timeout_ms 1. That 1 ms inventory timeout is a plausible cause to check in the revision's configuration. I did not confirm the exact first 503 timestamp, because the results I read were newest-first and truncated, so the onset is only bracketed by the 22:22 deploy and the 22:34 entries I saw. The 22:22 deploy is a strong lead for the change that started the errors.\n\nI only read logs and audit entries, so I did not inspect the revision's configuration or the inventory service. To confirm, compare the timeout settings in checkout-00002-nt5 with checkout-00001-ldp, and consider rolling back to checkout-00001-ldp if the timeout change is the cause.\n\n**Evidence**\n- `gcp_list_log_entries`: Audit activity log (cloudaudit activity, run.googleapis.com) shows google.cloud.run.v1.Services.ReplaceService on namespaces/shop-prod-4f2a/services/checkout at 2026-10-18T22:22:37.931973Z, principalEmail oncall@example.com (oauthClientId 32555940559.apps.googleusercontent.com).\n- `gcp_list_log_entries`: System events show /Services.ReplaceService on revision namespaces/shop-prod-4f2a/revisions/checkout-00002-nt5 at 2026-10-18T22:22:38.627770Z, following the service update.\n- `gcp_list_log_entries`: Earlier audit entries: google.cloud.run.v1.Services.CreateService on services/checkout by oncall@example.com at 22:17:04.854822Z, creating revision checkout-00001-ldp at 22:17:06; SetIamPolicy on services/checkout by oncall@example.com at 22:17:08.025081Z.\n- `gcp_list_log_entries`: Request logs for checkout-00002-nt5 show status 503 on GET https://checkout-100000000001.us-central1.run.app/ (e.g. timestamp 2026-10-18T22:34:30.980961Z, latency about 0.024s), with stdout ERROR 'inventory lookup failed after 1 ms: URLError: <urlopen error timed out>', timeout_ms 1, upstream inventory."
+  },
+  {
+    "scenario": "grafana-log-patterns",
+    "passed": false,
+    "failures": [
+      "14 tool calls > 12",
+      "0 evidence links < 1"
+    ],
+    "category": "dependency_failure",
+    "tool_calls": 14,
+    "seconds": 38.5,
+    "calls": [
+      "grafana_list_datasources",
+      "grafana_list_loki_label_values",
+      "grafana_query_loki_logs",
+      "grafana_query_loki_patterns",
+      "grafana_query_loki_patterns",
+      "grafana_list_loki_label_values",
+      "grafana_query_loki_logs",
+      "grafana_query_loki_stats",
+      "grafana_query_loki_logs",
+      "grafana_query_loki_patterns",
+      "grafana_generate_deeplink",
+      "grafana_generate_deeplink",
+      "grafana_generate_deeplink",
+      "grafana_generate_deeplink"
+    ],
+    "proposed": [],
+    "dropped_links": 0,
+    "report": "## POST /charge 5xx errors come from payments calling fraud-check.risk.svc.cluster.local:8443, which refuses connections. Payments returns 502 'risk check unavailable' on those charges, and other charges succeed with 200. The fault is in the fraud-check dependency, not in payments code, and no payments rollout is implicated in the logs.\n\n**Root cause** (medium confidence, `dependency_failure`): Payments' risk check call to fraud-check.risk.svc.cluster.local:8443 fails with 'dial tcp ...: connect: connection refused', and payments converts that into HTTP 502 for each affected charge. The Loki pattern for this failure has 135 occurrences in the last 30 minutes, while successful charges (status=200) have 636. That is roughly 17% of charge attempts in the window, consistent with the alert's 8% over 10 minutes. Connection refused means nothing is listening on the fraud-check endpoint, which points to fraud-check being down, crashed, scaled to zero, or misrouted. I could not inspect fraud-check itself, because the only log source available was payments and storefront. Whether a recent fraud-check change caused this is unverified.\n**Severity:** high  \u00b7  **Affected:** shop/Deployment/payments, risk/Deployment/fraud-check\n\n**Evidence**\n- `grafana_list_loki_label_values`: service_name values are [\"payments\", \"storefront\"]; no separate fraud-check service stream is visible in Loki.\n- `grafana_query_loki_logs`: Error lines from {service_name=\"payments\"}: 'charge order=o-c75499fd failed status=502: risk check unavailable: dial tcp fraud-check.risk.svc.cluster.local:8443: connect: connection refused' (repeated for o-e022b341, o-2eebc721, and others), interleaved with 'charge ... status=200 latency_ms=...' lines.\n- `grafana_query_loki_patterns`: Over the last 30m for {service_name=\"payments\"}: 'charge order=<_> status=200 latency_ms=<_>' totalCount 636; 'charge order=<_> failed status=502: risk check unavailable: dial tcp fraud-check.risk.svc.cluster.local:8443: connect: connection refused' totalCount 135.\n- `grafana_query_loki_stats`: {service_name=\"payments\"} over the last 30m: 1 stream, 1908 entries, 194560 bytes.\n- `grafana_query_loki_patterns`: {service_name=\"storefront\"} pattern query returned no recorded data for the window, so storefront gives no corroborating signal.\n\n**Recommendations**\n1. Check fraud-check health now: its pods, endpoints behind the risk/fraud-check Service, and whether it is crashlooping, scaled to zero, or has a bad rollout. Kubernetes tools were not available in this session, so this step is not yet done.\n2. Read fraud-check's own logs and recent rollout history to see when it stopped listening on port 8443 and whether a change preceded it.\n3. If fraud-check is down, restore it (roll back a bad revision, or restart or scale it up). This is the real fix. Do not restart payments as a workaround.\n4. Consider a temporary degraded mode for payments (for example, bypassing or queueing the risk check) only if the business approves, since that changes fraud-screening behaviour.\n5. Watch the payments 5xx ratio and the count of 'connection refused' lines drop back to zero after fraud-check recovers."
+  },
+  {
+    "scenario": "grafana-slow-traces",
+    "passed": true,
+    "failures": [],
+    "category": "dependency_failure",
+    "tool_calls": 9,
+    "seconds": 27.2,
+    "calls": [
+      "grafana_list_datasources",
+      "grafana_search_tempo_traces",
+      "grafana_query_loki_logs",
+      "grafana_query_loki_patterns",
+      "grafana_get_tempo_trace",
+      "grafana_query_loki_patterns",
+      "grafana_query_loki_logs",
+      "grafana_generate_deeplink",
+      "read_more"
+    ],
+    "proposed": [],
+    "dropped_links": 0,
+    "report": "## p99 latency on GET /product/{sku} is high because storefront's calls to inventory are stalled waiting on a row lock in inventory-db. In the sampled slow trace, 3050ms of the 3103ms request sits in one SELECT ... FOR UPDATE on the stock table with db.wait_event=Lock:tuple. Other services (catalog, pricing) are fast, so inventory's DB lock contention is the bottleneck.\n\n**Root cause** (medium confidence, `dependency_failure`): Row-lock contention in inventory-db. Trace 45d31a48f074c35561c0353b3bdfe298 (storefront, 3103ms, GET /product/{sku}) shows the child span GET /stock/{sku} in inventory taking 3056ms, and its SELECT stock span taking 3050ms with query 'SELECT qty FROM stock WHERE sku = $1 FOR UPDATE', db.wait_event 'Lock:tuple', server inventory-db.shop.svc. Catalog (14ms) and pricing (21ms) are fast, so the delay is the inventory row lock. Slow storefront requests in Loki (for example sku-1010 at 2606ms, sku-1088 at 2834ms) correlate with this path. Who holds the lock (a long transaction or a hot SKU) is not established. I had no Kubernetes tools, so I could not check for a recent rollout of inventory or inventory-db.\n**Severity:** high  \u00b7  **Affected:** shop/Deployment/storefront, shop/Deployment/inventory, shop/StatefulSet/inventory-db\n\n**Evidence**\n- `grafana_search_tempo_traces`: TraceQL {resource.service.name=\"storefront\" && duration > 2s} returned multiple GET /product/{sku} traces of 2.4s to 3.3s in the last hour (for example 45d31a48f074c35561c0353b3bdfe298 at 3103ms). (http://localhost:3000/explore?panes=%7B%22a%22%3A%7B%22datasource%22%3A%22tempo%22%2C%22queries%22%3A%5B%7B%22datasource%22%3A%7B%22uid%22%3A%22tempo%22%7D%2C%22query%22%3A%22%7Bresource.service.name%3D%5C%22storefront%5C%22+%5Cu0026%5Cu0026+duration+%5Cu003e+2s%7D%22%2C%22queryType%22%3A%22traceql%22%2C%22refId%22%3A%22A%22%7D%5D%2C%22range%22%3A%7B%22from%22%3A%22now-1h%22%7D%7D%7D&schemaVersion=1)\n- `grafana_get_tempo_trace`: Trace 45d31a48f074c35561c0353b3bdfe298: storefront GET /product/{sku} 3103ms; inventory GET /stock/{sku} 3056ms; SELECT stock 3050ms with db.query.text 'SELECT qty FROM stock WHERE sku = $1 FOR UPDATE', db.wait_event 'Lock:tuple', server.address inventory-db.shop.svc. catalog 14ms and pricing 21ms.\n- `grafana_query_loki_logs`: Storefront access logs in the last hour show slow requests such as 'GET /product/sku-1010 200 2606ms slow', 'GET /product/sku-1088 200 2834ms slow' and 'GET /product/sku-1077 200 3131ms slow', interleaved with normal 55-62ms 'ok' lines.\n- `grafana_query_loki_patterns`: Storefront log pattern 'GET <_> 200 <_> <_>' totals 346 lines in the last hour. The pattern does not distinguish slow from ok lines, so it does not show the failure on its own.\n\n**Recommendations**\n1. In inventory-db, check pg_stat_activity and pg_locks for sessions waiting on Lock:tuple against the stock table, and identify the blocking transaction and its query.\n2. Look for long-running or idle-in-transaction sessions that hold row locks on stock (for example from a batch job or a missing commit), and end them only with approval.\n3. Check whether the inventory or inventory-db workload changed recently (rollout history or config). The Kubernetes tools were unavailable, so this is unverified.\n4. Review the stock update path: SELECT ... FOR UPDATE on hot SKUs serializes requests. Consider a shorter transaction scope, a lock timeout, or a non-locking read for the product page.\n5. Confirm the trend in Prometheus (storefront p99 for /product/{sku} against inventory latency) to measure impact and when it started."
+  }
+]

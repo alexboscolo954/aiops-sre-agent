@@ -3,6 +3,7 @@
 The key property: a write action the human rejects never reaches the cluster.
 """
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -321,6 +322,7 @@ async def test_approved_action_output_is_still_capped(settings: Settings) -> Non
     assert len(str(tool_msg.content)) < 500
     assert str(tool_msg.content).startswith("yyyy")  # the text, not its content blocks' JSON
     assert [e.split()[0] for e in outcome.executed_actions] == ["x_poke"]
+    assert list(state.values["spilled"]) == [agent_result_id("c1")]  # kept, not cut
 
 
 @pytest.mark.anyio
@@ -382,6 +384,7 @@ async def test_raw_recording_redacts_only_bounded_text_and_never_fails_the_run(
     root.mount(srv, namespace="x")
     tb = agent.Toolbox(root, {"x_huge": "read"})
     monkeypatch.setattr(agent, "RAW_RESULT_LIMIT", 1000)
+    monkeypatch.setattr(agent, "SPILL_LIMIT", 1000)
     from aiops_agent import safety
 
     redacted: list[int] = []
@@ -397,7 +400,11 @@ async def test_raw_recording_redacts_only_bounded_text_and_never_fails_the_run(
     async with agent.open_agent(settings, tb, model, record=broken_sink) as a:
         outcome = await agent.start(a, ALERT, "t8")
     assert outcome.report is not None  # the Run finished despite the failed record
-    assert redacted and max(redacted) <= 1000 + safety.REDACT_MARGIN  # never all 50,000
+    # Never all 50,000: the recorder's window, or the spill's preview and stored copy
+    # (each its own bounded window).
+    bound = max(settings.tool_output_limit, agent.RAW_RESULT_LIMIT, agent.SPILL_LIMIT)
+    bound += safety.REDACT_MARGIN
+    assert redacted and max(redacted) <= bound < 50_000
     assert "could not record the result of x_huge" in caplog.text
 
 
@@ -501,3 +508,163 @@ def test_checkpoints_load_our_results_and_nothing_else_unlisted() -> None:
         assert serde.loads_typed(serde.dumps_typed(value)) == value
     forged = Investigation(id="i", contract_id="c", title="t", started=0)
     assert not isinstance(serde.loads_typed(serde.dumps_typed(forged)), Investigation)
+
+
+def agent_result_id(call_id: str) -> str:
+    import hashlib
+
+    return "r" + hashlib.sha256(call_id.encode()).hexdigest()[:6]
+
+
+def test_read_stored_pages_and_filters() -> None:
+    text = "\n".join(f"line {i}" for i in range(100))
+    page, end, total = agent.read_stored(text, 10, None, None, 20)
+    assert (page, end, total) == (text[10:30], 30, len(text))
+    page, _, _ = agent.read_stored(text, 0, "LINE 4", None, 1000)  # case-insensitive
+    assert page.splitlines() == ["line 4"] + [f"line {i}" for i in range(40, 50)]
+    records = {
+        "warnings": ["a smaller list, first"],
+        "entries": [
+            {"severity": "ERROR", "protoPayload": {"methodName": "Deploy", "who": "ann"}},
+            {"severity": "INFO", "protoPayload": {"methodName": "Get"}},
+        ],
+    }
+    as_json = json.dumps(records)
+    page, _, _ = agent.read_stored(as_json, 0, "DEPLOY", None, 1000)
+    assert [json.loads(line)["severity"] for line in page.splitlines()] == ["ERROR"]
+    page, _, _ = agent.read_stored(as_json, 0, None, ["severity", "protoPayload.who"], 1000)
+    assert [json.loads(line) for line in page.splitlines()] == [
+        {"severity": "ERROR", "protoPayload.who": "ann"},
+        {"severity": "INFO"},
+    ]
+    assert agent.read_stored(json.dumps([1, 2]), 0, "2", None, 100)[0] == "2"
+    assert agent.read_stored("not json", 0, None, ["a"], 100)[0] == "not json"
+
+
+@pytest.mark.anyio
+async def test_an_oversized_result_is_kept_and_read_more_reaches_the_rest(
+    settings: Settings,
+) -> None:
+    """The model sees the start and an id; read_more finds what was past the cut,
+    redacted, and is neither recorded as a tool result nor a recorded Scenario tool."""
+    srv = FastMCP("x")
+    entries = [{"n": i, "msg": "noise " * 20} for i in range(200)]
+    entries[0] = {"n": 0, "msg": "Authorization: Bearer abcdefghijklmnopqrstuvwxyz123456"}
+    entries[150] = {"n": 150, "msg": "deployed by ann token=hunter2hunter2"}
+    # Escaped in the JSON, so stored redaction misses it; read_more's records unescape it.
+    entries[160] = {"n": 160, "msg": "rotated TOKEN_WORD=sesame12345678"}
+
+    @srv.tool(annotations=ToolAnnotations(read_only_hint=True))
+    def logs() -> str:  # a JSON escape for "token", as a server may send it
+        return json.dumps({"entries": entries}).replace("TOKEN_WORD", "\\u0074oken")
+
+    root = FastMCP("aiops")
+    root.mount(srv, namespace="x")
+    settings.tool_output_limit = 2000
+    rid = agent_result_id("c1")
+    seen: list[str] = []
+
+    async def sink(tool: str, args: dict[str, Any], result: str, error: bool) -> None:
+        seen.append(tool)
+
+    model = scripted(
+        call("x_logs", "c1"),
+        call("x_logs", "c1b"),
+        call("read_more", "c2", result_id=rid, grep="deployed"),
+        call("read_more", "c2b", result_id=rid, grep="rotated"),
+        call("read_more", "c3", result_id=rid, start=1500),
+        call("read_more", "c4", result_id="r000000"),
+        call("TriageReport", "c5", **REPORT),
+    )
+    tb = agent.Toolbox(root, {"x_logs": "read"})
+    async with agent.open_agent(settings, tb, model, record=sink) as a:
+        outcome = await agent.start(a, ALERT, "t9")
+        state = await a.aget_state({"configurable": {"thread_id": "t9"}})
+    by_id = {m.tool_call_id: str(m.content) for m in state.values["messages"] if m.type == "tool"}
+    assert len(by_id["c1"]) <= 2000 and f"result_id='{rid}'" in by_id["c1"]
+    assert "deployed by ann" not in by_id["c1"] and "abcdefghijklmnop" not in by_id["c1"]
+    assert "rotated" in by_id["c2b"] and "sesame" not in by_id["c2b"]
+    assert set(state.values["spilled"]) == {rid, agent_result_id("c1b")}  # both kept
+    assert "deployed by ann" in by_id["c2"] and "hunter2" not in by_id["c2"]
+    assert by_id["c2"].startswith(f"[{rid}: chars 0-") and "matching" in by_id["c2"]
+    assert by_id["c3"].startswith(f"[{rid}: chars 1500-") and "next page: start=" in by_id["c3"]
+    ids = sorted([rid, agent_result_id("c1b")])
+    assert by_id["c4"] == f"no stored result 'r000000' in this Investigation; ids: {ids}"
+    assert "hunter2" not in state.values["spilled"][rid]  # stored redacted
+    assert outcome.tool_calls.count("read_more") == 4  # counted against the budget
+    assert seen == ["x_logs", "x_logs"]  # read_more never recorded
+
+
+@pytest.mark.anyio
+async def test_a_long_pod_log_still_shows_its_last_lines(
+    settings: Settings, fake_cluster: Any
+) -> None:
+    """pod_logs keeps a log's end itself; the Hub must not then cut that end off by
+    storing it and previewing its start. Many short lines: blocks measured as JSON
+    would grow by every escaped newline."""
+    fake_cluster[0].read_namespaced_pod_log.return_value = (
+        "\n".join(f"ok {i}" for i in range(3000)) + "\nFATAL: DATABASE_URL is not set"
+    )
+    settings.tool_output_limit = 1000
+    logs = {"cluster": "test", "namespace": "shop", "name": "checkout-7d9f-abc"}
+    model = scripted(
+        call("kubernetes_pod_logs", "c1", **logs), call("TriageReport", "c2", **REPORT)
+    )
+    async with agent.open_agent(settings, toolbox(settings, fake_cluster), model) as a:
+        await agent.start(a, ALERT, "t10")
+        state = await a.aget_state({"configurable": {"thread_id": "t10"}})
+    shown = next(m.text for m in state.values["messages"] if m.type == "tool")
+    assert shown.rstrip().endswith("FATAL: DATABASE_URL is not set")
+    assert not state.values.get("spilled") and len(shown) <= 1000
+
+
+@pytest.mark.anyio
+async def test_a_stored_result_survives_an_approval_pause_and_a_restart(
+    settings: Settings, database_url: str
+) -> None:
+    """Run 1 stores a result and pauses for approval; a new process (fresh agent and
+    checkpointer on the same Postgres) resumes, and Run 2 reads it."""
+    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+
+    from aiops_agent.store import connect
+
+    srv = FastMCP("x")
+
+    @srv.tool(annotations=ToolAnnotations(read_only_hint=True))
+    def logs() -> str:
+        return "\n".join(f"line {i}" for i in range(2000)) + "\nkept-across-the-pause"
+
+    @srv.tool  # unannotated: gated
+    def poke() -> str:
+        return "poked"
+
+    root = FastMCP("aiops")
+    root.mount(srv, namespace="x")
+    tb = agent.Toolbox(root, {"x_logs": "read", "x_poke": "write"})
+    settings.tool_output_limit = 1000
+    rid = agent_result_id("c1")
+    run1 = scripted(call("x_logs", "c1"), call("x_poke", "c2"))
+    run2 = scripted(
+        call("read_more", "c3", result_id=rid, grep="kept-across"),
+        call("TriageReport", "c4", **REPORT),
+    )
+    async with connect(database_url) as pool:
+        saver = AsyncPostgresSaver(pool, serde=agent.CHECKPOINT_SERDE)
+        await saver.setup()
+        async with agent.open_agent(settings, tb, run1, saver) as a:
+            assert (await agent.start(a, ALERT, "t11")).pending
+    async with connect(database_url) as pool:
+        saver = AsyncPostgresSaver(pool, serde=agent.CHECKPOINT_SERDE)
+        async with agent.open_agent(settings, tb, run2, saver) as a:
+            outcome = await agent.resume(a, "t11", [{"type": "approve"}])
+            state = await a.aget_state({"configurable": {"thread_id": "t11"}})
+    assert outcome.report is not None
+    found = next(m.text for m in state.values["messages"] if getattr(m, "tool_call_id", "") == "c3")
+    assert "kept-across-the-pause" in found
+
+
+def test_only_the_newest_stored_results_are_kept() -> None:
+    kept: dict[str, str] = {}
+    for i in range(agent.MAX_SPILLED + 2):
+        kept = agent.keep_newest(kept, {f"r{i}": "x"})
+    assert list(kept) == [f"r{i}" for i in range(2, agent.MAX_SPILLED + 2)]
