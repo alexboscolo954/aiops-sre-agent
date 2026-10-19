@@ -1,4 +1,4 @@
-"""The Azure recorder's scrub: what keeps the sandbox's identity out of this public repo."""
+"""The recorders' scrub (evals/scrub.py): keeps a sandbox's identity out of this public repo."""
 
 import importlib.util
 import json
@@ -53,3 +53,12 @@ def test_a_recording_with_a_real_value_left_is_never_written() -> None:
     scrub.refuse_leaks("caller: oncall@example.com", fakes)  # clean: no exit
     with pytest.raises(SystemExit, match="1 real value"):
         scrub.refuse_leaks("caller: JO@Mail.test", fakes)
+
+
+def test_aws_access_key_ids_never_reach_a_recording() -> None:
+    import scrub
+
+    text = 'resources: [ASIAQWERTYUIOPASDFGH, checkout], key: "AKIAZXCVBNMLKJHGFDSA"'
+    assert scrub.mask_aws_key_ids(text) == (
+        'resources: [ASIAIOSFODNN7EXAMPLE, checkout], key: "AKIAIOSFODNN7EXAMPLE"'
+    )
