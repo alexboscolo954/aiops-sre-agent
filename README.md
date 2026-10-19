@@ -333,6 +333,24 @@ integrations:
 
 The prompt names the project, so the model passes `projects/<id>` where a tool wants it. `list_log_names` must be listed: the health page calls it on the project, since listing these servers' tools needs no credential and would show a revoked key as healthy. Make a service account in the client's project with **Logs Viewer** (`roles/logging.viewer`), **Monitoring Viewer** (`roles/monitoring.viewer`), **Cloud Trace User** (`roles/cloudtrace.user`) and **MCP Tool User** (`roles/mcp.toolUser`, which allows calling MCP tools), then a JSON key: `gcloud iam service-accounts keys create key.json --iam-account=aiops@<project>.iam.gserviceaccount.com`. Cloud Trace User can also manage trace scopes; the read-only token scopes keep it from doing so. The Logging, Monitoring and Trace APIs must be enabled in the project. An organization that blocks key creation (`iam.disableServiceAccountKeyCreation`) needs an exception for this account.
 
+**AWS** is a builtin, `aws`, not a vendor. AWS's official servers don't fit: the local CloudWatch server claims none of its tools read-only, so every call would need approval, and it adds 249 MB to the image. The remote AWS MCP Server reads data only through `run_script`, which claims to be destructive. The builtin has six read-only tools:
+- alarms: `describe_alarms`
+- metrics: `list_metrics`, `get_metric_data`
+- logs: `describe_log_groups`, `query_logs` (Logs Insights, stopped after 20 s)
+- what changed: `lookup_events` (CloudTrail management events)
+
+The Hub signs each request itself (SigV4), so the key never leaves it, and sends it only to one of the Contract's regions.
+
+```yaml
+integrations:
+  - name: aws
+    regions: [us-east-1]                        # the first is the default
+    access_key_id: AKIA...                       # an IAM user's key
+    secret_access_key_secret: aws-secret-key     # its secret, only from secrets.sops.yaml
+```
+
+Make an IAM user with **CloudWatchReadOnlyAccess** and **AWSCloudTrail_ReadOnlyAccess**, nothing more, and an access key for it. Not ReadOnlyAccess: it also reads S3 objects, DynamoDB items and Lambda environment variables, which are client data and often secrets. The health page reads the alarms in the first region.
+
 Each registry vendor has a schema snapshot in `src/aiops_agent/servers/snapshots/`, its tools' names, descriptions, schemas and annotations, so Scenarios with a vendor replay without its binary. After bumping a vendor's pinned version, run `make snapshots` (it runs `aiops integrations snapshot <vendor>` in the image, where the pinned binary is) and commit the diff. `--check` fails when the running vendor no longer matches its snapshot, and hub-smoke runs it in CI. `gcp` isn't pinned: Google deploys its servers, so in hub-smoke its drift is a warning, not a failure. Drift can't make the Hub less safe there: a new tool stays hidden until a Contract lists it, a tool that stops claiming read-only needs approval, and production always uses the live schemas. Only a replay sees an old one, until `make snapshots`. The vendor runs with no Contract and no variables for this, so no credential can end up in the file.
 
 **Model and cost.** A Contract runs on the Hub's `AIOPS_MODEL` unless it sets `model:` (for example a cheaper one), through the Hub's gateway and key, so its prefix must match (`openai:` behind OpenRouter). Every model call's tokens are recorded, and priced from `AIOPS_MODEL_PRICES` when the model has a price: the console shows each Investigation's tokens and cost, and each Contract's spend this month. `monthly_budget_usd:` sets a Contract's monthly budget (UTC calendar month); a Contract with a budget needs its model priced, or the Hub won't start. At 80% and at 100% of it, the Contract's operator channel gets a notice, once each per month. At 100%, a new alert, Question or follow-up is refused without calling the model: it becomes a Failed investigation that names the spend and the budget, and Slack still tells you, so no alert is silently dropped. A Run that resumes after your approval always runs, so an approved action is always reported. Several Runs that start together can overshoot the budget a little.

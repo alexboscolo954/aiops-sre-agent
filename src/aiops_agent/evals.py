@@ -130,6 +130,15 @@ def scenario_contract(
                     "project": "REPLAY",
                 }
             )
+        elif name == "aws":  # placeholder: never reached
+            built.append(
+                {
+                    "name": name,
+                    "regions": ["us-east-1"],
+                    "access_key_id": "AKIAREPLAYREPLAYREPL",
+                    "secret_access_key_secret": "replay",
+                }
+            )
         elif name == "runbooks":
             if any(d.is_dir() for d in dirs):
                 built.append({"name": name})

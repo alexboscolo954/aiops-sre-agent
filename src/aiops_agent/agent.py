@@ -41,6 +41,7 @@ from pydantic import BaseModel
 
 from aiops_agent.config import Settings
 from aiops_agent.contracts import (
+    Aws,
     Contract,
     Integration,
     Jira,
@@ -52,7 +53,7 @@ from aiops_agent.contracts import (
 from aiops_agent.models import AlertGroup, Answer, TriageReport
 from aiops_agent.observability import AuditMiddleware
 from aiops_agent.safety import redact, redact_capped, redact_strings, truncate
-from aiops_agent.servers import Access, jira, kubernetes, prometheus, runbooks, vendors
+from aiops_agent.servers import Access, aws, jira, kubernetes, prometheus, runbooks, vendors
 
 log = logging.getLogger("aiops.agent")
 
@@ -237,6 +238,8 @@ def build_mcp(
         mount(root, access, i.name, *server)
         if isinstance(i, Jira):
             guides.append(jira.GUIDE)
+        if isinstance(i, Aws):
+            guides.append(aws.GUIDE.format(name=i.name, regions=", ".join(i.regions)))
         if isinstance(i, Vendor):
             spec = vendors.VENDORS[i.vendor]
             if spec.guide:
@@ -266,6 +269,8 @@ def probes(contract: Contract) -> list[tuple[str, str | None, dict[str, Any]]]:
             checks.append(("runbooks", "runbooks_search_runbooks", {"keywords": "health"}))
         elif isinstance(i, Jira):
             checks.append(("jira", "jira_search_issues", {"text": "health", "days": 1, "limit": 1}))
+        elif isinstance(i, Aws):
+            checks.append(("aws", "aws_describe_alarms", {"state": "ALARM"}))
         elif i.probe:
             checks.append((i.name, f"{i.name}_{i.probe.tool}", i.probe.args))
         elif probe := vendors.VENDORS[i.vendor].probe:  # one authenticated read
@@ -298,6 +303,9 @@ def integration_server(
         token = contract.secret(integration.token_secret)
         server = jira.build_server(integration.url, integration.email, token, integration.project)
         return server, jira.ACCESS
+    if isinstance(integration, Aws):
+        secret = contract.secret(integration.secret_access_key_secret)
+        return aws.build_server(integration.regions, integration.access_key_id, secret), aws.ACCESS
     if isinstance(integration, Vendor):
         if snapshots:
             server = vendors.snapshot_server(integration.vendor, integration.name)

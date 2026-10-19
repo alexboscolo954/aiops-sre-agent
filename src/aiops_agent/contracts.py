@@ -96,6 +96,18 @@ class Jira(Strict):
     issue_type: str = "Task"  # for the Create Jira issue button: as the project names it
 
 
+class Aws(Strict):
+    """The Contract's AWS account, read-only: CloudWatch metrics, alarms and logs, and
+    CloudTrail's management events, with an IAM user's key."""
+
+    name: Literal["aws"]
+    regions: list[Annotated[str, Field(pattern=r"^[a-z]{2}(-[a-z]+)+-[0-9]$")]] = Field(
+        min_length=1
+    )  # every call goes to one of these; the first is the default
+    access_key_id: str = Field(pattern=r"^AKIA[A-Z0-9]{16}$")  # an IAM user's long-term key
+    secret_access_key_secret: str
+
+
 class Runbooks(Strict):
     name: Literal["runbooks"]  # reads <contract dir>/runbooks
 
@@ -160,7 +172,7 @@ class Vendor(Strict):
         return self
 
 
-BUILTINS = ("kubernetes", "prometheus", "runbooks", "jira")
+BUILTINS = ("kubernetes", "prometheus", "runbooks", "jira", "aws")
 
 
 def _kind(value: Any) -> str:
@@ -173,6 +185,7 @@ Integration = Annotated[
     | Annotated[Prometheus, Tag("prometheus")]
     | Annotated[Runbooks, Tag("runbooks")]
     | Annotated[Jira, Tag("jira")]
+    | Annotated[Aws, Tag("aws")]
     | Annotated[Vendor, Tag("vendor")],
     Discriminator(_kind),
 ]
