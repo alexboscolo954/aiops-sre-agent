@@ -1,0 +1,36 @@
+[
+  {
+    "scenario": "azure-appservice-bad-startup",
+    "passed": true,
+    "failures": [],
+    "category": "bad_config",
+    "tool_calls": 4,
+    "seconds": 19.6,
+    "calls": [
+      "azure_appservice_webapp_get",
+      "azure_monitor_activitylog_list",
+      "azure_resourcehealth_availability-status_get",
+      "azure_monitor_metrics_query"
+    ],
+    "proposed": [],
+    "dropped_links": 0,
+    "report": "## shop-web (shop-prod-rg, Basic SKU) is returning mostly 5xx: Http5xx went from 0 to 61 and then 84 per 5-minute bucket starting around 15:53 UTC, while successful responses fell to 3 and then 0. The onset follows a configuration write to the shop-web site and web config by oncall@example.com at 15:50:54-15:50:56 UTC, so that change is the leading suspect. Resource Health still reports the app as Available, so the failure is at the application layer.\n\n**Root cause** (medium confidence, `bad_config`): The site configuration write (Microsoft.Web/sites/config/write on config/web, plus a site Update) at about 15:50:55 UTC by oncall@example.com is the likely trigger. Requests began returning 5xx within about 3-5 minutes of it, and 2xx traffic dropped to near zero in the same window. The activity log shows the operation name only, not the values changed, so the specific bad setting (app settings, startup command, runtime stack, or similar) is unconfirmed. Application logs and the config diff were not available to this investigation.\n**Severity:** critical  \u00b7  **Affected:** shop-prod-rg/Microsoft.Web/sites/shop-web\n\n**Evidence**\n- `azure_appservice_webapp_get`: shop-web is Running and enabled, Basic SKU, centralus, lastModifiedTimeUtc 2026-10-18T15:50:55.88Z.\n- `azure_monitor_activitylog_list`: Microsoft.Web/sites/config/write (Update web sites config, config/web) by oncall@example.com, Succeeded at 15:50:56Z; Microsoft.Web/sites/write (Update website) by the same caller at 15:54:36Z. The list was truncated, so earlier or later events may be missing.\n- `azure_monitor_metrics_query`: Http5xx per 5-min bucket from 15:43: 0, 0, 61 (15:53), 84 (15:58). Http2xx: 20, 110, 3 (15:53), 0 (15:58). Requests: 20, 110, 64, 84. Errors dominate after the 15:50 config change.\n- `azure_resourcehealth_availability-status_get`: shop-web availabilityState Available, 'The Web app is running normally.' Platform health is not the cause, so the failure is likely in the app or its config.\n\n**Recommendations**\n1. Compare the current site config and app settings with the last known-good values (for example the previous deployment slot or an exported config). Identify what oncall@example.com changed at about 15:50 UTC.\n2. Check the application log stream or Kudu/diagnostic logs for shop-web and the stack-specific startup errors (HTTP 500/503 details) from 15:50 UTC onward.\n3. If the cause is confirmed as the 15:50 change, roll back that setting or swap back to the previous slot. This is a state-changing action and needs human approval before it is run.\n4. Confirm recovery by watching Http5xx and Http2xx for the next few 5-minute buckets. Also check the activity log for any further changes after 15:54, since the list was truncated."
+  },
+  {
+    "scenario": "gcp-cloudrun-bad-timeout",
+    "passed": true,
+    "failures": [],
+    "category": "bad_rollout",
+    "tool_calls": 4,
+    "seconds": 21.4,
+    "calls": [
+      "gcp_list_log_entries",
+      "gcp_list_log_entries",
+      "gcp_list_timeseries",
+      "gcp_list_log_entries"
+    ],
+    "proposed": [],
+    "dropped_links": 0,
+    "report": "## The checkout Cloud Run service is returning mostly 503s because its newest revision, checkout-00002-nt5, fails every inventory lookup with a 1 ms timeout (timeout_ms: 1). The previous revision, checkout-00001-ldp, was serving 2xx traffic earlier but has had zero requests in the last 10 minutes, so traffic appears to have moved to the bad revision. Rolling traffic back to checkout-00001-ldp is the fastest mitigation.\n\n**Root cause** (medium confidence, `bad_rollout`): A new revision (checkout-00002-nt5) was deployed with an inventory-service timeout of 1 ms, far too short for a real call. Every inventory lookup times out, and the handler returns 503. The 1 ms value is the most likely misconfiguration, but I did not see the revision's config diff, so this is inferred from the logs.\n**Severity:** critical  \u00b7  **Affected:** shop-prod-4f2a/Service/checkout, shop-prod-4f2a/Revision/checkout-00002-nt5\n\n**Evidence**\n- `gcp_list_log_entries (run.googleapis.com/stdout, severity>=ERROR)`: Repeated ERROR 'inventory lookup failed after 1 ms: URLError: <urlopen error timed out>' with jsonPayload timeout_ms: 1, upstream: inventory, all from revision checkout-00002-nt5.\n- `gcp_list_log_entries (run.googleapis.com/requests, severity>=ERROR)`: GET / requests to checkout on revision checkout-00002-nt5 returning status 503 with latency of about 0.024-0.028s, matching the inventory timeouts.\n- `gcp_list_timeseries (run.googleapis.com/request_count, grouped by revision and response_code_class)`: checkout-00002-nt5: 503 (5xx) counts of 113 and 100 in the last two 5-minute windows, with no 2xx. checkout-00001-ldp: 2xx counts of 37 and 83 in earlier windows, then 0 in the last two windows.\n- `gcp_list_log_entries (cloudaudit activity, checkout, since 21:00Z)`: The audit query returned the same entries as the error-log query and showed no deploy record, so I could not confirm when or by whom checkout-00002-nt5 was deployed.\n\n**Recommendations**\n1. Shift checkout traffic back to checkout-00001-ldp, which was healthy, using a traffic split or rollback. This needs human approval and I have not run it.\n2. Confirm the revision diff: compare the environment/config of checkout-00002-nt5 with checkout-00001-ldp and find where the inventory timeout is set to 1 ms.\n3. Fix the inventory client timeout to a sane value (for example a few hundred ms to a few seconds), then redeploy as a new revision and roll out gradually.\n4. Check the audit log for who deployed checkout-00002-nt5 and when, to confirm the change and its timing. The audit query I ran did not return it.\n5. After rollback, confirm that the 5xx rate drops and that 2xx traffic returns to checkout-00001-ldp. Also check the inventory service's own health, since a 1 ms timeout could mask a real inventory slowdown."
+  }
+]

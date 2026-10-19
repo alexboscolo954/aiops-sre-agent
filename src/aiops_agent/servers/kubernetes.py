@@ -199,17 +199,21 @@ def _inventory(status: dict[str, Any]) -> set[str]:
 
 def _targets(plural: str, obj: dict[str, Any]) -> set[str] | None:
     """Every namespace a GitOps object deploys into, or None when that can't be told
-    (or, for ArgoCD, it deploys to another cluster): such an object is never shown."""
+    or it deploys to another cluster: such an object is never shown. Its namespaces
+    there would be checked against this cluster's allowlist, which says nothing."""
     spec, status = obj.get("spec") or {}, obj.get("status") or {}
+    # ponytail: in-cluster only; a controller that deploys to other clusters needs a
+    # cluster mapping in the Contract before those objects can be shown.
     if plural == "applications":
         dest = spec.get("destination") or {}
         server, name = dest.get("server"), dest.get("name")
-        # ponytail: in-cluster only; an ArgoCD that deploys to other clusters needs a
-        # cluster mapping in the Contract before its Applications can be shown.
-        if server not in (None, IN_CLUSTER_SERVER) or name not in (None, "in-cluster"):
+        in_cluster = (server or name) and server in (None, IN_CLUSTER_SERVER)
+        if not (in_cluster and name in (None, "in-cluster")):
             return None
         found = {r["namespace"] for r in status.get("resources") or [] if r.get("namespace")}
         found |= {dest["namespace"]} if dest.get("namespace") else set()
+    elif spec.get("kubeConfig"):  # Flux: applied to the cluster that kubeconfig names
+        return None
     elif plural == "kustomizations":
         found = _inventory(status)
         found |= {spec["targetNamespace"]} if spec.get("targetNamespace") else set()

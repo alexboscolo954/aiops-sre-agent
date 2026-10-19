@@ -85,7 +85,11 @@ Category = Literal[
 
 
 class Evidence(BaseModel):
-    source: str = Field(description="Tool that produced it, e.g. kubernetes_pod_logs")
+    source: str = Field(
+        description="The one tool that produced it, exactly as named in your tools, e.g. "
+        "kubernetes_pod_logs. No arguments and no second tool: say which pod or query in "
+        "the finding, and give each tool its own Evidence."
+    )
     finding: str = Field(description="What it showed, quoted or summarized, one line")
     link: str | None = Field(
         None,

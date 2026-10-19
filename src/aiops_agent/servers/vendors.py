@@ -42,6 +42,9 @@ class Spec:
     # Tools whose whole result is a link the Hub may show, built by the vendor from
     # its own base URL, and the guide sentence for each, added when the Contract lists it.
     links: tuple[tuple[str, str], ...] = ()
+    # Tools that show what changed (deploys, config writes), and the guide sentence
+    # for each, added when the Contract lists it: a guide never names a missing tool.
+    changes: tuple[tuple[str, str], ...] = ()
     # Set by the registry on every start, snapshots included, over anything else:
     # telemetry off, which credential to use. A Contract can't set or override them.
     fixed_env: dict[str, str] = field(default_factory=dict)
@@ -281,6 +284,16 @@ the cause.
             "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT": "1",  # slim image: no ICU
         },
         secret_env=frozenset({"AZURE_CLIENT_SECRET"}),
+        changes=(
+            (
+                "monitor_activitylog_list",
+                "What changed (a Change): {name}_monitor_activitylog_list for the failing "
+                "resource (resource-name, resource-group) over the hours before the onset "
+                "lists config writes, deployments and restarts, with who and when. It names "
+                "the operation, not the new values. A write shortly before the onset is a "
+                "strong lead.",
+            ),
+        ),
     ),
     # Google's own remote MCP servers: every tool claims read-only, and the token the
     # Hub mints has read-only scopes. Unpinned: Google deploys them, so drift is a
@@ -300,6 +313,16 @@ the cause.
             "GOOGLE_SERVICE_ACCOUNT_KEY": r".+",
         },
         probe=("list_log_names", {"parent": "projects/{GOOGLE_CLOUD_PROJECT}"}),
+        changes=(
+            (
+                "list_log_entries",
+                "What changed (a Change): the audit log, {name}_list_log_entries with "
+                'logName="projects/{GOOGLE_CLOUD_PROJECT}/logs/cloudaudit.googleapis.com'
+                '%2Factivity" and a time bound before the onset, lists deploys and config '
+                "changes (protoPayload.methodName, resourceName), with who and when. A "
+                "change shortly before the onset is a strong lead.",
+            ),
+        ),
     ),
 }
 START_SECONDS = 30  # a vendor that never finishes MCP's handshake fails the Run

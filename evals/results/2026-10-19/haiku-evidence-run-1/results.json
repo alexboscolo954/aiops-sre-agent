@@ -1,0 +1,22 @@
+[
+  {
+    "scenario": "question-unhealthy-workloads",
+    "passed": true,
+    "failures": [],
+    "category": null,
+    "tool_calls": 6,
+    "seconds": 16.0,
+    "calls": [
+      "kubernetes_list_pods",
+      "kubernetes_list_deployments",
+      "kubernetes_get_events",
+      "kubernetes_pod_logs",
+      "kubernetes_pod_logs",
+      "kubernetes_recent_changes"
+    ],
+    "proposed": [],
+    "dropped_links": 0,
+    "report": null,
+    "answer": "Three workloads in namespace demo are unhealthy, each for a different reason:\n\n1. **checkout** (0/1 ready, 3 restarts, CrashLoopBackOff): revision 2 removed the `DATABASE_URL` env var from the `app` container, and the app exits on startup with `FATAL: required env var DATABASE_URL is not set`. The rollout 48s before the check is the trigger. Fix: restore `DATABASE_URL` in the checkout deployment (or roll back to revision 1).\n\n2. **frontend** (0/1 ready, Pending): the image `nginx:1.99.99-does-not-exist` does not exist on Docker Hub, so the pod is stuck in ErrImagePull/ImagePullBackOff. Fix: correct the image tag to a real nginx version.\n\n3. **reports** (0/1 ready, 3 restarts, OOMKilled, exit 137): the app is killed while building the monthly report, which loads about 200MB of rows. Its memory limit is too low for that workload. Fix: raise the memory limit or reduce how much data is loaded per run. I did not check the configured limit.\n\nAll three pods also logged FailedScheduling events about untolerated taints, but the pods that started did get onto the single node (aiops-control-plane), so I did not treat that as a current cause.\n\n**Evidence**\n- `kubernetes_list_pods`: checkout-869fc5bcc6-db5ps Running 0/1, restarts 3, last terminated Error exit 1; frontend-6f6b4986b9-hxdf2 Pending 0/1, waiting ErrImagePull; reports-55b4fffc66-hmq7f Running 0/1, restarts 3, last terminated OOMKilled exit 137.\n- `kubernetes_list_deployments`: checkout, frontend and reports each show ready 0/1 with MinimumReplicasUnavailable; frontend image is nginx:1.99.99-does-not-exist.\n- `kubernetes_get_events`: BackOff events for checkout and reports pods; frontend Failed events: 'Failed to pull image \"nginx:1.99.99-does-not-exist\" ... not found'; FailedScheduling events citing untolerated taints.\n- `kubernetes_pod_logs`: checkout app (pod checkout-869fc5bcc6-db5ps): 'FATAL: required env var DATABASE_URL is not set' followed by 'checkout starting, version 1.4.0'.\n- `kubernetes_pod_logs`: reports app (pod reports-55b4fffc66-hmq7f): 'building monthly report: loading 200MB of rows' with no error before the kill.\n- `kubernetes_recent_changes`: checkout revision 2 rollout 48s ago: env_removed app: [DATABASE_URL]. Revision 1 of checkout, frontend and reports were created about 2m ago."
+  }
+]

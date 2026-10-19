@@ -250,6 +250,11 @@ def build_mcp(
                 if tool in i.tools:
                     link_tools.add(f"{i.name}_{tool}")
                     guides.append(sentence.format(name=i.name))
+            guides += [
+                sentence.format(name=i.name, **i.env)
+                for tool, sentence in spec.changes
+                if tool in i.tools
+            ]
     root.add_middleware(AuditMiddleware(contract.id))
     return Toolbox(root, access, guides, link_tools)
 

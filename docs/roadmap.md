@@ -255,7 +255,7 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
 
 ### Phase 6: Investigation quality (4 slices)
 
-**6.1 What changed.** Part a done: `kubernetes_recent_changes` (rollouts with their diffs, Helm chart labels; release Secrets stay unreadable) and the `dependency-bad-rollout` Scenario. Part b done: ArgoCD Applications and Flux Kustomizations and HelmReleases from a cluster's `gitops_namespaces`, shown only when they deploy wholly into the Contract's namespaces, with an opt-in RBAC file (`deploy/gitops/rbac-gitops.yaml`); tested against stand-in CRDs on kind, not the real controllers. Next: part c (cloud activity logs in the prompt).
+**6.1 What changed.** Part a done: `kubernetes_recent_changes` (rollouts with their diffs, Helm chart labels; release Secrets stay unreadable) and the `dependency-bad-rollout` Scenario. Part b done: ArgoCD Applications and Flux Kustomizations and HelmReleases from a cluster's `gitops_namespaces`, shown only when they deploy wholly into the Contract's namespaces, with an opt-in RBAC file (`deploy/gitops/rbac-gitops.yaml`); tested against stand-in CRDs on kind, not the real controllers. Part c done: each cloud's guide names its activity or audit log when the Contract lists that tool. 6.1 is done; next is 6.2.
 - One timeline of rollouts, Helm releases, ArgoCD/Flux syncs and cloud activity logs before the alert.
 - *Done when:* Scenarios pass where the cause is a change to a different resource.
 
@@ -313,4 +313,4 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
 
 ## Next
 
-Phase 4 first (the Operator's choice: no Contract needs a Relay yet). Phase 4 is done. Phase 5 is done: Azure, AWS and GCP, each with a Scenario recorded from a sandbox. The Operator chose Phase 6 next; 6.1 is in progress.
+Phase 4 first (the Operator's choice: no Contract needs a Relay yet). Phase 4 is done. Phase 5 is done: Azure, AWS and GCP, each with a Scenario recorded from a sandbox. The Operator chose Phase 6 next; 6.1 is done, 6.2 is next.

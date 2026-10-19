@@ -656,3 +656,21 @@ async def test_an_azure_scenario_replays_without_the_binary(settings: Settings) 
         loaded = await agent.load_tools(adapter, toolbox.access)
     assert [t.name for t in loaded] == ["azure_quota_usage_check"]
     assert agent.gated(loaded, toolbox.access) == set()
+
+
+def test_a_clouds_change_sentence_comes_only_with_its_tool(settings: Settings) -> None:
+    """Azure's activity log and Google's audit log, named in the prompt only when the
+    Contract lists the tool that reads them."""
+    from tests.test_gcp import GCP
+
+    def prompt(vendor: dict[str, Any]) -> str:
+        c = evals.scenario_contract("", False, [Path("no-runbooks")], {}, [vendor])
+        return agent.prompt("triage", evals.replay_server(c, settings, {}))
+
+    azure = {"name": "az", "vendor": "azure", "tools": {"monitor_activitylog_list": "read"}}
+    assert "What changed (a Change): az_monitor_activitylog_list" in prompt(azure)
+    assert "activitylog" not in prompt(azure | {"tools": {"monitor_metrics_query": "read"}})
+    gcp = {**GCP, "tools": {"list_log_names": "read", "list_log_entries": "read"}}
+    text = prompt(gcp)
+    assert 'logName="projects/acme-prod/logs/cloudaudit.googleapis.com%2Factivity"' in text
+    assert "cloudaudit" not in prompt({**GCP, "tools": {"list_log_names": "read"}})
