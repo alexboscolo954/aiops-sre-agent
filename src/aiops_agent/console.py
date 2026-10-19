@@ -161,6 +161,7 @@ def router(
             usage=await store().investigation_usage(t.id),
             tool_calls=await store().tool_calls(t.id),
             decisions=await store().decisions(t.id),
+            related=await store().related(t.id),
         )
 
     @console.get("/investigations/{investigation_id}/scenario.yaml")

@@ -42,6 +42,10 @@ _Avoid_: Using "alert" for a whole notification
 One Alertmanager notification, holding one or more Alerts that Alertmanager grouped together. The Alert group is the unit that gets triaged. It belongs to exactly one Contract, so two Contracts never share an Alert group. A re-sent Alert group starts a new Triage only when an Alert not seen before starts firing. A group that shrinks, or comes back unchanged, is a duplicate.
 _Avoid_: Notification, alert batch
 
+**Related alert group**:
+An Alert group that joined an open Triage of the same Contract instead of starting its own. It joins when the Triage's own Alert group still fires, the Triage started within the window (30 minutes by default) and did not fail, the two share a match label (such as `service` or `app`), and no scope label (`cluster`, `namespace`) differs. It is posted in the Triage's thread and costs no investigation. The Operator can still have it triaged separately. Only the Triage's own Alert group makes its Proposed actions Stale.
+_Avoid_: Incident, duplicate (a duplicate is a re-sent Alert group with nothing new)
+
 **Alert severity**:
 The severity label the rule author set on an Alert. The agent never changes it.
 

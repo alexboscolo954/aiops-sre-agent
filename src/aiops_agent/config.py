@@ -56,6 +56,9 @@ class Settings(BaseSettings):
     database_url: SecretStr | None = None  # Postgres; required for serve
     max_concurrent_triages: int = 3  # alert storms queue instead of fanning out
     decision_timeout_seconds: int = 1800  # proposed actions go stale after this
+    # How long after a Triage starts a new Alert group can still join it (a Contract's
+    # related.window_minutes overrides it).
+    related_window_minutes: int = 30
     slack_bot_token: SecretStr | None = None  # xoxb-...; channels are per Contract
     # Approve / reject buttons: Socket Mode with an app-level token (xapp-...,
     # connections:write). Only clicks from the Operator's Slack user id decide.

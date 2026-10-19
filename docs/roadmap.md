@@ -265,6 +265,7 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
 
 **6.3 Alert correlation within a Contract.**
 - A new Alert group that overlaps an open Investigation in time and topology joins it instead of starting a Triage. This needs a new glossary term, decided in a grilling round at slice time.
+- Part a done: the term is Related alert group (a grilling round, 2026-10-19). It joins an open Triage when they share a match label and no scope label differs, within 30 minutes; it is posted in the thread and costs no investigation. Next: part b, the "Triage separately" button and a live Slack check.
 
 **6.4 Masking.**
 - Identifiers are replaced with stable placeholders before the LLM call and restored in the Report (an OpenSRE idea). Built when the first Contract's Data policy requires it.

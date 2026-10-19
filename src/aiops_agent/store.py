@@ -18,7 +18,7 @@ from psycopg.rows import DictRow, dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
-from aiops_agent.models import Investigation
+from aiops_agent.models import AlertGroup, Investigation
 
 Pool = AsyncConnectionPool[AsyncConnection[DictRow]]
 MIGRATIONS = Path(__file__).parent / "migrations"
@@ -384,6 +384,48 @@ class Store:
             (investigation_id,),
         )
         return row or {"input_tokens": 0, "output_tokens": 0, "cost_usd": None}
+
+    async def open_triages(self, contract_id: str, since: float) -> list[Investigation]:
+        """The Triages a new Alert group of this Contract may join: started since
+        `since`, own group still firing, not failed (a refusal fails too)."""
+        rows = await self._all(
+            f"select {COLUMNS} from investigations "  # noqa: S608 - fixed columns
+            "where contract_id = %s and kind = 'triage' and started >= %s "
+            "and not group_resolved and status <> 'failed' order by started desc",
+            (contract_id, since),
+        )
+        return [_investigation(r) for r in rows]
+
+    async def add_related(
+        self,
+        investigation_id: str,
+        contract_id: str,
+        group: AlertGroup,
+        matched: dict[str, str],
+        louder: bool,
+        at: float,
+    ) -> None:
+        await self._exec(
+            "insert into related_groups (investigation_id, contract_id, group_key, title, "
+            "input, matched, louder, at) values (%s, %s, %s, %s, %s, %s, %s, %s)",
+            (
+                investigation_id,
+                contract_id,
+                group.groupKey,
+                group.title,
+                Jsonb(group.model_dump(mode="json")),
+                Jsonb(matched),
+                louder,
+                at,
+            ),
+        )
+
+    async def related(self, investigation_id: str) -> list[dict[str, Any]]:
+        return await self._all(
+            "select id, group_key, title, input, matched, louder, at, separate_id "
+            "from related_groups where investigation_id = %s order by id",
+            (investigation_id,),
+        )
 
     async def alert_group(
         self, contract_id: str, group_key: str

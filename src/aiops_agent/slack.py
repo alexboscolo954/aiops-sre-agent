@@ -40,6 +40,20 @@ def clean(text: str, limit: int = TEXT_LIMIT) -> str:
     return redact_capped(escaped, limit)
 
 
+def related_text(title: str, matched: dict[str, str], severity: str | None, louder: bool) -> str:
+    """The thread reply for a Related alert group: what joined, on which labels."""
+    shared = ", ".join(f"{k}={v}" for k, v in matched.items())
+    text = (
+        f":link: Related alert group joined this Triage: *{clean(title, 200)}* "
+        f"(shares {clean(shared, 300)}). It is not investigated on its own."
+    )
+    if louder:
+        text += (
+            f"\n:warning: Its severity ({clean(severity or '?', 40)}) is higher than this Triage's."
+        )
+    return text
+
+
 def mrkdwn(markdown: str) -> str:
     """The Report's markdown as Slack mrkdwn: headings and **bold** become *bold*,
     and list dashes become bullets."""

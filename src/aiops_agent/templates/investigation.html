@@ -60,6 +60,23 @@
 </form>
 {% endif %}
 
+{% if related %}
+<h2>Related alert groups</h2>
+<p>They joined this Triage instead of starting their own; none is investigated on its own.</p>
+<table>
+  <thead><tr><th>When</th><th>Alert group</th><th>Shares</th><th></th></tr></thead>
+  <tbody>
+  {% for r in related %}
+    <tr>
+      <td>{{ r.at | when }}</td><td>{{ r.title }}</td>
+      <td>{% for k, v in r.matched.items() %}<code>{{ k }}={{ v }}</code> {% endfor %}</td>
+      <td>{% if r.louder %}<strong>higher severity</strong>{% endif %}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
 <h2>Decisions</h2>
 <table>
   <thead><tr><th>When</th><th>By</th><th>Decision</th><th>Actions</th><th>Message</th></tr></thead>

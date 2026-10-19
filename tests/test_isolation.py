@@ -285,3 +285,39 @@ async def test_a_stored_result_is_readable_only_in_its_own_investigation(
     answer = next(str(m.content) for m in state.values["messages"] if m.type == "tool")
     assert answer == f"no stored result {rid!r} in this Investigation; ids: []"
     assert "shop-only" not in json.dumps([str(m.content) for m in state.values["messages"]])
+
+
+@pytest.mark.anyio
+async def test_an_alert_group_never_joins_another_contracts_triage(
+    two_contracts: Contracts, database_url: str
+) -> None:
+    """Identical labels on the same physical cluster: demo-bank's group finds no open
+    Triage of demo-shop's to join."""
+    from aiops_agent import related
+    from aiops_agent.models import AlertGroup, Investigation
+    from aiops_agent.store import Store, connect, now
+
+    labels = {"alertname": "Errors", "cluster": "kind", "service": "ledger"}
+    group = {
+        "status": "firing",
+        "groupKey": "g",
+        "commonLabels": labels,
+        "alerts": [{"status": "firing", "labels": labels}],
+    }
+    async with connect(database_url) as pool:
+        store = Store(pool)
+        await store.migrate()
+        shop = Investigation(
+            id="shop-t",
+            contract_id="demo-shop",
+            title="t",
+            group_key="other",
+            started=now(),
+            input=group,
+        )
+        await store.insert(shop)
+        assert [t.id for t in await store.open_triages("demo-shop", now() - 60)] == ["shop-t"]
+        candidates = await store.open_triages("demo-bank", now() - 60)
+    assert candidates == []
+    bank = two_contracts["demo-bank"]
+    assert related.find(AlertGroup.model_validate(group), candidates, bank.related) is None

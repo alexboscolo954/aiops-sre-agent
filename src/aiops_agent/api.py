@@ -37,7 +37,7 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel
 
-from aiops_agent import agent, console, contracts
+from aiops_agent import agent, console, contracts, related
 from aiops_agent.config import Settings
 from aiops_agent.contracts import Jira
 from aiops_agent.models import AlertGroup, GrafanaAlertGroup, Investigation
@@ -52,6 +52,7 @@ from aiops_agent.slack import (
     parent_blocks,
     parent_text,
     reject_modal,
+    related_text,
     reply_text,
 )
 from aiops_agent.store import Store, connect, now
@@ -649,6 +650,22 @@ def create_app(
             # Only an Alert not seen before is new work.
             if firing <= seen:
                 return {"status": "duplicate", "investigation": previous}
+        contract = by_id[contract_id]
+        window = 60 * (contract.related.window_minutes or settings.related_window_minutes)
+        candidates = await store().open_triages(contract_id, started - window)
+        if match := related.find(group, candidates, contract.related):
+            # Remembered under the Triage it joined: its re-sends are duplicates of it.
+            t = match.investigation
+            await store().add_related(
+                t.id, contract_id, group, match.matched, match.louder, started
+            )
+            await store().remember_group(contract_id, group.groupKey, started, t.id, seen | firing)
+            log.info("alert group %s joined investigation %s", group.groupKey, t.id)
+            if t.slack_channel and t.slack_ts and settings.slack_bot_token:
+                severity = related.labels(group).get("severity")
+                text = related_text(group.title, match.matched, severity, match.louder)
+                await db["slack"].post(t.slack_channel, text, thread_ts=t.slack_ts)
+            return {"status": "related", "investigation": t.id}
 
         t = Investigation(
             id=str(uuid.uuid4()),

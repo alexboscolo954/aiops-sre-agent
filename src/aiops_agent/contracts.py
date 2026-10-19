@@ -210,6 +210,16 @@ class Slack(Strict):
         return self
 
 
+class Related(Strict):
+    """When a new Alert group joins an open Triage (a Related alert group): a scope
+    label both have must be equal, and at least one match label must be shared.
+    No match labels: never joins. window_minutes: the Hub's default unless set."""
+
+    scope_labels: list[str] = ["cluster", "namespace"]
+    match_labels: list[str] = ["service", "service_name", "app", "deployment"]
+    window_minutes: int | None = Field(None, ge=1)
+
+
 class Contract(Strict):
     id: Slug
     name: str
@@ -222,6 +232,7 @@ class Contract(Strict):
     # The Hub's AIOPS_MODEL unless set; through the Hub's gateway and key (same prefix).
     model: str | None = None
     monthly_budget_usd: float | None = Field(None, gt=0)  # calendar month, UTC
+    related: Related = Related()
 
     _dir: Path = PrivateAttr(default=Path())
     _secrets: dict[str, SecretStr] = PrivateAttr(default_factory=dict)
