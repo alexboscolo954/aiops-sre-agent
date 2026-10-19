@@ -38,6 +38,15 @@ Contract's namespaces, with what each changed. A rollout shortly before the aler
 is a strong lead, including one of a different workload the alerting one depends on.
 """
 REVISION = "deployment.kubernetes.io/revision"
+# What recent_changes reads in a cluster's gitops_namespaces: (group, version, plural).
+# Older versions (Flux before 2.3's helm v2) answer 404 and are skipped like a
+# controller that isn't installed.
+GITOPS = (
+    ("argoproj.io", "v1alpha1", "applications"),
+    ("kustomize.toolkit.fluxcd.io", "v1", "kustomizations"),
+    ("helm.toolkit.fluxcd.io", "v2", "helmreleases"),
+)
+IN_CLUSTER_SERVER = "https://kubernetes.default.svc"
 MAX_CHANGES = 30
 LOG_RACE = "unable to retrieve container logs"
 LOG_RETRY_SECONDS = 2.0
@@ -175,20 +184,165 @@ def _rollout_diff(rs: Any, prev: Any) -> dict[str, Any]:
     return diff
 
 
+def _time(value: Any) -> datetime | None:
+    if not value:
+        return None
+    return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+
+
+def _inventory(status: dict[str, Any]) -> set[str]:
+    """Namespaces in a Flux inventory: ids are <namespace>_<name>_<group>_<kind>, and a
+    cluster-scoped object's namespace is empty."""
+    entries = (status.get("inventory") or {}).get("entries") or []
+    return {e["id"].split("_", 1)[0] for e in entries if e.get("id")} - {""}
+
+
+def _targets(plural: str, obj: dict[str, Any]) -> set[str] | None:
+    """Every namespace a GitOps object deploys into, or None when that can't be told
+    (or, for ArgoCD, it deploys to another cluster): such an object is never shown."""
+    spec, status = obj.get("spec") or {}, obj.get("status") or {}
+    if plural == "applications":
+        dest = spec.get("destination") or {}
+        server, name = dest.get("server"), dest.get("name")
+        # ponytail: in-cluster only; an ArgoCD that deploys to other clusters needs a
+        # cluster mapping in the Contract before its Applications can be shown.
+        if server not in (None, IN_CLUSTER_SERVER) or name not in (None, "in-cluster"):
+            return None
+        found = {r["namespace"] for r in status.get("resources") or [] if r.get("namespace")}
+        found |= {dest["namespace"]} if dest.get("namespace") else set()
+    elif plural == "kustomizations":
+        found = _inventory(status)
+        found |= {spec["targetNamespace"]} if spec.get("targetNamespace") else set()
+    else:  # helmreleases: the release namespace, the history's, the inventory's
+        found = {spec.get("targetNamespace") or obj["metadata"]["namespace"]}
+        found |= {h["namespace"] for h in status.get("history") or [] if h.get("namespace")}
+        found |= _inventory(status)
+    return found or None
+
+
+def _gitops_changes(
+    plural: str, obj: dict[str, Any], allowed: set[str], since: datetime
+) -> list[tuple[datetime, dict[str, Any]]]:
+    """One GitOps object's changes in the window. An object that deploys into any
+    namespace outside `allowed` yields nothing at all: its messages can name them."""
+    targets = _targets(plural, obj)
+    if targets is None or not targets <= allowed:
+        return []
+    name, status = obj["metadata"]["name"], obj.get("status") or {}
+    where = ", ".join(sorted(targets))
+    out: list[tuple[datetime, dict[str, Any]]] = []
+
+    def add(when: datetime | None, entry: dict[str, Any]) -> None:
+        if when is not None and when >= since:
+            out.append((when, {"when": _age(when), "namespace": where, **entry}))
+
+    if plural == "applications":
+        history = status.get("history") or []  # oldest first
+        for i, h in enumerate(history):
+            prev = history[i - 1] if i else {}
+            source = h.get("source") or {}
+            add(
+                _time(h.get("deployedAt")),
+                {
+                    "argocd_application": name,
+                    "change": "sync",
+                    "revision": h.get("revision") or h.get("revisions"),
+                    "from_revision": prev.get("revision") or prev.get("revisions"),
+                    "source": redact(
+                        " ".join(filter(None, [source.get("repoURL"), source.get("path")]))
+                    ),
+                },
+            )
+        op = status.get("operationState") or {}
+        if op.get("phase") in ("Failed", "Error", "Running"):
+            add(
+                _time(op.get("startedAt")),
+                {
+                    "argocd_application": name,
+                    "change": f"sync {op['phase'].lower()}",
+                    "revision": (op.get("syncResult") or {}).get("revision"),
+                    "message": redact(op.get("message") or ""),
+                },
+            )
+    elif plural == "kustomizations":
+        history = status.get("history") or []  # newest first
+        for i, h in enumerate(history):
+            prev = history[i + 1] if i + 1 < len(history) else {}
+            add(
+                _time(h.get("firstReconciled")),
+                {
+                    "flux_kustomization": name,
+                    "change": "applied",
+                    "revision": (h.get("metadata") or {}).get("revision"),
+                    "from_revision": (prev.get("metadata") or {}).get("revision"),
+                    "result": h.get("lastReconciledStatus"),
+                },
+            )
+        ready: dict[str, Any] = next(
+            (c for c in status.get("conditions") or [] if c.get("type") == "Ready"), {}
+        )
+        if not history and status.get("lastAppliedRevision"):
+            # Flux before the history field: Ready's last change is the closest time.
+            add(
+                _time(ready.get("lastTransitionTime")),
+                {
+                    "flux_kustomization": name,
+                    "change": "applied (time of its last Ready change)",
+                    "revision": status["lastAppliedRevision"],
+                },
+            )
+        if ready.get("status") == "False":
+            add(
+                _time(ready.get("lastTransitionTime")),
+                {
+                    "flux_kustomization": name,
+                    "change": "not ready",
+                    "reason": ready.get("reason"),
+                    "message": redact(ready.get("message") or ""),
+                },
+            )
+    else:
+        history = status.get("history") or []  # newest first
+        for i, h in enumerate(history):
+            prev = history[i + 1] if i + 1 < len(history) else {}
+            chart = f"{h.get('chartName')}-{h.get('chartVersion')}"
+            entry: dict[str, Any] = {
+                "flux_helmrelease": name,
+                "change": h.get("action") or "release",
+                "release_version": h.get("version"),
+                "status": h.get("status"),
+                "chart": chart,
+                "app_version": h.get("appVersion"),
+            }
+            if prev:
+                before = f"{prev.get('chartName')}-{prev.get('chartVersion')}"
+                if before != chart:
+                    entry["from_chart"] = before
+                entry["values_changed"] = h.get("configDigest") != prev.get("configDigest")
+            add(_time(h.get("lastDeployed")), entry)
+    return out
+
+
 def build_server(
     contract: Contract,
     k8s: Kubernetes,
     limit: int,
-    apis: dict[str, tuple[Any, Any]] | None = None,
+    apis: dict[str, tuple[Any, ...]] | None = None,
 ) -> FastMCP:
-    """apis: cluster name -> (CoreV1Api, AppsV1Api) instead of connecting, for tests."""
+    """apis: cluster name -> (CoreV1Api, AppsV1Api[, CustomObjectsApi]) instead of
+    connecting, for tests. Without the third, GitOps objects aren't read."""
     targets = {}
+    customs: dict[str, Any] = {}
+    gitops = {c.name: sorted(c.gitops_namespaces) for c in contract.clusters}
     for c in contract.clusters:
         if apis is None:
             api = api_client(c, contract)
             targets[c.name] = (client.CoreV1Api(api), client.AppsV1Api(api), set(c.namespaces))
+            customs[c.name] = client.CustomObjectsApi(api)
         else:
-            targets[c.name] = (*apis[c.name], set(c.namespaces))
+            core, apps, *custom = apis[c.name]
+            targets[c.name] = (core, apps, set(c.namespaces))
+            customs[c.name] = custom[0] if custom else None
     names = sorted(targets)
     # Namespaces too: a Question names no namespace, and a guessed one only errors.
     spaces = {n: ", ".join(sorted(targets[n][2])) for n in names}
@@ -452,11 +606,12 @@ def build_server(
     def recent_changes(
         cluster: Annotated[str, cluster_arg], since_minutes: int = 360
     ) -> list[dict[str, Any]]:
-        """Deployment rollouts in every allowed namespace of the cluster, newest
-        first: when, which deployment, its revision, and what changed from the
-        revision before (images, env var names, Helm chart). The cause of an alert
-        is often a change to a different workload than the one alerting, such as
-        one it calls. Use describe_deployment for one deployment's full history."""
+        """Changes in every allowed namespace of the cluster, newest first:
+        Deployment rollouts with what changed from the revision before (images,
+        env var names, Helm chart), plus ArgoCD syncs and Flux Kustomization and
+        HelmRelease releases when the cluster runs them. The cause of an alert is
+        often a change to a different workload than the one alerting, such as one
+        it calls. Use describe_deployment for one deployment's full history."""
         allowed = allowed_in(cluster)
         apps = targets[cluster][1]
         since = datetime.now(UTC) - timedelta(minutes=max(1, min(since_minutes, 10080)))
@@ -498,8 +653,32 @@ def build_server(
                     if cause := annotations.get("kubernetes.io/change-cause"):
                         entry["change_cause"] = redact(cause)
                     changes.append((created, entry))
+        notices = []
+        custom = customs[cluster]
+        # GitOps objects live in their controllers' namespaces, next to other teams':
+        # each is filtered by where it deploys before anything of it is kept.
+        for namespace in gitops[cluster] if custom is not None else []:
+            for group, version, plural in GITOPS:
+                try:
+                    items = custom.list_namespaced_custom_object(group, version, namespace, plural)[
+                        "items"
+                    ]
+                except ApiException as e:
+                    if e.status == 404:  # not installed here
+                        continue
+                    notices.append(
+                        {
+                            "namespace": namespace,
+                            "gitops": plural,
+                            "error": f"Kubernetes API {e.status} {e.reason}"
+                            + (" (check the agent's RBAC)" if e.status == 403 else ""),
+                        }
+                    )
+                    continue
+                for obj in items:
+                    changes += _gitops_changes(plural, obj, allowed, since)
         changes.sort(key=lambda c: c[0], reverse=True)
-        return [entry for _, entry in changes[:MAX_CHANGES]]
+        return [entry for _, entry in changes[:MAX_CHANGES]] + notices
 
     if not k8s.enable_actions:
         return mcp

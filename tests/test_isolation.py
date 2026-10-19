@@ -69,6 +69,40 @@ async def test_recent_changes_lists_only_the_contracts_own_namespaces(
 
 
 @pytest.mark.anyio
+async def test_shared_gitops_namespaces_show_only_the_contracts_own_deploys(
+    two_contracts: Contracts, settings: Settings, fake_cluster: Any
+) -> None:
+    """argocd and flux-system are shared by every team on the cluster: demo-shop sees
+    its Applications and Kustomizations, never bank's, nor one that spans both."""
+    from tests.test_kubernetes_server import ago, app, fake_custom
+
+    shop = two_contracts["demo-shop"]
+    assert shop.clusters[0].gitops_namespaces == ["argocd", "flux-system"]
+    history = [{"revision": "r1", "deployedAt": ago(5)}]
+    bank_ks = {
+        "metadata": {"name": "bank-ledger", "namespace": "flux-system"},
+        "spec": {"targetNamespace": "bank"},
+        "status": {"history": [{"firstReconciled": ago(3), "metadata": {"revision": "bank@1"}}]},
+    }
+    custom = fake_custom(
+        {
+            ("argocd", "applications"): [
+                app("orders-inventory", "orders", history=history),
+                app("bank-vault", "bank", history=history),
+                app("spans", "orders", history=history, resources=[{"namespace": "bank"}]),
+            ],
+            ("flux-system", "kustomizations"): [bank_ks],
+        }
+    )
+    tb = agent.build_mcp(shop, settings, {"kind": (*fake_cluster, custom)})
+    async with Client(tb.mcp) as client:
+        result = await client.call_tool("kubernetes_recent_changes", {"cluster": "kind"})
+    out = result.structured_content["result"]
+    assert [c["argocd_application"] for c in out] == ["orders-inventory"]
+    assert "bank" not in json.dumps(out) and "spans" not in json.dumps(out)
+
+
+@pytest.mark.anyio
 async def test_runbooks_never_cross_contracts(
     two_contracts: Contracts, settings: Settings, fake_cluster: Any
 ) -> None:

@@ -147,11 +147,25 @@ async def test_recent_changes_finds_the_dependency_rollout(live: contracts.Contr
     async with Client(k8s(live)) as c:
         changes = (await tool(c, "recent_changes", cluster="kind"))["result"]
     rollout = next(
-        ch for ch in changes if ch["deployment"] == "inventory" and ch["change"] == "rollout"
+        ch for ch in changes if ch.get("deployment") == "inventory" and ch["change"] == "rollout"
     )
     assert rollout["namespace"] == "orders"
     assert rollout["diff"] == {"env_added": {"app": ["API_VERSION"]}}
     assert {ch["namespace"] for ch in changes} == {"demo", "orders"}
+
+
+async def test_recent_changes_reads_gitops_objects_of_its_own_namespaces(
+    live: contracts.Contract,
+) -> None:
+    """demo/gitops.sh's stand-ins: orders' Application and Kustomization show, with
+    their revisions; demo-bank's objects in the same shared namespaces never do."""
+    async with Client(k8s(live)) as c:
+        changes = (await tool(c, "recent_changes", cluster="kind"))["result"]
+    sync = next(ch for ch in changes if ch.get("argocd_application") == "orders")
+    assert (sync["revision"], sync["from_revision"]) == ("9e8f7a6", "1b2c3d4")
+    applied = next(ch for ch in changes if ch.get("flux_kustomization") == "orders")
+    assert applied["revision"] == "main@sha1:9e8f7a6" and applied["namespace"] == "orders"
+    assert "bank" not in str(changes) and not any("error" in ch for ch in changes)
 
 
 async def test_record_eval_fixtures(live: contracts.Contract) -> None:

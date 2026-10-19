@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Prove the shipped RBAC is least privilege by impersonating the agent's ServiceAccount.
 set -euo pipefail
-ctx=$1; actions=${2:-false}
+ctx=$1; actions=${2:-false}; gitops=${3:-false}
 sa=system:serviceaccount:aiops:aiops-agent
 fail=0
 check() {  # expected namespace verb resource [--subresource=x]
@@ -27,4 +27,16 @@ else
   check no  demo create pods --subresource=eviction
   check no  demo patch deployments.apps --subresource=scale
 fi
+# GitOps objects: only with deploy/gitops, and never the Secrets next to them.
+want=no; [[ "$gitops" == true ]] && want=yes
+check $want argocd list applications.argoproj.io
+check $want flux-system list kustomizations.kustomize.toolkit.fluxcd.io
+check $want flux-system list helmreleases.helm.toolkit.fluxcd.io
+check no  demo list applications.argoproj.io
+for ns in argocd flux-system; do
+  check no $ns get secrets
+  check no $ns list configmaps
+  check no $ns list pods
+  check no $ns get pods --subresource=log
+done
 exit $fail

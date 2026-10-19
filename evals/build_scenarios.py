@@ -36,7 +36,10 @@ def recordings(
         "kubernetes_list_pods": rec["kubernetes_list_pods"],
         "kubernetes_list_deployments": rec["kubernetes_list_deployments"],
         "kubernetes_get_events": rec["kubernetes_get_events"],
-        "kubernetes_recent_changes": [c for c in changes or [] if c["namespace"] == namespace],
+        # Rollouts only: the GitOps objects on kind are stand-ins (demo/gitops.sh).
+        "kubernetes_recent_changes": [
+            c for c in changes or [] if c["namespace"] == namespace and "deployment" in c
+        ],
         "kubernetes_describe_deployment": [],
         "kubernetes_describe_pod": [],
         "kubernetes_pod_logs": [],

@@ -1,0 +1,58 @@
+# Opt-in: let recent_changes read ArgoCD Applications and Flux Kustomizations and
+# HelmReleases. kubectl apply -f deploy/gitops/rbac-gitops.yaml, then list the
+# namespaces under the cluster's gitops_namespaces in the Contract. Drop the half
+# for a controller you don't run: its namespace must exist.
+# Read the GitOps objects only, in the controllers' namespaces. Deliberately not
+# secrets or configmaps: argocd and flux-system hold cluster tokens and repo keys.
+# The agent still shows an object only when everything it deploys is in the
+# Contract's namespaces.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aiops-gitops
+  namespace: argocd
+rules:
+  - apiGroups: ["argoproj.io"]
+    resources: [applications]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aiops-gitops
+  namespace: argocd
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: aiops-gitops
+subjects:
+  - kind: ServiceAccount
+    name: aiops-agent
+    namespace: aiops
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aiops-gitops
+  namespace: flux-system
+rules:
+  - apiGroups: ["kustomize.toolkit.fluxcd.io"]
+    resources: [kustomizations]
+    verbs: [get, list]
+  - apiGroups: ["helm.toolkit.fluxcd.io"]
+    resources: [helmreleases]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aiops-gitops
+  namespace: flux-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: aiops-gitops
+subjects:
+  - kind: ServiceAccount
+    name: aiops-agent
+    namespace: aiops

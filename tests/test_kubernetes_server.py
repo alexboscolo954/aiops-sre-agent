@@ -449,3 +449,303 @@ def test_the_changes_guide_comes_only_with_kubernetes(
     aws_only = evals.scenario_contract("", False, [Path("no-runbooks")], {}, ["aws"])
     prompt = agent.prompt("triage", evals.replay_server(aws_only, settings, {}))
     assert "recent_changes" not in prompt
+
+
+def ago(minutes: int) -> str:
+    return (NOW - timedelta(minutes=minutes)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def fake_custom(objects: dict[tuple[str, str], list[dict[str, Any]]], errors: Any = None) -> Any:
+    """A CustomObjectsApi: (namespace, plural) -> items; anything else is not installed."""
+    from unittest.mock import MagicMock
+
+    from kubernetes.client.exceptions import ApiException
+
+    def list_objects(group: str, version: str, namespace: str, plural: str) -> Any:
+        status = (errors or {}).get((namespace, plural))
+        if status or (namespace, plural) not in objects:
+            raise ApiException(status=status or 404, reason="Forbidden" if status else "Not Found")
+        return {"items": objects[(namespace, plural)]}
+
+    custom = MagicMock()
+    custom.list_namespaced_custom_object.side_effect = list_objects
+    return custom
+
+
+def gitops_server(settings: Settings, fake_cluster: Any, custom: Any) -> FastMCP:
+    c = contracts.build(
+        {
+            "id": "acme",
+            "name": "acme",
+            "clusters": [
+                {
+                    "name": "test",
+                    "context": "test",
+                    "namespaces": ["shop", "pay"],
+                    "gitops_namespaces": ["argocd", "flux-system", "pay"],
+                }
+            ],
+            "integrations": [{"name": "kubernetes"}],
+        }
+    )
+    k = c.integrations[0]
+    assert isinstance(k, contracts.Kubernetes)
+    return kubernetes.build_server(
+        c, k, settings.tool_output_limit, {"test": (*fake_cluster, custom)}
+    )
+
+
+def app(name: str, namespace: str | None, **status: Any) -> dict[str, Any]:
+    dest = {"server": "https://kubernetes.default.svc"} | (
+        {"namespace": namespace} if namespace else {}
+    )
+    return {
+        "metadata": {"name": name, "namespace": "argocd"},
+        "spec": {"destination": dest},
+        "status": status,
+    }
+
+
+@pytest.mark.anyio
+async def test_argocd_syncs_show_only_for_applications_wholly_inside_the_allowlist(
+    settings: Settings, fake_cluster: Any
+) -> None:
+    fake_cluster[1].list_namespaced_replica_set.return_value = k.V1ReplicaSetList(items=[])
+    history = [
+        {
+            "revision": "aaa",
+            "deployedAt": ago(50),
+            "source": {"repoURL": "git@x:shop", "path": "app"},
+        },
+        {
+            "revision": "bbb",
+            "deployedAt": ago(5),
+            "source": {"repoURL": "git@x:shop", "path": "app"},
+        },
+    ]
+    shop = app(
+        "shop",
+        "shop",
+        history=history,
+        resources=[{"kind": "Deployment", "namespace": "shop", "name": "checkout"}],
+        operationState={
+            "phase": "Failed",
+            "startedAt": ago(2),
+            "message": "hook failed token=supersecret123",
+            "syncResult": {"revision": "ccc"},
+        },
+    )
+    leaky = {"repoURL": "https://git.x/pay?token=ghtoken12345678", "path": "p"}
+    by_destination = app("fresh", "pay", history=[history[1] | {"source": leaky}])
+    remote = app("remote", "shop", history=history)
+    remote["spec"]["destination"]["server"] = "https://prod-eu:6443"
+    hidden = [
+        app(
+            "bank",
+            "bank",
+            history=history,
+            operationState={"phase": "Failed", "startedAt": ago(1), "message": "bank-ledger down"},
+        ),
+        app("mixed", "shop", history=history, resources=[{"namespace": "bank", "name": "ledger"}]),
+        app("nowhere", None, history=history),
+        remote,
+    ]
+    objects = {("argocd", "applications"): [shop, by_destination, *hidden]}
+    out = await changes(gitops_server(settings, fake_cluster, fake_custom(objects)))
+    fresh = [c for c in out if c["argocd_application"] == "fresh"]
+    assert [(c["namespace"], c["revision"]) for c in fresh] == [("pay", "bbb")]
+    assert "ghtoken" not in str(fresh) and fresh[0]["source"].endswith(" p")
+    everything = str(out)
+    out = [c for c in out if c["argocd_application"] == "shop"]
+    assert [c["change"] for c in out] == ["sync failed", "sync", "sync"]
+    assert out[0]["revision"] == "ccc" and "supersecret123" not in out[0]["message"]
+    assert out[1] == {
+        "when": "5m",
+        "namespace": "shop",
+        "argocd_application": "shop",
+        "change": "sync",
+        "revision": "bbb",
+        "from_revision": "aaa",
+        "source": "git@x:shop app",
+    }
+    assert out[2]["from_revision"] is None
+    for trace in ("bank", "mixed", "nowhere", "remote", "ledger", "prod-eu"):
+        assert trace not in everything
+
+
+@pytest.mark.anyio
+async def test_flux_kustomizations_and_helmreleases_with_their_diffs(
+    settings: Settings, fake_cluster: Any
+) -> None:
+    fake_cluster[1].list_namespaced_replica_set.return_value = k.V1ReplicaSetList(items=[])
+    inventory = {"entries": [{"id": "shop_checkout_apps_Deployment"}, {"id": "_shop__Namespace"}]}
+    ks = {
+        "metadata": {"name": "apps", "namespace": "flux-system"},
+        "spec": {},
+        "status": {
+            "inventory": inventory,
+            "history": [
+                {
+                    "firstReconciled": ago(3),
+                    "lastReconciledStatus": "HealthCheckFailed",
+                    "metadata": {"revision": "main@sha1:222"},
+                },
+                {"firstReconciled": ago(400), "metadata": {"revision": "main@sha1:111"}},
+            ],
+            "conditions": [
+                {
+                    "type": "Ready",
+                    "status": "False",
+                    "reason": "HealthCheckFailed",
+                    "message": "checkout not ready password=hunter2hunter2",
+                    "lastTransitionTime": ago(1),
+                }
+            ],
+        },
+    }
+    older_flux = {
+        "metadata": {"name": "pay", "namespace": "flux-system"},
+        "spec": {"targetNamespace": "pay"},
+        "status": {
+            "lastAppliedRevision": "main@sha1:999",
+            "conditions": [{"type": "Ready", "status": "True", "lastTransitionTime": ago(10)}],
+        },
+    }
+    unknown = {
+        "metadata": {"name": "empty", "namespace": "flux-system"},
+        "spec": {},
+        "status": {
+            "lastAppliedRevision": "x",
+            "conditions": [{"type": "Ready", "status": "True", "lastTransitionTime": ago(1)}],
+        },
+    }
+    hr = {
+        "metadata": {"name": "podinfo", "namespace": "flux-system"},
+        "spec": {"targetNamespace": "shop"},
+        "status": {
+            "history": [
+                {
+                    "version": 2,
+                    "action": "upgrade",
+                    "status": "deployed",
+                    "chartName": "podinfo",
+                    "chartVersion": "6.6.1",
+                    "appVersion": "6.6.1",
+                    "configDigest": "sha256:b",
+                    "namespace": "shop",
+                    "firstDeployed": ago(60),
+                    "lastDeployed": ago(4),
+                },
+                {
+                    "version": 1,
+                    "action": "install",
+                    "status": "superseded",
+                    "chartName": "podinfo",
+                    "chartVersion": "6.6.0",
+                    "configDigest": "sha256:a",
+                    "namespace": "shop",
+                    "firstDeployed": ago(60),
+                    "lastDeployed": ago(60),
+                },
+            ]
+        },
+    }
+    own_namespace = {
+        "metadata": {"name": "infra", "namespace": "flux-system"},
+        "spec": {},
+        "status": {"history": [{"version": 1, "lastDeployed": ago(2)}]},
+    }
+    release = {"version": 1, "chartName": "c", "chartVersion": "1", "lastDeployed": ago(2)}
+
+    def helmrelease(name: str, namespace: str, spec: Any, **status: Any) -> dict[str, Any]:
+        history = [release | status.pop("release", {})]
+        meta = {"name": name, "namespace": namespace}
+        return {"metadata": meta, "spec": spec, "status": {"history": history, **status}}
+
+    beside_its_app = helmrelease("ledger-pay", "pay", {})  # release namespace: its own
+    moved = helmrelease(
+        "moved", "flux-system", {"targetNamespace": "shop"}, release={"namespace": "bank"}
+    )
+    spills = helmrelease(
+        "spills",
+        "flux-system",
+        {"targetNamespace": "shop"},
+        inventory={"entries": [{"id": "bank_vault_apps_Deployment"}]},
+    )
+    custom = fake_custom(
+        {
+            ("flux-system", "kustomizations"): [ks, older_flux, unknown],
+            ("flux-system", "helmreleases"): [hr, own_namespace, moved, spills],
+            ("pay", "helmreleases"): [beside_its_app],
+        }
+    )
+    out = await changes(gitops_server(settings, fake_cluster, custom), since_minutes=120)
+    assert [c["namespace"] for c in out if c.get("flux_helmrelease") == "ledger-pay"] == ["pay"]
+    everything = str(out)
+    out = [c for c in out if c.get("flux_helmrelease") != "ledger-pay"]
+    names = [(c.get("flux_kustomization") or c.get("flux_helmrelease"), c["change"]) for c in out]
+    assert names == [
+        ("apps", "not ready"),
+        ("apps", "applied"),
+        ("podinfo", "upgrade"),
+        ("pay", "applied (time of its last Ready change)"),
+        ("podinfo", "install"),
+    ]
+    assert out[1]["revision"] == "main@sha1:222" and out[1]["from_revision"] == "main@sha1:111"
+    assert out[1]["result"] == "HealthCheckFailed" and out[0]["message"].startswith(
+        "checkout not ready password="
+    )
+    assert "hunter2" not in str(out)
+    assert out[2] == {
+        "when": "4m",
+        "namespace": "shop",
+        "flux_helmrelease": "podinfo",
+        "change": "upgrade",
+        "release_version": 2,
+        "status": "deployed",
+        "chart": "podinfo-6.6.1",
+        "app_version": "6.6.1",
+        "from_chart": "podinfo-6.6.0",
+        "values_changed": True,
+    }
+    assert "from_chart" not in out[4] and "values_changed" not in out[4]
+    assert out[3]["namespace"] == "pay" and out[3]["revision"] == "main@sha1:999"
+    for trace in ("infra", "empty", "moved", "spills", "bank", "vault"):
+        assert trace not in everything
+
+
+@pytest.mark.anyio
+async def test_gitops_errors_and_absent_controllers(settings: Settings, fake_cluster: Any) -> None:
+    """Not installed (404): nothing. No access (403): said, so a gap is never silent."""
+    fake_cluster[1].list_namespaced_replica_set.return_value = k.V1ReplicaSetList(items=[])
+    custom = fake_custom({}, errors={("argocd", "applications"): 403})
+    out = await changes(gitops_server(settings, fake_cluster, custom))
+    assert out == [
+        {
+            "namespace": "argocd",
+            "gitops": "applications",
+            "error": "Kubernetes API 403 Forbidden (check the agent's RBAC)",
+        }
+    ]
+    asked = {c.args[2:] for c in custom.list_namespaced_custom_object.call_args_list}
+    assert asked == {
+        (ns, plural)
+        for ns in ("argocd", "flux-system", "pay")
+        for _, _, plural in kubernetes.GITOPS
+    }
+
+
+@pytest.mark.anyio
+async def test_gitops_namespaces_are_for_recent_changes_only(
+    settings: Settings, fake_cluster: Any
+) -> None:
+    server = gitops_server(settings, fake_cluster, fake_custom({}))
+    async with Client(server) as c:
+        tools = {t.name: t for t in await c.list_tools()}
+        assert (
+            "argocd" not in tools["list_pods"].input_schema["properties"]["cluster"]["description"]
+        )
+        for tool in ("list_pods", "get_events", "list_deployments"):
+            with pytest.raises(ToolError, match="'argocd' is not allowed"):
+                await c.call_tool(tool, {"cluster": "test", "namespace": "argocd"})
+    fake_cluster[0].list_namespaced_pod.assert_not_called()

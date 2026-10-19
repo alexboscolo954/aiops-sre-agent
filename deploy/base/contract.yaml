@@ -7,6 +7,7 @@ clusters:
   - name: local
     in_cluster: true
     namespaces: [demo]        # bind the read Role in each (rbac.yaml)
+    # gitops_namespaces: [argocd, flux-system]  # with deploy/gitops/rbac-gitops.yaml
 integrations:
   - name: kubernetes
     enable_actions: false     # deploy/actions turns this on, with its RBAC

@@ -6,6 +6,7 @@ clusters:
   - name: kind
     context: kind-aiops
     namespaces: [demo, orders]
+    gitops_namespaces: [argocd, flux-system]  # stand-in CRDs on kind (demo/gitops.sh)
 integrations:
   - name: kubernetes
   - name: prometheus

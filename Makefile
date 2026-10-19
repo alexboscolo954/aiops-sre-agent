@@ -27,6 +27,7 @@ demo: ## broken workloads in namespaces demo and orders; checkout and inventory 
 	kubectl --context $(CTX) -n orders rollout status deploy/inventory deploy/orders-api --timeout=5m
 	kubectl --context $(CTX) -n orders set env deploy/inventory API_VERSION=v2
 	./demo/wait-broken.sh $(CTX)
+	./demo/gitops.sh $(CTX)
 
 lgtm: ## Grafana LGTM + synthetic logs and traces (Grafana Scenarios; not in CI)
 	kubectl --context $(CTX) apply -f demo/lgtm.yaml
@@ -60,6 +61,8 @@ deploy-smoke: image ## real image + shipped manifests on kind
 	kubectl kustomize deploy/actions | grep -q 'enable_actions: true'  # the overlay turns actions on
 	kubectl --context $(CTX) apply -f deploy/actions/rbac-actions.yaml
 	./demo/rbac-check.sh $(CTX) true
+	kubectl --context $(CTX) apply -f deploy/gitops/rbac-gitops.yaml
+	./demo/rbac-check.sh $(CTX) true true
 
 hub-smoke: image ## the Hub's compose stack: health, public boundary, backups, contracts updates
 	./demo/hub-smoke.sh aiops-sre-agent:ci

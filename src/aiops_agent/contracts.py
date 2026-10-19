@@ -51,6 +51,10 @@ class Strict(BaseModel):
 class Cluster(Strict):
     name: Slug
     namespaces: list[str] = Field(min_length=1)
+    # Where ArgoCD Applications and Flux Kustomizations/HelmReleases live (argocd,
+    # flux-system). Only recent_changes reads there, and only objects that deploy
+    # into `namespaces`; no other tool may name these namespaces.
+    gitops_namespaces: list[str] = []
     in_cluster: bool = False
     context: str | None = None
     kubeconfig_file: Path | None = None  # default: ~/.kube/config
