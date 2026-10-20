@@ -52,6 +52,7 @@ from aiops_agent.slack import (
     parent_blocks,
     parent_text,
     reject_modal,
+    related_blocks,
     related_text,
     reply_text,
 )
@@ -481,6 +482,50 @@ def create_app(
         await slack.update(channel, t.slack_ts, parent_text(t), blocks)
         await slack.post(channel, f":outbox_tray: Sent to the client by <@{user}>.", t.slack_ts)
 
+    async def triage_separately(
+        t: Investigation, related_id: int, channel: str, user: str, message_ts: str | None
+    ) -> None:
+        """A Related alert group of t gets its own Triage, once: claimed together with
+        that Triage, so a double click starts one. The budget is checked before the
+        claim, so a refusal leaves the button for later. From then on the group is
+        that Triage's own: its re-sends, resolution and Stale rule go there.
+        ponytail: a group that resolved before the click isn't tracked, so its
+        Triage starts as firing; track related groups' resolution if that matters."""
+        slack: Slack = db["slack"]
+        row = await store().related_group(related_id, t.id)
+        gone = "Already triaged separately, or not a related group of this Triage."
+        if row is None:
+            await slack.ephemeral(channel, user, gone)
+            return
+        if reason := await over_budget(t.contract_id):
+            await slack.ephemeral(channel, user, f"Not started. {reason}")
+            return
+        group = AlertGroup.model_validate(row["input"])
+        new = Investigation(
+            id=str(uuid.uuid4()),
+            contract_id=t.contract_id,
+            title=row["title"],
+            group_key=row["group_key"],
+            started=now(),
+            input=row["input"],
+        )
+        if not await store().separate(related_id, t.id, new):
+            await slack.ephemeral(channel, user, gone)
+            return
+        remembered = await store().alert_group(t.contract_id, new.group_key)
+        seen = remembered[2] if remembered else {a.fingerprint for a in group.firing}
+        await store().remember_group(t.contract_id, new.group_key, new.started, new.id, seen)
+        log.info("related group %s of %s triaged separately as %s", related_id, t.id, new.id)
+        if message_ts:  # the post clicked: its button goes, the rest stays
+            severity = related.labels(group).get("severity")
+            text = related_text(row["title"], row["matched"], severity, row["louder"])
+            await slack.update(channel, message_ts, f"{text}\n:mag: Triaged separately.", [])
+        title = clean(row["title"], 200)
+        assert t.slack_ts is not None  # the click came from this thread
+        reply = f":mag: <@{user}> had *{title}* triaged separately, in a new thread."
+        await slack.post(channel, reply, t.slack_ts)
+        spawn(run(new, lambda a: agent.start(a, group, new.id)))
+
     async def interaction(p: dict[str, Any]) -> None:
         """A Slack button click or reject modal, from Socket Mode (already acked)."""
         slack: Slack = db["slack"]
@@ -503,6 +548,10 @@ def create_app(
             return
         if action["action_id"] == "send_to_client":
             await send_to_client(t, channel, user)
+            return
+        if action["action_id"] == "triage_separately":
+            message_ts = p.get("container", {}).get("message_ts")
+            await triage_separately(t, int(pause["related"]), channel, user, message_ts)
             return
         if action["action_id"] == "create_jira":
             key, message = await file_jira(t, f"slack:{user}", f"<@{user}>")
@@ -652,11 +701,11 @@ def create_app(
                 return {"status": "duplicate", "investigation": previous}
         contract = by_id[contract_id]
         window = 60 * (contract.related.window_minutes or settings.related_window_minutes)
-        candidates = await store().open_triages(contract_id, started - window)
+        candidates = await store().open_triages(contract_id, started - window, group.groupKey)
         if match := related.find(group, candidates, contract.related):
             # Remembered under the Triage it joined: its re-sends are duplicates of it.
             t = match.investigation
-            await store().add_related(
+            rid = await store().add_related(
                 t.id, contract_id, group, match.matched, match.louder, started
             )
             await store().remember_group(contract_id, group.groupKey, started, t.id, seen | firing)
@@ -664,7 +713,8 @@ def create_app(
             if t.slack_channel and t.slack_ts and settings.slack_bot_token:
                 severity = related.labels(group).get("severity")
                 text = related_text(group.title, match.matched, severity, match.louder)
-                await db["slack"].post(t.slack_channel, text, thread_ts=t.slack_ts)
+                blocks = related_blocks(text, t.id, rid) if buttons else None
+                await db["slack"].post(t.slack_channel, text, t.slack_ts, blocks)
             return {"status": "related", "investigation": t.id}
 
         t = Investigation(

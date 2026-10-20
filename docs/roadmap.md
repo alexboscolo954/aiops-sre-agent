@@ -265,7 +265,8 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
 
 **6.3 Alert correlation within a Contract.**
 - A new Alert group that overlaps an open Investigation in time and topology joins it instead of starting a Triage. This needs a new glossary term, decided in a grilling round at slice time.
-- Part a done: the term is Related alert group (a grilling round, 2026-10-19). It joins an open Triage when they share a match label and no scope label differs, within 30 minutes; it is posted in the thread and costs no investigation. Next: part b, the "Triage separately" button and a live Slack check.
+- Part a done: the term is Related alert group (a grilling round, 2026-10-19). It joins an open Triage when they share a match label and no scope label differs, within 30 minutes; it is posted in the thread and costs no investigation.
+- Part b done: a "Triage separately" button on the related group's post starts its own Triage, once, within the budget; the two groups never join again.
 
 **6.4 Masking.**
 - Identifiers are replaced with stable placeholders before the LLM call and restored in the Report (an OpenSRE idea). Built when the first Contract's Data policy requires it.
@@ -315,4 +316,4 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
 
 ## Next
 
-Phase 4 first (the Operator's choice: no Contract needs a Relay yet). Phase 4 is done. Phase 5 is done: Azure, AWS and GCP, each with a Scenario recorded from a sandbox. The Operator chose Phase 6 next; 6.1 and 6.2 are done, 6.3 is next.
+Phase 4 first (the Operator's choice: no Contract needs a Relay yet). Phase 4 is done. Phase 5 is done: Azure, AWS and GCP, each with a Scenario recorded from a sandbox. The Operator chose Phase 6 next; 6.1, 6.2 and 6.3 are done; 6.4 waits for a Data policy that needs it, so Phase 7 is next.

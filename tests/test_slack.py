@@ -277,11 +277,18 @@ def sock(settings: Settings) -> Iterator[FakeSocket]:
     s.server.shutdown()
 
 
-def click(action_id: str, value: str, user: str = OPERATOR, channel: str = ACME) -> dict[str, Any]:
+def click(
+    action_id: str,
+    value: str,
+    user: str = OPERATOR,
+    channel: str = ACME,
+    message_ts: str = "1700000000.000001",
+) -> dict[str, Any]:
     return {
         "type": "block_actions",
         "user": {"id": user},
         "channel": {"id": channel},
+        "container": {"type": "message", "message_ts": message_ts},
         "trigger_id": "trigger-1",
         "actions": [{"action_id": action_id, "value": value}],
     }

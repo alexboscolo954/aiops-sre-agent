@@ -316,8 +316,48 @@ async def test_an_alert_group_never_joins_another_contracts_triage(
             input=group,
         )
         await store.insert(shop)
-        assert [t.id for t in await store.open_triages("demo-shop", now() - 60)] == ["shop-t"]
-        candidates = await store.open_triages("demo-bank", now() - 60)
+        assert [t.id for t in await store.open_triages("demo-shop", now() - 60, "g")] == ["shop-t"]
+        candidates = await store.open_triages("demo-bank", now() - 60, "g")
     assert candidates == []
     bank = two_contracts["demo-bank"]
     assert related.find(AlertGroup.model_validate(group), candidates, bank.related) is None
+
+
+@pytest.mark.anyio
+async def test_a_related_group_is_separated_only_through_its_own_triage(
+    two_contracts: Contracts, database_url: str
+) -> None:
+    """demo-bank's related group, named with demo-shop's Triage: not found, and the
+    claim inserts nothing (no orphan Triage)."""
+    from aiops_agent.models import AlertGroup, Investigation
+    from aiops_agent.store import Store, connect, now
+
+    labels = {"alertname": "Errors", "service": "ledger"}
+    group = {
+        "status": "firing",
+        "groupKey": "g",
+        "commonLabels": labels,
+        "alerts": [{"status": "firing", "labels": labels}],
+    }
+    async with connect(database_url) as pool:
+        store = Store(pool)
+        await store.migrate()
+        shop, bank = (
+            Investigation(id=f"{c}-t", contract_id=c, title="t", group_key="g0", started=now())
+            for c in ("demo-shop", "demo-bank")
+        )
+        await store.insert(shop)
+        await store.insert(bank)
+        rid = await store.add_related(
+            bank.id,
+            "demo-bank",
+            AlertGroup.model_validate(group),
+            {"service": "ledger"},
+            False,
+            now(),
+        )
+        assert await store.related_group(rid, shop.id) is None
+        new = Investigation(id="new", contract_id="demo-shop", title="t", started=now())
+        assert not await store.separate(rid, shop.id, new)
+        assert await store.get("new") is None
+        assert (await store.related_group(rid, bank.id) or {})["separate_id"] is None

@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from psycopg import AsyncConnection
+from psycopg import AsyncConnection, Rollback
 from psycopg.errors import UniqueViolation
 from psycopg.rows import DictRow, dict_row
 from psycopg.types.json import Jsonb
@@ -60,6 +60,41 @@ def _investigation(row: dict[str, Any]) -> Investigation:
     return Investigation.model_validate(row)
 
 
+INSERT = (
+    f"insert into investigations ({COLUMNS}) values "  # noqa: S608 - fixed columns
+    f"({', '.join(['%s'] * len(COLUMNS.split(',')))})"
+)
+
+
+def _row(t: Investigation) -> tuple[Any, ...]:
+    """The values for INSERT, in COLUMNS order."""
+    return (
+        t.id,
+        t.kind,
+        t.contract_id,
+        t.title,
+        t.group_key,
+        t.group_resolved,
+        t.status,
+        t.started,
+        Jsonb(t.report.model_dump(mode="json")) if t.report else None,
+        Jsonb(t.pending),
+        Jsonb(t.executed_actions),
+        t.error,
+        t.deadline,
+        t.slack_channel,
+        t.slack_ts,
+        t.client_sent_at,
+        t.client_sent_by,
+        Jsonb(t.answer.model_dump(mode="json")) if t.answer else None,
+        t.last_mention_ts,
+        Jsonb(t.input) if t.input is not None else None,
+        t.jira_issue,
+        t.jira_by,
+        t.jira_at,
+    )
+
+
 class Store:
     def __init__(self, pool: Pool) -> None:
         self.pool = pool
@@ -97,36 +132,7 @@ class Store:
             return rows
 
     async def insert(self, t: Investigation) -> None:
-        await self._exec(
-            f"insert into investigations ({COLUMNS}) values "  # noqa: S608 - fixed columns
-            "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
-            "%s, %s, %s)",
-            (
-                t.id,
-                t.kind,
-                t.contract_id,
-                t.title,
-                t.group_key,
-                t.group_resolved,
-                t.status,
-                t.started,
-                Jsonb(t.report.model_dump(mode="json")) if t.report else None,
-                Jsonb(t.pending),
-                Jsonb(t.executed_actions),
-                t.error,
-                t.deadline,
-                t.slack_channel,
-                t.slack_ts,
-                t.client_sent_at,
-                t.client_sent_by,
-                Jsonb(t.answer.model_dump(mode="json")) if t.answer else None,
-                t.last_mention_ts,
-                Jsonb(t.input) if t.input is not None else None,
-                t.jira_issue,
-                t.jira_by,
-                t.jira_at,
-            ),
-        )
+        await self._exec(INSERT, _row(t))
 
     async def set_slack_thread(self, investigation_id: str, channel: str, ts: str) -> bool:
         """Only while it has none: a thread, once started, is never replaced."""
@@ -385,14 +391,24 @@ class Store:
         )
         return row or {"input_tokens": 0, "output_tokens": 0, "cost_usd": None}
 
-    async def open_triages(self, contract_id: str, since: float) -> list[Investigation]:
+    async def open_triages(
+        self, contract_id: str, since: float, group_key: str
+    ) -> list[Investigation]:
         """The Triages a new Alert group of this Contract may join: started since
-        `since`, own group still firing, not failed (a refusal fails too)."""
+        `since`, own group still firing, not failed (a refusal fails too). Never one
+        whose group the Operator split from this one, either way round, while the
+        split-off Triage is within the window too: next incident, they may join."""
         rows = await self._all(
             f"select {COLUMNS} from investigations "  # noqa: S608 - fixed columns
             "where contract_id = %s and kind = 'triage' and started >= %s "
-            "and not group_resolved and status <> 'failed' order by started desc",
-            (contract_id, since),
+            "and not group_resolved and status <> 'failed' and not exists ("
+            " select 1 from related_groups r join investigations i on i.id = r.investigation_id"
+            " join investigations s on s.id = r.separate_id"
+            " where r.contract_id = %s and s.started >= %s and ("
+            "  (r.group_key = %s and i.group_key = investigations.group_key)"
+            "  or (i.group_key = %s and r.group_key = investigations.group_key))"
+            ") order by started desc",
+            (contract_id, since, contract_id, since, group_key, group_key),
         )
         return [_investigation(r) for r in rows]
 
@@ -404,10 +420,10 @@ class Store:
         matched: dict[str, str],
         louder: bool,
         at: float,
-    ) -> None:
-        await self._exec(
+    ) -> int:
+        row = await self._one(
             "insert into related_groups (investigation_id, contract_id, group_key, title, "
-            "input, matched, louder, at) values (%s, %s, %s, %s, %s, %s, %s, %s)",
+            "input, matched, louder, at) values (%s, %s, %s, %s, %s, %s, %s, %s) returning id",
             (
                 investigation_id,
                 contract_id,
@@ -419,6 +435,32 @@ class Store:
                 at,
             ),
         )
+        assert row is not None
+        return int(row["id"])
+
+    async def related_group(self, related_id: int, investigation_id: str) -> dict[str, Any] | None:
+        """One Related alert group, only if it joined that Triage."""
+        return await self._one(
+            "select group_key, title, input, matched, louder, separate_id from related_groups "
+            "where id = %s and investigation_id = %s",
+            (related_id, investigation_id),
+        )
+
+    async def separate(self, related_id: int, investigation_id: str, t: Investigation) -> bool:
+        """Triage a Related alert group separately, once: t, its own Triage, is
+        inserted together with the claim, or not at all (a second click)."""
+        async with self.pool.connection() as conn, conn.transaction() as tx:
+            await conn.execute(INSERT, _row(t))  # first: separate_id references it
+            claimed = await (
+                await conn.execute(
+                    "update related_groups set separate_id = %s where id = %s "
+                    "and investigation_id = %s and separate_id is null returning id",
+                    (t.id, related_id, investigation_id),
+                )
+            ).fetchone()
+            if claimed is None:
+                raise Rollback(tx)
+        return claimed is not None
 
     async def related(self, investigation_id: str) -> list[dict[str, Any]]:
         return await self._all(

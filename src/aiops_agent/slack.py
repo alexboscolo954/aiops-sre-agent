@@ -54,6 +54,30 @@ def related_text(title: str, matched: dict[str, str], severity: str | None, loud
     return text
 
 
+def related_blocks(text: str, investigation_id: str, related_id: int) -> list[dict[str, Any]]:
+    """The Related alert group's post with its Triage separately button."""
+    button = {
+        "type": "button",
+        "action_id": "triage_separately",
+        "text": {"type": "plain_text", "text": "Triage separately"},
+        "value": json.dumps({"id": investigation_id, "related": related_id}),
+        "confirm": {
+            "title": {"type": "plain_text", "text": "Triage it separately?"},
+            "text": {
+                "type": "plain_text",
+                "text": "It gets a Triage and thread of its own, which counts against the "
+                "Contract's budget.",
+            },
+            "confirm": {"type": "plain_text", "text": "Triage"},
+            "deny": {"type": "plain_text", "text": "Cancel"},
+        },
+    }
+    return [
+        {"type": "section", "text": {"type": "mrkdwn", "text": text}},
+        {"type": "actions", "elements": [button]},
+    ]
+
+
 def mrkdwn(markdown: str) -> str:
     """The Report's markdown as Slack mrkdwn: headings and **bold** become *bold*,
     and list dashes become bullets."""

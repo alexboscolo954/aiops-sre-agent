@@ -62,7 +62,7 @@
 
 {% if related %}
 <h2>Related alert groups</h2>
-<p>They joined this Triage instead of starting their own; none is investigated on its own.</p>
+<p>They joined this Triage instead of starting their own; one is investigated only when triaged separately.</p>
 <table>
   <thead><tr><th>When</th><th>Alert group</th><th>Shares</th><th></th></tr></thead>
   <tbody>
@@ -70,7 +70,8 @@
     <tr>
       <td>{{ r.at | when }}</td><td>{{ r.title }}</td>
       <td>{% for k, v in r.matched.items() %}<code>{{ k }}={{ v }}</code> {% endfor %}</td>
-      <td>{% if r.louder %}<strong>higher severity</strong>{% endif %}</td>
+      <td>{% if r.louder %}<strong>higher severity</strong>{% endif %}
+        {% if r.separate_id %}<a href="/console/investigations/{{ r.separate_id }}">triaged separately</a>{% endif %}</td>
     </tr>
   {% endfor %}
   </tbody>

@@ -43,7 +43,7 @@ One Alertmanager notification, holding one or more Alerts that Alertmanager grou
 _Avoid_: Notification, alert batch
 
 **Related alert group**:
-An Alert group that joined an open Triage of the same Contract instead of starting its own. It joins when the Triage's own Alert group still fires, the Triage started within the window (30 minutes by default) and did not fail, the two share a match label (such as `service` or `app`), and no scope label (`cluster`, `namespace`) differs. It is posted in the Triage's thread and costs no investigation. The Operator can still have it triaged separately. Only the Triage's own Alert group makes its Proposed actions Stale.
+An Alert group that joined an open Triage of the same Contract instead of starting its own. It joins when the Triage's own Alert group still fires, the Triage started within the window (30 minutes by default) and did not fail, the two share a match label (such as `service` or `app`), and no scope label (`cluster`, `namespace`) differs. It is posted in the Triage's thread and costs no investigation. The Operator can still have it triaged separately: it then becomes that new Triage's own Alert group, and the two groups don't join each other again within the window. Only the Triage's own Alert group makes its Proposed actions Stale.
 _Avoid_: Incident, duplicate (a duplicate is a re-sent Alert group with nothing new)
 
 **Alert severity**:
