@@ -418,6 +418,133 @@ class Store:
             (investigation_id, contract_id),
         )
 
+    async def add_feedback(
+        self, t: Investigation, correct: bool, correction: str | None, by: str
+    ) -> None:
+        await self._exec(
+            "insert into feedback (investigation_id, contract_id, correct, correction, by, at) "
+            "values (%s, %s, %s, %s, %s, %s)",
+            (t.id, t.contract_id, correct, correction, by, now()),
+        )
+
+    async def feedback(self, investigation_id: str) -> list[dict[str, Any]]:
+        return await self._all(
+            "select correct, correction, by, at from feedback "
+            "where investigation_id = %s order by id",
+            (investigation_id,),
+        )
+
+    async def teachings(
+        self, contract_id: str | None = None, status: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Newest first; one Contract's and one status's only when given."""
+        return await self._all(
+            "select id, contract_id, text, alerts, status, source_id, correction, contradicts, "
+            "proposed_at, decided_by, decided_at, slack_ts from teachings "
+            "where (%s::text is null or contract_id = %s) and (%s::text is null or status = %s) "
+            "order by id desc",
+            (contract_id, contract_id, status, status),
+        )
+
+    async def teaching(self, teaching_id: int) -> dict[str, Any] | None:
+        return await self._one(
+            "select id, contract_id, text, alerts, status, source_id, correction, contradicts, "
+            "slack_ts from teachings where id = %s",
+            (teaching_id,),
+        )
+
+    async def add_teaching(
+        self,
+        contract_id: str,
+        text: str,
+        alerts: list[str],
+        *,
+        source_id: str | None = None,
+        correction: str | None = None,
+        contradicts: int | None = None,
+        approved_by: str | None = None,
+    ) -> int:
+        """Proposed, or approved at once when the Operator wrote it (approved_by)."""
+        at = now()
+        row = await self._one(
+            "insert into teachings (contract_id, text, alerts, status, source_id, correction, "
+            "contradicts, proposed_at, decided_by, decided_at) "
+            "values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) returning id",
+            (
+                contract_id,
+                text,
+                Jsonb(alerts),
+                "approved" if approved_by else "proposed",
+                source_id,
+                correction,
+                contradicts,
+                at,
+                approved_by,
+                at if approved_by else None,
+            ),
+        )
+        assert row is not None
+        return int(row["id"])
+
+    async def set_teaching_post(self, teaching_id: int, ts: str) -> None:
+        await self._exec("update teachings set slack_ts = %s where id = %s", (ts, teaching_id))
+
+    async def decide_teaching(
+        self,
+        teaching_id: int,
+        contract_id: str,
+        approve: bool,
+        by: str,
+        text: str | None = None,
+        source_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Approve (with the text the Operator submitted, if any) or reject a proposed
+        Teaching of this Contract, once. Approving retires the approved Teaching of the
+        same Contract it contradicts. source_id: from a Slack click, the Investigation
+        whose thread holds it. Returns the decided row (and `retired`), or None."""
+        async with self.pool.connection() as conn, conn.transaction():
+            row: dict[str, Any] | None = await (
+                await conn.execute(
+                    "update teachings set status = %s, decided_by = %s, decided_at = %s, "
+                    "text = coalesce(%s, text) where id = %s and contract_id = %s "
+                    "and status = 'proposed' and (%s::text is null or source_id = %s) "
+                    "returning id, contract_id, text, alerts, status, source_id, contradicts, "
+                    "slack_ts",
+                    (
+                        "approved" if approve else "rejected",
+                        by,
+                        now(),
+                        text,
+                        teaching_id,
+                        contract_id,
+                        source_id,
+                        source_id,
+                    ),
+                )
+            ).fetchone()
+            if row is None:
+                return None
+            row["retired"] = None
+            if approve and row["contradicts"] is not None:
+                retired = await (
+                    await conn.execute(
+                        "update teachings set status = 'retired', decided_by = %s, "
+                        "decided_at = %s where id = %s and contract_id = %s "
+                        "and status = 'approved' returning id",
+                        (by, now(), row["contradicts"], contract_id),
+                    )
+                ).fetchone()
+                row["retired"] = retired["id"] if retired else None
+        return row
+
+    async def retire_teaching(self, teaching_id: int, contract_id: str, by: str) -> bool:
+        row = await self._one(
+            "update teachings set status = 'retired', decided_by = %s, decided_at = %s "
+            "where id = %s and contract_id = %s and status = 'approved' returning id",
+            (by, now(), teaching_id, contract_id),
+        )
+        return row is not None
+
     async def open_triages(
         self, contract_id: str, since: float, group_key: str
     ) -> list[Investigation]:

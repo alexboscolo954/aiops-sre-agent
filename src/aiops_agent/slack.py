@@ -78,6 +78,98 @@ def related_blocks(text: str, investigation_id: str, related_id: int) -> list[di
     ]
 
 
+def feedback_blocks(investigation_id: str) -> list[dict[str, Any]]:
+    """Its own thread message after a Triage Report: the Report's reply can run past a
+    section block's 3,000 characters, and the parent keeps only its own buttons."""
+    value = json.dumps({"id": investigation_id})
+    return [
+        {"type": "section", "text": {"type": "mrkdwn", "text": "Was this Report right?"}},
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "action_id": "feedback_right",
+                    "text": {"type": "plain_text", "text": ":+1: Right"},
+                    "value": value,
+                },
+                {
+                    "type": "button",
+                    "action_id": "feedback_wrong",
+                    "text": {"type": "plain_text", "text": ":-1: Wrong…"},
+                    "value": value,
+                },
+            ],
+        },
+    ]
+
+
+def text_modal(
+    callback: str, title: str, label: str, metadata: str, submit: str, limit: int, initial: str = ""
+) -> dict[str, Any]:
+    """A modal with one required text input, named after the callback."""
+    element: dict[str, Any] = {
+        "type": "plain_text_input",
+        "action_id": callback,
+        "multiline": True,
+        "max_length": limit,
+    }
+    if initial:
+        element["initial_value"] = initial
+    return {
+        "type": "modal",
+        "callback_id": callback,
+        "private_metadata": metadata,
+        "title": {"type": "plain_text", "text": title},
+        "submit": {"type": "plain_text", "text": submit},
+        "close": {"type": "plain_text", "text": "Cancel"},
+        "blocks": [
+            {
+                "type": "input",
+                "block_id": callback,
+                "label": {"type": "plain_text", "text": label},
+                "element": element,
+            }
+        ],
+    }
+
+
+def teaching_text(row: dict[str, Any]) -> str:
+    """A Teaching as its review post shows it."""
+    alerts = ", ".join(row["alerts"]) or "every alert"
+    text = f":bulb: Teaching #{row['id']} (for {clean(alerts, 300)}): *{clean(row['text'], 600)}*"
+    if row.get("contradicts"):
+        text += (
+            f"\n:warning: It contradicts Teaching #{row['contradicts']}: "
+            "approving it retires that one."
+        )
+    return text
+
+
+def teaching_blocks(row: dict[str, Any], investigation_id: str) -> list[dict[str, Any]]:
+    value = json.dumps({"id": investigation_id, "teaching": row["id"]})
+    buttons = [
+        ("teaching_approve", "Approve", "primary"),
+        ("teaching_edit", "Edit…", None),
+        ("teaching_reject", "Reject", "danger"),
+    ]
+    elements = []
+    for action_id, label, style in buttons:
+        b: dict[str, Any] = {
+            "type": "button",
+            "action_id": action_id,
+            "text": {"type": "plain_text", "text": label},
+            "value": value,
+        }
+        if style:
+            b["style"] = style
+        elements.append(b)
+    return [
+        {"type": "section", "text": {"type": "mrkdwn", "text": teaching_text(row)}},
+        {"type": "actions", "elements": elements},
+    ]
+
+
 def mrkdwn(markdown: str) -> str:
     """The Report's markdown as Slack mrkdwn: headings and **bold** become *bold*,
     and list dashes become bullets."""

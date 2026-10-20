@@ -362,7 +362,7 @@ def test_the_operator_approves_once_with_the_button(
         sock.send(click("approve", approve["value"]))
         wait_for(c, tid, "done")
         until(lambda: any("Approved by <@U0OPERATOR1>" in r for r in replies(slack)))
-        until(lambda: "done" in slack.calls[-2][1]["text"])  # parent done, then the Report
+        until(lambda: "done" in slack.calls[-3][1]["text"])  # parent done, Report, feedback
         assert buttons(slack) == {}
         sock.send(click("approve", approve["value"]))  # a second click
         until(lambda: ephemerals(slack) == [(OPERATOR, ANY_DECIDED)])
@@ -462,7 +462,7 @@ def test_stale_and_api_decisions_take_the_buttons_away(
         tid = c.post(URL, json=stale_alert, headers=HOOK).json()["investigation"]
         wait_for(c, tid, "done")
         until(lambda: any(r.startswith(":hourglass: Stale") for r in replies(slack)))
-        until(lambda: "done" in slack.calls[-2][1]["text"])
+        until(lambda: "done" in slack.calls[-3][1]["text"])  # parent done, Report, feedback
         assert buttons(slack) == {}
 
 

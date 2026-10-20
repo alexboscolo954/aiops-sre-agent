@@ -124,8 +124,11 @@ _Avoid_: Action taken
 **Similar incident**:
 A past Report from the same Contract that the agent finds and uses as a lead. It never comes from another Contract.
 
+**Feedback**:
+The Operator's verdict on a finished Triage Report: right, or wrong with a correction. A correction, like a reason the Operator typed when rejecting a Proposed action, makes the agent propose a Teaching.
+
 **Teaching**:
-A lesson the agent proposes after an Investigation or from the Operator's feedback. It is used only after the Operator approves it, and it always stays in its own Contract.
+A lesson for future Investigations of one Contract, at most 500 characters, optionally for some alert names only. The agent proposes it from a correction or a rejection reason; the Operator approves (possibly editing it), rejects it, or writes one by hand. Only an approved Teaching is ever used, and it always stays in its own Contract. One that says what an approved Teaching already says is not proposed; one that contradicts an approved Teaching retires it when approved. The Operator can retire one at any time.
 _Avoid_: Memory, learning (for a single lesson)
 
 **Shared knowledge**:

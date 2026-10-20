@@ -49,6 +49,24 @@
 <pre>{{ t.report.to_markdown(t.executed_actions) }}</pre>
 {% endif %}
 {% if t.status == "running" %}<p>Working on it: this page reloads every 5 seconds.</p>{% endif %}
+{% if t.kind == "triage" and t.status == "done" and t.report %}
+<h2>Was this Report right?</h2>
+<form method="post" action="/console/investigations/{{ t.id }}/feedback">
+  <input type="hidden" name="correct" value="1">
+  <button type="submit">Right</button>
+</form>
+<form method="post" action="/console/investigations/{{ t.id }}/feedback">
+  <input type="hidden" name="correct" value="0">
+  <p><textarea name="correction" rows="3" cols="80" maxlength="2000" required></textarea></p>
+  <button type="submit">Wrong</button> Say what was wrong: the agent drafts a Teaching from it for your review.
+</form>
+{% for f in feedback %}
+<p>{{ f.at | when }} · {{ f.by }}: {{ "right" if f.correct else "wrong" }}{% if f.correction %}: {{ f.correction }}{% endif %}</p>
+{% endfor %}
+{% for x in taught %}
+<p>Teaching <a href="/console/teachings?contract={{ t.contract_id }}">#{{ x.id }}</a> ({{ x.status }}): {{ x.text }}</p>
+{% endfor %}
+{% endif %}
 {% if t.answer %}
 <h2>Answer</h2>
 <pre>{{ t.answer.to_markdown() }}</pre>

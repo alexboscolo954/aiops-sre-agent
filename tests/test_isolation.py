@@ -392,3 +392,26 @@ async def test_past_incidents_never_cross_contracts(
                 assert (await client.call_tool("incidents_read", {"id": f"{cid}-past"})).data
                 with pytest.raises(ToolError, match="no past Report"):
                     await client.call_tool("incidents_read", {"id": f"{other}-past"})
+
+
+@pytest.mark.anyio
+async def test_teachings_never_cross_contracts(two_contracts: Contracts, database_url: str) -> None:
+    """Each Contract's approved Teachings are its own, and one Contract's Teaching can't
+    be decided or retired as another's."""
+    from aiops_agent.store import Store, connect
+
+    async with connect(database_url) as pool:
+        store = Store(pool)
+        await store.migrate()
+        ids = {}
+        for cid in two_contracts:
+            ids[cid, "approved"] = await store.add_teaching(
+                cid, f"{cid} lesson", [], approved_by="x"
+            )
+            ids[cid, "proposed"] = await store.add_teaching(cid, f"{cid} draft", [])
+        for cid in two_contracts:
+            other = next(o for o in two_contracts if o != cid)
+            assert [t["text"] for t in await store.teachings(cid, "approved")] == [f"{cid} lesson"]
+            assert await store.decide_teaching(ids[other, "proposed"], cid, True, "x") is None
+            assert not await store.retire_teaching(ids[other, "approved"], cid, "x")
+        assert {t["status"] for t in await store.teachings()} == {"approved", "proposed"}

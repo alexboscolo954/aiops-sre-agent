@@ -37,28 +37,42 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel
 
-from aiops_agent import agent, console, contracts, related
+from aiops_agent import agent, console, contracts, related, teachings
 from aiops_agent.config import Settings
 from aiops_agent.contracts import Jira
 from aiops_agent.models import AlertGroup, GrafanaAlertGroup, Investigation
 from aiops_agent.observability import PENDING_APPROVALS, TRIAGE_SECONDS, TRIAGES
-from aiops_agent.safety import redact_capped
+from aiops_agent.safety import redact, redact_capped
 from aiops_agent.servers import jira
 from aiops_agent.slack import (
     STATUS,
     Slack,
     clean,
     client_text,
+    feedback_blocks,
     parent_blocks,
     parent_text,
     reject_modal,
     related_blocks,
     related_text,
     reply_text,
+    teaching_blocks,
+    teaching_text,
+    text_modal,
 )
 from aiops_agent.store import Store, connect, now
 
 log = logging.getLogger("aiops.api")
+MODALS = ("reject", "correction", "teaching_edit")  # Slack modals: <callback>_submit
+TEACHING_ACTIONS = {
+    "feedback_right",
+    "feedback_wrong",
+    "correction_submit",
+    "teaching_approve",
+    "teaching_edit",
+    "teaching_edit_submit",
+    "teaching_reject",
+}
 DEDUP_SECONDS = 30 * 60
 PROBE_SECONDS = 10  # each health check
 
@@ -217,6 +231,123 @@ def create_app(
         for reply in (note, reply_text(t, buttons)):
             if reply:
                 await slack.post(channel, reply, thread_ts=t.slack_ts)
+        if buttons and t.kind == "triage" and t.status == "done" and t.report:
+            await slack.post(channel, "Was this Report right?", t.slack_ts, feedback_blocks(t.id))
+
+    async def thread_note(t: Investigation, text: str) -> None:
+        """A reply in the Investigation's thread, when it has one."""
+        if t.slack_channel and t.slack_ts and settings.slack_bot_token:
+            await db["slack"].post(t.slack_channel, text, thread_ts=t.slack_ts)
+
+    def usage_sink(t: Investigation) -> agent.UsageSink:
+        """Each model call's tokens and cost, on the Investigation it is for."""
+        contract = by_id[t.contract_id]
+        name = contract.model or settings.model
+        price = settings.model_prices.get(name)
+
+        async def used(input_tokens: int, output_tokens: int) -> None:
+            cost = price.cost(input_tokens, output_tokens) if price else None
+            await store().record_usage(t.id, t.contract_id, name, input_tokens, output_tokens, cost)
+
+        return used
+
+    async def give_feedback(
+        t: Investigation, correct: bool, correction: str | None, by: str, who: str
+    ) -> None:
+        """The Operator's verdict on a finished Triage Report, recorded first; a
+        correction then has a Teaching drafted from it."""
+        await store().add_feedback(t, correct, correction, by)
+        log.info("investigation %s feedback correct=%s by %s", t.id, correct, by)
+        if correct:
+            await thread_note(t, f":+1: {who} marked this Report right.")
+            return
+        if not correction:
+            return
+        await thread_note(t, f":-1: {who} marked this Report wrong: {clean(correction, 2000)}")
+        spawn(propose(t, correction, by))
+
+    async def propose(t: Investigation, correction: str, by: str) -> None:
+        """A Teaching drafted from the Operator's words, into the review queue. Never
+        fails anything else: the feedback or decision is already recorded."""
+        contract = by_id.get(t.contract_id)
+        if contract is None:
+            return
+        try:
+            if reason := await over_budget(t.contract_id):
+                await thread_note(t, f":no_entry: No Teaching drafted. {reason}")
+                return
+            approved = await store().teachings(t.contract_id, "approved")  # never others
+            context = (
+                t.report.to_markdown(t.executed_actions)
+                if t.report
+                else f"No Report ({t.status}) for {t.title}"
+            )
+            d = await teachings.draft(
+                model_for(contract),
+                agent.for_contract(settings, contract),
+                context,
+                correction,
+                approved,
+                usage_sink(t),
+            )
+        except Exception:
+            log.exception("investigation %s: no Teaching drafted", t.id)
+            await thread_note(
+                t, ":warning: Couldn't draft a Teaching from that: write one on the console."
+            )
+            return
+        pending = await store().teachings(t.contract_id, "proposed")
+        twin = d.duplicate_of or next(
+            (x["id"] for x in approved + pending if teachings.same(x["text"], d.text)), None
+        )
+        if twin is not None:
+            twice = f":repeat: Already taught, or waiting for review: Teaching #{twin}."
+            await thread_note(t, twice)
+            return
+        tid = await store().add_teaching(
+            t.contract_id,
+            redact(d.text),  # stored as the review post shows it
+            d.alerts,
+            source_id=t.id,
+            correction=correction,
+            contradicts=d.contradicts,
+        )
+        log.info("investigation %s proposed teaching %s (from %s)", t.id, tid, by)
+        row = await store().teaching(tid)
+        assert row is not None
+        if t.slack_channel and t.slack_ts and settings.slack_bot_token:
+            text = teaching_text(row)
+            if not buttons:
+                text += "\nReview it on the console's Teachings page."
+            blocks = teaching_blocks(row, t.id) if buttons else None
+            ts = await db["slack"].post(t.slack_channel, text, t.slack_ts, blocks)
+            if ts:
+                await store().set_teaching_post(tid, ts)
+        await budget_notices(t.contract_id)
+
+    async def decide_teaching(
+        teaching_id: int,
+        contract_id: str,
+        approve: bool,
+        by: str,
+        who: str,
+        text: str | None = None,
+        source_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Approve (with the text the Operator submitted) or reject a proposed
+        Teaching, once, then show the verdict on its review post."""
+        row = await store().decide_teaching(teaching_id, contract_id, approve, by, text, source_id)
+        if row is None:
+            return None
+        log.info("teaching %s %s by %s", teaching_id, row["status"], by)
+        source = await store().get(row["source_id"]) if row["source_id"] else None
+        if row["slack_ts"] and source and source.slack_channel and settings.slack_bot_token:
+            mark = ":white_check_mark: Approved" if approve else ":no_entry: Rejected"
+            shown = f"{teaching_text(row)}\n{mark} by {who}."
+            if row["retired"]:
+                shown += f" Teaching #{row['retired']} is retired."
+            await db["slack"].update(source.slack_channel, row["slack_ts"], shown, [])
+        return row
 
     async def over_budget(contract_id: str) -> str | None:
         """Why a new Run may not start: the Contract has spent its monthly budget.
@@ -304,7 +435,11 @@ def create_app(
     def agent_kind(t: Investigation) -> agent.Kind:
         return "question" if t.kind == "question" else "triage"  # Checks come in 8.1
 
-    async def run(t: Investigation, step: Any, note: str | None = None) -> None:
+    async def run(
+        t: Investigation, step: Any, note: str | None = None, teach: tuple[str, str] | None = None
+    ) -> None:
+        """teach: (the Operator's words, who): a Teaching is drafted once the Run ends,
+        with its Report as context, never alongside it."""
         await to_slack(t, note)  # "investigating", in a new or the existing thread
         async with slots:
             try:
@@ -315,15 +450,6 @@ def create_app(
                     await store().record_tool_call(t.id, t.contract_id, tool, args, result, error)
 
                 contract = by_id[t.contract_id]
-                name = contract.model or settings.model
-                price = settings.model_prices.get(name)
-
-                async def used(input_tokens: int, output_tokens: int) -> None:
-                    cost = price.cost(input_tokens, output_tokens) if price else None
-                    await store().record_usage(
-                        t.id, t.contract_id, name, input_tokens, output_tokens, cost
-                    )
-
                 checkpointer = db["checkpointer"]
                 async with agent.open_agent(
                     settings,
@@ -332,7 +458,7 @@ def create_app(
                     checkpointer,
                     record,
                     kind=agent_kind(t),
-                    usage=used,
+                    usage=usage_sink(t),
                 ) as a:
                     apply(t, await step(a))
             except Exception as e:  # report every failure, never lose an alert silently
@@ -353,6 +479,8 @@ def create_app(
         await budget_notices(t.contract_id)
         if t.status == "awaiting_approval":
             spawn(expire(t.id, t.deadline))
+        if teach:
+            await propose(t, *teach)
 
     async def expire(investigation_id: str, deadline: float | None) -> None:
         await asyncio.sleep(max(0.0, (deadline or 0) - now()))
@@ -367,10 +495,12 @@ def create_app(
         message: str,
         decided_by: str,
         note: str,
+        reason: str | None = None,
     ) -> bool:
         """The one decision path (API, Slack buttons, Stale): claim the pause named
         by its deadline, record who decided, resume. False when that pause is
-        already decided, Stale, or not the current one."""
+        already decided, Stale, or not the current one. reason: what the Operator
+        typed when rejecting, which has a Teaching drafted after the Run."""
         pending = await store().claim(t.id, deadline)
         if pending is None:
             return False
@@ -387,7 +517,11 @@ def create_app(
             for _ in pending
         ]
         t.status, t.pending, t.deadline = "running", [], None
-        spawn(run(t, lambda a: agent.resume(a, t.id, decisions), note))
+        teach = None
+        if reason and not approve:
+            names = ", ".join(sorted({p["name"] for p in pending}))
+            teach = (f"The Operator rejected the proposed {names}, saying: {reason}", decided_by)
+        spawn(run(t, lambda a: agent.resume(a, t.id, decisions), note, teach))
         return True
 
     async def reject_stale(investigation_id: str, deadline: float | None, reason: str) -> bool:
@@ -526,6 +660,65 @@ def create_app(
         await slack.post(channel, reply, t.slack_ts)
         spawn(run(new, lambda a: agent.start(a, group, new.id)))
 
+    async def teaching_interaction(
+        action_id: str,
+        p: dict[str, Any],
+        pause: dict[str, Any],
+        t: Investigation,
+        channel: str,
+        user: str,
+    ) -> None:
+        """Feedback on a Report and the review of its Teachings, from the Operator in
+        the Investigation's own channel (checked by the caller)."""
+        slack: Slack = db["slack"]
+        by, who = f"slack:{user}", f"<@{user}>"
+
+        def typed(callback: str) -> str:
+            value = p["view"]["state"]["values"][callback][callback].get("value") or ""
+            return str(value).strip()
+
+        if action_id in ("feedback_right", "feedback_wrong", "correction_submit"):
+            if not (t.kind == "triage" and t.status == "done" and t.report):
+                await slack.ephemeral(channel, user, "Feedback is for a finished Triage Report.")
+            elif action_id == "feedback_right":
+                await give_feedback(t, True, None, by, who)
+            elif action_id == "feedback_wrong":
+                meta = json.dumps({"id": t.id, "channel": channel})
+                label = "Your correction. The agent drafts a Teaching from it for your review."
+                modal = text_modal("correction", "What was wrong?", label, meta, "Send", 2000)
+                await slack.open_view(p["trigger_id"], modal)
+            elif correction := typed("correction"):
+                await give_feedback(t, False, correction, by, who)
+            return
+        tid = int(pause["teaching"])
+        gone = "Already decided, or not a Teaching of this thread."
+        if action_id == "teaching_edit":
+            row = await store().teaching(tid)
+            if not row or row["status"] != "proposed" or row["source_id"] != t.id:
+                await slack.ephemeral(channel, user, gone)
+                return
+            meta = json.dumps({"id": t.id, "channel": channel, "teaching": tid})
+            modal = text_modal(
+                "teaching_edit",
+                "Edit and approve",
+                "The Teaching, as it will be used",
+                meta,
+                "Approve",
+                teachings.LIMIT,
+                row["text"],
+            )
+            await slack.open_view(p["trigger_id"], modal)
+            return
+        approve = action_id in ("teaching_approve", "teaching_edit_submit")
+        text = typed("teaching_edit") if action_id == "teaching_edit_submit" else None
+        if text is not None and not 0 < len(text) <= teachings.LIMIT:
+            size = f"A Teaching is 1 to {teachings.LIMIT} characters: nothing changed."
+            await slack.ephemeral(channel, user, size)
+            return
+        decided = await decide_teaching(tid, t.contract_id, approve, by, who, text, t.id)
+        if decided is None:
+            await slack.ephemeral(channel, user, gone)
+
     async def interaction(p: dict[str, Any]) -> None:
         """A Slack button click or reject modal, from Socket Mode (already acked)."""
         slack: Slack = db["slack"]
@@ -533,9 +726,10 @@ def create_app(
         if p.get("type") == "block_actions":
             action = p["actions"][0]
             pause, channel = json.loads(action["value"]), p["channel"]["id"]
-        elif p.get("type") == "view_submission" and p["view"]["callback_id"] == "reject":
+        elif p.get("type") == "view_submission" and p["view"]["callback_id"] in MODALS:
             pause = json.loads(p["view"]["private_metadata"])
-            channel, action = pause["channel"], {"action_id": "reject_submit"}
+            channel = pause["channel"]
+            action = {"action_id": f"{p['view']['callback_id']}_submit"}
         else:
             return
         if user != operator:
@@ -548,6 +742,9 @@ def create_app(
             return
         if action["action_id"] == "send_to_client":
             await send_to_client(t, channel, user)
+            return
+        if action["action_id"] in TEACHING_ACTIONS:
+            await teaching_interaction(action["action_id"], p, pause, t, channel, user)
             return
         if action["action_id"] == "triage_separately":
             message_ts = p.get("container", {}).get("message_ts")
@@ -573,7 +770,7 @@ def create_app(
             message = reason or "Rejected by the Operator. Do not retry."
             shown = f": {clean(reason, 2000)}" if reason else ""
             done = await settle(
-                t, deadline, False, message, by, f":no_entry: Rejected by {who}{shown}"
+                t, deadline, False, message, by, f":no_entry: Rejected by {who}{shown}", reason
             )
         if not done:
             await slack.ephemeral(channel, user, "Already decided or Stale: nothing to decide.")
@@ -771,7 +968,7 @@ def create_app(
             shown = f": {clean(decision.message, 2000)}" if decision.message else ""
             note = f":no_entry: Rejected through the API{shown}"
         decided = t.status == "awaiting_approval" and await settle(
-            t, t.deadline, decision.approve, message, "operator", note
+            t, t.deadline, decision.approve, message, "operator", note, decision.message
         )
         if not decided:  # already decided, stale, or never paused
             current = await store().get(t.id)
@@ -793,7 +990,22 @@ def create_app(
             message = reason.strip() or "Rejected by the Operator. Do not retry."
             shown = f": {clean(reason.strip(), 2000)}" if reason.strip() else ""
             note = f":no_entry: Rejected by {who}{shown}"
-        return await settle(t, deadline, approve, message, f"console:{login}", note)
+        typed = reason.strip() or None
+        return await settle(t, deadline, approve, message, f"console:{login}", note, typed)
+
+    async def console_feedback(
+        t: Investigation, correct: bool, correction: str | None, login: str
+    ) -> None:
+        await give_feedback(t, correct, correction, f"console:{login}", clean(login, 200))
+
+    async def console_decide_teaching(
+        row: dict[str, Any], approve: bool, text: str | None, login: str
+    ) -> bool:
+        who = f"{clean(login, 200)} in the console"
+        by = f"console:{login}"
+        return (
+            await decide_teaching(row["id"], row["contract_id"], approve, by, who, text) is not None
+        )
 
     async def console_ask(contract_id: str, text: str, question_id: str | None) -> str | None:
         """A Question from the console, or a follow-up on question_id: the
@@ -856,6 +1068,8 @@ def create_app(
                 approver_token,
                 console_file_jira,
                 jira_of,
+                console_feedback,
+                console_decide_teaching,
             )
         )
 

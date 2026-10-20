@@ -31,6 +31,7 @@ from aiops_agent.contracts import Contract, Jira
 from aiops_agent.models import Investigation
 from aiops_agent.safety import redact
 from aiops_agent.store import Store, now
+from aiops_agent.teachings import LIMIT as TEACHING_LIMIT
 
 # Autoescape always: alert titles come from client Alertmanagers, Reports and
 # Answers from a model that reads tool output. Never mark anything |safe.
@@ -55,6 +56,11 @@ QUESTION_LIMIT = 4000
 Health = Callable[[Contract], Awaitable[list[dict[str, Any]]]]
 # (investigation, the Operator's login) -> (the issue key, or None and why)
 FileJira = Callable[[Investigation, str], Awaitable[tuple[str | None, str]]]
+# (a finished Triage, right, the correction when wrong, login)
+Feedback = Callable[[Investigation, bool, str | None, str], Awaitable[None]]
+# (a proposed Teaching's row, approve, the text the Operator submitted, login) -> decided
+DecideTeaching = Callable[[dict[str, Any], bool, str | None, str], Awaitable[bool]]
+CORRECTION_LIMIT = 2000
 
 
 def action_key(approver_token: str) -> str:
@@ -87,6 +93,8 @@ def router(
     approver_token: str,
     file_jira: FileJira,
     jira_of: Callable[[Investigation], Jira | None],
+    feedback: Feedback,
+    decide_teaching: DecideTeaching,
 ) -> APIRouter:
     key = action_key(approver_token)
 
@@ -162,6 +170,8 @@ def router(
             tool_calls=await store().tool_calls(t.id),
             decisions=await store().decisions(t.id),
             related=await store().related(t.id),
+            feedback=await store().feedback(t.id),
+            taught=[x for x in await store().teachings(t.contract_id) if x["source_id"] == t.id],
         )
 
     @console.get("/investigations/{investigation_id}/scenario.yaml")
@@ -232,6 +242,81 @@ def router(
         if await ask(t.contract_id, question_text(await form(request)), t.id) is None:
             raise HTTPException(409, "still answering, or not a Question")
         return RedirectResponse(f"/console/investigations/{t.id}", 303)
+
+    @console.post("/investigations/{investigation_id}/feedback")
+    async def give_feedback(
+        request: Request, investigation_id: str, login: str = Depends(acting)
+    ) -> RedirectResponse:
+        t = await store().get(investigation_id)
+        if t is None:
+            raise HTTPException(404, "unknown investigation")
+        if not (t.kind == "triage" and t.status == "done" and t.report):
+            raise HTTPException(409, "feedback is for a finished Triage Report")
+        f = await form(request)
+        correct = f.get("correct") == "1"
+        correction = f.get("correction", "").strip()
+        if not correct and not 0 < len(correction) <= CORRECTION_LIMIT:
+            raise HTTPException(400, f"say what was wrong, in 1 to {CORRECTION_LIMIT} characters")
+        await feedback(t, correct, None if correct else correction, login)
+        return RedirectResponse(f"/console/investigations/{t.id}", 303)
+
+    @console.get("/teachings", response_class=HTMLResponse)
+    async def teachings_page(
+        request: Request, contract: str | None = None, login: str = Depends(viewer)
+    ) -> HTMLResponse:
+        shown = contract if contract in by_id else None
+        rows = await store().teachings(shown)
+        return page(
+            request,
+            "teachings.html",
+            login=login,
+            contracts=sorted(by_id),
+            shown=shown,
+            proposed=[r for r in rows if r["status"] == "proposed"],
+            approved=[r for r in rows if r["status"] == "approved"],
+            past=[r for r in rows if r["status"] in ("rejected", "retired")],
+            limit=TEACHING_LIMIT,
+        )
+
+    async def teaching_row(teaching_id: int) -> dict[str, Any]:
+        row = await store().teaching(teaching_id)
+        if row is None or row["contract_id"] not in by_id:
+            raise HTTPException(404, "unknown Teaching")
+        return row
+
+    @console.post("/teachings/{teaching_id}/decision")
+    async def teaching_decision(
+        request: Request, teaching_id: int, login: str = Depends(acting)
+    ) -> RedirectResponse:
+        row = await teaching_row(teaching_id)
+        f = await form(request)
+        approve = f.get("approve") == "1"
+        text = f.get("text", "").strip() if approve else None
+        if approve and not 0 < len(text or "") <= TEACHING_LIMIT:
+            raise HTTPException(400, f"a Teaching is 1 to {TEACHING_LIMIT} characters")
+        if not await decide_teaching(row, approve, text, login):
+            raise HTTPException(409, "already decided")
+        return RedirectResponse(f"/console/teachings?contract={row['contract_id']}", 303)
+
+    @console.post("/teachings/{teaching_id}/retire")
+    async def retire(teaching_id: int, login: str = Depends(acting)) -> RedirectResponse:
+        row = await teaching_row(teaching_id)
+        if not await store().retire_teaching(row["id"], row["contract_id"], f"console:{login}"):
+            raise HTTPException(409, "not an approved Teaching")
+        return RedirectResponse(f"/console/teachings?contract={row['contract_id']}", 303)
+
+    @console.post("/teachings")
+    async def write_teaching(request: Request, login: str = Depends(acting)) -> RedirectResponse:
+        """Written by the Operator: approved at once."""
+        f = await form(request)
+        if f.get("contract") not in by_id:
+            raise HTTPException(400, "which Contract?")
+        text = f.get("text", "").strip()
+        if not 0 < len(text) <= TEACHING_LIMIT:
+            raise HTTPException(400, f"a Teaching is 1 to {TEACHING_LIMIT} characters")
+        alerts = [a.strip() for a in f.get("alerts", "").split(",") if a.strip()]
+        await store().add_teaching(f["contract"], text, alerts, approved_by=f"console:{login}")
+        return RedirectResponse(f"/console/teachings?contract={f['contract']}", 303)
 
     @console.get("/health", response_class=HTMLResponse)
     async def health_page(request: Request, login: str = Depends(viewer)) -> HTMLResponse:
