@@ -427,6 +427,33 @@ async def test_past_incidents_by_meaning_never_cross_contracts(
 
 
 @pytest.mark.anyio
+async def test_checks_never_cross_contracts(two_contracts: Contracts, database_url: str) -> None:
+    """Two Contracts with a Check of the same name: each has its own schedule row, a
+    claim fires only its own, and an Open failure is set only on its own."""
+    from aiops_agent.models import Investigation
+    from aiops_agent.store import Store, connect
+
+    async with connect(database_url) as pool:
+        store = Store(pool)
+        await store.migrate()
+        for cid in two_contracts:
+            await store.sync_checks(cid, {"healthy": (f"{cid} key", 100.0)})
+        a, b = list(two_contracts)
+        t = Investigation(id="ta", kind="check", contract_id=a, title="t", started=100.0)
+        assert await store.claim_check(t, "healthy", 100.0, 200.0, None) == "started"
+        assert await store.set_failing(a, "healthy", "ta", None)
+        mine, theirs = (
+            await store.check_schedule(a, "healthy"),
+            await store.check_schedule(b, "healthy"),
+        )
+        assert mine and theirs
+        assert (mine["next_due"], mine["last_id"], mine["failing_id"]) == (200.0, "ta", "ta")
+        assert (theirs["next_due"], theirs["last_id"], theirs["failing_id"]) == (100.0, None, None)
+        assert theirs["schedule"] == f"{b} key"
+        assert [r["contract_id"] for r in await store.check_schedules(b)] == [b]
+
+
+@pytest.mark.anyio
 async def test_teachings_never_cross_contracts(two_contracts: Contracts, database_url: str) -> None:
     """Each Contract's approved Teachings are its own, and one Contract's Teaching can't
     be decided or retired as another's."""

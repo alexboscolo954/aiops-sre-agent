@@ -83,7 +83,11 @@ def validate_contracts(directory: Path) -> int:
         integrations = ", ".join(i.name for i in c.integrations)
         clusters = ", ".join(cl.name for cl in c.clusters) or "-"
         secrets = len(c.secret_refs())
-        print(f"{c.id}: clusters {clusters}; integrations {integrations}; secrets {secrets}")
+        checks = ", ".join(k.name for k in c.checks) or "-"
+        print(
+            f"{c.id}: clusters {clusters}; integrations {integrations}; checks {checks}; "
+            f"secrets {secrets}"
+        )
     return 0
 
 
@@ -221,7 +225,8 @@ def main(argv: list[str] | None = None) -> int:
                     + (" (error)" if c["error"] else "")
                     for i, c in enumerate(r["call_log"], 1)
                 )
-                body = f"{r.get('answer') or r['report']}\n\n**Tool calls**\n{calls}\n"
+                result = r.get("answer") or r["report"] or r.get("check")
+                body = f"{result}\n\n**Tool calls**\n{calls}\n"
                 (args.out / f"{r['scenario']}.md").write_text(body)
         print(json.dumps(results, indent=2) if args.json else evals.table(results))
         return 0 if all(r["passed"] for r in results) else 1

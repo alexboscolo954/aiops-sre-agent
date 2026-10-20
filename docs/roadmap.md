@@ -300,6 +300,7 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
 
 **8.1 Scheduled Checks.**
 - Per Contract, a cron schedule and a check prompt in YAML. A passing Check is recorded quietly. A failing one produces a Report and notifies the Operator. The schedule lives in Postgres, so a restart never fires a Check twice.
+- Grilled 2026-10-20 (all recommended): a CheckResult (passed, summary, Evidence, a Report when failed); 5-field cron via `cronsim`, a per-Check time zone, at most every 15 minutes; missed fire times run once; an Open failure keeps one thread (*still failing*, *recovered*); Proposed actions as in a Triage; skipped at 100% of the budget. Part a: config, schedule, runner, Slack and console. Part b: Scenario support and two Scenarios. Both built 2026-10-20; the two Scenarios pass on Haiku.
 
 **8.2 Deploy verification.**
 - A rollout or ArgoCD sync starts a Check of the new revision after a set delay.
@@ -321,4 +322,4 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
 
 ## Next
 
-Phase 4 first (the Operator's choice: no Contract needs a Relay yet). Phase 4 is done. Phase 5 is done: Azure, AWS and GCP, each with a Scenario recorded from a sandbox. The Operator chose Phase 6 next; 6.1, 6.2 and 6.3 are done; 6.4 waits for a Data policy that needs it. Phase 7 is done: 7.1, 7.2, 7.3 and 7.4.
+Phase 4 first (the Operator's choice: no Contract needs a Relay yet). Phase 4 is done. Phase 5 is done: Azure, AWS and GCP, each with a Scenario recorded from a sandbox. The Operator chose Phase 6 next; 6.1, 6.2 and 6.3 are done; 6.4 waits for a Data policy that needs it. Phase 7 is done: 7.1, 7.2, 7.3 and 7.4. Phase 8: 8.1 is built; 8.2 Deploy verification is next.

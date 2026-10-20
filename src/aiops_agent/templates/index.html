@@ -35,6 +35,27 @@
   <button type="submit">Ask</button> It only reads, and its Answer opens here.
 </form>
 
+<h1>Checks</h1>
+<table>
+  <thead><tr><th>Contract</th><th>Check</th><th>Schedule</th><th>Next</th><th>Last Run</th><th>Open failure</th><th>Last skipped</th></tr></thead>
+  <tbody>
+  {% for k in checks %}
+    <tr>
+      <td><code>{{ k.contract_id }}</code></td>
+      <td>{{ k.name }}</td>
+      <td><code>{{ k.schedule }}</code></td>
+      <td>{{ k.next_due | when }}</td>
+      <td>{% if k.last_id %}<a href="/console/investigations/{{ k.last_id }}">{{ k.last_started | when }}</a>: {{ "passed" if k.last_passed else ("failed" if k.last_passed == false else k.last_status) }}{% else %}-{% endif %}</td>
+      <td>{% if k.failing_id %}<a href="/console/investigations/{{ k.failing_id }}">since this Run</a>{% else %}-{% endif %}</td>
+      <td>{% if k.skipped_at %}{{ k.skipped_at | when }}: {{ k.skipped_reason }}{% else %}-{% endif %}</td>
+    </tr>
+  {% else %}
+    <tr><td colspan="7">No Checks scheduled.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+<p>Passing Checks are left out of the list below.</p>
+
 <h1>Investigations{% if shown %} for <code>{{ shown }}</code> · <a href="/console">all</a>{% endif %}</h1>
 <table>
   <thead><tr><th>Started</th><th>Contract</th><th>Kind</th><th>Status</th><th>Title</th></tr></thead>

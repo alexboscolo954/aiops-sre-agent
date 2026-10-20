@@ -4,7 +4,7 @@ report the agent returns, and the Investigation record the Hub keeps."""
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class Alert(BaseModel):
@@ -167,6 +167,38 @@ class Answer(BaseModel):
         )
 
 
+class CheckResult(BaseModel):
+    """Result of a scheduled Check: does what the Operator wrote hold right now?
+    Every claim must be backed by evidence."""
+
+    passed: bool = Field(
+        description="true only when the evidence shows the Check holds; false when it "
+        "doesn't, or when you couldn't tell (a tool failed, a target is missing)"
+    )
+    summary: str = Field(description="One or two sentences: what holds, or what doesn't")
+    evidence: list[Evidence] = Field(min_length=1)
+    report: TriageReport | None = Field(
+        None,
+        description="Required when passed is false, empty when true: the failure "
+        "investigated like an alert",
+    )
+
+    @model_validator(mode="after")
+    def _report_on_failure(self) -> "CheckResult":
+        if not self.passed and self.report is None:
+            raise ValueError("a failing Check needs its report")
+        if self.passed:
+            self.report = None
+        return self
+
+    def to_markdown(self) -> str:
+        verdict = "Passed" if self.passed else "Failed"
+        return "\n".join(
+            [f"**{verdict}:** {self.summary}", "", "**Evidence**"]
+            + [e.to_markdown() for e in self.evidence]
+        )
+
+
 class Investigation(BaseModel):
     id: str
     kind: Literal["triage", "question", "check"] = "triage"
@@ -178,6 +210,7 @@ class Investigation(BaseModel):
     started: float  # epoch seconds, Python's clock
     report: TriageReport | None = None
     answer: Answer | None = None  # a Question's latest
+    check_result: CheckResult | None = None  # a Check's verdict; its Report when failed
     pending: list[dict[str, Any]] = []
     executed_actions: list[str] = []
     error: str | None = None
@@ -196,5 +229,6 @@ class Investigation(BaseModel):
     # A Question's last @mention (Slack ts): a follow-up must be newer.
     last_mention_ts: str | None = None
     # What started it, as received (written once): the Alert group, or
-    # {"question": text} for a Question's first message. None before migration 0008.
+    # {"question": text} for a Question's first message, {"check": name, "prompt":
+    # text} for a Check. None before migration 0008.
     input: dict[str, Any] | None = None

@@ -62,7 +62,10 @@ _Avoid_: Using "triage" for a single agent invocation
 An Investigation the Operator asks for in their own words, in Slack or the web console. A Question only reads: it never proposes an action. A follow-up in the same thread continues the same Question.
 
 **Check**:
-An Investigation that runs on a schedule or after a deploy, without an alert. A passing Check is recorded quietly. A failing Check produces a Report and notifies the Operator like a Triage does.
+An Investigation that runs on a schedule or after a deploy, without an alert. The Operator writes what healthy means in the Check's prompt, and the agent's verdict is pass or fail. A passing Check is recorded quietly. A failing Check produces a Report and notifies the Operator like a Triage does, including Proposed actions. A Check whose Run fails without a verdict counts as failing.
+
+**Open failure**:
+A Check's failure that the Operator has been told about and that hasn't passed since. Each later failing Run of that Check replies *still failing* in its thread instead of starting a new one, unless it needs an Approval decision. The first passing Run replies *recovered* and ends it.
 
 **Run**:
 One uninterrupted stretch of agent work inside an Investigation. An Investigation without a Proposed action has one Run. Each Approval decision or Stale rejection starts another Run.

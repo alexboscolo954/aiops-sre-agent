@@ -39,6 +39,8 @@ from pydantic import (
     model_validator,
 )
 
+from aiops_agent import checks
+
 SECRETS_FILE = "secrets.sops.yaml"
 SHARED = "shared"
 
@@ -230,6 +232,21 @@ class Related(Strict):
     window_minutes: int | None = Field(None, ge=1)
 
 
+class Check(Strict):
+    """A scheduled Check: the prompt says what healthy means, the schedule when to
+    look (5-field cron in `timezone`, at most once every 15 minutes)."""
+
+    name: Slug
+    schedule: str
+    timezone: str = "UTC"
+    prompt: str = Field(min_length=1, max_length=2000)
+
+    @model_validator(mode="after")
+    def _schedule(self) -> "Check":
+        checks.validate(self.schedule, self.timezone)
+        return self
+
+
 class Contract(Strict):
     id: Slug
     name: str
@@ -243,6 +260,7 @@ class Contract(Strict):
     model: str | None = None
     monthly_budget_usd: float | None = Field(None, gt=0)  # calendar month, UTC
     related: Related = Related()
+    checks: list[Check] = []
 
     _dir: Path = PrivateAttr(default=Path())
     _secrets: dict[str, SecretStr] = PrivateAttr(default_factory=dict)
@@ -253,6 +271,7 @@ class Contract(Strict):
         groups: dict[str, list[str]] = {
             "cluster": [c.name for c in self.clusters],
             "integration": [i.name for i in self.integrations],
+            "check": [c.name for c in self.checks],
         }
         for kind, names in groups.items():
             dupes = sorted({n for n in names if names.count(n) > 1})

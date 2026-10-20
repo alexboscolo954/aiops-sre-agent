@@ -260,7 +260,7 @@ def test_only_the_operator_and_only_a_finished_report(
     assert rows(database_url, "select count(*) from feedback") == [(0,)]
 
 
-def test_slack_feedback_is_for_a_finished_triage_only(
+def test_slack_feedback_is_for_a_finished_report_only(
     settings: Settings, fake_cluster: Any, buttons: FakeSocket, database_url: str
 ) -> None:
     slack = FakeSlack(buttons.url)
@@ -271,7 +271,7 @@ def test_slack_feedback_is_for_a_finished_triage_only(
         wait_for(c, tid, "awaiting_approval")
         for action in ("feedback_right", "feedback_wrong"):
             buttons.send(click(action, json.dumps({"id": tid})))  # forged: no Report yet
-        nope = (OPERATOR, "Feedback is for a finished Triage Report.")
+        nope = (OPERATOR, "Feedback is for a finished Report.")
         until(lambda: ephemerals(slack) == [nope, nope])
     assert rows(database_url, "select count(*) from feedback") == [(0,)]
     assert not [m for m, _, _ in slack.calls if m == "views.open"]

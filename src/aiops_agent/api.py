@@ -37,7 +37,7 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel
 
-from aiops_agent import agent, console, contracts, embeddings, related, teachings
+from aiops_agent import agent, checks, console, contracts, embeddings, related, teachings
 from aiops_agent.config import Settings
 from aiops_agent.contracts import Jira
 from aiops_agent.models import AlertGroup, GrafanaAlertGroup, Investigation
@@ -63,6 +63,8 @@ from aiops_agent.slack import (
 from aiops_agent.store import Store, connect, now
 
 log = logging.getLogger("aiops.api")
+CHECK_TICK = 30  # seconds between looks for due Checks
+REPORTED = ("triage", "check")  # kinds whose Report gets Feedback, Jira, the client
 MODALS = ("reject", "correction", "teaching_edit")  # Slack modals: <callback>_submit
 TEACHING_ACTIONS = {
     "feedback_right",
@@ -181,6 +183,9 @@ def create_app(
             app.state.checkpointer = db["checkpointer"]  # for tests
             await db["checkpointer"].setup()
             await recover()
+            await sync_checks()
+            spawn(scheduler())
+            app.state.due_checks = due_checks  # for tests: one tick at a given time
             if settings.slack_app_token:
                 spawn(db["slack"].listen(settings.slack_app_token, on_socket))
             try:
@@ -203,6 +208,9 @@ def create_app(
     async def notify(t: Investigation) -> None:
         log.info("investigation %s %s", t.id, t.status)
         PENDING_APPROVALS.set(await store().pending_count())
+        if t.kind == "check":
+            await check_slack(t)
+            return
         if t.status in ("done", "failed"):
             TRIAGES.labels(t.status).inc()
             TRIAGE_SECONDS.observe(now() - t.started)
@@ -238,8 +246,38 @@ def create_app(
         for reply in (note, reply_text(t, buttons)):
             if reply:
                 await slack.post(channel, reply, thread_ts=t.slack_ts)
-        if buttons and t.kind == "triage" and t.status == "done" and t.report:
+        if buttons and t.kind in REPORTED and t.status == "done" and t.report:
             await slack.post(channel, "Was this Report right?", t.slack_ts, feedback_blocks(t.id))
+
+    async def check_slack(t: Investigation) -> None:
+        """A passing Check is quiet. A failing one (or one whose Run failed) opens the
+        Check's Open failure, a thread like a Triage's; later failures reply in it,
+        unless they need a decision (their own thread, the Open failure now). The
+        first pass after replies "recovered" there and ends it."""
+        name = str((t.input or {}).get("check", ""))
+        row = await store().check_schedule(t.contract_id, name)
+        open_id = row["failing_id"] if row else None
+        verdict = t.check_result
+        if t.status == "done" and verdict and verdict.passed:
+            if t.slack_ts:  # resumed after a decision in its own thread
+                await to_slack(t)
+            if open_id and await store().set_failing(t.contract_id, name, None, open_id):
+                text = f":white_check_mark: Recovered: {clean(verdict.summary, 1000)} · `{t.id}`"
+                await note_in(open_id, text)
+            return
+        if open_id and not t.slack_ts and t.status != "awaiting_approval":
+            what = verdict.summary if verdict else f"the Run failed: {t.error or 'unknown error'}"
+            await note_in(open_id, f":x: Still failing: {clean(what, 1000)} · `{t.id}`")
+            return
+        await to_slack(t)
+        moved = t.slack_ts and open_id != t.id
+        if moved and await store().set_failing(t.contract_id, name, t.id, open_id) and open_id:
+            await note_in(open_id, f":arrow_right: Continued in a new thread: `{t.id}`")
+
+    async def note_in(investigation_id: str, text: str) -> None:
+        other = await store().get(investigation_id)
+        if other:
+            await thread_note(other, text)
 
     async def thread_note(t: Investigation, text: str) -> None:
         """A reply in the Investigation's thread, when it has one."""
@@ -266,6 +304,8 @@ def create_app(
         if t.kind == "triage":
             group = AlertGroup.model_validate(t.input) if t.input else None
             alerts = {a.labels.get("alertname", "") for a in group.firing} if group else set()
+        elif t.kind == "check":
+            alerts = set()  # no alert names: the general ones only
         text, left = teachings.section(approved, alerts)
         if left:
             log.warning("investigation %s: %d approved Teachings didn't fit", t.id, left)
@@ -448,19 +488,21 @@ def create_app(
 
     def apply(t: Investigation, outcome: agent.Outcome) -> None:
         t.report, t.answer, t.pending = outcome.report, outcome.answer, outcome.pending
+        t.check_result = outcome.check
         t.executed_actions = outcome.executed_actions
         t.status = "done" if outcome.done else "awaiting_approval"
         t.deadline = now() + settings.decision_timeout_seconds if t.pending else None
 
     def agent_kind(t: Investigation) -> agent.Kind:
-        return "question" if t.kind == "question" else "triage"  # Checks come in 8.1
+        return t.kind
 
     async def run(
         t: Investigation, step: Any, note: str | None = None, teach: tuple[str, str] | None = None
     ) -> None:
         """teach: (the Operator's words, who): a Teaching is drafted once the Run ends,
         with its Report as context, never alongside it."""
-        await to_slack(t, note)  # "investigating", in a new or the existing thread
+        if t.kind != "check" or t.slack_ts:  # a Check speaks only once it has a verdict
+            await to_slack(t, note)  # "investigating", in a new or the existing thread
         async with slots:
             try:
                 # Always the Investigation's own Contract, on start and on every resume.
@@ -709,8 +751,8 @@ def create_app(
             return str(value).strip()
 
         if action_id in ("feedback_right", "feedback_wrong", "correction_submit"):
-            if not (t.kind == "triage" and t.status == "done" and t.report):
-                await slack.ephemeral(channel, user, "Feedback is for a finished Triage Report.")
+            if not (t.kind in REPORTED and t.status == "done" and t.report):
+                await slack.ephemeral(channel, user, "Feedback is for a finished Report.")
             elif action_id == "feedback_right":
                 await give_feedback(t, True, None, by, who)
             elif action_id == "feedback_wrong":
@@ -888,6 +930,54 @@ def create_app(
         log.info("question %s follow-up", t.id)
         spawn(run(t, lambda a: agent.ask(a, text, t.id)))
         return True
+
+    async def sync_checks() -> None:
+        """Each configured Check's schedule row; a changed schedule is due anew."""
+        at = now()
+        for c in by_id.values():
+            due = {
+                k.name: (f"{k.schedule} {k.timezone}", checks.next_due(k.schedule, k.timezone, at))
+                for k in c.checks
+            }
+            await store().sync_checks(c.id, due)
+
+    async def due_checks(at: float | None = None) -> list[str]:
+        """Start every due Check once; the ids started. A Check removed from its
+        contract.yaml is ignored. At 100% of the budget it is skipped, quietly (the
+        budget notice already said so)."""
+        at = now() if at is None else at
+        started = []
+        for contract_id, name in await store().due_checks(at):
+            c = by_id.get(contract_id)
+            k = next((k for k in c.checks if k.name == name), None) if c else None
+            if c is None or k is None:
+                continue
+            t = Investigation(
+                id=str(uuid.uuid4()),
+                kind="check",
+                contract_id=c.id,
+                title=f"Check {name}",
+                started=at,
+                input={"check": name, "prompt": k.prompt},
+            )
+            following = checks.next_due(k.schedule, k.timezone, at)
+            status = await store().claim_check(t, name, at, following, await over_budget(c.id))
+            log.info("check %s/%s: %s", c.id, name, status)
+            if status == "started":
+                spawn(run(t, check_step(t, k)))
+                started.append(t.id)
+        return started
+
+    def check_step(t: Investigation, k: contracts.Check) -> Any:
+        return lambda a: agent.check(a, k.name, k.prompt, t.id)
+
+    async def scheduler() -> None:
+        while True:
+            await asyncio.sleep(CHECK_TICK)
+            try:
+                await due_checks()
+            except Exception:  # the next tick tries again
+                log.exception("scheduled Checks failed")
 
     def spawn(coro: Any) -> None:
         task = asyncio.create_task(coro)

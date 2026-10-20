@@ -177,13 +177,17 @@ def mrkdwn(markdown: str) -> str:
     return re.sub(r"(?m)^- ", "• ", text.replace("**", "*"))
 
 
+def status(t: Investigation) -> str:
+    """A Check that finished with a failing verdict is done, but not healthy."""
+    if t.status == "done" and t.check_result and not t.check_result.passed:
+        return ":x: Check failed"
+    return STATUS[t.status]
+
+
 def parent_text(t: Investigation) -> str:
     sent = " · :outbox_tray: sent to the client" if t.client_sent_at else ""
     filed = f" · :ticket: {clean(t.jira_issue, 40)}" if t.jira_issue else ""
-    return (
-        f"*[{clean(t.contract_id)}] {clean(t.title, 300)}*\n"
-        f"{STATUS[t.status]} · `{t.id}`{sent}{filed}"
-    )
+    return f"*[{clean(t.contract_id)}] {clean(t.title, 300)}*\n{status(t)} · `{t.id}`{sent}{filed}"
 
 
 def client_text(t: Investigation) -> str:
@@ -310,6 +314,8 @@ def reply_text(t: Investigation, buttons: bool = False) -> str | None:
         return clean(mrkdwn(t.report.to_markdown(t.executed_actions)))
     if t.status == "done" and t.answer:
         return clean(mrkdwn(t.answer.to_markdown()))
+    if t.status == "done" and t.check_result:
+        return clean(mrkdwn(t.check_result.to_markdown()))
     if t.status == "failed":
         return f"Investigation failed: {clean(t.error or 'unknown error', 2000)}"
     return None

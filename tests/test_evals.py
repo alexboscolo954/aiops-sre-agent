@@ -120,6 +120,12 @@ def test_scenarios_are_well_formed(path: Path, settings: Settings) -> None:
         assert "alert" not in s and s["question"].strip() and s["expect"]["keywords"]
         for source in s["expect"]["evidence"]:
             assert ({source} if isinstance(source, str) else set(source)) <= set(s["tools"])
+    elif "check" in s:  # a verdict; a failing one is a Report too
+        assert "alert" not in s and s["check"]["name"] and s["check"]["prompt"].strip()
+        assert isinstance(s["expect"]["passed"], bool)
+        assert s["expect"]["passed"] or s["expect"]["category"]
+        for source in s["expect"].get("evidence", []):
+            assert ({source} if isinstance(source, str) else set(source)) <= set(s["tools"])
     else:
         AlertGroup.model_validate(s["alert"])
         assert s["expect"]["category"]
@@ -301,3 +307,97 @@ def test_a_result_the_hub_cant_read_counts_as_found() -> None:
     )
     agent.drop_empty_searches(report, [odd])
     assert [e.source for e in report.evidence] == ["kubernetes_pod_logs", "incidents_search"]
+
+
+@pytest.mark.anyio
+async def test_a_check_is_run_and_scored_on_its_verdict(settings: Settings) -> None:
+    recordings = {"kubernetes_list_pods": [{"name": "checkout-1", "restarts": 0}]}
+    listed = call("kubernetes_list_pods", "c1", cluster="kind", namespace="shop")
+    ev = [{"source": "kubernetes_list_pods", "finding": "checkout-1 runs, 0 restarts"}]
+    ok = call("CheckResult", "c2", passed=True, summary="checkout runs.", evidence=ev)
+    spec = {"name": "checkout-up", "prompt": "Is checkout running?"}
+    async with agent.open_agent(
+        settings, replay(settings, recordings), scripted(listed, ok), kind="check"
+    ) as a:
+        outcome, proposed = await evals.check(a, spec, "k1", {})
+    assert proposed == [] and outcome.check and outcome.check.passed
+    expect: dict[str, Any] = {"passed": True, "keywords": ["checkout"]}
+    expect["evidence"] = [["kubernetes_list_pods", "kubernetes_describe_pod"]]
+    assert evals.score_check({"expect": expect}, outcome) == []
+    expect.update(keywords=["reports"], evidence=["kubernetes_pod_logs"], max_tool_calls=0)
+    assert evals.score_check({"expect": expect}, outcome) == [
+        "summary misses ['reports']",
+        "evidence doesn't cite ['kubernetes_pod_logs']",
+        "2 tool calls > 0",
+    ]
+    assert evals.score_check({"expect": {"passed": False}}, outcome) == [
+        "passed is True, expected False"
+    ]
+    assert evals.score_check({"expect": {"passed": True}}, agent.Outcome("t")) == ["no verdict"]
+
+
+@pytest.mark.anyio
+async def test_a_failing_check_is_scored_as_a_report(settings: Settings) -> None:
+    bad = call(
+        "CheckResult",
+        "c1",
+        passed=False,
+        summary="x",
+        evidence=[REPORT["evidence"][0]],
+        report=REPORT,
+    )
+    spec = {"name": "checkout-up", "prompt": "Is checkout running?"}
+    async with agent.open_agent(settings, replay(settings, {}), scripted(bad), kind="check") as a:
+        outcome, _ = await evals.check(a, spec, "k2", {})
+    expect: dict[str, Any] = {
+        "passed": False,
+        "category": ["resource_limits"],
+        "keywords": ["64Mi"],
+    }
+    assert evals.score_check({"expect": expect}, outcome) == []
+    expect["category"] = ["bad_config"]
+    assert evals.score_check({"expect": expect}, outcome) == [
+        "category resource_limits not in ['bad_config']"
+    ]
+
+
+@pytest.mark.anyio
+async def test_a_check_proposing_an_unlisted_action_fails(settings: Settings) -> None:
+    evict = call("kubernetes_evict_pod", "c1", cluster="kind", namespace="shop", name="p")
+    spec = {"name": "checkout-up", "prompt": "Is checkout running?"}
+    toolbox = replay(settings, {"kubernetes_evict_pod": "evicted"}, actions=True)
+    async with agent.open_agent(settings, toolbox, scripted(evict), kind="check") as a:
+        outcome, _ = await evals.check(a, spec, "k3", {})
+    assert evals.score_check({"expect": {"passed": False}}, outcome) == [
+        "attempted write action: ['kubernetes_evict_pod']"
+    ]
+
+
+def test_a_checks_scenario_gets_the_general_teachings_only() -> None:
+    taught = [{"text": "For crash loops.", "alerts": ["KubePodCrashLooping"]}, {"text": "General."}]
+    text = evals.scenario_taught({"check": {"name": "x", "prompt": "y"}, "teachings": taught})
+    assert "General." in text and "For crash loops." not in text
+
+
+@pytest.mark.anyio
+async def test_a_checks_allowed_proposal_is_rejected_and_the_verdict_scored(
+    settings: Settings,
+) -> None:
+    evict = call("kubernetes_evict_pod", "c1", cluster="kind", namespace="shop", name="p")
+    bad = call(
+        "CheckResult",
+        "c2",
+        passed=False,
+        summary="x",
+        evidence=[REPORT["evidence"][0]],
+        report=REPORT,
+    )
+    expect = {"passed": False, "category": ["resource_limits"]}
+    expect["allowed_actions"] = [{"name": "kubernetes_evict_pod"}]  # type: ignore[assignment]
+    spec = {"name": "checkout-up", "prompt": "Is checkout running?"}
+    toolbox = replay(settings, {"kubernetes_evict_pod": "evicted"}, actions=True)
+    async with agent.open_agent(settings, toolbox, scripted(evict, bad), kind="check") as a:
+        outcome, proposed = await evals.check(a, spec, "k4", expect)
+    assert [p["name"] for p in proposed] == ["kubernetes_evict_pod"]
+    assert outcome.executed_actions == [] and outcome.check is not None
+    assert evals.score_check({"expect": expect}, outcome) == []

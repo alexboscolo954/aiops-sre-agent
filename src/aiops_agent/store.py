@@ -19,6 +19,7 @@ from psycopg.errors import UniqueViolation
 from psycopg.rows import DictRow, dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
+from pydantic import BaseModel
 
 from aiops_agent.models import AlertGroup, Investigation
 
@@ -28,7 +29,7 @@ MIGRATION_LOCK = 4_242_001  # pg_advisory_xact_lock key: one Hub migrates at a t
 COLUMNS = (
     "id, kind, contract_id, title, group_key, group_resolved, status, started, report, "
     "pending, executed_actions, error, deadline, slack_channel, slack_ts, client_sent_at, "
-    "client_sent_by, answer, last_mention_ts, input, jira_issue, jira_by, jira_at"
+    "client_sent_by, answer, last_mention_ts, input, jira_issue, jira_by, jira_at, check_result"
 )
 
 
@@ -94,7 +95,12 @@ def _row(t: Investigation) -> tuple[Any, ...]:
         t.jira_issue,
         t.jira_by,
         t.jira_at,
+        _json(t.check_result),
     )
+
+
+def _json(m: BaseModel | None) -> Jsonb | None:
+    return Jsonb(m.model_dump(mode="json")) if m else None
 
 
 class Store:
@@ -228,7 +234,8 @@ class Store:
         mention (claim_follow_up)."""
         await self._exec(
             "update investigations set status = %s, report = %s, pending = %s, "
-            "executed_actions = %s, error = %s, deadline = %s, answer = %s where id = %s",
+            "executed_actions = %s, error = %s, deadline = %s, answer = %s, "
+            "check_result = %s where id = %s",
             (
                 t.status,
                 Jsonb(t.report.model_dump(mode="json")) if t.report else None,
@@ -237,6 +244,7 @@ class Store:
                 t.error,
                 t.deadline,
                 Jsonb(t.answer.model_dump(mode="json")) if t.answer else None,
+                _json(t.check_result),
                 t.id,
             ),
         )
@@ -249,10 +257,13 @@ class Store:
         return _investigation(row) if row else None
 
     async def recent(self, limit: int = 50, contract_id: str | None = None) -> list[Investigation]:
-        """Newest first; one Contract's only when contract_id is given."""
+        """Newest first; one Contract's only when contract_id is given. Passing Checks
+        are left out: they are quiet (the Checks table shows each one's last Run)."""
         rows = await self._all(
             f"select {COLUMNS} from investigations "  # noqa: S608 - fixed columns
-            "where %s::text is null or contract_id = %s order by started desc limit %s",
+            "where (%s::text is null or contract_id = %s) "
+            "and (check_result is null or not (check_result->>'passed')::boolean) "
+            "order by started desc limit %s",
             (contract_id, contract_id, limit),
         )
         return [_investigation(r) for r in rows]
@@ -394,6 +405,93 @@ class Store:
             (investigation_id,),
         )
         return row or {"input_tokens": 0, "output_tokens": 0, "cost_usd": None}
+
+    async def sync_checks(self, contract_id: str, due: dict[str, tuple[str, float]]) -> None:
+        """due: name -> (schedule key, its next fire time). A new Check, or one whose
+        schedule key changed, gets that time; the others keep theirs."""
+        for name, (key, next_due) in due.items():
+            await self._exec(
+                "insert into check_schedules (contract_id, name, schedule, next_due) "
+                "values (%s, %s, %s, %s) on conflict (contract_id, name) do update set "
+                "schedule = excluded.schedule, next_due = case when "
+                "check_schedules.schedule = excluded.schedule then check_schedules.next_due "
+                "else excluded.next_due end",
+                (contract_id, name, key, next_due),
+            )
+
+    async def due_checks(self, at: float) -> list[tuple[str, str]]:
+        rows = await self._all(
+            "select contract_id, name from check_schedules where next_due <= %s", (at,)
+        )
+        return [(r["contract_id"], r["name"]) for r in rows]
+
+    async def claim_check(
+        self, t: Investigation, name: str, at: float, next_due: float, skip: str | None
+    ) -> str:
+        """Fire one due Check, once: in one transaction its next due time moves to
+        `next_due` (computed from now, so missed fire times run once), and either its
+        Investigation t is inserted ("started") or the skip is recorded ("skipped":
+        `skip` given, or its previous Run still open). "not due": already claimed."""
+        async with self.pool.connection() as conn, conn.transaction():
+            row = await (
+                await conn.execute(
+                    "select next_due, last_id from check_schedules where contract_id = %s "
+                    "and name = %s for update",
+                    (t.contract_id, name),
+                )
+            ).fetchone()
+            if row is None or row["next_due"] > at:
+                return "not due"
+            if skip is None and row["last_id"]:
+                last = await (
+                    await conn.execute(
+                        "select status from investigations where id = %s", (row["last_id"],)
+                    )
+                ).fetchone()
+                if last and last["status"] in ("running", "awaiting_approval"):
+                    skip = "its previous Run is still open"
+            if skip:
+                await conn.execute(
+                    "update check_schedules set next_due = %s, skipped_at = %s, "
+                    "skipped_reason = %s where contract_id = %s and name = %s",
+                    (next_due, at, skip, t.contract_id, name),
+                )
+                return "skipped"
+            await conn.execute(INSERT, _row(t))
+            await conn.execute(
+                "update check_schedules set next_due = %s, last_id = %s "
+                "where contract_id = %s and name = %s",
+                (next_due, t.id, t.contract_id, name),
+            )
+            return "started"
+
+    async def check_schedule(self, contract_id: str, name: str) -> dict[str, Any] | None:
+        return await self._one(
+            "select * from check_schedules where contract_id = %s and name = %s",
+            (contract_id, name),
+        )
+
+    async def check_schedules(self, contract_id: str | None = None) -> list[dict[str, Any]]:
+        """With each one's last Run (status, verdict)."""
+        return await self._all(
+            "select s.*, i.status as last_status, (i.check_result->>'passed')::boolean "
+            "as last_passed, i.started as last_started from check_schedules s "
+            "left join investigations i on i.id = s.last_id "
+            "where %s::text is null or s.contract_id = %s order by s.contract_id, s.name",
+            (contract_id, contract_id),
+        )
+
+    async def set_failing(
+        self, contract_id: str, name: str, investigation_id: str | None, expected: str | None
+    ) -> bool:
+        """Open (an id) or end (None) the Check's Open failure, only if it is still
+        `expected`: two Runs finishing together can't both open one."""
+        row = await self._one(
+            "update check_schedules set failing_id = %s where contract_id = %s and "
+            "name = %s and failing_id is not distinct from %s returning name",
+            (investigation_id, contract_id, name, expected),
+        )
+        return row is not None
 
     async def similar(
         self,

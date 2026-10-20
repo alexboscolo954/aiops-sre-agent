@@ -1,6 +1,6 @@
 """Offline evals: run the real agent and a real LLM against recorded tool outputs.
 
-Each scenario (evals/scenarios/*.yaml) holds an alert or a question, the tool
+Each scenario (evals/scenarios/*.yaml) holds an alert, a question or a Check, the tool
 results recorded from a real cluster, and what a correct Report or Answer must
 contain. The MCP servers are
 the real ones (same tool names and schemas the model sees in production; a
@@ -181,7 +181,21 @@ async def triage(
     """Start a triage. Allowed proposed actions are recorded, rejected (never executed
     against the recording) and resumed so the report still gets scored. A disallowed
     one stops the run and stays pending for score() to fail."""
-    outcome, proposed = await agent.start(a, group, thread_id), []
+    return await settle(a, await agent.start(a, group, thread_id), thread_id, expect)
+
+
+async def check(
+    a: Any, spec: dict[str, Any], thread_id: str, expect: dict[str, Any]
+) -> tuple[agent.Outcome, list[dict[str, Any]]]:
+    """Run a Check ({name, prompt}); its proposals are handled as a triage's."""
+    outcome = await agent.check(a, spec["name"], spec["prompt"], thread_id)
+    return await settle(a, outcome, thread_id, expect)
+
+
+async def settle(
+    a: Any, outcome: agent.Outcome, thread_id: str, expect: dict[str, Any]
+) -> tuple[agent.Outcome, list[dict[str, Any]]]:
+    proposed: list[dict[str, Any]] = []
     for _ in range(3):  # ponytail: bounded re-proposals; raise if a scenario needs more
         if not outcome.pending or not all(allowed(expect, p) for p in outcome.pending):
             break
@@ -204,6 +218,8 @@ def scenario_taught(scenario: dict[str, Any]) -> str:
     if "alert" in scenario:
         group = AlertGroup.model_validate(scenario["alert"])
         alerts = {a.labels.get("alertname", "") for a in group.firing}
+    elif "check" in scenario:
+        alerts = set()  # as production: the general ones only
     return teachings.section(rows, alerts)[0]
 
 
@@ -236,6 +252,48 @@ def missing_links(expect: dict[str, Any], evidence: list[Any]) -> list[str]:
     return [f"{kept} evidence links < {expect['links']}"] if kept < expect.get("links", 0) else []
 
 
+def score_check(scenario: dict[str, Any], outcome: agent.Outcome) -> list[str]:
+    """A Check's checks: expect.passed first. A failing one is then scored as a
+    Report (category, keywords, recommendations, budget, links); a passing one on
+    keywords in its summary, the Evidence it must cite, and the budget."""
+    expect, verdict = scenario["expect"], outcome.check
+    bad = [p["name"] for p in outcome.pending if not allowed(expect, p)]
+    if bad:
+        return [f"attempted write action: {bad}"]
+    if verdict is None:
+        return ["no verdict"]
+    if verdict.passed != expect["passed"]:
+        return [f"passed is {verdict.passed}, expected {expect['passed']}"]
+    if not verdict.passed:
+        return score(scenario, outcome)
+    text = verdict.summary.lower()
+    failures = [f"summary misses {m}"] if (m := absent(expect, text)) else []
+    failures += cites(expect, verdict.evidence, outcome.tool_calls)
+    if len(outcome.tool_calls) > expect.get("max_tool_calls", 12):
+        failures.append(f"{len(outcome.tool_calls)} tool calls > {expect['max_tool_calls']}")
+    return failures + missing_links(expect, verdict.evidence)
+
+
+def absent(expect: dict[str, Any], text: str) -> list[str]:
+    return [k for k in expect.get("keywords", []) if k.lower() not in text]
+
+
+def cites(expect: dict[str, Any], evidence: list[Any], tool_calls: list[str]) -> list[str]:
+    """The Evidence sources it must cite (an entry that is a list: any one of them),
+    and no cited source that never ran (invented Evidence)."""
+    failures = []
+    cited = {e.source for e in evidence}
+    uncited = [
+        t for t in expect.get("evidence", []) if not cited & ({t} if isinstance(t, str) else set(t))
+    ]
+    if uncited:
+        failures.append(f"evidence doesn't cite {uncited}")
+    invented = sorted(cited - set(tool_calls))
+    if invented:
+        failures.append(f"evidence cites tools that never ran: {invented}")
+    return failures
+
+
 def score_answer(scenario: dict[str, Any], outcome: agent.Outcome) -> list[str]:
     """A Question's checks: keywords in the Answer, the Evidence sources it must cite
     (an entry that is a list: any one of them), no cited source that never ran
@@ -243,19 +301,9 @@ def score_answer(scenario: dict[str, Any], outcome: agent.Outcome) -> list[str]:
     expect, answer, failures = scenario["expect"], outcome.answer, []
     if answer is None:
         return ["no answer"]
-    text = answer.answer.lower()
-    missing = [k for k in expect.get("keywords", []) if k.lower() not in text]
-    if missing:
+    if missing := absent(expect, answer.answer.lower()):
         failures.append(f"answer misses {missing}")
-    cited = {e.source for e in answer.evidence}
-    uncited = [
-        t for t in expect.get("evidence", []) if not cited & ({t} if isinstance(t, str) else set(t))
-    ]
-    if uncited:
-        failures.append(f"evidence doesn't cite {uncited}")
-    invented = sorted(cited - set(outcome.tool_calls))
-    if invented:
-        failures.append(f"evidence cites tools that never ran: {invented}")
+    failures += cites(expect, answer.evidence, outcome.tool_calls)
     if len(outcome.tool_calls) > expect.get("max_tool_calls", 12):
         failures.append(f"{len(outcome.tool_calls)} tool calls > {expect['max_tool_calls']}")
     return failures + missing_links(expect, answer.evidence)
@@ -277,27 +325,35 @@ async def run(
             scenario.get("clusters"),
             scenario.get("integrations"),
         )
-        question, thread = scenario.get("question"), f"eval-{path.stem}"
+        question, spec, thread = (
+            scenario.get("question"),
+            scenario.get("check"),
+            f"eval-{path.stem}",
+        )
+        kind: agent.Kind = "question" if question else "check" if spec else "triage"
         start = time.monotonic()
         try:
             async with agent.open_agent(
                 settings,
                 replay_server(contract, settings, scenario["tools"]),
-                kind="question" if question else "triage",
+                kind=kind,
                 taught=scenario_taught(scenario),
             ) as a:
                 if question:
                     outcome, proposed = await agent.ask(a, question, thread), list[dict[str, Any]]()
                     failures = score_answer(scenario, outcome)
+                elif spec:
+                    outcome, proposed = await check(a, spec, thread, scenario["expect"])
+                    failures = score_check(scenario, outcome)
                 else:
                     group = AlertGroup.model_validate(scenario["alert"])
                     outcome, proposed = await triage(a, group, thread, scenario["expect"])
                     failures = score(scenario, outcome)
             calls, report, answer = outcome.tool_calls, outcome.report, outcome.answer
-            dropped, call_log = outcome.dropped_links, outcome.call_log
+            dropped, call_log, verdict = outcome.dropped_links, outcome.call_log, outcome.check
         except agent.TriageError as e:
             failures, calls, report, answer, proposed, dropped = [str(e)], [], None, None, [], 0
-            call_log = []
+            call_log, verdict = [], None
         results.append(
             {
                 "scenario": path.stem,
@@ -312,6 +368,7 @@ async def run(
                 "dropped_links": dropped,
                 "report": report.to_markdown() if report else None,
                 **({"answer": answer.to_markdown()} if answer else {}),
+                **({"check": verdict.to_markdown()} if verdict else {}),
             }
         )
     return results
@@ -382,9 +439,17 @@ def scenario_yaml(
         cited = sorted({e.source for e in t.answer.evidence}) if t.answer else []
         body["expect"] = {"keywords": [], "evidence": cited, "max_tool_calls": budget}
     else:
-        body["alert"] = redact_strings(t.input)
-        category = [t.report.category] if t.report else []
-        body["expect"] = {"category": category, "keywords": [], "max_tool_calls": budget}
+        if t.kind == "check":
+            body["check"] = {"name": t.input["check"], "prompt": redact(t.input["prompt"])}
+            ok = bool(t.check_result and t.check_result.passed)
+            body["expect"] = {"passed": ok, "keywords": [], "max_tool_calls": budget}
+            if ok and t.check_result:
+                body["expect"]["evidence"] = sorted({e.source for e in t.check_result.evidence})
+        else:
+            body["alert"] = redact_strings(t.input)
+            body["expect"] = {"keywords": [], "max_tool_calls": budget}
+        if t.report:
+            body["expect"] = {"category": [t.report.category], **body["expect"]}
         if allowed:
             body["enable_actions"] = True
             body["expect"]["allowed_actions"] = [
@@ -397,8 +462,8 @@ def scenario_yaml(
     header = (
         f"# Draft Scenario from {t.kind} {t.id} ({t.contract_id}), {day}.\n"
         "# Before committing it to <contracts-repo>/" + t.contract_id + "/scenarios/:\n"
-        "# add the keywords a correct result must contain, and check the category,\n"
-        "# evidence, budget and allowed actions. A Question with follow-ups keeps only\n"
-        "# its first question, but every call, so its budget reads high.\n"
+        "# add the keywords a correct result must contain, and check the verdict,\n"
+        "# category, evidence, budget and allowed actions. A Question with follow-ups\n"
+        "# keeps only its first question, but every call, so its budget reads high.\n"
     )
     return header + yaml.safe_dump(body, sort_keys=False, width=100, allow_unicode=True)

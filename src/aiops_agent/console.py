@@ -150,6 +150,7 @@ def router(
             spend={cid: await store().month_spend(cid, at) for cid in by_id},
             shown=shown,
             investigations=await store().recent(100, shown),
+            checks=await store().check_schedules(shown),
         )
 
     @console.get("/investigations/{investigation_id}", response_class=HTMLResponse)
@@ -255,8 +256,8 @@ def router(
         t = await store().get(investigation_id)
         if t is None:
             raise HTTPException(404, "unknown investigation")
-        if not (t.kind == "triage" and t.status == "done" and t.report):
-            raise HTTPException(409, "feedback is for a finished Triage Report")
+        if not (t.kind in ("triage", "check") and t.status == "done" and t.report):
+            raise HTTPException(409, "feedback is for a finished Report")
         f = await form(request)
         correct = f.get("correct") == "1"
         correction = f.get("correction", "").strip()

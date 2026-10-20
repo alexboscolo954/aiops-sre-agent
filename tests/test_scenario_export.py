@@ -59,7 +59,7 @@ def replay(settings: Settings, scenario: dict[str, Any], model: Any) -> Any:
         scenario.get("clusters"),
         scenario.get("integrations"),
     )
-    kind = "question" if "question" in scenario else "triage"
+    kind = "question" if "question" in scenario else "check" if "check" in scenario else "triage"
     toolbox = evals.replay_server(contract, settings, scenario["tools"])
     return agent.open_agent(settings, toolbox, model, kind=kind)
 
@@ -279,3 +279,47 @@ def test_a_saved_scenario_carries_the_contracts_approved_teachings() -> None:
         {"text": "Never roll back checkout.", "alerts": ["KubePodCrashLooping"]}
     ]
     assert "teachings" not in yaml.safe_load(evals.scenario_yaml(t, make_contract(), [], []))
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("ok", [True, False])
+async def test_a_saved_check_replays_and_scores(
+    ok: bool, settings: Settings, fake_cluster: Any, full: dict[str, Any]
+) -> None:
+    from aiops_agent.store import now
+    from tests.test_checks import CHECK, DAY, tick
+
+    ev = [{"source": "kubernetes_list_pods", "finding": "all run"}]
+    if ok:
+        verdict = call("CheckResult", "v", passed=True, summary="All run.", evidence=ev)
+    else:
+        verdict = call("CheckResult", "v", passed=False, summary="x", evidence=ev, report=REPORT)
+    prompt = f"{CHECK['prompt']} {SECRET}"
+    acme = {**full, "checks": [{**CHECK, "prompt": prompt}]}
+    with client(settings, fake_cluster, *steps(LIST, last=verdict), acme=acme) as c:
+        (tid,) = tick(c, now() + DAY)
+        wait_for(c, tid, "done")
+        r, scenario, text = download(c, tid)
+    assert r.status_code == 200 and SECRET not in text
+    assert scenario["check"] == {
+        "name": "shop-healthy",
+        "prompt": f"{CHECK['prompt']} token=[REDACTED]",
+    }
+    assert "alert" not in scenario
+    if ok:
+        assert scenario["expect"] == {
+            "passed": True,
+            "keywords": [],
+            "max_tool_calls": 4,
+            "evidence": ["kubernetes_list_pods"],
+        }
+    else:
+        assert scenario["expect"] == {
+            "category": [REPORT["category"]],
+            "passed": False,
+            "keywords": [],
+            "max_tool_calls": 4,
+        }
+    async with replay(settings, scenario, scripted(*steps(LIST, last=verdict))) as a:
+        outcome, _ = await evals.check(a, scenario["check"], "k", scenario["expect"])
+    assert evals.score_check(scenario, outcome) == []

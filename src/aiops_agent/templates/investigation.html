@@ -44,12 +44,16 @@
 <p>{% endif %}</p>
 {% endif %}
 
+{% if t.check_result %}
+<h2>Check</h2>
+<pre>{{ t.check_result.to_markdown() }}</pre>
+{% endif %}
 {% if t.report %}
 <h2>Report</h2>
 <pre>{{ t.report.to_markdown(t.executed_actions) }}</pre>
 {% endif %}
 {% if t.status == "running" %}<p>Working on it: this page reloads every 5 seconds.</p>{% endif %}
-{% if t.kind == "triage" and t.status == "done" and t.report %}
+{% if t.kind in ("triage", "check") and t.status == "done" and t.report %}
 <h2>Was this Report right?</h2>
 <form method="post" action="/console/investigations/{{ t.id }}/feedback">
   <input type="hidden" name="correct" value="1">
