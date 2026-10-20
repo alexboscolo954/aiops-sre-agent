@@ -361,3 +361,34 @@ async def test_a_related_group_is_separated_only_through_its_own_triage(
         assert not await store.separate(rid, shop.id, new)
         assert await store.get("new") is None
         assert (await store.related_group(rid, bank.id) or {})["separate_id"] is None
+
+
+@pytest.mark.anyio
+async def test_past_incidents_never_cross_contracts(
+    two_contracts: Contracts, settings: Settings, fake_cluster: Any, database_url: str
+) -> None:
+    """The same words in both Contracts' past Reports: each finds and reads only its own."""
+    from aiops_agent.models import Investigation
+    from aiops_agent.store import Store, connect, now
+    from tests.conftest import REPORT
+
+    async with connect(database_url) as pool:
+        store = Store(pool)
+        await store.migrate()
+        for cid in two_contracts:
+            report = {**REPORT, "summary": "ledger OOMKilled: batch size unset"}
+            t = Investigation(
+                id=f"{cid}-past", contract_id=cid, title="t", status="done", started=now(),
+                report=report,
+            )  # fmt: skip
+            await store.insert(t)
+        for cid, c in two_contracts.items():
+            apis = {cl.name: fake_cluster for cl in c.clusters}
+            tb = agent.build_mcp(c, settings, apis, store=store)
+            other = next(o for o in two_contracts if o != cid)
+            async with Client(tb.mcp) as client:
+                found = await client.call_tool("incidents_search", {"keywords": "ledger batch"})
+                assert [i["id"] for i in found.structured_content["incidents"]] == [f"{cid}-past"]
+                assert (await client.call_tool("incidents_read", {"id": f"{cid}-past"})).data
+                with pytest.raises(ToolError, match="no past Report"):
+                    await client.call_tool("incidents_read", {"id": f"{other}-past"})

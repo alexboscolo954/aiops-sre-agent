@@ -1,3 +1,4 @@
+integrations: [kubernetes, runbooks, incidents]
 namespace: demo
 alert:
   status: firing
@@ -18,7 +19,7 @@ expect:
   - bad_rollout
   keywords:
   - DATABASE_URL
-  max_tool_calls: 10
+  max_tool_calls: 11
 tools:
   kubernetes_list_pods:
   - name: checkout-869fc5bcc6-db5ps
@@ -640,3 +641,6 @@ tools:
     result: 'building monthly report: loading 200MB of rows
 
       '
+  incidents_search:
+    incidents: []
+    note: No past Report in the last 90 days matches.

@@ -185,3 +185,26 @@ async def test_the_outcome_logs_each_calls_arguments_and_errors(settings: Settin
         "args": {"cluster": "kind", "namespace": "shop"},
         "error": True,
     }
+
+
+@pytest.mark.anyio
+async def test_past_incidents_replay_from_the_recording(settings: Settings) -> None:
+    """Never the Hub's database: an id the recording doesn't hold errors, as the real
+    tool does for an unknown one."""
+    from fastmcp import Client
+    from fastmcp.exceptions import ToolError
+
+    contract = evals.scenario_contract("shop", False, Path("x"), {}, ["incidents"])
+    recordings = {
+        "incidents_search": {"incidents": [{"id": "p1", "summary": "reports oom"}]},
+        "incidents_read": [{"match": {"id": "p1"}, "result": {"id": "p1", "report": "## r"}}],
+    }
+    async with Client(evals.replay_server(contract, settings, recordings).mcp) as c:
+        found = await c.call_tool("incidents_search", {"keywords": "anything"})
+        assert found.structured_content == recordings["incidents_search"]
+        assert (await c.call_tool("incidents_read", {"id": "p1"})).structured_content == {
+            "id": "p1",
+            "report": "## r",
+        }
+        with pytest.raises(ToolError, match="no recorded data"):
+            await c.call_tool("incidents_read", {"id": "invented"})

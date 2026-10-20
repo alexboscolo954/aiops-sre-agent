@@ -140,7 +140,7 @@ def create_app(
         return models[c.id]
 
     if mcp_factory is None:
-        mcp_factory = lambda c: agent.build_mcp(c, settings)  # noqa: E731
+        mcp_factory = lambda c: agent.build_mcp(c, settings, store=store())  # noqa: E731
     db: dict[str, Any] = {}  # store and checkpointer, opened in the lifespan
     slots = asyncio.Semaphore(settings.max_concurrent_triages)
     tasks: set[asyncio.Task[None]] = set()

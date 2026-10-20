@@ -139,6 +139,8 @@ def scenario_contract(
                     "secret_access_key_secret": "replay",
                 }
             )
+        elif name == "incidents":  # answered from the recording
+            built.append({"name": name})
         elif name == "runbooks":
             if any(d.is_dir() for d in dirs):
                 built.append({"name": name})

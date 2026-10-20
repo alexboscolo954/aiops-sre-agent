@@ -14,3 +14,4 @@ integrations:
     url: http://localhost:9091
     token_secret: prometheus-token
   - name: runbooks
+  - name: incidents

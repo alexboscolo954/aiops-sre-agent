@@ -1,3 +1,4 @@
+integrations: [kubernetes, runbooks, incidents]
 namespace: demo
 description: 'A Question, not an alert: the Answer must name all three broken workloads and cite the pod
   listing.'
@@ -631,3 +632,6 @@ tools:
     result: 'building monthly report: loading 200MB of rows
 
       '
+  incidents_search:
+    incidents: []
+    note: No past Report in the last 90 days matches.

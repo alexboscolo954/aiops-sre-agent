@@ -5,6 +5,7 @@ settings the checkpointer needs (autocommit, no prepared statements, dict rows).
 Migrations are numbered .sql files in migrations/, applied once each at startup.
 """
 
+import re
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -390,6 +391,32 @@ class Store:
             (investigation_id,),
         )
         return row or {"input_tokens": 0, "output_tokens": 0, "cost_usd": None}
+
+    async def similar(
+        self, contract_id: str, keywords: str, since: float, limit: int
+    ) -> list[dict[str, Any]]:
+        """This Contract's finished Triage Reports since `since` matching any of the
+        words, best match first. Only words reach the query: it never fails to parse."""
+        words = re.findall(r"\w+", keywords)[:20]
+        if not words:
+            return []
+        return await self._all(
+            "select id, started, title, report from investigations, "
+            "websearch_to_tsquery('english', %s) q where contract_id = %s "
+            "and kind = 'triage' and status = 'done' and report is not null "
+            "and started >= %s and report_search @@ q "
+            "order by ts_rank(report_search, q) desc, started desc limit %s",
+            (" or ".join(words), contract_id, since, limit),
+        )
+
+    async def past_report(self, contract_id: str, investigation_id: str) -> dict[str, Any] | None:
+        """One finished Triage Report, only if it is this Contract's."""
+        return await self._one(
+            "select id, started, title, report, executed_actions, jira_issue "
+            "from investigations where id = %s and contract_id = %s "
+            "and kind = 'triage' and status = 'done' and report is not null",
+            (investigation_id, contract_id),
+        )
 
     async def open_triages(
         self, contract_id: str, since: float, group_key: str

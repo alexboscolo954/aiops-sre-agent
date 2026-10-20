@@ -44,6 +44,7 @@ from aiops_agent.config import Settings
 from aiops_agent.contracts import (
     Aws,
     Contract,
+    Incidents,
     Integration,
     Jira,
     Kubernetes,
@@ -54,7 +55,17 @@ from aiops_agent.contracts import (
 from aiops_agent.models import AlertGroup, Answer, TriageReport
 from aiops_agent.observability import AuditMiddleware
 from aiops_agent.safety import redact, redact_capped, redact_strings
-from aiops_agent.servers import Access, aws, jira, kubernetes, prometheus, runbooks, vendors
+from aiops_agent.servers import (
+    Access,
+    aws,
+    incidents,
+    jira,
+    kubernetes,
+    prometheus,
+    runbooks,
+    vendors,
+)
+from aiops_agent.store import Store
 
 log = logging.getLogger("aiops.agent")
 
@@ -249,14 +260,25 @@ def build_mcp(
     settings: Settings,
     k8s_apis: dict[str, tuple[Any, Any]] | None = None,
     snapshots: bool = False,
+    store: Store | None = None,
 ) -> Toolbox:
     """One Contract's integrations, mounted in-process under one namespace-prefixed
     root. Nothing of another Contract is reachable from it.
     k8s_apis: cluster name -> (CoreV1Api, AppsV1Api) instead of connecting, for tests.
-    snapshots: vendors' tools from their schema snapshots, never started (replay)."""
+    snapshots: vendors' tools from their schema snapshots, never started (replay).
+    store: the Hub's database, for past incidents; without it (the CLI) they're left
+    out, guide and all."""
     root, access, guides = FastMCP(f"aiops-{contract.id}"), dict[str, Access](), []
     link_tools: set[str] = set()
     for i in contract.integrations:
+        if isinstance(i, Incidents):
+            if store is None and not snapshots:
+                continue
+            mount(
+                root, access, i.name, incidents.build_server(contract.id, store), incidents.ACCESS
+            )
+            guides.append(incidents.GUIDE)
+            continue
         server = integration_server(contract, i, settings, k8s_apis, snapshots)
         mount(root, access, i.name, *server)
         if isinstance(i, Kubernetes):
@@ -301,6 +323,8 @@ def probes(contract: Contract) -> list[tuple[str, str | None, dict[str, Any]]]:
             checks.append(("jira", "jira_search_issues", {"text": "health", "days": 1, "limit": 1}))
         elif isinstance(i, Aws):
             checks.append(("aws", "aws_describe_alarms", {"state": "ALARM"}))
+        elif isinstance(i, Incidents):
+            checks.append(("incidents", "incidents_search", {"keywords": "health", "limit": 1}))
         elif i.probe:
             checks.append((i.name, f"{i.name}_{i.probe.tool}", i.probe.args))
         elif probe := vendors.VENDORS[i.vendor].probe:  # one authenticated read

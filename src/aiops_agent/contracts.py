@@ -116,6 +116,10 @@ class Runbooks(Strict):
     name: Literal["runbooks"]  # reads <contract dir>/runbooks
 
 
+class Incidents(Strict):
+    name: Literal["incidents"]  # the Contract's own past Reports, from the Hub's database
+
+
 class Probe(Strict):
     tool: str  # one of the vendor's tools listed `read`
     args: dict[str, Any] = {}
@@ -176,7 +180,7 @@ class Vendor(Strict):
         return self
 
 
-BUILTINS = ("kubernetes", "prometheus", "runbooks", "jira", "aws")
+BUILTINS = ("kubernetes", "prometheus", "runbooks", "jira", "aws", "incidents")
 
 
 def _kind(value: Any) -> str:
@@ -190,6 +194,7 @@ Integration = Annotated[
     | Annotated[Runbooks, Tag("runbooks")]
     | Annotated[Jira, Tag("jira")]
     | Annotated[Aws, Tag("aws")]
+    | Annotated[Incidents, Tag("incidents")]
     | Annotated[Vendor, Tag("vendor")],
     Discriminator(_kind),
 ]

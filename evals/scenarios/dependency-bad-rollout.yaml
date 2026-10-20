@@ -1,3 +1,4 @@
+integrations: [kubernetes, runbooks, incidents]
 namespace: orders
 description: 'orders-api crash loops with no change of its own: inventory, which it calls, rolled out
   API v2 minutes earlier and still looks healthy. The cause is the other workload''s rollout.'
@@ -21,7 +22,7 @@ expect:
   keywords:
   - inventory
   - API_VERSION
-  max_tool_calls: 10
+  max_tool_calls: 11
 tools:
   kubernetes_list_pods:
   - name: inventory-b775d96fd-qq86l
@@ -435,3 +436,6 @@ tools:
       FATAL: stock sync failed: GET http://inventory.orders:8080/stock: HTTP Error 404: Not Found
 
       '
+  incidents_search:
+    incidents: []
+    note: No past Report in the last 90 days matches.

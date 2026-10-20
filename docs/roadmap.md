@@ -278,6 +278,7 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
 - *Done when:*
   - a Scenario passes where a past Report holds the decisive hint;
   - the isolation test passes.
+- Done (2026-10-19): the `incidents` integration (`incidents_search`, `incidents_read`), Postgres full-text search over the Contract's own finished Triage Reports. A Triage searches once before its Report. Scenario `similar-incident-batch-size` passes on Haiku.
 
 **7.2 Shared knowledge.**
 - `shared/` in the contracts repo, mounted read-only for every Contract.
@@ -316,4 +317,4 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
 
 ## Next
 
-Phase 4 first (the Operator's choice: no Contract needs a Relay yet). Phase 4 is done. Phase 5 is done: Azure, AWS and GCP, each with a Scenario recorded from a sandbox. The Operator chose Phase 6 next; 6.1, 6.2 and 6.3 are done; 6.4 waits for a Data policy that needs it, so Phase 7 is next.
+Phase 4 first (the Operator's choice: no Contract needs a Relay yet). Phase 4 is done. Phase 5 is done: Azure, AWS and GCP, each with a Scenario recorded from a sandbox. The Operator chose Phase 6 next; 6.1, 6.2 and 6.3 are done; 6.4 waits for a Data policy that needs it. Phase 7: 7.1 is done, 7.2 is next.

@@ -1,3 +1,4 @@
+integrations: [kubernetes, runbooks, incidents]
 namespace: demo
 description: 'A Question about a change: the Answer must find the env var the latest rollout dropped,
   from the deployment''s history or the cluster''s recent changes (both show the diff, so citing either
@@ -631,3 +632,6 @@ tools:
     result: 'building monthly report: loading 200MB of rows
 
       '
+  incidents_search:
+    incidents: []
+    note: No past Report in the last 90 days matches.
