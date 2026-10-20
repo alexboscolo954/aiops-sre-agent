@@ -33,11 +33,42 @@ STATUS = {
 }
 
 
-def clean(text: str, limit: int = TEXT_LIMIT) -> str:
-    """Escape Slack markup, then redact and cap. Alert titles and Reports come from
-    clients and from tool output: `<!channel>` or `<@U…>` must arrive as text."""
+# What Slack turns into a link by itself: a scheme or www. URL, or a host with a path.
+URL = re.compile(
+    r"(?:(?:https?|ftp)://|www\.)[^\s`<>|]+|(?<![\w@/.:-])(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?/[^\s`<>|]*",
+    re.IGNORECASE,
+)
+TRAILING = ".,;:!?)]}'\"*_~"  # punctuation, and Slack's own bold/italic/strike
+
+
+def unlinked(text: str, links: frozenset[str] = frozenset()) -> str:
+    """Every URL outside a code span goes into one, where Slack never links it, unless
+    it is one of `links` (an Evidence link a link tool returned). A prompt injection
+    could have the model write one carrying client data to its own host. ponytail: a
+    bare domain with no path (x.evil.com) can still be linked by Slack; it carries
+    data only in its labels and needs a click."""
+
+    def wrap(m: re.Match[str]) -> str:
+        url = m[0].rstrip(TRAILING)
+        return m[0] if url in links else f"`{url}`{m[0][len(url) :]}"
+
+    parts = text.split("`")  # odd parts are inside code spans: never linked
+    return "`".join(URL.sub(wrap, p) if i % 2 == 0 else p for i, p in enumerate(parts))
+
+
+def clean(text: str, limit: int = TEXT_LIMIT, links: frozenset[str] = frozenset()) -> str:
+    """No self-made links, escape Slack markup, then redact and cap. Alert titles and
+    Reports come from clients and from tool output: `<!channel>` or `<@U…>` must
+    arrive as text, and a URL only as text (links: the ones that may stay links)."""
+    text = unlinked(text, links)
     escaped = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     return redact_capped(escaped, limit)
+
+
+def evidence_links(t: Investigation) -> frozenset[str]:
+    """The Evidence links of a result: each one a link tool returned (agent.py)."""
+    parts: list[Any] = [t.report, t.answer, t.check_result]
+    return frozenset(e.link for p in parts if p for e in p.evidence if e.link)
 
 
 def related_text(title: str, matched: dict[str, str], severity: str | None, louder: bool) -> str:
@@ -206,7 +237,7 @@ def client_text(t: Investigation) -> str:
             *[f"{i}. {a}" for i, a in enumerate(r.recommended_actions, 1)],
         ]
     )
-    return clean(mrkdwn(md))
+    return clean(mrkdwn(md))  # no Evidence here: no link stays
 
 
 def parent_blocks(
@@ -310,12 +341,13 @@ def reply_text(t: Investigation, buttons: bool = False) -> str | None:
         if buttons:
             decide = f"Approve or reject on the message above, or {decide[0].lower()}{decide[1:]}"
         return f"Waiting for your approval:\n{actions}\n{decide}"
+    links = evidence_links(t)
     if t.status == "done" and t.report:
-        return clean(mrkdwn(t.report.to_markdown(t.executed_actions)))
+        return clean(mrkdwn(t.report.to_markdown(t.executed_actions)), links=links)
     if t.status == "done" and t.answer:
-        return clean(mrkdwn(t.answer.to_markdown()))
+        return clean(mrkdwn(t.answer.to_markdown()), links=links)
     if t.status == "done" and t.check_result:
-        return clean(mrkdwn(t.check_result.to_markdown()))
+        return clean(mrkdwn(t.check_result.to_markdown()), links=links)
     if t.status == "failed":
         return f"Investigation failed: {clean(t.error or 'unknown error', 2000)}"
     return None

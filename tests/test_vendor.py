@@ -565,7 +565,9 @@ def test_a_recorded_deeplink_reaches_slack_whole() -> None:
     ]
     assert len(links) == 3
     for link in links:
-        assert slack.clean(slack.mrkdwn(link)) == link.replace("&", "&amp;")
+        # As an Evidence link a link tool returned: the one kind that stays a link.
+        kept = slack.clean(slack.mrkdwn(link), links=frozenset({link}))
+        assert kept == link.replace("&", "&amp;")
 
 
 def test_the_azure_vendor_reads_only_with_the_contracts_service_principal() -> None:

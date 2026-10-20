@@ -830,3 +830,29 @@ def test_no_post_unfurls_a_link_or_an_image(settings: Settings, fake_cluster: An
     done_once(settings, fake_cluster, slack)
     posted = [p for m, p, _ in slack.calls if m == "chat.postMessage"]
     assert posted and all(p["unfurl_links"] is False and p["unfurl_media"] is False for p in posted)
+
+
+def test_model_written_urls_reach_slack_as_text_never_as_links() -> None:
+    """Slack links a bare URL by itself; a prompt injection could have the model write
+    one carrying client data. Only an Evidence link a link tool returned stays one."""
+    from aiops_agent.models import Investigation, TriageReport
+    from aiops_agent.slack import client_text, reply_text, unlinked
+
+    assert unlinked("go https://evil.example/?d=S.") == "go `https://evil.example/?d=S`."
+    assert unlinked("evil.com/a?d=1 and www.evil.com") == "`evil.com/a?d=1` and `www.evil.com`"
+    assert unlinked("`curl http://in.code/x`") == "`curl http://in.code/x`"  # already code
+    assert unlinked("java.lang.OutOfMemoryError, inventory.orders") == (
+        "java.lang.OutOfMemoryError, inventory.orders"
+    )
+    kept = "https://grafana.example/d/abc"
+    assert unlinked(f"({kept})", frozenset({kept})) == f"({kept})"
+
+    evil = "https://evil.example/?d=SECRET"
+    evidence = [{"source": "grafana_deeplink", "finding": "the panel", "link": kept}]
+    report = TriageReport(**{**REPORT, "summary": f"see {evil}", "evidence": evidence})
+    t = Investigation(
+        id="i", contract_id="acme", title="t", started=0, status="done", report=report
+    )
+    text = reply_text(t) or ""
+    assert f"`{evil}`" in text and f"({kept})" in text and f"`{kept}`" not in text
+    assert f"`{evil}`" in client_text(t)
