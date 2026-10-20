@@ -401,3 +401,25 @@ async def test_a_checks_allowed_proposal_is_rejected_and_the_verdict_scored(
     assert [p["name"] for p in proposed] == ["kubernetes_evict_pod"]
     assert outcome.executed_actions == [] and outcome.check is not None
     assert evals.score_check({"expect": expect}, outcome) == []
+
+
+@pytest.mark.anyio
+async def test_the_two_cluster_scenario_answers_each_cluster_its_own(settings: Settings) -> None:
+    from fastmcp import Client
+
+    s = yaml.safe_load((SCENARIOS / "two-clusters-alert-picks-one.yaml").read_text())
+    contract = evals.scenario_contract(
+        "", False, [Path("no-runbooks")], s["clusters"], s["integrations"]
+    )
+    toolbox = evals.replay_server(contract, settings, s["tools"])
+    async with Client(toolbox.mcp) as c:
+        args = {"namespace": "demo"}
+        eu = await c.call_tool("kubernetes_list_pods", {"cluster": "prod-eu", **args})
+        us = await c.call_tool("kubernetes_list_pods", {"cluster": "prod-us", **args})
+        assert "OOMKilled" in str(eu.structured_content) and "OOMKilled" not in str(
+            us.structured_content
+        )
+        pod = {"cluster": "prod-us", "namespace": "demo", "name": "reports-55b4fffc66-hmq7f"}
+        missing = await c.call_tool("kubernetes_describe_pod", pod, raise_on_error=False)
+        assert missing.is_error  # the broken pod exists in prod-eu only
+    assert s["alert"]["commonLabels"]["cluster"] == "prod-eu"

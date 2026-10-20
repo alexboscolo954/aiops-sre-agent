@@ -87,7 +87,7 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
   - fails when two Contracts share an age recipient. It reads recipients from sops metadata, so it needs no key.
 - Two synthetic demo Contracts live in `demo/contracts/`, each with its own test-only age key. The `two_contracts` fixture loads them for every later isolation test.
 
-**0.2 Contract-scoped tools.** Done, except one open item: a Scenario where the Contract has two clusters and the alert's `cluster` label must pick one.
+**0.2 Contract-scoped tools.** Done. Its last item, a Scenario where the Contract has two clusters and the alert's `cluster` label must pick one, is `two-clusters-alert-picks-one` (2026-10-20, passes on Haiku).
 - Each Contract gets its own MCP server set. The kubernetes server takes a `cluster` argument limited to the Contract's clusters, with a namespace allowlist per cluster. Runbooks come from the Contract's directory plus Shared knowledge.
 - **Part 1, done: the allowlist decides read or write.** Each builtin server declares its list in code (`ACCESS`), and `open_agent` requires it. A tool not on the list is hidden, and a server's annotation can only make a tool stricter. This closed a gap: before, a server that wrongly marked a write tool as read-only skipped approval. A server that leaves the marker out was already safe, because those tools are gated.
 - *Done when:*
