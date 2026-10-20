@@ -122,7 +122,7 @@ _Avoid_: Action taken
 ### Knowledge
 
 **Similar incident**:
-A past Report from the same Contract that the agent finds and uses as a lead. It never comes from another Contract.
+A past Report from the same Contract that the agent finds, by its words or by meaning, and uses as a lead. It never comes from another Contract.
 
 **Feedback**:
 The Operator's verdict on a finished Triage Report: right, or wrong with a correction. A correction, like a reason the Operator typed when rejecting a Proposed action, makes the agent propose a Teaching.

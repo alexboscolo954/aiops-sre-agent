@@ -1,8 +1,9 @@
 """Similar incidents MCP server: the Contract's own past Triage Reports (slice 7.1).
 
-Postgres full-text search over the Hub's Investigations. The server is built for
-one Contract and puts its id in every query; the model passes only words and ids,
-so another Contract's Reports are never reachable.
+Postgres full-text search over the Hub's Investigations, merged with a search by
+meaning when the Contract has an Embedder (slice 7.4). The server is built for one
+Contract and puts its id in every query; the model passes only words and ids, so
+another Contract's Reports are never reachable.
 """
 
 from datetime import UTC, datetime
@@ -13,6 +14,7 @@ from fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
+from aiops_agent.embeddings import Embedder
 from aiops_agent.models import TriageReport
 from aiops_agent.servers import Access
 from aiops_agent.store import Store, now
@@ -33,8 +35,11 @@ def _date(epoch: float) -> str:
     return datetime.fromtimestamp(epoch, UTC).strftime("%Y-%m-%d %H:%M UTC")
 
 
-def build_server(contract_id: str, store: Store | None) -> FastMCP:
-    """store None: tool definitions only (replay answers before any call)."""
+def build_server(
+    contract_id: str, store: Store | None, embedder: Embedder | None = None
+) -> FastMCP:
+    """store None: tool definitions only (replay answers before any call).
+    embedder: this Contract's, to search by meaning too; None: words only."""
     mcp = FastMCP("incidents", instructions="This Contract's past Triage Reports.")
 
     def db() -> Store:
@@ -50,7 +55,10 @@ def build_server(contract_id: str, store: Store | None) -> FastMCP:
     ) -> dict[str, Any]:
         """Past Reports of this Contract matching any of the keywords (a workload,
         an error, a symptom), best match first. Read one with incidents_read."""
-        rows = await db().similar(contract_id, keywords, now() - days * 86400, limit)
+        near = None
+        if embedder and (vector := await embedder.query(keywords)):
+            near = (vector, embedder.model, embedder.max_distance)
+        rows = await db().similar(contract_id, keywords, now() - days * 86400, limit, near)
         if not rows:
             return {"incidents": [], "note": f"No past Report in the last {days} days matches."}
         found = []

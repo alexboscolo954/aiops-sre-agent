@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
         - name: postgres
-          image: postgres:17.10
+          image: pgvector/pgvector:0.8.7-pg17-trixie
           env:
             - {name: POSTGRES_PASSWORD, value: smoke}
           ports:

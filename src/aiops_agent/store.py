@@ -5,6 +5,7 @@ settings the checkpointer needs (autocommit, no prepared statements, dict rows).
 Migrations are numbered .sql files in migrations/, applied once each at startup.
 """
 
+import json
 import re
 import time
 from collections.abc import AsyncIterator
@@ -127,7 +128,9 @@ class Store:
         async with self.pool.connection() as conn:
             await conn.execute(sql, args)
 
-    async def _all(self, sql: str, args: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
+    async def _all(
+        self, sql: str, args: tuple[Any, ...] | dict[str, Any] = ()
+    ) -> list[dict[str, Any]]:
         async with self.pool.connection() as conn:
             rows: list[dict[str, Any]] = await (await conn.execute(sql, args)).fetchall()
             return rows
@@ -351,7 +354,7 @@ class Store:
 
     async def record_usage(
         self,
-        investigation_id: str,
+        investigation_id: str | None,  # None: a search's embedding, the Contract's only
         contract_id: str,
         model: str,
         input_tokens: int,
@@ -393,20 +396,66 @@ class Store:
         return row or {"input_tokens": 0, "output_tokens": 0, "cost_usd": None}
 
     async def similar(
-        self, contract_id: str, keywords: str, since: float, limit: int
+        self,
+        contract_id: str,
+        keywords: str,
+        since: float,
+        limit: int,
+        near: tuple[list[float], str, float] | None = None,
     ) -> list[dict[str, Any]]:
         """This Contract's finished Triage Reports since `since` matching any of the
-        words, best match first. Only words reach the query: it never fails to parse."""
+        words, best match first. Only words reach the query: it never fails to parse.
+        near (vector, model, max distance): also those whose embedding by that model is
+        that close, the two rankings merged (reciprocal rank fusion)."""
         words = re.findall(r"\w+", keywords)[:20]
         if not words:
             return []
+        vector, model, distance = near or (None, None, None)
+        # ponytail: no vector index, a scan of one Contract's Reports; add HNSW past ~100k
         return await self._all(
-            "select id, started, title, report from investigations, "
-            "websearch_to_tsquery('english', %s) q where contract_id = %s "
+            "with mine as (select id, started, title, report, report_search, embedding, "
+            "embedding_model from investigations where contract_id = %(c)s "
             "and kind = 'triage' and status = 'done' and report is not null "
-            "and started >= %s and report_search @@ q "
-            "order by ts_rank(report_search, q) desc, started desc limit %s",
-            (" or ".join(words), contract_id, since, limit),
+            "and started >= %(since)s), "
+            "words as (select id, row_number() over (order by ts_rank(report_search, q) "
+            "desc, started desc) r from mine, websearch_to_tsquery('english', %(words)s) q "
+            "where report_search @@ q order by r limit 20), "
+            "meaning as (select id, row_number() over (order by embedding <=> %(v)s::vector) "
+            "r from mine where embedding_model = %(model)s "
+            "and embedding <=> %(v)s::vector < %(d)s order by r limit 20), "
+            "fused as (select id, sum(1.0 / (60 + r)) score from "
+            "(select * from words union all select * from meaning) u group by id) "
+            "select id, started, title, report from mine join fused using (id) "
+            "order by score desc, started desc limit %(limit)s",
+            {
+                "c": contract_id,
+                "since": since,
+                "words": " or ".join(words),
+                "v": json.dumps(vector) if vector else None,
+                "model": model,
+                "d": distance,
+                "limit": limit,
+            },
+        )
+
+    async def set_embedding(
+        self, contract_id: str, investigation_id: str, model: str, vector: list[float]
+    ) -> bool:
+        """Only on this Contract's own Investigation."""
+        row = await self._one(
+            "update investigations set embedding = %s::vector, embedding_model = %s "
+            "where id = %s and contract_id = %s returning id",
+            (json.dumps(vector), model, investigation_id, contract_id),
+        )
+        return row is not None
+
+    async def unembedded(self, contract_id: str, model: str) -> list[dict[str, Any]]:
+        """This Contract's finished Triage Reports with no embedding by `model`."""
+        return await self._all(
+            "select id, title, report from investigations where contract_id = %s "
+            "and kind = 'triage' and status = 'done' and report is not null "
+            "and embedding_model is distinct from %s order by started",
+            (contract_id, model),
         )
 
     async def past_report(self, contract_id: str, investigation_id: str) -> dict[str, Any] | None:

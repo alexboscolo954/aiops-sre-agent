@@ -59,7 +59,7 @@ A slice is one commit-sized change, about one working session (1 to 3 hours).
 | Jira | An issue is created only when the Operator clicks | Never write to a client's tracker unasked |
 | Budget | Monthly per Contract. Warn at 80%. At 100%, refuse new Investigations but still notify | An alert is never silently dropped |
 | Model | One Hub default, overridable per Contract | |
-| Similar incidents | Postgres full-text search first. Add pgvector only if evals show misses | No embedding calls until they pay off |
+| Similar incidents | Postgres full-text search, merged with pgvector when `AIOPS_EMBEDDING_MODEL` is set (7.4) | Unset, no embedding calls |
 
 ## Phases
 
@@ -293,6 +293,8 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
   - A's Teachings never reach B.
 
 **7.4 Embeddings** (pgvector), only if 7.1's evals show misses.
+- Built on the Operator's call (2026-10-20): no eval showed a miss, and Scenarios replay recorded searches, so none can. Grilled: OpenRouter embeddings (`openai/text-embedding-3-small`, 512 dimensions); hybrid with full-text search (reciprocal rank fusion); a Contract opts out with `embeddings: false`, and embedding tokens count in its usage; embedded when a Triage Report finishes, `aiops incidents embed` for the rest.
+- *Done when:* a store test finds by meaning a past Report that full-text search misses; the isolation test passes.
 
 ### Phase 8: Checks (2 slices)
 
@@ -319,4 +321,4 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
 
 ## Next
 
-Phase 4 first (the Operator's choice: no Contract needs a Relay yet). Phase 4 is done. Phase 5 is done: Azure, AWS and GCP, each with a Scenario recorded from a sandbox. The Operator chose Phase 6 next; 6.1, 6.2 and 6.3 are done; 6.4 waits for a Data policy that needs it. Phase 7: 7.1 and 7.2 are done, 7.3 is next.
+Phase 4 first (the Operator's choice: no Contract needs a Relay yet). Phase 4 is done. Phase 5 is done: Azure, AWS and GCP, each with a Scenario recorded from a sandbox. The Operator chose Phase 6 next; 6.1, 6.2 and 6.3 are done; 6.4 waits for a Data policy that needs it. Phase 7 is done: 7.1, 7.2, 7.3 and 7.4.

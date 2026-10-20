@@ -1,6 +1,6 @@
 CLUSTER := aiops
 CTX     := kind-$(CLUSTER)
-PG      := postgres:17.10
+PG      := pgvector/pgvector:0.8.7-pg17-trixie
 
 .PHONY: lint test db cluster demo lgtm integration image snapshots deploy-smoke hub-smoke rbac-check down
 

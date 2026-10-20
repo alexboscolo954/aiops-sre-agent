@@ -37,7 +37,7 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel
 
-from aiops_agent import agent, console, contracts, related, teachings
+from aiops_agent import agent, console, contracts, embeddings, related, teachings
 from aiops_agent.config import Settings
 from aiops_agent.contracts import Jira
 from aiops_agent.models import AlertGroup, GrafanaAlertGroup, Investigation
@@ -132,12 +132,19 @@ def create_app(
         )
     buttons = settings.slack_app_token is not None
     hub_provider = settings.model.split(":", 1)[0]
+    prices = settings.model_prices
     for c in by_id.values():
         effective = c.model or settings.model
         if c.monthly_budget_usd and effective not in settings.model_prices:
             raise RuntimeError(
                 f"Contract {c.id!r} has a budget, but its model {effective!r} has no price "
                 "in AIOPS_MODEL_PRICES"
+            )
+        embedder = settings.embedding_model
+        if c.monthly_budget_usd and embeddings.on(settings, c) and embedder not in prices:
+            raise RuntimeError(
+                f"Contract {c.id!r} has a budget, but the embedding model {embedder!r} has "
+                "no price in AIOPS_MODEL_PRICES"
             )
         if c.model and settings.model_base_url and c.model.split(":", 1)[0] != hub_provider:
             raise RuntimeError(
@@ -493,8 +500,18 @@ def create_app(
         await budget_notices(t.contract_id)
         if t.status == "awaiting_approval":
             spawn(expire(t.id, t.deadline))
+        if t.kind == "triage" and t.status == "done" and t.report:
+            spawn(index(t))
         if teach:
             await propose(t, *teach)
+
+    async def index(t: Investigation) -> None:
+        """A finished Triage Report's embedding, for later searches by meaning. Its
+        failure is logged and the Report is still found by its words."""
+        embedder = embeddings.for_contract(settings, store(), by_id[t.contract_id])
+        row = await store().past_report(t.contract_id, t.id) if embedder else None
+        if embedder and row:
+            await embedder.index(row)
 
     async def expire(investigation_id: str, deadline: float | None) -> None:
         await asyncio.sleep(max(0.0, (deadline or 0) - now()))

@@ -121,6 +121,8 @@ class Runbooks(Strict):
 
 class Incidents(Strict):
     name: Literal["incidents"]  # the Contract's own past Reports, from the Hub's database
+    # false: its Reports never go to the embedding model (AIOPS_EMBEDDING_MODEL); words only
+    embeddings: bool = True
 
 
 class Probe(Strict):

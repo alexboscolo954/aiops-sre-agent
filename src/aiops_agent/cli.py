@@ -1,5 +1,5 @@
 """Command line: `aiops triage`, `aiops serve`, `aiops mcp`, `aiops eval`, `aiops contracts`,
-`aiops integrations`."""
+`aiops integrations`, `aiops incidents`."""
 
 import argparse
 import asyncio
@@ -9,10 +9,11 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from aiops_agent import agent, contracts, evals
+from aiops_agent import agent, contracts, embeddings, evals
 from aiops_agent.config import Settings, refuse_moved
 from aiops_agent.models import AlertGroup
 from aiops_agent.servers import vendors
+from aiops_agent.store import Store, connect
 
 
 def ask(action: dict[str, Any], auto_reject: bool) -> dict[str, Any]:
@@ -112,6 +113,29 @@ def snapshot(vendor: str, check: bool, out: str | None = None) -> int:
     return 1
 
 
+async def embed_past(settings: Settings) -> int:
+    """Embed every finished Triage Report that has no embedding by the current model
+    yet, for each Contract that searches by meaning."""
+    refuse_moved()
+    if not (settings.contracts_dir and settings.database_url and settings.embedding_model):
+        raise SystemExit("set AIOPS_CONTRACTS_DIR, AIOPS_DATABASE_URL and AIOPS_EMBEDDING_MODEL")
+    loaded = contracts.load(settings.contracts_dir)
+    failed = 0
+    async with connect(settings.database_url.get_secret_value()) as pool:
+        store = Store(pool)
+        await store.migrate()
+        for c in loaded.values():
+            embedder = embeddings.for_contract(settings, store, c)
+            if embedder is None:
+                print(f"{c.id}: off (no incidents integration, or embeddings: false)")
+                continue
+            rows = await store.unembedded(c.id, embedder.model)
+            done = sum([await embedder.index(r) for r in rows])
+            failed += len(rows) - done
+            print(f"{c.id}: {done} of {len(rows)} Reports embedded")
+    return 1 if failed else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="aiops", description=__doc__)
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -159,7 +183,13 @@ def main(argv: list[str] | None = None) -> int:
     snap.add_argument("--check", action="store_true", help="fail if the vendor's tools drifted")
     snap.add_argument("--out", help="write here instead of the package's snapshots/; - prints")
 
+    n = sub.add_parser("incidents", help="the Contracts' past Reports in the Hub's database")
+    nsub = n.add_subparsers(dest="incidents_cmd", required=True)
+    nsub.add_parser("embed", help="embed past Reports for search by meaning (once, after setup)")
+
     args = parser.parse_args(argv)
+    if args.cmd == "incidents":
+        return asyncio.run(embed_past(Settings()))
     if args.cmd == "integrations":
         return snapshot(args.vendor, args.check, args.out)
     if args.cmd == "contracts" and args.contracts_cmd == "new-token":

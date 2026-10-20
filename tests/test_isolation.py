@@ -395,6 +395,38 @@ async def test_past_incidents_never_cross_contracts(
 
 
 @pytest.mark.anyio
+async def test_past_incidents_by_meaning_never_cross_contracts(
+    two_contracts: Contracts, database_url: str
+) -> None:
+    """The same vector in both Contracts' past Reports: a search by meaning finds only
+    its own, and one Contract can't set another's embedding."""
+    from aiops_agent.models import Investigation
+    from aiops_agent.servers import incidents
+    from aiops_agent.store import Store, connect, now
+    from tests.conftest import REPORT
+    from tests.test_embeddings import MODEL, Fake, vec
+
+    async with connect(database_url) as pool:
+        store = Store(pool)
+        await store.migrate()
+        for cid in two_contracts:
+            t = Investigation(
+                id=f"{cid}-past", contract_id=cid, title="t", status="done", started=now(),
+                report={**REPORT, "summary": "certificate expired"},
+            )  # fmt: skip
+            await store.insert(t)
+            assert await store.set_embedding(cid, f"{cid}-past", MODEL, vec(0))
+        for cid in two_contracts:
+            other = next(o for o in two_contracts if o != cid)
+            assert not await store.set_embedding(cid, f"{other}-past", MODEL, vec(1))
+            embedder = Fake(store, {"x509": vec(0)})
+            embedder.contract_id = cid
+            async with Client(incidents.build_server(cid, store, embedder)) as client:
+                found = await client.call_tool("search", {"keywords": "x509 handshake"})
+            assert [i["id"] for i in found.structured_content["incidents"]] == [f"{cid}-past"]
+
+
+@pytest.mark.anyio
 async def test_teachings_never_cross_contracts(two_contracts: Contracts, database_url: str) -> None:
     """Each Contract's approved Teachings are its own, and one Contract's Teaching can't
     be decided or retired as another's."""

@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 
 from dotenv import dotenv_values
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import BaseModel, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -44,6 +44,12 @@ class Settings(BaseSettings):
     max_model_calls: int = 30
     max_tool_calls: int = 25
     tool_output_limit: int = 8000  # max characters per tool result
+    # Similar incidents by meaning (embeddings.py): an embedding model on the model
+    # gateway, e.g. openai/text-embedding-3-small on OpenRouter. Unset: words only.
+    embedding_model: str | None = None
+    # Cosine distance under which a past Report counts as similar. ponytail: set from
+    # six short probes on text-embedding-3-small (2026-10-20); tune on real Reports.
+    embedding_max_distance: float = Field(0.6, gt=0, le=2)
 
     # Every Contract: one directory each (see contracts.py). Required for serve,
     # triage and mcp.
@@ -69,6 +75,12 @@ class Settings(BaseSettings):
     # Only behind `tailscale serve`: anything else reaching the port could send the
     # identity header itself (console.py).
     console_operators: set[str] = set()
+
+    @model_validator(mode="after")
+    def _embeddings_need_a_gateway(self) -> "Settings":
+        if self.embedding_model and not self.model_base_url:
+            raise ValueError("AIOPS_EMBEDDING_MODEL needs AIOPS_MODEL_BASE_URL (its gateway)")
+        return self
 
 
 # Settings that are gone: most moved into a Contract's contract.yaml (slice 0.3).

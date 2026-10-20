@@ -40,6 +40,7 @@ from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.types import Command
 from pydantic import BaseModel
 
+from aiops_agent import embeddings
 from aiops_agent.config import Settings
 from aiops_agent.contracts import (
     Aws,
@@ -274,9 +275,9 @@ def build_mcp(
         if isinstance(i, Incidents):
             if store is None and not snapshots:
                 continue
-            mount(
-                root, access, i.name, incidents.build_server(contract.id, store), incidents.ACCESS
-            )
+            embedder = embeddings.for_contract(settings, store, contract)
+            past = incidents.build_server(contract.id, store, embedder)
+            mount(root, access, i.name, past, incidents.ACCESS)
             guides.append(incidents.GUIDE)
             continue
         server = integration_server(contract, i, settings, k8s_apis, snapshots)
