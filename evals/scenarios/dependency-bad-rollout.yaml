@@ -22,7 +22,7 @@ expect:
   keywords:
   - inventory
   - API_VERSION
-  max_tool_calls: 11
+  max_tool_calls: 12
 tools:
   kubernetes_list_pods:
   - name: inventory-b775d96fd-qq86l

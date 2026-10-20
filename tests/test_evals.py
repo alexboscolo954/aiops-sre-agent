@@ -7,7 +7,7 @@ import yaml
 
 from aiops_agent import agent, evals
 from aiops_agent.config import Settings
-from aiops_agent.models import AlertGroup
+from aiops_agent.models import AlertGroup, TriageReport
 from tests.conftest import REPORT, call, scripted
 from tests.test_agent import ALERT
 
@@ -208,3 +208,96 @@ async def test_past_incidents_replay_from_the_recording(settings: Settings) -> N
         }
         with pytest.raises(ToolError, match="no recorded data"):
             await c.call_tool("incidents_read", {"id": "invented"})
+
+
+def test_a_scenarios_teachings_reach_its_prompt_as_in_production() -> None:
+    alert = {
+        "status": "firing",
+        "alerts": [{"status": "firing", "labels": {"alertname": "KubePodCrashLooping"}}],
+    }
+    scenario = {
+        "alert": alert,
+        "teachings": [
+            {"text": "Never roll back checkout.", "alerts": ["KubePodCrashLooping"]},
+            {"text": "For disks only.", "alerts": ["DiskFull"]},
+            {"text": "In general."},
+        ],
+    }
+    taught = evals.scenario_taught(scenario)
+    assert "Never roll back checkout." in taught and "In general." in taught
+    assert "For disks only." not in taught
+    question = {"question": "?", "teachings": scenario["teachings"]}
+    assert "For disks only." in evals.scenario_taught(question)  # a Question: every one
+    assert evals.scenario_taught({"alert": alert}) == ""
+
+
+def test_recommendations_are_scored_when_the_scenario_asks() -> None:
+    report = TriageReport.model_validate(
+        {**REPORT, "recommended_actions": ["Restore DATABASE_URL from secret checkout-db."]}
+    )
+    outcome = agent.Outcome("t", report=report)
+    expect = {"category": ["resource_limits"], "recommendations": ["checkout-db"]}
+    assert evals.score({"expect": expect}, outcome) == []
+    expect["recommendations"] = ["rollout undo"]
+    assert evals.score({"expect": expect}, outcome) == ["recommendations miss ['rollout undo']"]
+
+
+EMPTY = {"incidents": [], "note": "No past Report in the last 90 days matches."}
+CITED = [
+    {"source": "kubernetes_pod_logs", "finding": "OutOfMemoryError"},
+    {"source": "incidents_search", "finding": "No past Report matches."},
+]
+
+
+async def cited_after(settings: Settings, *searches: Any) -> list[str]:
+    """The Evidence sources a Report keeps after searches with these results."""
+    contract = evals.scenario_contract("shop", False, Path("x"), {}, ["incidents"])
+    recordings = {
+        "incidents_search": [
+            {"match": {"keywords": f"k{i}"}, "result": r} for i, r in enumerate(searches)
+        ]
+    }
+    steps = [call("incidents_search", f"s{i}", keywords=f"k{i}") for i in range(len(searches))]
+    model = scripted(*steps, call("TriageReport", "r", **{**REPORT, "evidence": CITED}))
+    toolbox = evals.replay_server(contract, settings, recordings)
+    group = AlertGroup.model_validate({"status": "firing", "alerts": []})
+    async with agent.open_agent(settings, toolbox, model) as a:
+        outcome = await agent.start(a, group, "e1")
+    assert outcome.report is not None
+    return [e.source for e in outcome.report.evidence]
+
+
+@pytest.mark.anyio
+async def test_evidence_citing_an_empty_search_is_dropped(settings: Settings) -> None:
+    assert await cited_after(settings, EMPTY) == ["kubernetes_pod_logs"]
+    assert await cited_after(settings, EMPTY, EMPTY) == ["kubernetes_pod_logs"]
+
+
+@pytest.mark.anyio
+async def test_evidence_citing_a_search_that_found_one_is_kept(settings: Settings) -> None:
+    found = {"incidents": [{"id": "p1", "summary": "reports oom"}]}
+    both = ["kubernetes_pod_logs", "incidents_search"]
+    assert await cited_after(settings, found) == both
+    assert await cited_after(settings, EMPTY, found) == both  # one found something
+    assert await cited_after(settings) == both  # never searched: not the Hub's to judge
+
+
+def test_the_only_evidence_is_kept() -> None:
+    from langchain.messages import ToolMessage
+
+    report = TriageReport.model_validate({**REPORT, "evidence": CITED[1:]})
+    empty = ToolMessage(content=json.dumps(EMPTY), name="incidents_search", tool_call_id="s")
+    agent.drop_empty_searches(report, [empty])
+    assert [e.source for e in report.evidence] == ["incidents_search"]
+
+
+def test_a_result_the_hub_cant_read_counts_as_found() -> None:
+    """A stored oversized result, or an error text: not known to be empty, so kept."""
+    from langchain.messages import ToolMessage
+
+    report = TriageReport.model_validate({**REPORT, "evidence": CITED})
+    odd = ToolMessage(
+        content="[stored result r1: 9000 chars]", name="incidents_search", tool_call_id="s"
+    )
+    agent.drop_empty_searches(report, [odd])
+    assert [e.source for e in report.evidence] == ["kubernetes_pod_logs", "incidents_search"]

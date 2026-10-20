@@ -25,7 +25,7 @@ for the alerting workload before writing the Report, even if the cause looks cle
 past Report can hold what current tools can't show, such as a fix already tried. A
 match is a lead, not proof: it was the agent's own conclusion then. Read it
 (incidents_read), confirm what it says with the current tools, and cite it as
-Evidence only next to current evidence.
+Evidence only next to current evidence. A search that found nothing is not Evidence.
 """
 
 

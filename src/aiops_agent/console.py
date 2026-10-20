@@ -32,6 +32,7 @@ from aiops_agent.models import Investigation
 from aiops_agent.safety import redact
 from aiops_agent.store import Store, now
 from aiops_agent.teachings import LIMIT as TEACHING_LIMIT
+from aiops_agent.teachings import section
 
 # Autoescape always: alert titles come from client Alertmanagers, Reports and
 # Answers from a model that reads tool output. Never mark anything |safe.
@@ -187,7 +188,11 @@ def router(
                 409, "started before Scenarios were recorded, or its Contract is gone"
             )
         body = evals.scenario_yaml(
-            t, by_id[t.contract_id], await store().tool_calls(t.id), await store().decisions(t.id)
+            t,
+            by_id[t.contract_id],
+            await store().tool_calls(t.id),
+            await store().decisions(t.id),
+            await store().teachings(t.contract_id, "approved"),
         )
         name = f"{t.contract_id}-{t.id[:8]}.yaml"
         return Response(
@@ -266,6 +271,11 @@ def router(
     ) -> HTMLResponse:
         shown = contract if contract in by_id else None
         rows = await store().teachings(shown)
+        approved = [r for r in rows if r["status"] == "approved"]
+        left = {
+            cid: section([r for r in approved if r["contract_id"] == cid], None)[1] for cid in by_id
+        }
+        crowded = {cid: n for cid, n in sorted(left.items()) if n}
         return page(
             request,
             "teachings.html",
@@ -276,6 +286,7 @@ def router(
             approved=[r for r in rows if r["status"] == "approved"],
             past=[r for r in rows if r["status"] in ("rejected", "retired")],
             limit=TEACHING_LIMIT,
+            crowded=crowded,
         )
 
     async def teaching_row(teaching_id: int) -> dict[str, Any]:

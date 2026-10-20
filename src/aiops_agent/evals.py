@@ -23,7 +23,7 @@ from fastmcp.tools import ToolResult
 from mcp.types import TextContent
 from pydantic import SecretStr
 
-from aiops_agent import agent, contracts
+from aiops_agent import agent, contracts, teachings
 from aiops_agent.config import Settings
 from aiops_agent.contracts import Contract, Integration, Vendor
 from aiops_agent.models import AlertGroup, Investigation
@@ -193,6 +193,20 @@ async def triage(
     return outcome, proposed
 
 
+def scenario_taught(scenario: dict[str, Any]) -> str:
+    """A Scenario's approved Teachings ({text, alerts?}), as production puts them in
+    the prompt: chosen by the alert's names, or every one for a Question."""
+    rows = [
+        {"id": i, "text": x["text"], "alerts": x.get("alerts", [])}
+        for i, x in enumerate(scenario.get("teachings", []), 1)
+    ]
+    alerts = None
+    if "alert" in scenario:
+        group = AlertGroup.model_validate(scenario["alert"])
+        alerts = {a.labels.get("alertname", "") for a in group.firing}
+    return teachings.section(rows, alerts)[0]
+
+
 def score(scenario: dict[str, Any], outcome: agent.Outcome) -> list[str]:
     """Return the list of failed checks (empty = pass)."""
     expect, report, failures = scenario["expect"], outcome.report, []
@@ -207,6 +221,9 @@ def score(scenario: dict[str, Any], outcome: agent.Outcome) -> list[str]:
     missing = [k for k in expect.get("keywords", []) if k.lower() not in text]
     if missing:
         failures.append(f"root cause misses {missing}")
+    steps = " ".join(report.recommended_actions).lower()
+    if absent := [k for k in expect.get("recommendations", []) if k.lower() not in steps]:
+        failures.append(f"recommendations miss {absent}")
     if len(outcome.tool_calls) > expect.get("max_tool_calls", 12):
         failures.append(f"{len(outcome.tool_calls)} tool calls > {expect['max_tool_calls']}")
     return failures + missing_links(expect, report.evidence)
@@ -267,6 +284,7 @@ async def run(
                 settings,
                 replay_server(contract, settings, scenario["tools"]),
                 kind="question" if question else "triage",
+                taught=scenario_taught(scenario),
             ) as a:
                 if question:
                     outcome, proposed = await agent.ask(a, question, thread), list[dict[str, Any]]()
@@ -335,6 +353,7 @@ def scenario_yaml(
     contract: Contract,
     tool_calls: list[dict[str, Any]],
     decisions: list[dict[str, Any]],
+    approved: list[dict[str, Any]] | None = None,
 ) -> str:
     """A finished Investigation as a draft Scenario: what started it, every recorded
     tool result (already redacted when recorded), and an Expectation to edit. Replay
@@ -351,7 +370,7 @@ def scenario_yaml(
         # Arguments are redacted when recorded; again here for rows from before that.
         match = redact_strings(call["args"])
         tools.setdefault(call["tool"], []).append({"match": match, "result": result})
-    approved = [a for d in decisions if d["approve"] for a in d["actions"]]
+    allowed = [a for d in decisions if d["approve"] for a in d["actions"]]
     budget = len(tool_calls) + 3
     body: dict[str, Any] = {
         "description": redact(f"Saved from {t.kind} {t.id} ({t.contract_id}): {t.title}"),
@@ -366,11 +385,13 @@ def scenario_yaml(
         body["alert"] = redact_strings(t.input)
         category = [t.report.category] if t.report else []
         body["expect"] = {"category": category, "keywords": [], "max_tool_calls": budget}
-        if approved:
+        if allowed:
             body["enable_actions"] = True
             body["expect"]["allowed_actions"] = [
-                {"name": a["name"], "args": redact_strings(a["args"])} for a in approved
+                {"name": a["name"], "args": redact_strings(a["args"])} for a in allowed
             ]
+    if approved:  # the Contract's approved Teachings as of saving, not of the Run
+        body["teachings"] = [{"text": x["text"], "alerts": x["alerts"]} for x in approved]
     body["tools"] = tools
     day = datetime.fromtimestamp(t.started, UTC).strftime("%Y-%m-%d")
     header = (

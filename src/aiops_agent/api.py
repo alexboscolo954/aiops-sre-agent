@@ -251,6 +251,19 @@ def create_app(
 
         return used
 
+    async def taught(t: Investigation) -> str:
+        """The Contract's approved Teachings for this Run's prompt: a Triage's for its
+        alert names first, then the general ones; a Question's, every one."""
+        approved = await store().teachings(t.contract_id, "approved")  # never others
+        alerts = None
+        if t.kind == "triage":
+            group = AlertGroup.model_validate(t.input) if t.input else None
+            alerts = {a.labels.get("alertname", "") for a in group.firing} if group else set()
+        text, left = teachings.section(approved, alerts)
+        if left:
+            log.warning("investigation %s: %d approved Teachings didn't fit", t.id, left)
+        return text
+
     async def give_feedback(
         t: Investigation, correct: bool, correction: str | None, by: str, who: str
     ) -> None:
@@ -459,6 +472,7 @@ def create_app(
                     record,
                     kind=agent_kind(t),
                     usage=usage_sink(t),
+                    taught=await taught(t),
                 ) as a:
                     apply(t, await step(a))
             except Exception as e:  # report every failure, never lose an alert silently

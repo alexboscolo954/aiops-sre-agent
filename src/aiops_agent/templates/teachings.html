@@ -5,6 +5,9 @@
 <p>Lessons for one Contract's future Investigations. Only approved ones are used, and never by another Contract.
 {% for c in contracts %}<a href="/console/teachings?contract={{ c }}"><code>{{ c }}</code></a> {% endfor %}</p>
 
+{% for cid, left in crowded.items() %}
+<p><strong><code>{{ cid }}</code>: {{ left }} approved Teaching(s) don't fit in a prompt</strong> (at most 30 and 6,000 characters, newest first; a Triage gets those for its alert first). Retire the ones no longer needed.</p>
+{% endfor %}
 <h2>Waiting for review</h2>
 {% for r in proposed %}
 <div>

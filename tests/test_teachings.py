@@ -3,6 +3,7 @@ drafted from a correction or a rejection reason, and its review in Slack and the
 console. Only approved Teachings, and only the Contract's own, reach the drafter."""
 
 # ruff: noqa: F811 - sock is test_slack's fixture, imported for these tests
+import asyncio
 import json
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -16,6 +17,7 @@ from pydantic import SecretStr
 
 from aiops_agent import teachings
 from aiops_agent.config import Settings
+from aiops_agent.store import Store, connect
 from tests import test_api
 from tests.conftest import REPORT, ScriptedModel, call
 from tests.test_api import ALERT, AUTH, BANK_HOOK, BANK_URL, HOOK, URL, bank, client
@@ -676,3 +678,147 @@ def test_another_contracts_teaching_is_never_decided_from_this_thread(
         ("proposed",),
         ("proposed",),
     ]
+
+
+# Part b: approved Teachings in the prompts
+
+
+def taught_row(i: int, text: str, alerts: list[str] | None = None) -> dict[str, Any]:
+    return {"id": i, "text": text, "alerts": alerts or []}
+
+
+def test_a_triage_gets_its_alerts_teachings_first_then_the_general_ones() -> None:
+    rows = [
+        taught_row(1, "old general"),
+        taught_row(2, "for crash loops", ["KubePodCrashLooping"]),
+        taught_row(3, "for another alert", ["DiskFull"]),
+        taught_row(4, "new general"),
+    ]
+    text, left = teachings.section(rows, {"KubePodCrashLooping"})
+    assert text.splitlines()[0].startswith("Teachings from the Operator")
+    assert text.splitlines()[-3:] == [
+        "- for crash loops (for KubePodCrashLooping)",
+        "- new general",
+        "- old general",
+    ]
+    assert left == 0 and "another alert" not in text
+    everything, _ = teachings.section(rows, None)  # a Question
+    assert "for another alert" in everything and everything.count("\n- ") == 4
+    assert teachings.section([], {"X"}) == ("", 0)
+
+
+def test_the_prompt_holds_at_most_30_and_6000_characters_newest_first() -> None:
+    many = [taught_row(i, f"lesson {i}") for i in range(1, 36)]
+    text, left = teachings.section(many, set())
+    assert left == 5 and "- lesson 35" in text and "- lesson 6\n" in text + "\n"
+    assert "- lesson 5\n" not in text + "\n"
+    long = [taught_row(i, "x" * 480) for i in range(1, 15)]
+    text, left = teachings.section(long, set())
+    assert len(text) < teachings.MAX_PROMPT_CHARS + 200 and left == 2
+
+
+def system_prompts() -> list[str]:
+    return [str(m[0].content) for m in Recording.sent if m and m[0].type == "system"]
+
+
+def migrated(database_url: str) -> None:
+    """The Hub migrates when it starts; these tests write before that."""
+
+    async def go() -> None:
+        async with connect(database_url) as pool:
+            await Store(pool).migrate()
+
+    asyncio.run(go())
+
+
+def seed(database_url: str) -> None:
+    migrated(database_url)
+    with psycopg.connect(database_url) as conn:
+        for contract, status, text, alerts in [
+            ("acme", "approved", "ACME-GENERAL lesson", []),
+            ("acme", "approved", "ACME-CRASHLOOP lesson", ["KubePodCrashLooping"]),
+            ("acme", "approved", "ACME-OTHER-ALERT lesson", ["DiskFull"]),
+            ("acme", "proposed", "ACME-PROPOSED lesson", []),
+            ("acme", "rejected", "ACME-REJECTED lesson", []),
+            ("acme", "retired", "ACME-RETIRED lesson", []),
+            ("bank", "approved", "BANK-APPROVED lesson", []),
+        ]:
+            conn.execute(
+                "insert into teachings (contract_id, text, alerts, status, proposed_at) "
+                "values (%s, %s, %s, %s, 0)",
+                (contract, text, json.dumps(alerts), status),
+            )
+
+
+NEVER = ("ACME-PROPOSED", "ACME-REJECTED", "ACME-RETIRED", "BANK-APPROVED")
+
+
+def test_only_the_contracts_approved_teachings_reach_a_triage(
+    settings: Settings, fake_cluster: Any, buttons: FakeSocket, database_url: str
+) -> None:
+    slack = FakeSlack(buttons.url)
+    seed(database_url)
+    alert = {**ALERT, "commonLabels": {"alertname": "KubePodCrashLooping", "namespace": "shop"}}
+    alert["alerts"] = [{**ALERT["alerts"][0], "labels": {"alertname": "KubePodCrashLooping"}}]
+    with client(
+        settings, fake_cluster, REPORT_STEP, slack=slack.transport(), acme_channel=ACME, more=bank()
+    ) as c:
+        tid = c.post(URL, json=alert, headers=HOOK).json()["investigation"]
+        wait_for(c, tid, "done")
+    (prompt,) = system_prompts()
+    assert prompt.index("ACME-CRASHLOOP") < prompt.index("ACME-GENERAL")
+    assert "ACME-OTHER-ALERT" not in prompt
+    for never in NEVER:
+        assert never not in prompt, never
+
+
+def test_a_question_gets_every_approved_teaching(
+    settings: Settings, fake_cluster: Any, buttons: FakeSocket, database_url: str
+) -> None:
+    seed(database_url)
+    answer = call("Answer", "a1", answer="It's fine.", evidence=[REPORT["evidence"][0]])
+    with client(settings, fake_cluster, answer, more=bank()) as c:
+        r = c.post("/console/questions", data={"contract": "acme", "question": "OK?"}, headers=SAME)
+        assert r.status_code == 200
+        until(lambda: len(Recording.sent) == 1)
+    (prompt,) = system_prompts()
+    for shown in ("ACME-GENERAL", "ACME-CRASHLOOP", "ACME-OTHER-ALERT"):
+        assert shown in prompt
+    for never in NEVER:
+        assert never not in prompt, never
+
+
+def test_a_resumed_run_reads_the_teachings_as_they_are_then(
+    settings: Settings, fake_cluster: Any, buttons: FakeSocket, database_url: str
+) -> None:
+    """One retired while it waited is gone; one approved since is there."""
+    slack = FakeSlack(buttons.url)
+    seed(database_url)
+    with paused(settings, fake_cluster, slack, REPORT_STEP) as (c, tid):
+        with psycopg.connect(database_url) as conn:
+            conn.execute("update teachings set status = 'retired' where text like 'ACME-GENERAL%'")
+            conn.execute(
+                "insert into teachings (contract_id, text, status, proposed_at) "
+                "values ('acme', 'ACME-NEW lesson', 'approved', 0)"
+            )
+        c.post(f"/investigations/{tid}/decision", json={"approve": True}, headers=AUTH)
+        wait_for(c, tid, "done")
+    first, resumed = system_prompts()
+    assert "ACME-GENERAL" in first and "ACME-NEW" not in first
+    assert "ACME-GENERAL" not in resumed and "ACME-NEW" in resumed
+
+
+def test_the_console_warns_when_teachings_dont_fit(
+    settings: Settings, fake_cluster: Any, buttons: FakeSocket, database_url: str
+) -> None:
+    migrated(database_url)
+    with psycopg.connect(database_url) as conn:
+        for i in range(31):
+            conn.execute(
+                "insert into teachings (contract_id, text, status, proposed_at) "
+                "values ('acme', %s, 'approved', 0)",
+                (f"lesson {i}",),
+            )
+    with client(settings, fake_cluster) as c:
+        page = c.get("/console/teachings", headers=VIEW).text
+    assert "<code>acme</code>: 1 approved Teaching(s) don't fit in a prompt" in page

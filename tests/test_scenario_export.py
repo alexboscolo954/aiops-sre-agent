@@ -262,3 +262,20 @@ def test_rows_recorded_before_argument_redaction_are_redacted_on_export() -> Non
     assert SECRET not in evals.scenario_yaml(t, make_contract(), [old_row], [])
     t = t.model_copy(update={"kind": "triage", "input": {"status": "firing", "alerts": []}})
     assert SECRET not in evals.scenario_yaml(t, make_contract(), [], [approved])
+
+
+def test_a_saved_scenario_carries_the_contracts_approved_teachings() -> None:
+    t = Investigation(
+        id="t1",
+        contract_id="acme",
+        title="t",
+        started=0,
+        status="done",
+        input={"status": "firing", "alerts": []},
+    )
+    approved = [{"id": 3, "text": "Never roll back checkout.", "alerts": ["KubePodCrashLooping"]}]
+    saved = yaml.safe_load(evals.scenario_yaml(t, make_contract(), [], [], approved))
+    assert saved["teachings"] == [
+        {"text": "Never roll back checkout.", "alerts": ["KubePodCrashLooping"]}
+    ]
+    assert "teachings" not in yaml.safe_load(evals.scenario_yaml(t, make_contract(), [], []))

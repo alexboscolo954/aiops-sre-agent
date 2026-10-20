@@ -587,10 +587,11 @@ def record_usage(sink: UsageSink) -> Any:
     return track
 
 
-def prompt(kind: Kind, toolbox: Toolbox) -> str:
-    """The kind's prompt, plus how to use each vendor offered that has a guide."""
+def prompt(kind: Kind, toolbox: Toolbox, taught: str = "") -> str:
+    """The kind's prompt, plus how to use each vendor offered that has a guide, plus
+    the Contract's approved Teachings (teachings.section)."""
     base = QUESTION_PROMPT if kind == "question" else SYSTEM_PROMPT
-    return base + "".join("\n" + g for g in toolbox.guides)
+    return base + "".join("\n" + g for g in [*toolbox.guides, taught] if g)
 
 
 @asynccontextmanager
@@ -602,6 +603,7 @@ async def open_agent(
     record: ToolSink | None = None,
     kind: Kind = "triage",
     usage: UsageSink | None = None,
+    taught: str = "",
 ) -> AsyncIterator[Any]:
     """The only way to build the agent, so every caller gets the Hub's list.
     record(tool, args, raw result, is_error) gets every tool result, uncapped.
@@ -616,7 +618,7 @@ async def open_agent(
         yield create_agent(
             model or build_model(settings),
             tools,
-            system_prompt=prompt(kind, toolbox),
+            system_prompt=prompt(kind, toolbox, taught),
             response_format=output_format(settings, kind),
             middleware=[
                 HumanInTheLoopMiddleware(
@@ -689,6 +691,7 @@ def _outcome(thread_id: str, result: Any) -> Outcome:
     if found is None:
         raise TriageError("agent stopped without a report (call limit reached?)")
     dropped = drop_unreturned_links(found, set(result.value.get("links", [])))
+    drop_empty_searches(found, messages)
     if isinstance(found, Answer):
         return Outcome(
             thread_id, answer=found, dropped_links=dropped, tool_calls=calls, call_log=log_
@@ -701,6 +704,30 @@ def _outcome(thread_id: str, result: Any) -> Outcome:
         tool_calls=calls,
         call_log=log_,
     )
+
+
+EMPTY_SEARCH = "incidents_search"
+
+
+def drop_empty_searches(found: TriageReport | Answer, messages: list[Any]) -> None:
+    """A past-incidents search that found nothing is no Evidence: when every one in
+    the Run came back empty, Evidence citing it is dropped (unless it is the only
+    Evidence, which a Report must have). The model was told so and still cites it."""
+    results = [m.text for m in messages if isinstance(m, ToolMessage) and m.name == EMPTY_SEARCH]
+    if not results or any(_found_any(r) for r in results):
+        return
+    kept = [e for e in found.evidence if e.source != EMPTY_SEARCH]
+    if kept and len(kept) < len(found.evidence):
+        log.info("dropping %d Evidence citing an empty search", len(found.evidence) - len(kept))
+        found.evidence = kept
+
+
+def _found_any(text: str) -> bool:
+    """Whether a search result listed any incident; unreadable counts as found."""
+    try:
+        return bool(json.loads(text).get("incidents", True))
+    except (ValueError, AttributeError):
+        return True
 
 
 def drop_unreturned_links(found: TriageReport | Answer, returned: set[str]) -> int:

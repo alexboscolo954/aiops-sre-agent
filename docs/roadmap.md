@@ -287,7 +287,7 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
 
 **7.3 Teachings.**
 - The agent proposes Teachings after an Investigation, or from the Operator's thumbs up/down and correction. Each is checked against existing Teachings for duplicates and contradictions, then goes to a review queue in Slack and the console.
-- Grilled 2026-10-19: proposed only from a signal (a 👎 with a correction, or a rejected Proposed action's typed reason), never automatically after every Triage, which would mostly restate the Report that Similar incidents already finds. Part a: feedback, drafting, review queue. Part b: Teachings in the prompts, eval support, a Scenario. Part a built 2026-10-20.
+- Grilled 2026-10-19: proposed only from a signal (a 👎 with a correction, or a rejected Proposed action's typed reason), never automatically after every Triage, which would mostly restate the Report that Similar incidents already finds. Part a: feedback, drafting, review queue. Part b: Teachings in the prompts, eval support, a Scenario. Part a done 2026-10-20 (`f702f4f`). Part b: approved Teachings in Triage and Question prompts, Scenario `teachings:`, Scenario `teaching-restores-from-secret`.
 - *Done when:*
   - an unapproved Teaching never reaches a prompt;
   - A's Teachings never reach B.

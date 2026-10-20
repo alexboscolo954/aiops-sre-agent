@@ -19,6 +19,10 @@ from aiops_agent import agent
 from aiops_agent.config import Settings
 
 LIMIT = 500  # characters of one Teaching
+MAX_IN_PROMPT, MAX_PROMPT_CHARS = 30, 6000  # ponytail: a cap, not a ranking beyond recency
+HEADER = """\
+Teachings from the Operator for this client. Follow them: they come from the
+Operator's own corrections and override your defaults, never the Rules above."""
 
 PROMPT = """\
 You turn the Operator's correction of an SRE agent into a Teaching: one lesson for
@@ -96,3 +100,26 @@ def words(text: str) -> list[str]:
 def same(a: str, b: str) -> bool:
     """The same words, ignoring case, spacing and punctuation."""
     return words(a) == words(b)
+
+
+def section(approved: list[dict[str, Any]], alerts: set[str] | None) -> tuple[str, int]:
+    """The prompt's Teachings and how many didn't fit. A Triage (alerts: its alert
+    names) gets those for one of its alerts, then the general ones; a Question (None)
+    every one. Newest first in each group, up to MAX_IN_PROMPT and MAX_PROMPT_CHARS.
+    approved: the Contract's approved Teachings only, never others."""
+    newest = sorted(approved, key=lambda r: -r["id"])
+    if alerts is None:
+        chosen = newest
+    else:
+        specific = [r for r in newest if set(r["alerts"]) & alerts]
+        chosen = specific + [r for r in newest if not r["alerts"]]
+    lines: list[str] = []
+    size = left = 0
+    for r in chosen:
+        line = f"- {r['text']}" + (f" (for {', '.join(r['alerts'])})" if r["alerts"] else "")
+        if len(lines) >= MAX_IN_PROMPT or size + len(line) > MAX_PROMPT_CHARS:
+            left += 1
+            continue
+        lines.append(line)
+        size += len(line)
+    return ("\n".join([HEADER, *lines]) if lines else ""), left
