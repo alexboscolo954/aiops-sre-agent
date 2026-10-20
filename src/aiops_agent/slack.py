@@ -362,7 +362,14 @@ class Slack:
     ) -> str | None:
         """The message's ts, or None when it wasn't posted. With blocks, text is
         the notification's fallback."""
-        payload: dict[str, Any] = {"channel": channel, "text": text, "unfurl_links": False}
+        # No unfurls: Slack's servers would fetch a link or image the model wrote (a
+        # prompt injection's way to send client data to a host it names).
+        payload: dict[str, Any] = {
+            "channel": channel,
+            "text": text,
+            "unfurl_links": False,
+            "unfurl_media": False,
+        }
         if thread_ts:
             payload["thread_ts"] = thread_ts
         if blocks is not None:

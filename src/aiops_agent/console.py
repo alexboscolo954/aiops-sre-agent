@@ -38,13 +38,20 @@ from aiops_agent.teachings import section
 
 # Autoescape always: alert titles come from client Alertmanagers, Reports and
 # Answers from a model that reads tool output. Never mark anything |safe; the one
-# filter that returns markup, md, renders Markdown with raw HTML escaped and
-# javascript:/data: links refused (markdown-it's own link check).
+# filter that returns markup, md, renders Markdown with raw HTML escaped and no
+# link or image at all: a prompt injection could have the model write one carrying
+# client data to its own host, for the Operator to click (or a browser to load).
+# Evidence links are plain text already, after the Hub dropped any a link tool
+# didn't return.
 TEMPLATES = Environment(
     loader=FileSystemLoader(Path(__file__).parent / "templates"), autoescape=True
 )
 # breaks: a Report's lines (root cause, severity) stay lines, as Slack shows them.
-MARKDOWN = MarkdownIt("commonmark", {"html": False, "breaks": True}).enable("table")
+MARKDOWN = (
+    MarkdownIt("commonmark", {"html": False, "breaks": True})
+    .enable("table")
+    .disable(["link", "image", "autolink", "reference"])
+)
 TEMPLATES.filters["md"] = lambda text: Markup(MARKDOWN.render(text or ""))  # noqa: S704
 CSS = (Path(__file__).parent / "static" / "console.css").read_text()
 TEMPLATES.filters["when"] = lambda t: (

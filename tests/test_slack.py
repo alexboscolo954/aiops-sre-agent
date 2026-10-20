@@ -822,3 +822,11 @@ async def test_one_run_per_question_and_each_mention_once(database_url: str) -> 
         triage = Investigation(id="t", contract_id="acme", title="t", started=0, status="done")
         await st.insert(triage)
         assert not await st.claim_follow_up("t", "1800000000.000004")
+
+
+def test_no_post_unfurls_a_link_or_an_image(settings: Settings, fake_cluster: Any) -> None:
+    """Slack's servers would fetch what the model wrote: never let them."""
+    slack = FakeSlack()
+    done_once(settings, fake_cluster, slack)
+    posted = [p for m, p, _ in slack.calls if m == "chat.postMessage"]
+    assert posted and all(p["unfurl_links"] is False and p["unfurl_media"] is False for p in posted)
