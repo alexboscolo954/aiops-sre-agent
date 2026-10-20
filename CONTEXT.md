@@ -67,6 +67,9 @@ An Investigation that runs on a schedule or after a deploy, without an alert. Th
 **Open failure**:
 A Check's failure that the Operator has been told about and that hasn't passed since. Each later failing Run of that Check replies *still failing* in its thread instead of starting a new one, unless it needs an Approval decision. The first passing Run replies *recovered* and ends it.
 
+**Deploy verification**:
+A Check that the Hub starts by itself after a deploy it sees in a Contract's cluster (a rollout, an ArgoCD sync, a Flux release), once a delay has passed, asking whether what was deployed is healthy and whether anything else in that namespace started failing since. Deploys in one namespace close together are verified in one Run. Opt-in per Contract. It has no Open failure: each deploy is verified once.
+
 **Run**:
 One uninterrupted stretch of agent work inside an Investigation. An Investigation without a Proposed action has one Run. Each Approval decision or Stale rejection starts another Run.
 

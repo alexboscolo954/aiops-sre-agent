@@ -304,6 +304,7 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
 
 **8.2 Deploy verification.**
 - A rollout or ArgoCD sync starts a Check of the new revision after a set delay.
+- Grilled 2026-10-20 (all recommended): poll the Contract's `recent_changes` every 2 minutes; opt-in `deploy_checks:` with a delay; a Hub-written prompt (only identities: object and revision) asking about the namespace too; one Run per namespace for deploys close together (capped at twice the delay); the first poll is the baseline; quiet on pass, a thread on failure, no Open failure. Built 2026-10-20. The live check showed the model can't tell what was failing before a deploy, so the Hub's poll records it and the prompt names it (the Operator chose that over a prompt-only fix). Scenarios `deploy-inventory-breaks-orders` (must fail) and `deploy-unrelated-next-to-crashloop` (must pass) pass on Haiku, and so does the live check.
 
 ## Deferred
 
@@ -322,4 +323,4 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
 
 ## Next
 
-Phase 4 first (the Operator's choice: no Contract needs a Relay yet). Phase 4 is done. Phase 5 is done: Azure, AWS and GCP, each with a Scenario recorded from a sandbox. The Operator chose Phase 6 next; 6.1, 6.2 and 6.3 are done; 6.4 waits for a Data policy that needs it. Phase 7 is done: 7.1, 7.2, 7.3 and 7.4. Phase 8: 8.1 is built; 8.2 Deploy verification is next.
+Phase 4 first (the Operator's choice: no Contract needs a Relay yet). Phase 4 is done. Phase 5 is done: Azure, AWS and GCP, each with a Scenario recorded from a sandbox. The Operator chose Phase 6 next; 6.1, 6.2 and 6.3 are done; 6.4 waits for a Data policy that needs it. Phase 7 is done: 7.1, 7.2, 7.3 and 7.4. Phase 8 is done: 8.1 and 8.2. Next is the Operator's choice: Phase 3 Relay when a Contract needs it, or 6.4 Masking when a Data policy does.

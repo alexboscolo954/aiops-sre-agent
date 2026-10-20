@@ -1,0 +1,402 @@
+integrations:
+- kubernetes
+- runbooks
+- incidents
+namespace: orders
+description: 'A deploy verification, recorded live on the kind demo (2026-10-20): a new, healthy deployment
+  audit in namespace orders, next to orders-api, which was crash looping for an hour before it. The Hub''s
+  look before the deploy saw orders-api failing, so the Check must pass: the crash loop is not this deploy''s
+  doing.'
+check:
+  name: deploy:kind/orders
+  prompt: 'Verify a deploy in namespace orders of cluster kind. These changed a few minutes ago:
+
+    - deployment audit, revision 1
+
+    Pass only if what changed is healthy now (every changed deployment has all its replicas ready on the
+    new revision, its pods have not restarted since, no new warning events, nothing failing in its logs)
+    and nothing else in the namespace started failing after the change. Something that was already failing
+    the same way before the change is not this change''s doing: say so in the summary, but don''t fail
+    the Check for it. Read the details of each change with recent_changes.
+
+    At the Hub''s look just before the change, these were already failing: orders-api. Fail the Check
+    for them only if the change made them fail in a new way.'
+expect:
+  passed: true
+  keywords:
+  - audit
+  evidence:
+  - - kubernetes_list_deployments
+    - kubernetes_list_pods
+    - kubernetes_describe_pod
+    - kubernetes_describe_deployment
+  max_tool_calls: 12
+tools:
+  kubernetes_list_deployments:
+  - name: audit
+    ready: 1/1
+    updated: 1
+    images:
+    - registry.k8s.io/pause:3.10
+    problems: []
+  - name: inventory
+    ready: 1/1
+    updated: 1
+    images:
+    - python:3.12-alpine
+    problems: []
+  - name: orders-api
+    ready: 0/1
+    updated: 1
+    images:
+    - python:3.12-alpine
+    problems:
+    - type: Available
+      reason: MinimumReplicasUnavailable
+      message: Deployment does not have minimum availability.
+  kubernetes_get_events:
+  - type: Warning
+    reason: BackOff
+    object: Pod/orders-api-79cd5d49dc-28wnk
+    message: Back-off restarting failed container app in pod orders-api-79cd5d49dc-28wnk_orders(fd09c9a8-4602-4f21-a5df-766dac771ec0)
+    count: 55
+    last_seen: 4m
+  - type: Warning
+    reason: Unhealthy
+    object: Pod/inventory-b775d96fd-rmlvd
+    message: 'Readiness probe failed: dial tcp 10.244.0.28:8080: connect: connection refused'
+    count: 1
+    last_seen: 11m
+  - type: Warning
+    reason: Unhealthy
+    object: Pod/inventory-5f754fbc87-m2rjd
+    message: 'Readiness probe failed: dial tcp 10.244.0.27:8080: connect: connection refused'
+    count: 1
+    last_seen: 14m
+  kubernetes_list_pods:
+  - name: audit-6cfdd68f8c-2xr5p
+    phase: Running
+    ready: 1/1
+    restarts: 0
+    containers:
+      pause:
+        running_since: 2m
+    last_terminated: {}
+    node: aiops-control-plane
+    age: 2m
+  - name: inventory-b775d96fd-rmlvd
+    phase: Running
+    ready: 1/1
+    restarts: 0
+    containers:
+      app:
+        running_since: 11m
+    last_terminated: {}
+    node: aiops-control-plane
+    age: 11m
+  - name: orders-api-79cd5d49dc-28wnk
+    phase: Running
+    ready: 0/1
+    restarts: 17
+    containers:
+      app:
+        waiting: CrashLoopBackOff
+        message: back-off 5m0s restarting failed container=app pod=orders-api-79cd5d49dc-28wnk_orders(fd09c9a8-4602-4f21-a5df-766dac771ec0)
+    last_terminated:
+      app:
+        terminated: Error
+        exit_code: 1
+        finished: 3m
+        message: null
+    node: aiops-control-plane
+    age: 1h
+  kubernetes_recent_changes:
+  - when: 2m
+    namespace: orders
+    deployment: audit
+    revision: '1'
+    change: created
+    diff: {}
+  - when: 14m
+    namespace: orders
+    deployment: inventory
+    revision: '5'
+    change: rollout
+    diff:
+      env_added:
+        app:
+        - API_VERSION
+        - BUILD
+  kubernetes_describe_pod:
+  - match:
+      name: orders-api-79cd5d49dc-28wnk
+    result:
+      name: orders-api-79cd5d49dc-28wnk
+      phase: Running
+      node: aiops-control-plane
+      owner:
+      - ReplicaSet/orders-api-79cd5d49dc
+      conditions:
+      - type: PodReadyToStartContainers
+        status: 'True'
+        reason: null
+      - type: Initialized
+        status: 'True'
+        reason: null
+      - type: Ready
+        status: 'False'
+        reason: ContainersNotReady
+      - type: ContainersReady
+        status: 'False'
+        reason: ContainersNotReady
+      - type: PodScheduled
+        status: 'True'
+        reason: null
+      containers:
+      - name: app
+        image: python:3.12-alpine
+        requests:
+          cpu: 10m
+          memory: 16Mi
+        limits:
+          memory: 32Mi
+        env:
+        - INVENTORY_URL
+        env_from: []
+        liveness: null
+        readiness: null
+        state:
+          waiting: CrashLoopBackOff
+          message: back-off 5m0s restarting failed container=app pod=orders-api-79cd5d49dc-28wnk_orders(fd09c9a8-4602-4f21-a5df-766dac771ec0)
+        last_state:
+          terminated: Error
+          exit_code: 1
+          finished: 3m
+          message: null
+        restarts: 17
+      events:
+      - type: Normal
+        reason: Pulled
+        object: Pod/orders-api-79cd5d49dc-28wnk
+        message: Container image "python:3.12-alpine" already present on machine and can be accessed by
+          the pod
+        count: 18
+        last_seen: 3m
+      - type: Warning
+        reason: BackOff
+        object: Pod/orders-api-79cd5d49dc-28wnk
+        message: Back-off restarting failed container app in pod orders-api-79cd5d49dc-28wnk_orders(fd09c9a8-4602-4f21-a5df-766dac771ec0)
+        count: 55
+        last_seen: 4m
+      - type: Normal
+        reason: Created
+        object: Pod/orders-api-79cd5d49dc-28wnk
+        message: Container created
+        count: 10
+        last_seen: 44m
+      - type: Normal
+        reason: Started
+        object: Pod/orders-api-79cd5d49dc-28wnk
+        message: Container started
+        count: 9
+        last_seen: 49m
+  - match:
+      name: audit-6cfdd68f8c-2xr5p
+    result:
+      name: audit-6cfdd68f8c-2xr5p
+      phase: Running
+      node: aiops-control-plane
+      owner:
+      - ReplicaSet/audit-6cfdd68f8c
+      conditions:
+      - type: PodReadyToStartContainers
+        status: 'True'
+        reason: null
+      - type: Initialized
+        status: 'True'
+        reason: null
+      - type: Ready
+        status: 'True'
+        reason: null
+      - type: ContainersReady
+        status: 'True'
+        reason: null
+      - type: PodScheduled
+        status: 'True'
+        reason: null
+      containers:
+      - name: pause
+        image: registry.k8s.io/pause:3.10
+        requests: {}
+        limits: {}
+        env: []
+        env_from: []
+        liveness: null
+        readiness: null
+        state:
+          running_since: 2m
+        last_state: null
+        restarts: 0
+      events:
+      - type: Normal
+        reason: Scheduled
+        object: Pod/audit-6cfdd68f8c-2xr5p
+        message: Successfully assigned orders/audit-6cfdd68f8c-2xr5p to aiops-control-plane
+        count: 1
+        last_seen: 2m
+      - type: Normal
+        reason: Pulled
+        object: Pod/audit-6cfdd68f8c-2xr5p
+        message: Container image "registry.k8s.io/pause:3.10" already present on machine and can be accessed
+          by the pod
+        count: 1
+        last_seen: 2m
+      - type: Normal
+        reason: Created
+        object: Pod/audit-6cfdd68f8c-2xr5p
+        message: Container created
+        count: 1
+        last_seen: 2m
+      - type: Normal
+        reason: Started
+        object: Pod/audit-6cfdd68f8c-2xr5p
+        message: Container started
+        count: 1
+        last_seen: 2m
+  kubernetes_pod_logs:
+  - match:
+      name: orders-api-79cd5d49dc-28wnk
+      previous: true
+    result: 'orders-api starting, version 2.3.0
+
+      FATAL: stock sync failed: GET http://inventory.orders:8080/stock: HTTP Error 404: Not Found
+
+      '
+  - match:
+      name: inventory-b775d96fd-rmlvd
+      previous: false
+    result: 'inventory serving /v2/stock
+
+      '
+  - match:
+      name: inventory-b775d96fd-rmlvd
+    result: 'inventory serving /v2/stock
+
+      '
+  kubernetes_describe_deployment:
+  - match:
+      name: inventory
+    result:
+      name: inventory
+      replicas:
+        desired: 1
+        ready: 1
+      strategy: RollingUpdate
+      containers:
+      - name: app
+        image: python:3.12-alpine
+        requests:
+          cpu: 10m
+          memory: 16Mi
+        limits:
+          memory: 32Mi
+        env:
+        - API_VERSION
+        env_from: []
+      conditions:
+      - type: Available
+        status: 'True'
+        reason: MinimumReplicasAvailable
+        message: Deployment has minimum availability.
+      - type: Progressing
+        status: 'True'
+        reason: NewReplicaSetAvailable
+        message: ReplicaSet "inventory-b775d96fd" has successfully progressed.
+      rollout_history:
+      - revision: '6'
+        replicaset: inventory-b775d96fd
+        created: 23h
+        replicas: 1
+        images:
+        - python:3.12-alpine
+        config:
+          app:
+            env:
+            - API_VERSION
+            env_from: []
+      - revision: '5'
+        replicaset: inventory-5f754fbc87
+        created: 14m
+        replicas: 0
+        images:
+        - python:3.12-alpine
+        config:
+          app:
+            env:
+            - API_VERSION
+            - BUILD
+            env_from: []
+      - revision: '3'
+        replicaset: inventory-8469585669
+        created: 23h
+        replicas: 0
+        images:
+        - python:3.12-alpine
+        config:
+          app:
+            env: []
+            env_from: []
+  - match:
+      name: orders-api
+    result:
+      name: orders-api
+      replicas:
+        desired: 1
+        ready: 0
+      strategy: RollingUpdate
+      containers:
+      - name: app
+        image: python:3.12-alpine
+        requests:
+          cpu: 10m
+          memory: 16Mi
+        limits:
+          memory: 32Mi
+        env:
+        - INVENTORY_URL
+        env_from: []
+      conditions:
+      - type: Progressing
+        status: 'True'
+        reason: NewReplicaSetAvailable
+        message: ReplicaSet "orders-api-79cd5d49dc" has successfully progressed.
+      - type: Available
+        status: 'False'
+        reason: MinimumReplicasUnavailable
+        message: Deployment does not have minimum availability.
+      rollout_history:
+      - revision: '2'
+        replicaset: orders-api-79cd5d49dc
+        created: 1h
+        replicas: 1
+        images:
+        - python:3.12-alpine
+        config:
+          app:
+            env:
+            - INVENTORY_URL
+            env_from: []
+      - revision: '1'
+        replicaset: orders-api-568b7b8d9f
+        created: 23h
+        replicas: 0
+        images:
+        - python:3.12-alpine
+        config:
+          app:
+            env:
+            - INVENTORY_URL
+            env_from: []
+  incidents_search:
+    incidents: []
+    note: No past Report in the last 90 days matches.

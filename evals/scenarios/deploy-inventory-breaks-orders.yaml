@@ -1,0 +1,446 @@
+integrations:
+- kubernetes
+- runbooks
+- incidents
+namespace: orders
+description: 'A deploy verification: inventory rolled out revision 2 (API_VERSION added) and is healthy
+  itself, but orders-api, which calls it, started crash looping right after. The Check must fail and name
+  inventory''s rollout, not pass because inventory looks fine. The Hub''s look before the deploy saw nothing
+  failing.'
+check:
+  name: deploy:kind/orders
+  prompt: 'Verify a deploy in namespace orders of cluster kind. These changed a few minutes ago:
+
+    - deployment inventory, revision 2
+
+    Pass only if what changed is healthy now (every changed deployment has all its replicas ready on the
+    new revision, its pods have not restarted since, no new warning events, nothing failing in its logs)
+    and nothing else in the namespace started failing after the change. Something that was already failing
+    the same way before the change is not this change''s doing: say so in the summary, but don''t fail
+    the Check for it. Read the details of each change with recent_changes.
+
+    At the Hub''s look just before the change, nothing in it was failing.'
+expect:
+  passed: false
+  category:
+  - bad_rollout
+  keywords:
+  - inventory
+  - API_VERSION
+  max_tool_calls: 13
+tools:
+  kubernetes_list_pods:
+  - name: inventory-b775d96fd-qq86l
+    phase: Running
+    ready: 1/1
+    restarts: 0
+    containers:
+      app:
+        running_since: 44s
+    last_terminated: {}
+    node: aiops-control-plane
+    age: 44s
+  - name: orders-api-568b7b8d9f-vzp22
+    phase: Running
+    ready: 0/1
+    restarts: 3
+    containers:
+      app:
+        terminated: Error
+        exit_code: 1
+        finished: 3s
+        message: null
+    last_terminated:
+      app:
+        terminated: Error
+        exit_code: 1
+        finished: 26s
+        message: null
+    node: aiops-control-plane
+    age: 2m
+  kubernetes_list_deployments:
+    result:
+    - name: inventory
+      ready: 1/1
+      updated: 1
+      images:
+      - python:3.12-alpine
+      problems: []
+    - name: orders-api
+      ready: 0/1
+      updated: 1
+      images:
+      - python:3.12-alpine
+      problems:
+      - type: Available
+        reason: MinimumReplicasUnavailable
+        message: Deployment does not have minimum availability.
+  kubernetes_get_events:
+    result:
+    - type: Warning
+      reason: BackOff
+      object: Pod/orders-api-568b7b8d9f-vzp22
+      message: Back-off restarting failed container app in pod orders-api-568b7b8d9f-vzp22_orders(826c400a-a26e-4082-9ac4-42e1b99dc4d4)
+      count: 3
+      last_seen: 3s
+    - type: Warning
+      reason: Unhealthy
+      object: Pod/inventory-b775d96fd-qq86l
+      message: 'Readiness probe failed: dial tcp 10.244.0.11:8080: connect: connection refused'
+      count: 1
+      last_seen: 44s
+    - type: Warning
+      reason: Unhealthy
+      object: Pod/inventory-8469585669-kfx7g
+      message: 'Readiness probe failed: dial tcp 10.244.0.2:8080: connect: connection refused'
+      count: 1
+      last_seen: 47s
+    - type: Warning
+      reason: FailedScheduling
+      object: Pod/inventory-8469585669-kfx7g
+      message: '0/1 nodes are available: 1 node(s) had untolerated taint(s). preemption: 0/1 nodes are
+        available: 1 Preemption is not helpful for scheduling.'
+      count: 1
+      last_seen: 2m
+    - type: Warning
+      reason: FailedScheduling
+      object: Pod/orders-api-568b7b8d9f-vzp22
+      message: '0/1 nodes are available: 1 node(s) had untolerated taint(s). preemption: 0/1 nodes are
+        available: 1 Preemption is not helpful for scheduling.'
+      count: 1
+      last_seen: 2m
+  kubernetes_recent_changes:
+  - when: 48s
+    namespace: orders
+    deployment: inventory
+    revision: '2'
+    change: rollout
+    diff:
+      env_added:
+        app:
+        - API_VERSION
+  - when: 2m
+    namespace: orders
+    deployment: inventory
+    revision: '1'
+    change: created
+    diff: {}
+  - when: 2m
+    namespace: orders
+    deployment: orders-api
+    revision: '1'
+    change: created
+    diff: {}
+  kubernetes_describe_deployment:
+  - match:
+      name: orders-api
+    result:
+      name: orders-api
+      replicas:
+        desired: 1
+        ready: 0
+      strategy: RollingUpdate
+      containers:
+      - name: app
+        image: python:3.12-alpine
+        requests:
+          cpu: 10m
+          memory: 16Mi
+        limits:
+          memory: 32Mi
+        env:
+        - INVENTORY_URL
+        env_from: []
+      conditions:
+      - type: Progressing
+        status: 'True'
+        reason: NewReplicaSetAvailable
+        message: ReplicaSet "orders-api-568b7b8d9f" has successfully progressed.
+      - type: Available
+        status: 'False'
+        reason: MinimumReplicasUnavailable
+        message: Deployment does not have minimum availability.
+      rollout_history:
+      - revision: '1'
+        replicaset: orders-api-568b7b8d9f
+        created: 2m
+        replicas: 1
+        images:
+        - python:3.12-alpine
+        config:
+          app:
+            env:
+            - INVENTORY_URL
+            env_from: []
+  - match:
+      name: inventory
+    result:
+      name: inventory
+      replicas:
+        desired: 1
+        ready: 1
+      strategy: RollingUpdate
+      containers:
+      - name: app
+        image: python:3.12-alpine
+        requests:
+          cpu: 10m
+          memory: 16Mi
+        limits:
+          memory: 32Mi
+        env:
+        - API_VERSION
+        env_from: []
+      conditions:
+      - type: Available
+        status: 'True'
+        reason: MinimumReplicasAvailable
+        message: Deployment has minimum availability.
+      - type: Progressing
+        status: 'True'
+        reason: NewReplicaSetAvailable
+        message: ReplicaSet "inventory-b775d96fd" has successfully progressed.
+      rollout_history:
+      - revision: '2'
+        replicaset: inventory-b775d96fd
+        created: 44s
+        replicas: 1
+        images:
+        - python:3.12-alpine
+        config:
+          app:
+            env:
+            - API_VERSION
+            env_from: []
+      - revision: '1'
+        replicaset: inventory-8469585669
+        created: 2m
+        replicas: 0
+        images:
+        - python:3.12-alpine
+        config:
+          app:
+            env: []
+            env_from: []
+  kubernetes_describe_pod:
+  - match:
+      name: inventory-b775d96fd-qq86l
+    result:
+      name: inventory-b775d96fd-qq86l
+      phase: Running
+      node: aiops-control-plane
+      owner:
+      - ReplicaSet/inventory-b775d96fd
+      conditions:
+      - type: PodReadyToStartContainers
+        status: 'True'
+        reason: null
+      - type: Initialized
+        status: 'True'
+        reason: null
+      - type: Ready
+        status: 'True'
+        reason: null
+      - type: ContainersReady
+        status: 'True'
+        reason: null
+      - type: PodScheduled
+        status: 'True'
+        reason: null
+      containers:
+      - name: app
+        image: python:3.12-alpine
+        requests:
+          cpu: 10m
+          memory: 16Mi
+        limits:
+          memory: 32Mi
+        env:
+        - API_VERSION
+        env_from: []
+        liveness: null
+        readiness: tcp :8080 delay=0s period=5s
+        state:
+          running_since: 44s
+        last_state: null
+        restarts: 0
+      events:
+      - type: Normal
+        reason: Scheduled
+        object: Pod/inventory-b775d96fd-qq86l
+        message: Successfully assigned orders/inventory-b775d96fd-qq86l to aiops-control-plane
+        count: 1
+        last_seen: 44s
+      - type: Normal
+        reason: Pulled
+        object: Pod/inventory-b775d96fd-qq86l
+        message: Container image "python:3.12-alpine" already present on machine and can be accessed by
+          the pod
+        count: 1
+        last_seen: 44s
+      - type: Normal
+        reason: Created
+        object: Pod/inventory-b775d96fd-qq86l
+        message: Container created
+        count: 1
+        last_seen: 44s
+      - type: Normal
+        reason: Started
+        object: Pod/inventory-b775d96fd-qq86l
+        message: Container started
+        count: 1
+        last_seen: 44s
+      - type: Warning
+        reason: Unhealthy
+        object: Pod/inventory-b775d96fd-qq86l
+        message: 'Readiness probe failed: dial tcp 10.244.0.11:8080: connect: connection refused'
+        count: 1
+        last_seen: 44s
+  - match:
+      name: orders-api-568b7b8d9f-vzp22
+    result:
+      name: orders-api-568b7b8d9f-vzp22
+      phase: Running
+      node: aiops-control-plane
+      owner:
+      - ReplicaSet/orders-api-568b7b8d9f
+      conditions:
+      - type: PodReadyToStartContainers
+        status: 'True'
+        reason: null
+      - type: Initialized
+        status: 'True'
+        reason: null
+      - type: Ready
+        status: 'False'
+        reason: ContainersNotReady
+      - type: ContainersReady
+        status: 'False'
+        reason: ContainersNotReady
+      - type: PodScheduled
+        status: 'True'
+        reason: null
+      containers:
+      - name: app
+        image: python:3.12-alpine
+        requests:
+          cpu: 10m
+          memory: 16Mi
+        limits:
+          memory: 32Mi
+        env:
+        - INVENTORY_URL
+        env_from: []
+        liveness: null
+        readiness: null
+        state:
+          terminated: Error
+          exit_code: 1
+          finished: 3s
+          message: null
+        last_state:
+          terminated: Error
+          exit_code: 1
+          finished: 26s
+          message: null
+        restarts: 3
+      events:
+      - type: Normal
+        reason: Created
+        object: Pod/orders-api-568b7b8d9f-vzp22
+        message: Container created
+        count: 4
+        last_seen: 3s
+      - type: Normal
+        reason: Started
+        object: Pod/orders-api-568b7b8d9f-vzp22
+        message: Container started
+        count: 4
+        last_seen: 3s
+      - type: Normal
+        reason: Pulled
+        object: Pod/orders-api-568b7b8d9f-vzp22
+        message: Container image "python:3.12-alpine" already present on machine and can be accessed by
+          the pod
+        count: 3
+        last_seen: 3s
+      - type: Warning
+        reason: BackOff
+        object: Pod/orders-api-568b7b8d9f-vzp22
+        message: Back-off restarting failed container app in pod orders-api-568b7b8d9f-vzp22_orders(826c400a-a26e-4082-9ac4-42e1b99dc4d4)
+        count: 3
+        last_seen: 3s
+      - type: Normal
+        reason: Pulled
+        object: Pod/orders-api-568b7b8d9f-vzp22
+        message: 'Successfully pulled image "python:3.12-alpine" in 1.168s (1m22.843s including waiting).
+          Image size: 21423636 bytes.'
+        count: 1
+        last_seen: 48s
+      - type: Normal
+        reason: Scheduled
+        object: Pod/orders-api-568b7b8d9f-vzp22
+        message: Successfully assigned orders/orders-api-568b7b8d9f-vzp22 to aiops-control-plane
+        count: 1
+        last_seen: 2m
+      - type: Normal
+        reason: Pulling
+        object: Pod/orders-api-568b7b8d9f-vzp22
+        message: Pulling image "python:3.12-alpine"
+        count: 1
+        last_seen: 2m
+      - type: Warning
+        reason: FailedScheduling
+        object: Pod/orders-api-568b7b8d9f-vzp22
+        message: '0/1 nodes are available: 1 node(s) had untolerated taint(s). preemption: 0/1 nodes are
+          available: 1 Preemption is not helpful for scheduling.'
+        count: 1
+        last_seen: 2m
+  kubernetes_pod_logs:
+  - match:
+      name: inventory-b775d96fd-qq86l
+      previous: false
+    result: 'inventory serving /v2/stock
+
+      '
+  - match:
+      name: inventory-b775d96fd-qq86l
+      previous: true
+    result:
+      error: 'cannot read logs: 400 Bad Request: {"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"previous
+        terminated container \"app\" in pod \"inventory-b775d96fd-qq86l\" not found","reason":"BadRequest","code":400}
+
+        '
+  - match:
+      name: orders-api-568b7b8d9f-vzp22
+      previous: false
+    result: 'orders-api starting, version 2.3.0
+
+      FATAL: stock sync failed: GET http://inventory.orders:8080/stock: HTTP Error 404: Not Found
+
+      '
+  - match:
+      name: orders-api-568b7b8d9f-vzp22
+      previous: true
+    result: '[previous instance''s logs are gone; showing the latest instance]
+
+      orders-api starting, version 2.3.0
+
+      FATAL: stock sync failed: GET http://inventory.orders:8080/stock: HTTP Error 404: Not Found
+
+      '
+  - match:
+      name: inventory-b775d96fd-qq86l
+    result: 'inventory serving /v2/stock
+
+      '
+  - match:
+      name: orders-api-568b7b8d9f-vzp22
+    result: 'orders-api starting, version 2.3.0
+
+      FATAL: stock sync failed: GET http://inventory.orders:8080/stock: HTTP Error 404: Not Found
+
+      '
+  incidents_search:
+    incidents: []
+    note: No past Report in the last 90 days matches.

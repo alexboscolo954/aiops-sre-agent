@@ -1,0 +1,199 @@
+[
+  {
+    "scenario": "deploy-inventory-breaks-orders",
+    "passed": true,
+    "failures": [],
+    "category": "bad_rollout",
+    "tool_calls": 9,
+    "seconds": 25.6,
+    "calls": [
+      "kubernetes_recent_changes",
+      "kubernetes_list_deployments",
+      "kubernetes_list_pods",
+      "kubernetes_get_events",
+      "kubernetes_describe_deployment",
+      "kubernetes_pod_logs",
+      "kubernetes_pod_logs",
+      "kubernetes_describe_deployment",
+      "incidents_search"
+    ],
+    "call_log": [
+      {
+        "name": "kubernetes_recent_changes",
+        "args": {
+          "cluster": "kind",
+          "since_minutes": 60
+        },
+        "error": false
+      },
+      {
+        "name": "kubernetes_list_deployments",
+        "args": {
+          "cluster": "kind",
+          "namespace": "orders"
+        },
+        "error": false
+      },
+      {
+        "name": "kubernetes_list_pods",
+        "args": {
+          "cluster": "kind",
+          "namespace": "orders",
+          "label_selector": ""
+        },
+        "error": false
+      },
+      {
+        "name": "kubernetes_get_events",
+        "args": {
+          "cluster": "kind",
+          "namespace": "orders",
+          "warnings_only": true
+        },
+        "error": false
+      },
+      {
+        "name": "kubernetes_describe_deployment",
+        "args": {
+          "cluster": "kind",
+          "namespace": "orders",
+          "name": "inventory"
+        },
+        "error": false
+      },
+      {
+        "name": "kubernetes_pod_logs",
+        "args": {
+          "cluster": "kind",
+          "namespace": "orders",
+          "name": "inventory-b775d96fd-qq86l",
+          "container": "app",
+          "tail_lines": 100,
+          "previous": false
+        },
+        "error": false
+      },
+      {
+        "name": "kubernetes_pod_logs",
+        "args": {
+          "cluster": "kind",
+          "namespace": "orders",
+          "name": "orders-api-568b7b8d9f-vzp22",
+          "container": "app",
+          "tail_lines": 100,
+          "previous": false
+        },
+        "error": false
+      },
+      {
+        "name": "kubernetes_describe_deployment",
+        "args": {
+          "cluster": "kind",
+          "namespace": "orders",
+          "name": "orders-api"
+        },
+        "error": false
+      },
+      {
+        "name": "incidents_search",
+        "args": {
+          "keywords": "inventory orders-api stock 404",
+          "days": 90,
+          "limit": 5
+        },
+        "error": false
+      }
+    ],
+    "proposed": [],
+    "dropped_links": 0,
+    "report": "## Inventory revision 2 changed its API to /v2/stock (via new API_VERSION env var), so orders-api's unchanged stock call to /stock now returns 404. orders-api crash-loops with 0/1 ready. Inventory itself is healthy.\n\n**Root cause** (medium confidence, `bad_rollout`): inventory revision 2 (rollout 48s ago, env added API_VERSION) serves /v2/stock. orders-api 2.3.0 still calls http://inventory.orders:8080/stock, gets HTTP 404 and exits with code 1 on startup, so it restarted 3 times and is 0/1 ready with Available=False. Before the change, orders-api had nothing failing. Medium confidence on the mechanism: API_VERSION is the only config diff I can see, and the link between it and the path change is inferred from the logs.\n**Severity:** high  \u00b7  **Affected:** orders/deployment/inventory, orders/deployment/orders-api\n\n**Evidence**\n- `kubernetes_pod_logs`: orders-api FATAL: stock sync failed: GET http://inventory.orders:8080/stock: HTTP Error 404: Not Found\n- `kubernetes_pod_logs`: inventory: 'inventory serving /v2/stock'\n- `kubernetes_recent_changes`: inventory revision 2 rollout 48s ago, env_added API_VERSION\n- `kubernetes_list_pods`: orders-api-568b7b8d9f-vzp22 0/1, restarts 3, Error exit code 1\n\n**Recommendations**\n1. Roll back inventory to revision 1 (kubectl rollout undo deployment/inventory -n orders), which restores /stock. This is the lowest-risk fix and needs human approval.\n2. Alternatively, update orders-api's INVENTORY_URL or stock path to /v2/stock, or set API_VERSION so inventory keeps the old path. Confirm the intended API contract with the inventory owners first.\n3. After the fix, confirm orders-api reaches 1/1 ready with no new restarts and no new warning events.\n4. Add a contract check (or a consumer integration test) between inventory and orders-api so breaking API changes are caught before rollout.",
+    "check": "**Failed:** The Check fails. Inventory revision 2 (the API_VERSION env var was added) is healthy by itself: 1/1 ready, zero restarts, serving /v2/stock. But orders-api, which was not changed, is crash-looping because its stock sync calls inventory's /stock path and gets HTTP 404. That started after the change, so the namespace has a new failure and the Check does not hold.\n\n**Evidence**\n- `kubernetes_recent_changes`: inventory rollout to revision 2 48s ago with diff env_added app: [API_VERSION]; inventory revision 1 and orders-api revision 1 were created 2m ago. No other changes in the window.\n- `kubernetes_list_pods`: inventory-b775d96fd-qq86l Running 1/1, restarts 0, age 44s. orders-api-568b7b8d9f-vzp22 0/1 Ready, restarts 3, last terminated Error exit code 1.\n- `kubernetes_pod_logs`: inventory (pod inventory-b775d96fd-qq86l): 'inventory serving /v2/stock'.\n- `kubernetes_pod_logs`: orders-api (pod orders-api-568b7b8d9f-vzp22): 'orders-api starting, version 2.3.0' then 'FATAL: stock sync failed: GET http://inventory.orders:8080/stock: HTTP Error 404: Not Found'.\n- `kubernetes_list_deployments`: inventory 1/1 ready, no problems. orders-api 0/1 ready, Available=False reason MinimumReplicasUnavailable.\n- `kubernetes_get_events`: Warning BackOff on orders-api-568b7b8d9f-vzp22 'Back-off restarting failed container app' (count 3). Inventory readiness probe 'connection refused' on the new pod at 44s and on the old pod at 47s, which is startup noise and has not recurred. FailedScheduling events (untolerated taint) are about 2m old, from the original pod creation, and are not current.\n- `kubernetes_describe_deployment`: orders-api revision 1 only, env INVENTORY_URL, Available=False. Its config did not change in the window."
+  },
+  {
+    "scenario": "deploy-unrelated-next-to-crashloop",
+    "passed": true,
+    "failures": [],
+    "category": null,
+    "tool_calls": 7,
+    "seconds": 19.3,
+    "calls": [
+      "kubernetes_recent_changes",
+      "kubernetes_list_deployments",
+      "kubernetes_list_pods",
+      "kubernetes_get_events",
+      "kubernetes_describe_pod",
+      "kubernetes_pod_logs",
+      "incidents_search"
+    ],
+    "call_log": [
+      {
+        "name": "kubernetes_recent_changes",
+        "args": {
+          "cluster": "kind",
+          "since_minutes": 30
+        },
+        "error": false
+      },
+      {
+        "name": "kubernetes_list_deployments",
+        "args": {
+          "cluster": "kind",
+          "namespace": "orders"
+        },
+        "error": false
+      },
+      {
+        "name": "kubernetes_list_pods",
+        "args": {
+          "cluster": "kind",
+          "namespace": "orders",
+          "label_selector": ""
+        },
+        "error": false
+      },
+      {
+        "name": "kubernetes_get_events",
+        "args": {
+          "cluster": "kind",
+          "namespace": "orders",
+          "warnings_only": true
+        },
+        "error": false
+      },
+      {
+        "name": "kubernetes_describe_pod",
+        "args": {
+          "cluster": "kind",
+          "namespace": "orders",
+          "name": "audit-6cfdd68f8c-2xr5p"
+        },
+        "error": false
+      },
+      {
+        "name": "kubernetes_pod_logs",
+        "args": {
+          "cluster": "kind",
+          "namespace": "orders",
+          "name": "orders-api-79cd5d49dc-28wnk",
+          "container": "app",
+          "tail_lines": 30,
+          "previous": true
+        },
+        "error": false
+      },
+      {
+        "name": "incidents_search",
+        "args": {
+          "keywords": "orders-api audit",
+          "days": 90,
+          "limit": 5
+        },
+        "error": false
+      }
+    ],
+    "proposed": [],
+    "dropped_links": 0,
+    "report": null,
+    "check": "**Passed:** The audit deployment (the change under test, revision 1) is healthy: 1/1 ready on its new ReplicaSet, 0 restarts, running for 2m, and no warning events for it. orders-api was already failing before this change: it is CrashLoopBackOff with 17 restarts over a 1h pod age, and its log shows a stock sync 404 from inventory.orders. The audit change did not touch it, so it is noted here, not failed against this Check. The inventory rollout (revision 5, 14m ago) predates the audit change and inventory is 1/1 ready now.\n\n**Evidence**\n- `kubernetes_recent_changes`: audit rollout: revision 1, change 'created', 2m ago; inventory rollout: revision 5 at 14m ago, env_added API_VERSION and BUILD.\n- `kubernetes_list_deployments`: audit ready 1/1, updated 1, no problems; inventory ready 1/1; orders-api ready 0/1 with MinimumReplicasUnavailable.\n- `kubernetes_describe_pod`: audit-6cfdd68f8c-2xr5p: Ready=True, ContainersReady=True, restarts 0, pause container running since 2m; events are only Normal (Scheduled, Pulled, Created, Started).\n- `kubernetes_list_pods`: audit-6cfdd68f8c-2xr5p Running 1/1, restarts 0, age 2m; orders-api-79cd5d49dc-28wnk 0/1, restarts 17, CrashLoopBackOff, age 1h.\n- `kubernetes_get_events`: Warnings in orders are only for orders-api BackOff (count 55, last seen 4m) and inventory readiness probe 'connection refused' events at 11m and 14m, none for audit.\n- `kubernetes_pod_logs`: orders-api previous run: 'orders-api starting, version 2.3.0' then 'FATAL: stock sync failed: GET http://inventory.orders:8080/stock: HTTP Error 404: Not Found'."
+  }
+]

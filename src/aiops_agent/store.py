@@ -493,6 +493,83 @@ class Store:
         )
         return row is not None
 
+    async def queue_deploy(
+        self,
+        contract_id: str,
+        cluster: str,
+        namespace: str,
+        changes: list[dict[str, str]],
+        at: float,
+        delay: float,
+        failing_before: list[str] | None = None,
+    ) -> None:
+        """A deploy to verify `delay` seconds from now. One already pending in that
+        namespace takes it in and is pushed back, but never past twice the delay from
+        its first deploy, and keeps what was failing before that first one."""
+        before = Jsonb(failing_before) if failing_before is not None else None
+        await self._exec(
+            "insert into deploy_checks (contract_id, cluster, namespace, first_seen, due, "
+            "changes, failing_before) values (%s, %s, %s, %s, %s, %s, %s) "
+            "on conflict (contract_id, cluster, namespace) where state = 'pending' do update "
+            "set changes = deploy_checks.changes || excluded.changes, "
+            "due = least(excluded.due, deploy_checks.first_seen + %s)",
+            (contract_id, cluster, namespace, at, at + delay, Jsonb(changes), before, 2 * delay),
+        )
+
+    async def due_deploys(self, at: float) -> list[dict[str, Any]]:
+        return await self._all(
+            "select * from deploy_checks where state = 'pending' and due <= %s order by id",
+            (at,),
+        )
+
+    async def claim_deploy(
+        self, row_id: int, t: Investigation, name: str, at: float, skip: str | None
+    ) -> str:
+        """Fire one due verification, once: "started" (t inserted with it), "skipped"
+        (recorded), "busy" (the namespace's previous one still open: it stays pending
+        for the next tick) or "not due"."""
+        async with self.pool.connection() as conn, conn.transaction():
+            row = await (
+                await conn.execute(
+                    "select due from deploy_checks where id = %s and contract_id = %s "
+                    "and state = 'pending' for update",
+                    (row_id, t.contract_id),
+                )
+            ).fetchone()
+            if row is None or row["due"] > at:
+                return "not due"
+            if skip:
+                await conn.execute(
+                    "update deploy_checks set state = 'skipped', skipped_reason = %s where id = %s",
+                    (skip, row_id),
+                )
+                return "skipped"
+            open_ = await (
+                await conn.execute(
+                    "select 1 from investigations where contract_id = %s and kind = 'check' "
+                    "and input->>'check' = %s and status in ('running', 'awaiting_approval')",
+                    (t.contract_id, name),
+                )
+            ).fetchone()
+            if open_:
+                return "busy"
+            await conn.execute(INSERT, _row(t))
+            await conn.execute(
+                "update deploy_checks set state = 'started', investigation_id = %s where id = %s",
+                (t.id, row_id),
+            )
+            return "started"
+
+    async def deploy_checks(self, contract_id: str | None = None) -> list[dict[str, Any]]:
+        """The latest verifications, with each started one's Run (status, verdict)."""
+        return await self._all(
+            "select d.*, i.status as run_status, (i.check_result->>'passed')::boolean "
+            "as passed from deploy_checks d left join investigations i "
+            "on i.id = d.investigation_id where %s::text is null or d.contract_id = %s "
+            "order by d.id desc limit 30",
+            (contract_id, contract_id),
+        )
+
     async def similar(
         self,
         contract_id: str,

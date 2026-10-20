@@ -454,6 +454,33 @@ async def test_checks_never_cross_contracts(two_contracts: Contracts, database_u
 
 
 @pytest.mark.anyio
+async def test_deploy_verifications_never_cross_contracts(
+    two_contracts: Contracts, database_url: str
+) -> None:
+    """The same cluster and namespace names in both Contracts: separate pending rows,
+    and one Contract's Investigation can't claim the other's."""
+    from aiops_agent.models import Investigation
+    from aiops_agent.store import Store, connect
+
+    async with connect(database_url) as pool:
+        store = Store(pool)
+        await store.migrate()
+        a, b = list(two_contracts)
+        for cid in (a, b):
+            change = [{"namespace": "shop", "object": f"deployment {cid}-app", "revision": "2"}]
+            await store.queue_deploy(cid, "kind", "shop", change, 0, 60)
+        due = {r["contract_id"]: r for r in await store.due_deploys(60)}
+        assert sorted(due) == sorted([a, b])
+        assert due[b]["changes"][0]["object"] == f"deployment {b}-app"
+        theirs = Investigation(id="x", kind="check", contract_id=a, title="t", started=60)
+        assert await store.claim_deploy(due[b]["id"], theirs, "deploy:kind/shop", 60, None) == (
+            "not due"
+        )
+        assert await store.get("x") is None
+        assert [r["contract_id"] for r in await store.deploy_checks(b)] == [b]
+
+
+@pytest.mark.anyio
 async def test_teachings_never_cross_contracts(two_contracts: Contracts, database_url: str) -> None:
     """Each Contract's approved Teachings are its own, and one Contract's Teaching can't
     be decided or retired as another's."""

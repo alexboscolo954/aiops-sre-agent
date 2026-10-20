@@ -151,6 +151,7 @@ def router(
             shown=shown,
             investigations=await store().recent(100, shown),
             checks=await store().check_schedules(shown),
+            deploys=await store().deploy_checks(shown),
         )
 
     @console.get("/investigations/{investigation_id}", response_class=HTMLResponse)

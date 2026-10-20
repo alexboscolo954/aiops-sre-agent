@@ -54,6 +54,23 @@
   {% endfor %}
   </tbody>
 </table>
+<h1>Deploy verifications</h1>
+<table>
+  <thead><tr><th>Contract</th><th>Where</th><th>Changes</th><th>Due</th><th>State</th></tr></thead>
+  <tbody>
+  {% for d in deploys %}
+    <tr>
+      <td><code>{{ d.contract_id }}</code></td>
+      <td>{{ d.cluster }} / {{ d.namespace }}</td>
+      <td>{% for x in d.changes %}{{ x.object }} {{ x.revision }}{% if not loop.last %}, {% endif %}{% endfor %}</td>
+      <td>{{ d.due | when }}</td>
+      <td>{% if d.investigation_id %}<a href="/console/investigations/{{ d.investigation_id }}">{{ "passed" if d.passed else ("failed" if d.passed == false else d.run_status) }}</a>{% elif d.state == "skipped" %}skipped: {{ d.skipped_reason }}{% else %}{{ d.state }}{% endif %}</td>
+    </tr>
+  {% else %}
+    <tr><td colspan="5">None yet. A Contract opts in with <code>deploy_checks:</code>.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
 <p>Passing Checks are left out of the list below.</p>
 
 <h1>Investigations{% if shown %} for <code>{{ shown }}</code> · <a href="/console">all</a>{% endif %}</h1>

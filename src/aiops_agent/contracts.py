@@ -247,6 +247,16 @@ class Check(Strict):
         return self
 
 
+class DeployChecks(Strict):
+    """Deploy verification: a Check of each deploy the Hub sees, `delay_minutes` after
+    it. namespaces: only these (of the clusters'); empty: all. prompt: a sentence
+    added to the Hub's."""
+
+    delay_minutes: int = Field(10, ge=1, le=120)
+    namespaces: list[str] = []
+    prompt: str | None = Field(None, min_length=1, max_length=1000)
+
+
 class Contract(Strict):
     id: Slug
     name: str
@@ -261,6 +271,7 @@ class Contract(Strict):
     monthly_budget_usd: float | None = Field(None, gt=0)  # calendar month, UTC
     related: Related = Related()
     checks: list[Check] = []
+    deploy_checks: DeployChecks | None = None  # off unless set
 
     _dir: Path = PrivateAttr(default=Path())
     _secrets: dict[str, SecretStr] = PrivateAttr(default_factory=dict)
@@ -280,6 +291,12 @@ class Contract(Strict):
         has_k8s = any(i.name == "kubernetes" for i in self.integrations)
         if has_k8s != bool(self.clusters):
             raise ValueError("the kubernetes integration and clusters go together")
+        if self.deploy_checks:
+            if not has_k8s:
+                raise ValueError("deploy_checks needs the kubernetes integration")
+            spaces = {n for c in self.clusters for n in c.namespaces}
+            if outside := sorted(set(self.deploy_checks.namespaces) - spaces):
+                raise ValueError(f"deploy_checks namespaces not in any cluster: {outside}")
         return self
 
     @property

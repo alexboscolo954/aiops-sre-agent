@@ -58,9 +58,14 @@ def client(
         fake = clusters[c.id][1]
         return agent.build_mcp(c, settings, {cl.name: fake for cl in c.clusters})
 
+    def changes(c: Contract) -> Any:  # deploy verification's polls, on the same fakes
+        fake = clusters[c.id][1]
+        k8s = next(i for i in c.integrations if i.name == "kubernetes")
+        return agent.integration_server(c, k8s, settings, {cl.name: fake for cl in c.clusters})[0]
+
     by_id = {cid: c for cid, (c, _) in clusters.items()}
     http = httpx.AsyncClient(transport=slack) if slack else None
-    return TestClient(create_app(settings, scripted(*steps), mcp, by_id, http))
+    return TestClient(create_app(settings, scripted(*steps), mcp, by_id, http, changes))
 
 
 def wait_for(c: TestClient, investigation_id: str, status: str) -> dict[str, Any]:

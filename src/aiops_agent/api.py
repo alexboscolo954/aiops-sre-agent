@@ -37,9 +37,9 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel
 
-from aiops_agent import agent, checks, console, contracts, embeddings, related, teachings
+from aiops_agent import agent, checks, console, contracts, deploys, embeddings, related, teachings
 from aiops_agent.config import Settings
-from aiops_agent.contracts import Jira
+from aiops_agent.contracts import Jira, Kubernetes
 from aiops_agent.models import AlertGroup, GrafanaAlertGroup, Investigation
 from aiops_agent.observability import PENDING_APPROVALS, TRIAGE_SECONDS, TRIAGES
 from aiops_agent.safety import redact, redact_capped
@@ -108,9 +108,11 @@ def create_app(
     mcp_factory: Any = None,
     by_id: dict[str, contracts.Contract] | None = None,
     slack_http: httpx.AsyncClient | None = None,
+    changes_server: Any = None,
 ) -> FastAPI:
-    """mcp_factory(contract) -> Toolbox, by_id (the loaded Contracts) and slack_http
-    (an httpx client for Slack's Web API), for tests."""
+    """mcp_factory(contract) -> Toolbox, by_id (the loaded Contracts), slack_http
+    (an httpx client for Slack's Web API) and changes_server(contract) -> its
+    kubernetes MCP server (for deploy verification's polls), for tests."""
     settings = settings or Settings()
     if not settings.approver_token:
         raise RuntimeError("set AIOPS_APPROVER_TOKEN")
@@ -164,6 +166,17 @@ def create_app(
 
     if mcp_factory is None:
         mcp_factory = lambda c: agent.build_mcp(c, settings, store=store())  # noqa: E731
+
+    def kube(c: contracts.Contract) -> Kubernetes:
+        return next(i for i in c.integrations if isinstance(i, Kubernetes))
+
+    if changes_server is None:  # the kubernetes server only: never vendors, every poll
+        changes_server = lambda c: agent.integration_server(c, kube(c), settings)[0]  # noqa: E731
+    seen: dict[tuple[str, str], deploys.Seen] = {}  # per (Contract, cluster)
+    pollers: dict[str, Any] = {}  # each Contract's kubernetes server, built once
+    # The workloads not running ready at the last poll, per (Contract, cluster,
+    # namespace): "before" for a deploy the next poll sees. None: couldn't tell.
+    failing: dict[tuple[str, str, str], set[str] | None] = {}
     db: dict[str, Any] = {}  # store and checkpointer, opened in the lifespan
     slots = asyncio.Semaphore(settings.max_concurrent_triages)
     tasks: set[asyncio.Task[None]] = set()
@@ -186,6 +199,7 @@ def create_app(
             await sync_checks()
             spawn(scheduler())
             app.state.due_checks = due_checks  # for tests: one tick at a given time
+            app.state.poll_deploys, app.state.due_deploys = poll_deploys, due_deploys
             if settings.slack_app_token:
                 spawn(db["slack"].listen(settings.slack_app_token, on_socket))
             try:
@@ -964,18 +978,111 @@ def create_app(
             status = await store().claim_check(t, name, at, following, await over_budget(c.id))
             log.info("check %s/%s: %s", c.id, name, status)
             if status == "started":
-                spawn(run(t, check_step(t, k)))
+                spawn(run(t, check_step(t, k.name, k.prompt)))
                 started.append(t.id)
         return started
 
-    def check_step(t: Investigation, k: contracts.Check) -> Any:
-        return lambda a: agent.check(a, k.name, k.prompt, t.id)
+    def check_step(t: Investigation, name: str, prompt: str) -> Any:
+        return lambda a: agent.check(a, name, prompt, t.id)
+
+    async def poll_deploys(at: float | None = None) -> int:
+        """Look for deploys in each opted-in Contract's clusters; queue each new one
+        for verification. The number queued."""
+        at = now() if at is None else at
+        queued = 0
+        for c in by_id.values():
+            if c.deploy_checks is None:
+                continue
+            try:
+                if c.id not in pollers:
+                    pollers[c.id] = changes_server(c)
+                async with Client(pollers[c.id]) as client:
+                    for cl in c.clusters:
+                        args = {"cluster": cl.name, "since_minutes": deploys.WINDOW_MINUTES}
+                        r = await client.call_tool("recent_changes", args, raise_on_error=False)
+                        if r.is_error or not isinstance(r.structured_content, dict):
+                            log.warning("deploys %s/%s: recent_changes failed", c.id, cl.name)
+                            continue  # no baseline from a failed poll
+                        entries = r.structured_content.get("result") or []
+                        fresh = seen.setdefault((c.id, cl.name), deploys.Seen()).new(entries, at)
+                        only = c.deploy_checks.namespaces
+                        groups: dict[str, list[dict[str, str]]] = {}
+                        for e in fresh:
+                            if deploys.wanted(str(e.get("namespace", "")), only):
+                                groups.setdefault(str(e["namespace"]), []).append(
+                                    deploys.summary(e)
+                                )
+                        delay = 60.0 * c.deploy_checks.delay_minutes
+                        for namespace, changes in groups.items():
+                            known = [failing.get((c.id, cl.name, n)) for n in namespace.split(", ")]
+                            before = (
+                                None
+                                if any(k is None for k in known)
+                                else sorted(set().union(*[k for k in known if k is not None]))
+                            )
+                            await store().queue_deploy(
+                                c.id, cl.name, namespace, changes, at, delay, before
+                            )
+                            log.info("deploy in %s/%s/%s queued", c.id, cl.name, namespace)
+                            queued += len(changes)
+                        here = [n for n in only or cl.namespaces if n in cl.namespaces]
+                        for namespace in here:  # now: "before" for the next poll's deploys
+                            pods = await client.call_tool(
+                                "list_pods",
+                                {"cluster": cl.name, "namespace": namespace},
+                                raise_on_error=False,
+                            )
+                            listed = pods.structured_content if not pods.is_error else None
+                            failing[(c.id, cl.name, namespace)] = (
+                                deploys.unhealthy(listed.get("result") or [])
+                                if isinstance(listed, dict)
+                                else None
+                            )
+            except Exception:  # one Contract's cluster never stops the others
+                log.exception("deploys %s: poll failed", c.id)
+        return queued
+
+    async def due_deploys(at: float | None = None) -> list[str]:
+        """Start every due deploy verification once; the ids started."""
+        at = now() if at is None else at
+        started = []
+        for row in await store().due_deploys(at):
+            c = by_id.get(row["contract_id"])
+            if c is None or c.deploy_checks is None:
+                continue
+            name = deploys.name(row["cluster"], row["namespace"])
+            text = deploys.prompt(
+                row["cluster"],
+                row["namespace"],
+                row["changes"],
+                c.deploy_checks.prompt,
+                row["failing_before"],
+            )
+            t = Investigation(
+                id=str(uuid.uuid4()),
+                kind="check",
+                contract_id=c.id,
+                title=f"Deploy check {row['namespace']}",
+                started=at,
+                input={"check": name, "prompt": text},
+            )
+            status = await store().claim_deploy(row["id"], t, name, at, await over_budget(c.id))
+            log.info("deploy check %s/%s: %s", c.id, name, status)
+            if status == "started":
+                spawn(run(t, check_step(t, name, text)))
+                started.append(t.id)
+        return started
 
     async def scheduler() -> None:
+        polled = 0.0
         while True:
             await asyncio.sleep(CHECK_TICK)
             try:
                 await due_checks()
+                if time.monotonic() - polled >= deploys.POLL_SECONDS:
+                    polled = time.monotonic()
+                    await poll_deploys()
+                await due_deploys()
             except Exception:  # the next tick tries again
                 log.exception("scheduled Checks failed")
 
