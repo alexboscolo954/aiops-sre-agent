@@ -24,6 +24,13 @@ def k8s(settings: Settings, fake_cluster: Any, actions: bool = False, **contract
     return kubernetes.build_server(c, k, settings.tool_output_limit, apis)
 
 
+@pytest.fixture(autouse=True)
+def _clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ages are measured from NOW, the time the fixtures were built from: on the real
+    clock a slow suite reaching these tests a minute late reads "5m" for "4m"."""
+    monkeypatch.setattr(kubernetes, "_now", lambda: NOW)
+
+
 def test_kubeconfig_secret_is_parsed_in_memory(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: dict[str, Any] = {}
     monkeypatch.setattr(

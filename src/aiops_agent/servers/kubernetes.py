@@ -91,10 +91,15 @@ def api_client(cluster: Cluster, contract: Contract) -> client.ApiClient:
     )
 
 
+def _now() -> datetime:
+    """The one clock for ages and windows (tests pin it)."""
+    return datetime.now(UTC)
+
+
 def _age(ts: datetime | None) -> str | None:
     if ts is None:
         return None
-    secs = int((datetime.now(UTC) - ts).total_seconds())
+    secs = int((_now() - ts).total_seconds())
     for unit, size in (("d", 86400), ("h", 3600), ("m", 60)):
         if secs >= size:
             return f"{secs // size}{unit}"
@@ -621,7 +626,7 @@ def build_server(
         it calls. Use describe_deployment for one deployment's full history."""
         allowed = allowed_in(cluster)
         apps = targets[cluster][1]
-        since = datetime.now(UTC) - timedelta(minutes=max(1, min(since_minutes, 10080)))
+        since = _now() - timedelta(minutes=max(1, min(since_minutes, 10080)))
         changes: list[tuple[datetime, dict[str, Any]]] = []
         # One namespace at a time, only the allowed ones: never a cluster-wide list.
         for namespace in sorted(allowed):
