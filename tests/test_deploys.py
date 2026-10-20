@@ -367,7 +367,7 @@ def test_an_over_budget_verification_is_skipped_and_shown(
         assert fire(c, at + HOUR) == []
         page = c.get("/console", headers=VIEW).text
     assert [r[2] for r in pending(database_url)] == ["skipped"]
-    assert "skipped: Contract" in page and "deployment cart 2" in page
+    assert "skipped</span> Contract" in page and "deployment cart 2" in page
 
 
 def test_a_pending_verification_fires_after_a_restart(

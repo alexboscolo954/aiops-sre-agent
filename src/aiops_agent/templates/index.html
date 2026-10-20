@@ -1,7 +1,9 @@
 {% extends "base.html" %}
+{% from "macros.html" import badge, verdict %}
 {% block title %}Investigations · aiops{% endblock %}
 {% block main %}
 <h1>Contracts</h1>
+<div class="table-wrap">
 <table>
   <thead><tr><th>Id</th><th>Name</th><th>Clusters</th><th>Operator channel</th><th>Model</th><th>Spent this month</th></tr></thead>
   <tbody>
@@ -16,13 +18,14 @@
       <td>${{ ("%.2f" if spent >= 1 else "%.4f") | format(spent) }}{% if c.monthly_budget_usd %} of ${{ "%.2f" | format(c.monthly_budget_usd) }} ({{ "%.0f" | format(100 * spent / c.monthly_budget_usd) }}%){% endif %}</td>
     </tr>
   {% else %}
-    <tr><td colspan="6">No Contracts loaded.</td></tr>
+    <tr><td colspan="6" class="empty">No Contracts loaded.</td></tr>
   {% endfor %}
   </tbody>
 </table>
+</div>
 
 <h1>Ask a Question</h1>
-<form method="post" action="/console/questions">
+<form method="post" action="/console/questions" class="panel">
   <label>Contract
     <select name="contract">
     {% for c in contracts %}
@@ -30,12 +33,13 @@
     {% endfor %}
     </select>
   </label>
-  <p><textarea name="question" rows="3" cols="80" maxlength="4000" required
+  <p><textarea name="question" rows="3" maxlength="4000" required
      placeholder="which pods in namespace demo are unhealthy?"></textarea></p>
-  <button type="submit">Ask</button> It only reads, and its Answer opens here.
+  <div class="actions"><button type="submit" class="primary">Ask</button> <span class="muted">It only reads, and its Answer opens here.</span></div>
 </form>
 
 <h1>Checks</h1>
+<div class="table-wrap">
 <table>
   <thead><tr><th>Contract</th><th>Check</th><th>Schedule</th><th>Next</th><th>Last Run</th><th>Open failure</th><th>Last skipped</th></tr></thead>
   <tbody>
@@ -45,16 +49,19 @@
       <td>{{ k.name }}</td>
       <td><code>{{ k.schedule }}</code></td>
       <td>{{ k.next_due | when }}</td>
-      <td>{% if k.last_id %}<a href="/console/investigations/{{ k.last_id }}">{{ k.last_started | when }}</a>: {{ "passed" if k.last_passed else ("failed" if k.last_passed == false else k.last_status) }}{% else %}-{% endif %}</td>
-      <td>{% if k.failing_id %}<a href="/console/investigations/{{ k.failing_id }}">since this Run</a>{% else %}-{% endif %}</td>
+      <td>{% if k.last_id %}<a href="/console/investigations/{{ k.last_id }}">{{ verdict(k.last_passed, k.last_status) }}</a> <span class="muted">{{ k.last_started | when }}</span>{% else %}-{% endif %}</td>
+      <td>{% if k.failing_id %}<a href="/console/investigations/{{ k.failing_id }}">{{ badge("failing") }} since this Run</a>{% else %}-{% endif %}</td>
       <td>{% if k.skipped_at %}{{ k.skipped_at | when }}: {{ k.skipped_reason }}{% else %}-{% endif %}</td>
     </tr>
   {% else %}
-    <tr><td colspan="7">No Checks scheduled.</td></tr>
+    <tr><td colspan="7" class="empty">No Checks scheduled.</td></tr>
   {% endfor %}
   </tbody>
 </table>
+</div>
+
 <h1>Deploy verifications</h1>
+<div class="table-wrap">
 <table>
   <thead><tr><th>Contract</th><th>Where</th><th>Changes</th><th>Due</th><th>State</th></tr></thead>
   <tbody>
@@ -64,30 +71,33 @@
       <td>{{ d.cluster }} / {{ d.namespace }}</td>
       <td>{% for x in d.changes %}{{ x.object }} {{ x.revision }}{% if not loop.last %}, {% endif %}{% endfor %}</td>
       <td>{{ d.due | when }}</td>
-      <td>{% if d.investigation_id %}<a href="/console/investigations/{{ d.investigation_id }}">{{ "passed" if d.passed else ("failed" if d.passed == false else d.run_status) }}</a>{% elif d.state == "skipped" %}skipped: {{ d.skipped_reason }}{% else %}{{ d.state }}{% endif %}</td>
+      <td>{% if d.investigation_id %}<a href="/console/investigations/{{ d.investigation_id }}">{{ verdict(d.passed, d.run_status) }}</a>{% elif d.state == "skipped" %}{{ badge("skipped") }} {{ d.skipped_reason }}{% else %}{{ badge(d.state) }}{% endif %}</td>
     </tr>
   {% else %}
-    <tr><td colspan="5">None yet. A Contract opts in with <code>deploy_checks:</code>.</td></tr>
+    <tr><td colspan="5" class="empty">None yet. A Contract opts in with <code>deploy_checks:</code>.</td></tr>
   {% endfor %}
   </tbody>
 </table>
-<p>Passing Checks are left out of the list below.</p>
+</div>
 
 <h1>Investigations{% if shown %} for <code>{{ shown }}</code> · <a href="/console">all</a>{% endif %}</h1>
+<p class="muted">Passing Checks are left out of this list.</p>
+<div class="table-wrap">
 <table>
   <thead><tr><th>Started</th><th>Contract</th><th>Kind</th><th>Status</th><th>Title</th></tr></thead>
   <tbody>
   {% for t in investigations %}
     <tr>
-      <td>{{ t.started | when }}</td>
+      <td class="muted">{{ t.started | when }}</td>
       <td><code>{{ t.contract_id }}</code></td>
       <td>{{ t.kind }}</td>
-      <td>{{ t.status }}</td>
+      <td>{% if t.check_result and not t.check_result.passed %}{{ badge("failed") }}{% else %}{{ badge(t.status) }}{% endif %}</td>
       <td><a href="/console/investigations/{{ t.id }}">{{ t.title }}</a></td>
     </tr>
   {% else %}
-    <tr><td colspan="5">None yet.</td></tr>
+    <tr><td colspan="5" class="empty">None yet.</td></tr>
   {% endfor %}
   </tbody>
 </table>
+</div>
 {% endblock %}

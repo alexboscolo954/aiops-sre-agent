@@ -44,9 +44,12 @@ def test_each_contract_shows_its_own_checks_and_last_success(
         no_token = c.get("/console/health", headers=AS_OPERATOR, follow_redirects=False)
     assert page.status_code == 200 and no_token.status_code == 303
     acme, other = section(page.text, "acme"), section(page.text, "bank")
-    assert "<td>kubernetes test</td><td>ok</td>" in acme and "FAILING" not in acme
+    assert (
+        '<td>kubernetes test</td><td><span class="badge ok">ok</span></td>' in acme
+        and "FAILING" not in acme
+    )
     assert f'href="/console/investigations/{tid}"' in acme
-    assert "<td>kubernetes test</td><td>FAILING</td>" in other
+    assert '<td>kubernetes test</td><td><span class="badge failing">FAILING</span></td>' in other
     assert "Kubernetes API 403" in other and "none yet" in other
     assert "abcdefghijklmnop1234" not in page.text  # a check's error is redacted
     assert "approver-token" not in page.text and "**********" in page.text  # Hub settings
@@ -71,7 +74,10 @@ def test_secret_values_never_show_and_unbuildable_tools_fail_the_check(
     assert secret not in page
     assert "<code>prometheus-token</code> loaded" in section(page, "demo-shop")
     bank = section(page, "demo-bank")
-    assert "<td>tools</td><td>FAILING</td>" in bank and "RuntimeError: kubeconfig not found" in bank
+    assert (
+        '<td>tools</td><td><span class="badge failing">FAILING</span></td>' in bank
+        and "RuntimeError: kubeconfig not found" in bank
+    )
     assert "abcdefghijklmnop1234" not in bank  # errors are redacted too
 
 

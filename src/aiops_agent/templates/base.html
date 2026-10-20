@@ -4,12 +4,19 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}aiops{% endblock %}</title>
+  <link rel="stylesheet" href="/console/console.css">
   {% block head %}{% endblock %}
 </head>
 <body>
-  <header>
-    <a href="/console"><strong>aiops</strong></a> · signed in as {{ name }} (<code>{{ login }}</code>)
-    · <a href="/console/teachings">teachings</a> · <a href="/console/health">health</a> · <a href="/console/token">approver token</a>
+  <header class="top">
+    <a class="brand" href="/console">aiops</a>
+    <nav>
+      <a href="/console">Investigations</a>
+      <a href="/console/teachings">Teachings</a>
+      <a href="/console/health">Health</a>
+      <a href="/console/token">Approver token</a>
+    </nav>
+    <span class="who">signed in as {{ name }} (<code>{{ login }}</code>)</span>
   </header>
   <main>
     {% block main %}{% endblock %}

@@ -301,3 +301,79 @@ def test_a_running_investigation_page_reloads_itself() -> None:
         name="n", login="l", t=t, usage=NO_USAGE, decisions=[], tool_calls=[]
     )
     assert '<meta http-equiv="refresh" content="5">' in html and "Follow up" not in html
+
+
+# The look: one stylesheet from the Hub, Reports rendered as Markdown, still escaped.
+
+
+def test_the_stylesheet_is_the_hubs_own_behind_the_identity(
+    settings: Settings, fake_cluster: Any, database_url: str
+) -> None:
+    from aiops_agent.console import CSS
+
+    settings.database_url = SecretStr(database_url)
+    settings.console_operators = {OPERATOR}
+    with client(settings, fake_cluster) as c:
+        css = c.get("/console/console.css", headers=AS_OPERATOR)  # no token needed
+        stranger = c.get("/console/console.css", headers={"Tailscale-User-Login": "x@y"})
+    assert css.status_code == 200 and css.headers["content-type"].startswith("text/css")
+    assert stranger.status_code == 403
+    for outside in ("http:", "https:", "@import", "url("):
+        assert outside not in CSS, outside
+
+
+def test_every_page_links_the_stylesheet_and_runs_no_script(
+    settings: Settings, fake_cluster: Any, database_url: str
+) -> None:
+    settings.database_url = SecretStr(database_url)
+    settings.console_operators = {OPERATOR}
+    with client(settings, fake_cluster, call("TriageReport", "c1", **REPORT)) as c:
+        tid = c.post(URL, json=ALERT, headers=HOOK).json()["investigation"]
+        wait_for(c, tid, "done")
+        pages = [
+            c.get(path, headers=VIEW)
+            for path in (
+                "/console",
+                f"/console/investigations/{tid}",
+                "/console/teachings",
+                "/console/health",
+                "/console/token",
+            )
+        ]
+    for r in pages:
+        assert r.status_code == 200, r.url
+        assert r.headers["content-security-policy"] == "default-src 'self'; frame-ancestors 'none'"
+        assert '<link rel="stylesheet" href="/console/console.css">' in r.text
+        assert "<script" not in r.text and " style=" not in r.text and 'src="http' not in r.text
+
+
+def test_reports_render_as_markdown_with_raw_html_escaped() -> None:
+    md = TEMPLATES.filters["md"]
+    html = str(md("## Down\n\n- **memory** limit 64Mi\n\n<script>alert(1)</script>"))
+    assert "<h2>Down</h2>" in html and "<strong>memory</strong>" in html and "<li>" in html
+    assert "<script>" not in html and "&lt;script&gt;alert(1)&lt;/script&gt;" in html
+    links = str(
+        md("[x](javascript:alert(1)) [y](data:text/html,hi) [z](https://grafana.example/d)")
+    )
+    assert 'href="javascript' not in links and 'href="data' not in links
+    assert '<a href="https://grafana.example/d">z</a>' in links
+    assert str(md(None)) == ""
+
+
+def test_an_investigation_page_renders_its_report() -> None:
+    hostile = "<img src=x onerror=alert(1)> [click](javascript:alert(1))"
+    t = Investigation(
+        id="i",
+        contract_id="acme",
+        title="t",
+        started=0,
+        status="done",
+        report=TriageReport(**{**REPORT, "summary": hostile}),
+    )
+    html = TEMPLATES.get_template("investigation.html").render(
+        name="n", login="l", t=t, usage=NO_USAGE, can_act=True, decisions=[], tool_calls=[]
+    )
+    assert '<div class="panel md"><h2>' in html  # the summary is the Report's heading
+    assert "<strong>Root cause</strong>" in html and "<li>" in html
+    assert "<img" not in html and 'href="javascript' not in html
+    assert '<span class="badge done">done</span>' in html

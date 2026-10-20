@@ -25,6 +25,8 @@ import yaml
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from jinja2 import Environment, FileSystemLoader
+from markdown_it import MarkdownIt
+from markupsafe import Markup
 
 from aiops_agent import evals
 from aiops_agent.contracts import Contract, Jira
@@ -35,10 +37,16 @@ from aiops_agent.teachings import LIMIT as TEACHING_LIMIT
 from aiops_agent.teachings import section
 
 # Autoescape always: alert titles come from client Alertmanagers, Reports and
-# Answers from a model that reads tool output. Never mark anything |safe.
+# Answers from a model that reads tool output. Never mark anything |safe; the one
+# filter that returns markup, md, renders Markdown with raw HTML escaped and
+# javascript:/data: links refused (markdown-it's own link check).
 TEMPLATES = Environment(
     loader=FileSystemLoader(Path(__file__).parent / "templates"), autoescape=True
 )
+# breaks: a Report's lines (root cause, severity) stay lines, as Slack shows them.
+MARKDOWN = MarkdownIt("commonmark", {"html": False, "breaks": True}).enable("table")
+TEMPLATES.filters["md"] = lambda text: Markup(MARKDOWN.render(text or ""))  # noqa: S704
+CSS = (Path(__file__).parent / "static" / "console.css").read_text()
 TEMPLATES.filters["when"] = lambda t: (
     datetime.fromtimestamp(t, UTC).strftime("%Y-%m-%d %H:%M:%S UTC") if t else "-"
 )
@@ -128,6 +136,11 @@ def router(
         return text
 
     console = APIRouter(prefix="/console")
+
+    @console.get("/console.css")
+    async def stylesheet(login: str = Depends(operator)) -> Response:
+        """Behind the identity like every page; the token page needs it too."""
+        return Response(CSS, media_type="text/css", headers={"Cache-Control": "max-age=3600"})
 
     def page(request: Request, template: str, status: int = 200, **context: Any) -> HTMLResponse:
         name = request.headers.get("Tailscale-User-Name") or context["login"]

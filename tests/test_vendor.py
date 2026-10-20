@@ -303,11 +303,11 @@ def test_health_checks_a_vendor_starts_and_offers_its_listed_tools(
         start = page.index(f"<h2><code>{cid}</code>")
         return page[start : page.find("<h2>", start + 1)]
 
-    assert "<td>x</td><td>ok</td>" in row("listed")
-    assert "<td>x</td><td>FAILING</td>" in row("renamed") and "not offered: x_ghost" in row(
+    assert '<td>x</td><td><span class="badge ok">ok</span></td>' in row("listed")
+    assert '<td>x</td><td><span class="badge failing">FAILING</span></td>' in row(
         "renamed"
-    )
-    assert "<td>x</td><td>ok</td>" in row("probed")
+    ) and "not offered: x_ghost" in row("renamed")
+    assert '<td>x</td><td><span class="badge ok">ok</span></td>' in row("probed")
 
 
 def test_a_scenario_vendor_needs_its_vendor_and_a_snapshot(snapshots: Path) -> None:

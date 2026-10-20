@@ -1,96 +1,111 @@
 {% extends "base.html" %}
+{% from "macros.html" import badge %}
 {% block title %}{{ t.title }} · aiops{% endblock %}
 {% block head %}{% if t.status == "running" %}<meta http-equiv="refresh" content="5">{% endif %}{% endblock %}
 {% block main %}
 <h1>{{ t.title }}</h1>
-<p>
-  <code>{{ t.contract_id }}</code> · {{ t.kind }} · <strong>{{ t.status }}</strong>
-  · started {{ t.started | when }} · <code>{{ t.id }}</code>
-</p>
-<p>
-  Tokens: {{ usage.input_tokens }} in, {{ usage.output_tokens }} out ·
-  cost: {% if usage.cost_usd is not none %}${{ "%.4f" | format(usage.cost_usd) }}{% else %}-{% endif %}
-</p>
-{% if t.error %}<p><strong>Failed:</strong> {{ t.error }}</p>{% endif %}
-{% if t.status == "done" and t.input %}
-<p><a href="/console/investigations/{{ t.id }}/scenario.yaml">Save as Scenario</a>: a draft to edit and commit to the contracts repo.</p>
-{% endif %}
+<div class="meta">
+  {% if t.check_result and not t.check_result.passed %}{{ badge("failed") }}{% else %}{{ badge(t.status) }}{% endif %}
+  <span><code>{{ t.contract_id }}</code> · {{ t.kind }}</span>
+  <span>started {{ t.started | when }}</span>
+  <span><code>{{ t.id }}</code></span>
+  <span>Tokens: {{ usage.input_tokens }} in, {{ usage.output_tokens }} out ·
+  cost: {% if usage.cost_usd is not none %}${{ "%.4f" | format(usage.cost_usd) }}{% else %}-{% endif %}</span>
+</div>
+{% if t.error %}<div class="panel alert-bad"><strong>Failed:</strong> {{ t.error }}</div>{% endif %}
+{% if t.status == "running" %}<p class="muted">Working on it: this page reloads every 5 seconds.</p>{% endif %}
 
 {% if t.pending %}
+<div class="panel alert-wait">
 <h2>Waiting for your approval</h2>
 <p>Goes Stale at {{ t.deadline | when }}.</p>
-<ul>{% for p in t.pending %}<li><pre>{{ p.description }}</pre></li>{% endfor %}</ul>
+{% for p in t.pending %}<pre>{{ p.description }}</pre>{% endfor %}
+<div class="actions">
 <form method="post" action="/console/investigations/{{ t.id }}/decision">
   <input type="hidden" name="deadline" value="{{ t.deadline }}">
   <input type="hidden" name="approve" value="1">
-  <button type="submit">Approve</button>
+  <button type="submit" class="primary">Approve</button>
 </form>
 <form method="post" action="/console/investigations/{{ t.id }}/decision">
   <input type="hidden" name="deadline" value="{{ t.deadline }}">
   <input type="hidden" name="approve" value="0">
-  <label>Reason (the agent reads it) <input type="text" name="reason" size="60"></label>
-  <button type="submit">Reject</button>
+  <label>Reason (the agent reads it) <input type="text" name="reason" size="50"></label>
+  <button type="submit" class="danger">Reject</button>
 </form>
+</div>
+</div>
 {% endif %}
 
+{% if t.check_result %}
+<h2>Check</h2>
+<div class="panel md">{{ t.check_result.to_markdown() | md }}</div>
+{% endif %}
+{% if t.report %}
+<h2>Report</h2>
+<div class="panel md">{{ t.report.to_markdown(t.executed_actions) | md }}</div>
+{% endif %}
+{% if t.answer %}
+<h2>Answer</h2>
+<div class="panel md">{{ t.answer.to_markdown() | md }}</div>
+{% endif %}
+
+{% if (jira and t.report and t.status == "done") or (t.status == "done" and t.input) %}
+<div class="panel">
 {% if jira and t.report and t.status == "done" %}
 <p>Jira:
 {% if t.jira_issue %}<a href="{{ jira.url.rstrip('/') }}/browse/{{ t.jira_issue }}">{{ t.jira_issue }}</a>, filed by {{ t.jira_by }}.
 {% elif t.jira_at %}being filed by {{ t.jira_by }} since {{ t.jira_at | when }}, or Jira didn't answer: check project {{ jira.project }} before filing it by hand.
 {% else %}</p>
 <form method="post" action="/console/investigations/{{ t.id }}/jira">
-  <button type="submit">Create Jira issue</button> The full Report, with Evidence, goes to Jira project {{ jira.project }}.
+  <button type="submit">Create Jira issue</button> <span class="muted">The full Report, with Evidence, goes to Jira project {{ jira.project }}.</span>
 </form>
 <p>{% endif %}</p>
 {% endif %}
+{% if t.status == "done" and t.input %}
+<p><a href="/console/investigations/{{ t.id }}/scenario.yaml">Save as Scenario</a> <span class="muted">a draft to edit and commit to the contracts repo.</span></p>
+{% endif %}
+</div>
+{% endif %}
 
-{% if t.check_result %}
-<h2>Check</h2>
-<pre>{{ t.check_result.to_markdown() }}</pre>
-{% endif %}
-{% if t.report %}
-<h2>Report</h2>
-<pre>{{ t.report.to_markdown(t.executed_actions) }}</pre>
-{% endif %}
-{% if t.status == "running" %}<p>Working on it: this page reloads every 5 seconds.</p>{% endif %}
 {% if t.kind in ("triage", "check") and t.status == "done" and t.report %}
 <h2>Was this Report right?</h2>
+<div class="panel">
+<div class="actions">
 <form method="post" action="/console/investigations/{{ t.id }}/feedback">
   <input type="hidden" name="correct" value="1">
   <button type="submit">Right</button>
 </form>
+</div>
 <form method="post" action="/console/investigations/{{ t.id }}/feedback">
   <input type="hidden" name="correct" value="0">
-  <p><textarea name="correction" rows="3" cols="80" maxlength="2000" required></textarea></p>
-  <button type="submit">Wrong</button> Say what was wrong: the agent drafts a Teaching from it for your review.
+  <p><textarea name="correction" rows="3" maxlength="2000" required placeholder="What was wrong?"></textarea></p>
+  <button type="submit">Wrong</button> <span class="muted">The agent drafts a Teaching from it for your review.</span>
 </form>
 {% for f in feedback %}
 <p>{{ f.at | when }} · {{ f.by }}: {{ "right" if f.correct else "wrong" }}{% if f.correction %}: {{ f.correction }}{% endif %}</p>
 {% endfor %}
 {% for x in taught %}
-<p>Teaching <a href="/console/teachings?contract={{ t.contract_id }}">#{{ x.id }}</a> ({{ x.status }}): {{ x.text }}</p>
+<p>Teaching <a href="/console/teachings?contract={{ t.contract_id }}">#{{ x.id }}</a> {{ badge(x.status) }} {{ x.text }}</p>
 {% endfor %}
-{% endif %}
-{% if t.answer %}
-<h2>Answer</h2>
-<pre>{{ t.answer.to_markdown() }}</pre>
+</div>
 {% endif %}
 {% if t.kind == "question" and t.status in ("done", "failed") %}
-<form method="post" action="/console/investigations/{{ t.id }}/questions">
-  <p><textarea name="question" rows="2" cols="80" maxlength="4000" required></textarea></p>
-  <button type="submit">Follow up</button> The agent keeps this Question's earlier exchange.
+<form method="post" action="/console/investigations/{{ t.id }}/questions" class="panel">
+  <p><textarea name="question" rows="2" maxlength="4000" required placeholder="A follow-up"></textarea></p>
+  <button type="submit" class="primary">Follow up</button> <span class="muted">The agent keeps this Question's earlier exchange.</span>
 </form>
 {% endif %}
 
 {% if related %}
 <h2>Related alert groups</h2>
-<p>They joined this Triage instead of starting their own; one is investigated only when triaged separately.</p>
+<p class="muted">They joined this Triage instead of starting their own; one is investigated only when triaged separately.</p>
+<div class="table-wrap">
 <table>
   <thead><tr><th>When</th><th>Alert group</th><th>Shares</th><th></th></tr></thead>
   <tbody>
   {% for r in related %}
     <tr>
-      <td>{{ r.at | when }}</td><td>{{ r.title }}</td>
+      <td class="muted">{{ r.at | when }}</td><td>{{ r.title }}</td>
       <td>{% for k, v in r.matched.items() %}<code>{{ k }}={{ v }}</code> {% endfor %}</td>
       <td>{% if r.louder %}<strong>higher severity</strong>{% endif %}
         {% if r.separate_id %}<a href="/console/investigations/{{ r.separate_id }}">triaged separately</a>{% endif %}</td>
@@ -98,33 +113,38 @@
   {% endfor %}
   </tbody>
 </table>
+</div>
 {% endif %}
 
 <h2>Decisions</h2>
+<div class="table-wrap">
 <table>
   <thead><tr><th>When</th><th>By</th><th>Decision</th><th>Actions</th><th>Message</th></tr></thead>
   <tbody>
   {% for d in decisions %}
     <tr>
-      <td>{{ d.at | when }}</td><td>{{ d.decided_by }}</td>
-      <td>{{ "approved" if d.approve else "rejected" }}</td>
+      <td class="muted">{{ d.at | when }}</td><td>{{ d.decided_by }}</td>
+      <td>{{ badge("approved" if d.approve else "rejected") }}</td>
       <td>{{ d.actions | map(attribute="name") | join(", ") }}</td><td>{{ d.message }}</td>
     </tr>
   {% else %}
-    <tr><td colspan="5">None.</td></tr>
+    <tr><td colspan="5" class="empty">None.</td></tr>
   {% endfor %}
   </tbody>
 </table>
+</div>
 
 <h2>Tool calls</h2>
-<ol>
+{% if tool_calls %}
+<ol class="calls">
 {% for c in tool_calls %}
   <li>
-    <code>{{ c.tool }}</code> {% if c.is_error %}<strong>error</strong>{% endif %}
+    <code>{{ c.tool }}</code> {% if c.is_error %}{{ badge("failed") }}{% endif %}
     <details><summary><code>{{ c.args | tojson }}</code></summary><pre>{{ c.result[:4000] }}</pre></details>
   </li>
-{% else %}
-  <li>None.</li>
 {% endfor %}
 </ol>
+{% else %}
+<p class="muted">None.</p>
+{% endif %}
 {% endblock %}

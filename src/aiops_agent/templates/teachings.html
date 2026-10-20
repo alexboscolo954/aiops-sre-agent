@@ -1,60 +1,63 @@
 {% extends "base.html" %}
+{% from "macros.html" import badge %}
 {% block title %}Teachings · aiops{% endblock %}
 {% block main %}
 <h1>Teachings{% if shown %} for <code>{{ shown }}</code> · <a href="/console/teachings">all</a>{% endif %}</h1>
-<p>Lessons for one Contract's future Investigations. Only approved ones are used, and never by another Contract.
+<p class="muted">Lessons for one Contract's future Investigations. Only approved ones are used, and never by another Contract.
 {% for c in contracts %}<a href="/console/teachings?contract={{ c }}"><code>{{ c }}</code></a> {% endfor %}</p>
 
 {% for cid, left in crowded.items() %}
-<p><strong><code>{{ cid }}</code>: {{ left }} approved Teaching(s) don't fit in a prompt</strong> (at most 30 and 6,000 characters, newest first; a Triage gets those for its alert first). Retire the ones no longer needed.</p>
+<div class="panel alert-wait"><strong><code>{{ cid }}</code>: {{ left }} approved Teaching(s) don't fit in a prompt</strong> (at most 30 and 6,000 characters, newest first; a Triage gets those for its alert first). Retire the ones no longer needed.</div>
 {% endfor %}
 <h2>Waiting for review</h2>
 {% for r in proposed %}
-<div>
-  <p><strong>#{{ r.id }}</strong> <code>{{ r.contract_id }}</code> · for {{ r.alerts | join(", ") or "every alert" }}
+<div class="panel">
+  <p>{{ badge("proposed") }} <strong>#{{ r.id }}</strong> <code>{{ r.contract_id }}</code> · for {{ r.alerts | join(", ") or "every alert" }}
   {% if r.source_id %}· from <a href="/console/investigations/{{ r.source_id }}">its Investigation</a>{% endif %}
   {% if r.contradicts %}· <strong>contradicts #{{ r.contradicts }}: approving it retires that one</strong>{% endif %}</p>
-  {% if r.correction %}<p>Your words: {{ r.correction }}</p>{% endif %}
+  {% if r.correction %}<p class="muted">Your words: {{ r.correction }}</p>{% endif %}
   <form method="post" action="/console/teachings/{{ r.id }}/decision">
     <input type="hidden" name="approve" value="1">
-    <p><textarea name="text" rows="3" cols="80" maxlength="{{ limit }}" required>{{ r.text }}</textarea></p>
-    <button type="submit">Approve this text</button>
+    <p><textarea name="text" rows="3" maxlength="{{ limit }}" required>{{ r.text }}</textarea></p>
+    <button type="submit" class="primary">Approve this text</button>
   </form>
   <form method="post" action="/console/teachings/{{ r.id }}/decision">
     <input type="hidden" name="approve" value="0">
-    <button type="submit">Reject</button>
+    <button type="submit" class="danger">Reject</button>
   </form>
 </div>
 {% else %}
-<p>None.</p>
+<p class="muted">None.</p>
 {% endfor %}
 
 <h2>Approved</h2>
+<div class="table-wrap">
 <table>
   <thead><tr><th>#</th><th>Contract</th><th>For</th><th>Teaching</th><th>By</th><th></th></tr></thead>
   <tbody>
   {% for r in approved %}
     <tr>
       <td>{{ r.id }}</td><td><code>{{ r.contract_id }}</code></td><td>{{ r.alerts | join(", ") or "every alert" }}</td>
-      <td>{{ r.text }}</td><td>{{ r.decided_by }}, {{ r.decided_at | when }}</td>
+      <td>{{ r.text }}</td><td class="muted">{{ r.decided_by }}, {{ r.decided_at | when }}</td>
       <td><form method="post" action="/console/teachings/{{ r.id }}/retire"><button type="submit">Retire</button></form></td>
     </tr>
   {% else %}
-    <tr><td colspan="6">None.</td></tr>
+    <tr><td colspan="6" class="empty">None.</td></tr>
   {% endfor %}
   </tbody>
 </table>
+</div>
 
 <h2>Write one</h2>
-<form method="post" action="/console/teachings">
+<form method="post" action="/console/teachings" class="panel">
   <p><label>Contract <select name="contract">{% for c in contracts %}<option{% if c == shown %} selected{% endif %}>{{ c }}</option>{% endfor %}</select></label>
   <label>For alerts (comma-separated; empty: every alert) <input type="text" name="alerts" size="40"></label></p>
-  <p><textarea name="text" rows="3" cols="80" maxlength="{{ limit }}" required></textarea></p>
-  <button type="submit">Add, approved</button>
+  <p><textarea name="text" rows="3" maxlength="{{ limit }}" required></textarea></p>
+  <button type="submit" class="primary">Add, approved</button>
 </form>
 
 <h2>Rejected and retired</h2>
 <ul>
-{% for r in past %}<li>#{{ r.id }} <code>{{ r.contract_id }}</code> {{ r.status }} by {{ r.decided_by }}: {{ r.text }}</li>{% else %}<li>None.</li>{% endfor %}
+{% for r in past %}<li>#{{ r.id }} <code>{{ r.contract_id }}</code> {{ badge(r.status) }} by {{ r.decided_by }}: {{ r.text }}</li>{% else %}<li class="muted">None.</li>{% endfor %}
 </ul>
 {% endblock %}

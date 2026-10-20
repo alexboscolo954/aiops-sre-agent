@@ -1,0 +1,7 @@
+{# A status as a coloured badge; the class is one of a fixed set of words. #}
+{% macro badge(word) -%}
+<span class="badge {{ word | lower | replace(' ', '_') }}">{{ word | replace('_', ' ') }}</span>
+{%- endmacro %}
+{% macro verdict(passed, status) -%}
+{% if passed %}{{ badge("passed") }}{% elif passed == false %}{{ badge("failed") }}{% elif status %}{{ badge(status) }}{% else %}-{% endif %}
+{%- endmacro %}
