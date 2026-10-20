@@ -3,7 +3,8 @@
     <contracts-dir>/<id>/contract.yaml       what the Contract runs; secret *names* only
     <contracts-dir>/<id>/secrets.sops.yaml   SOPS-encrypted map: secret name -> value
     <contracts-dir>/<id>/runbooks/*.md       this Contract's Runbooks
-    <contracts-dir>/shared/runbooks/*.md     Shared knowledge, for every Contract
+    <contracts-dir>/shared/runbooks/*.md     Shared knowledge, for every Contract;
+                                             never naming one (load() refuses it)
 
 `load()` reads every Contract, decrypts its secrets with the `sops` binary and
 reports every problem at once as `path: field: message`. Secret values never
@@ -12,6 +13,7 @@ appear in errors, logs or repr.
 
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import re
@@ -22,6 +24,7 @@ from collections import defaultdict
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Annotated, Any, Literal
+from urllib.parse import urlsplit
 
 import yaml
 from pydantic import (
@@ -338,11 +341,70 @@ def load(directory: Path) -> dict[str, Contract]:
                 f"{directory}: {', '.join(ids)} share age recipient {recipient}; "
                 "each Contract needs its own key"
             )
+    problems += _client_data_in_shared(directory / SHARED, contracts.values())
     if not contracts and not problems:
         problems.append(f"{directory}: no */contract.yaml found")
     if problems:
         raise ContractError(problems)
     return contracts
+
+
+def identifiers(c: Contract) -> dict[str, str]:
+    """What names this Contract, as term -> what it is: its id and name, kube
+    contexts, the hosts of its integration URLs, Jira project, Slack channels, AWS
+    key id and vendor settings. Namespaces and cluster names are left out: generic
+    names like `prod` would match everywhere. ponytail: terms under 4 characters too."""
+    found = {c.id: "id", c.name: "name"}
+    found |= {cl.context: "kube context" for cl in c.clusters if cl.context}
+    if c.slack:
+        found[c.slack.operator_channel] = "operator channel"
+        if c.slack.client_channel:
+            found[c.slack.client_channel] = "client channel"
+    for i in c.integrations:
+        if isinstance(i, Prometheus | Jira):
+            found[_own_host(i.url)] = f"{i.name} host"
+        if isinstance(i, Jira):
+            found[i.project] = "Jira project"
+        if isinstance(i, Aws):
+            found[i.access_key_id] = "AWS access key id"
+        if isinstance(i, Vendor):
+            for var, value in i.env.items():
+                found[_own_host(value) if "://" in value else value] = f"{i.name} {var}"
+    return {term: what for term, what in found.items() if len(term) >= 4}
+
+
+def _own_host(url: str) -> str:
+    """A URL's host when it can name one client: not `prometheus`, `localhost`, an IP
+    or a cluster-local service, which every client's setup can share. Else ""."""
+    host = urlsplit(url).hostname or ""
+    try:
+        ipaddress.ip_address(host)
+        return ""
+    except ValueError:
+        pass
+    local = host.endswith((".svc", ".cluster.local", ".local", ".internal"))
+    return host if "." in host and not local else ""
+
+
+def _client_data_in_shared(shared: Path, loaded: Any) -> list[str]:
+    """Shared knowledge holds no client data: every Contract reads it. A file that
+    names a Contract is refused, by line and by what it names, never the value."""
+    terms = [
+        (re.compile(rf"(?<![\w.-]){re.escape(term)}(?![\w-]|\.\w)", re.IGNORECASE), c.id, what)
+        for c in loaded
+        for term, what in identifiers(c).items()
+    ]
+    problems = []
+    for file in sorted(f for f in shared.rglob("*") if f.is_file()) if shared.is_dir() else []:
+        lines = file.read_text(errors="replace").splitlines()
+        for n, line in enumerate(lines, 1):
+            for pattern, contract_id, what in terms:
+                if pattern.search(line):
+                    problems.append(
+                        f"{file}:{n}: names Contract {contract_id!r} (its {what}): Shared "
+                        "knowledge is read by every Contract and must hold no client data"
+                    )
+    return problems
 
 
 def _load_one(path: Path) -> tuple[Contract, set[str]]:

@@ -283,6 +283,7 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
 **7.2 Shared knowledge.**
 - `shared/` in the contracts repo, mounted read-only for every Contract.
 - *Done when:* tests show the agent has no write path to it.
+- Done (2026-10-19): it was already `shared/runbooks/`, mounted read-only. Tests now prove no write path (read-only tools, no file paths, Runbooks by name, read-only mounts), and loading refuses a shared file that names a Contract.
 
 **7.3 Teachings.**
 - The agent proposes Teachings after an Investigation, or from the Operator's thumbs up/down and correction. Each is checked against existing Teachings for duplicates and contradictions, then goes to a review queue in Slack and the console.
@@ -317,4 +318,4 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
 
 ## Next
 
-Phase 4 first (the Operator's choice: no Contract needs a Relay yet). Phase 4 is done. Phase 5 is done: Azure, AWS and GCP, each with a Scenario recorded from a sandbox. The Operator chose Phase 6 next; 6.1, 6.2 and 6.3 are done; 6.4 waits for a Data policy that needs it. Phase 7: 7.1 is done, 7.2 is next.
+Phase 4 first (the Operator's choice: no Contract needs a Relay yet). Phase 4 is done. Phase 5 is done: Azure, AWS and GCP, each with a Scenario recorded from a sandbox. The Operator chose Phase 6 next; 6.1, 6.2 and 6.3 are done; 6.4 waits for a Data policy that needs it. Phase 7: 7.1 and 7.2 are done, 7.3 is next.

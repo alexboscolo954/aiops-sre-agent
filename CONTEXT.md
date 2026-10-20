@@ -129,7 +129,7 @@ A lesson the agent proposes after an Investigation or from the Operator's feedba
 _Avoid_: Memory, learning (for a single lesson)
 
 **Shared knowledge**:
-Knowledge the Operator writes that holds no client data, such as general SRE lessons and generic Runbooks. Every Contract can use it. The agent never writes to it.
+Knowledge the Operator writes that holds no client data, such as general SRE lessons and generic Runbooks. Every Contract can use it. The agent never writes to it, and a file that names a Contract is refused.
 
 ### Evaluation
 
