@@ -1,8 +1,8 @@
 # Roadmap
 
-The goal is one Hub that lets the Operator run SRE for several Contracts at once. It answers alerts, answers questions and runs checks, and it never lets one Contract's data reach another. HolmesGPT, OpenSRE and IncidentFox inspire the features. We take their ideas, not their code.
+The goal is one Hub that lets the Operator run SRE for several Contracts at once. It answers alerts, answers questions and runs checks, and it never lets one Contract's data reach another. From Phase 9 it also optimizes each Contract's resources: Sizings for every Workload, cost, horizontal scaling, nodes, spot and GPUs, applied under the Operator's Automation. HolmesGPT, OpenSRE and IncidentFox inspire the agent; ScaleOps (first) and Kubex inspire the optimizer. We take their ideas, not their code.
 
-Terms are defined in [`CONTEXT.md`](../CONTEXT.md). The decisions behind the shape are in [ADR 0002](adr/0002-hub-and-relay.md) (Hub and Relay) and [ADR 0003](adr/0003-contract-data-in-private-git.md) (Contract data in a private repo).
+Terms are defined in [`CONTEXT.md`](../CONTEXT.md). The decisions behind the shape are in [ADR 0002](adr/0002-hub-and-relay.md) (Hub and Relay), [ADR 0003](adr/0003-contract-data-in-private-git.md) (Contract data in a private repo) and [ADR 0004](adr/0004-standing-approval-for-sizing.md) (an in-cluster Actuator applies Sizings under a standing approval).
 
 ## Where we start
 
@@ -36,7 +36,7 @@ A slice is one commit-sized change, about one working session (1 to 3 hours).
 |---|---|
 | Who works | One Operator. The Operator receives every Report and makes every Approval decision |
 | Reaching a Contract | **Direct** (the Hub holds the credentials) or **Relay** (dials out from the client network) |
-| Hub | A cloud VM you own: docker compose with the Hub and Postgres |
+| Hub | Any machine you own, a VM or a laptop: docker compose with the Hub and Postgres |
 | Operator interfaces | Your own Slack workspace, one channel per Contract, with approve buttons. Also a web console |
 | Client delivery | Optional per Contract. A Client report goes when the Operator clicks Send, never with approval controls |
 | Data policy | Set per Contract. Default: no restrictions |
@@ -45,6 +45,19 @@ A slice is one commit-sized change, about one working session (1 to 3 hours).
 | Console | View and act. It shows config read-only and is reachable only over Tailscale |
 | Investigations | Triage, then Question, then Check |
 | Knowledge | Similar incidents and Teachings stay in their own Contract. Teachings need review. Shared knowledge is written by the Operator |
+| Optimizer shape (2026-10-21) | The brain in the Hub (metrics aggregates, recommender, Sizing policies), the hands in the client cluster (an Actuator that pulls approved Sizings over the Relay). [ADR 0004](adr/0004-standing-approval-for-sizing.md) |
+| Writes under Automation | Allowed, opt-in per Contract and per Workload, read-only by default, audited and reversible. Reflexes (OOM step-up, burst CPU, startup boost, auto-rollback) act unattended, capped and expiring |
+| Metrics for Sizings | Each Contract's own Prometheus; the Hub keeps per-Workload aggregates in Postgres, never raw series. A bundled collector only where a cluster has none |
+| Sizing policies | In the contracts repo (`contract.yaml`), validated by `aiops contracts validate`; the Actuator renders them in the cluster |
+| Applying Sizings | In-place resize first (Kubernetes 1.33+); webhook plus PDB-safe eviction only behind a per-Contract flag. Never Git write-back to client repos |
+| Actuator | Python, same image as the Hub (`aiops actuator`); revisit only if webhook latency shows up in tests |
+| Scope | Everything both products do: Workloads, horizontal, node and Karpenter, spot, cloud billing, JVM, Spark and batch, GPU and LLM inference, and as many integrations as possible |
+| Testing | kind, KWOK and fake metrics for everything; paid write sandboxes (Karpenter, spot, GPU) small, time-boxed and approved by the Operator per phase |
+| Vendor trials | Only after our part of a phase is built, to compare; read the terms first |
+| Console (2026-10-21) | A React single-page app for the whole console, served by the Hub, replacing the Jinja pages once each is rebuilt. Same Tailscale identity and approver cookie, same-origin JSON API, strict CSP, model-written text rendered as text (no raw HTML, no live links), built in the image's Docker build with a pinned toolchain, nothing loaded from a CDN |
+| Test lab | A persistent kind lab on the Operator's Mac: Prometheus, kube-state-metrics and load generators (diurnal, spikes, leaks, OOMs) running continuously so real history builds up, plus synthetic backfill for weeks of data |
+| Usage aggregates | Kept 90 days per Contract |
+| Hub MCP server | The Operator only, over Tailscale. Reads, plus Approval decisions on Proposed actions and single Sizings, the kill switch, and pull requests to the contracts repo for Automation and policy changes, which the Operator merges. Every write is audited as made through MCP. The Investigation agent never gets these tools |
 
 ## Defaults you can veto
 
@@ -54,16 +67,23 @@ A slice is one commit-sized change, about one working session (1 to 3 hours).
 | Secrets | `sops -d` at load. The Hub holds age keys for Direct Contracts only | No new library. A Relay Contract's credentials never reach the Hub |
 | Many clusters | One kubernetes server per Contract, with a `cluster` argument limited to that Contract's clusters | A Contract can have dozens of clusters, and one server per cluster would multiply the tool count |
 | Slack | Web API over httpx; Socket Mode over `websockets` (1.2), not slack-bolt | No public Slack endpoint, and no framework for one socket and a few calls |
-| Console stack | FastAPI + Jinja + HTMX, with no JS build | One language, one process |
+| Console stack | FastAPI + Jinja + HTMX, with no JS build, until Phase 9.5; then a React app (see Decisions) | The optimizer's charts outgrew server-rendered pages |
 | Console login | Tailscale identity headers from `tailscale serve`, with the console on `127.0.0.1`, plus an Operator allowlist | No passwords to manage. `serve` strips a client's copy of the header, but anything else that can reach the port (local processes, other containers on the compose network) could send it |
 | Jira | An issue is created only when the Operator clicks | Never write to a client's tracker unasked |
 | Budget | Monthly per Contract. Warn at 80%. At 100%, refuse new Investigations but still notify | An alert is never silently dropped |
 | Model | One Hub default, overridable per Contract | |
 | Similar incidents | Postgres full-text search, merged with pgvector when `AIOPS_EMBEDDING_MODEL` is set (7.4) | Unset, no embedding calls |
+| Kubernetes versions | Find out each Contract's before Phase 12; the kind matrix covers 1.33+ for in-place resize | Sets what Phase 12 can rely on |
+| Sizing data and Data policy | Per-Workload aggregates count as tool output under each Contract's Data policy and 6.4 masking | They leave the client network |
+| Automation granularity | Per Workload, Operator only, in the contracts repo | One clear audit trail |
+| In-cluster state | CRDs with our own names and schemas, rendered by the Actuator | Validation and scale over ConfigMaps |
+| Clouds and distributions | Follow the Contracts' stacks; manual unit prices for on-prem | No cloud bill on RKE2 |
+| Node autoscalers | Recommendations first, NodePool patches later | Patches need write access to node config |
+| Cost source | List prices first; billing exports where a client grants read access | Billing needs extra permissions |
 
 ## Phases
 
-There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 stays where it is. **It moves to right after Phase 0 if a new Contract can be reached only through a Relay.**
+Phases 0 to 8 were about 36 slices; Phases 9 to 19 add about 65. Phase 3 (Relay) is now a hard prerequisite of Phase 12, because every write to a client cluster goes through the Actuator, and it comes earlier if a new Contract can be reached only through a Relay. Phases 9 to 19 are outlines: each is grilled just before it is built, like every phase before it.
 
 ### Phase 0: Foundation: many Contracts, durable state (5 slices)
 
@@ -306,6 +326,83 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
 - A rollout or ArgoCD sync starts a Check of the new revision after a set delay.
 - Grilled 2026-10-20 (all recommended): poll the Contract's `recent_changes` every 2 minutes; opt-in `deploy_checks:` with a delay; a Hub-written prompt (only identities: object and revision) asking about the namespace too; one Run per namespace for deploys close together (capped at twice the delay); the first poll is the baseline; quiet on pass, a thread on failure, no Open failure. Built 2026-10-20. The live check showed the model can't tell what was failing before a deploy, so the Hub's poll records it and the prompt names it (the Operator chose that over a prompt-only fix). Scenarios `deploy-inventory-breaks-orders` (must fail) and `deploy-unrelated-next-to-crashloop` (must pass) pass on Haiku, and so does the live check.
 
+### Phase 9: Read-only Sizings (6 slices)
+
+Touches nothing in client clusters. Sizings come from each Direct Contract's Prometheus.
+
+**9.1 Metric contract and Workloads.**
+- The Prometheus queries a Sizing needs (container CPU and memory usage, requests, limits, OOM kills, throttling), checked per Contract; Workloads found through pod owners (ReplicaSet to Deployment, Jobs, StatefulSets, DaemonSets, Rollouts, ownerless pods).
+- *Done when:* a fake Prometheus in the style of `fake_cluster` (CI has no kubeconfig) yields the right Workloads and usage for flat, diurnal, spike, slow-leak and OOM series.
+
+**9.2 Recommender.**
+- Percentile, window, headroom, minimum and maximum, change threshold and a node-capacity cap, per container, CPU and memory separately.
+- *Done when:* every rule has a test that fails when the rule is removed, and a 4x over-requested kind Workload gets a Sizing within headroom of its real p95.
+
+**9.3 Sizing policies.**
+- Built-in policies (production, batch, high availability) and overrides in `contract.yaml`, validated by `aiops contracts validate`.
+
+**9.4 Waste and risk.**
+- Per Workload: waste (requests above use) and risk (OOM kills, throttling, requests below use), stored as aggregates in Postgres per Contract.
+- *Done when:* the isolation test proves Contract A's Sizings never appear for B.
+
+**9.5 Console app and Slack.**
+- The React console's foundation (build, serving, login, the JSON API pattern) with its first page: Workloads per Contract (Sizing vs current over time, waste, risk). A weekly digest in the Contract's channel.
+- *Done when:* the console tests that guard the Jinja pages (identity, token cookie, 404 through Caddy, text-only model output) pass against the app too.
+
+**9.6 The agent uses Sizings.**
+- A `sizing_for_workload` tool; a Triage of an OOM kill cites the Sizing.
+- *Done when:* a new Scenario, an OOM-killed Triage whose Report recommends a memory request above the observed peak, passes on Haiku.
+
+### Phase 10: Cost and Savings (5 slices, grill before building)
+
+- 10.1 Unit prices per Contract (CPU-hour, GB-hour, GPU, spot). 10.2 Allocation by namespace, label and team. 10.3 Available and realized Savings, compare periods. 10.4 Cloud list prices. 10.5 Read-only billing readers (AWS CUR, GCP Billing Export, Azure Cost Management), recorded from the sandboxes.
+- *Done when:* namespace cost on kind matches a hand computation, and one sandbox bill reconciles within a stated tolerance.
+
+### Phase 11: The Hub as a source, and the whole console in the app (7 slices, grill before building)
+
+- 11.1 The Hub MCP server for the Operator: reads across Contracts, each call scoped to one. 11.2 Its writes: Approval decisions, single Sizings, the kill switch, audited as made through MCP. 11.3 Pull requests to the contracts repo for Automation and policy changes (a token limited to opening pull requests; the Operator merges). 11.4 A "what should I do now" Check ranking waste, risk and open Investigations. 11.5 to 11.7 The remaining console pages rebuilt in the app (Investigations and approvals, Teachings and Checks, Questions), then the Jinja pages deleted.
+- *Done when:* Claude Code lists a Contract's top 5 Sizings and approves one through the Hub MCP server, an Automation change arrives as a pull request, and the Jinja templates are gone with every console test still passing.
+
+### Phase 12: Actuator (9 slices, grill before building; needs Phase 3)
+
+- 12.1 Our CRDs (policies, Sizings, Automation) and their rendering from the contracts repo. 12.2 Pulling approved Sizings over the Relay. 12.3 In-place resize. 12.4 Pre-checks (HPA, VPA, quotas, LimitRange, node headroom, PDB, readiness), each with its own test. 12.5 Windows, pause annotation, per-Contract kill switch. 12.6 Pod-creation webhook (fail open, protected namespaces) and PDB-safe eviction behind a flag. 12.7 Auto-rollback with an adoption threshold and backoff. 12.8 Kubernetes events and the Hub audit trail. 12.9 The console's Automation view.
+- *Done when:* on kind 1.33+, an approved policy resizes a Deployment in place without restarts, a PDB blocks an eviction, a bad Sizing is rolled back, and pods still start with the Actuator scaled to zero. KWOK with thousands of fake Workloads for load.
+
+### Phase 13: Reflexes (4 slices, grill before building)
+
+- 13.1 OOM memory step-up, capped and expiring. 13.2 Node-level vs container-limit OOM attribution. 13.3 Burst CPU headroom. 13.4 Startup CPU boost. A Triage Report links any Reflex it triggered.
+- *Done when:* an OOM-killed pod's next replica gets more memory within a minute, and the step-up expires on schedule.
+
+### Phase 14: Horizontal (4 slices, grill before building)
+
+- 14.1 HPA and KEDA minimum replicas from percentiles. 14.2 Weekly profiles with lead time. 14.3 Re-anchoring the HPA target after a Sizing changes requests. 14.4 Backtests with an error budget.
+- *Done when:* backtests pre-scale before a synthetic Monday peak, and a request cut doesn't change HPA replica counts.
+
+### Phase 15: Nodes (6 slices, grill before building)
+
+- 15.1 What blocks scale-down (PDBs, `safe-to-evict=false`, local storage, ownerless and kube-system pods). 15.2 Placing unevictable pods together. 15.3 DaemonSet Sizing per node. 15.4 Consolidation recommendations. 15.5 Compaction with the descheduler. 15.6 Karpenter NodePool and Cluster Autoscaler proposals.
+- *Done when:* on multi-node kind, placement empties a node the report named as blocked.
+
+### Phase 16: Spot (3 slices, grill before building)
+
+- 16.1 A spot ratio per Workload with an on-demand floor. 16.2 Placing replicas by capacity type. 16.3 Fallback on interruption.
+- *Done when:* replicas keep the ratio and the floor when a "spot" kind node is deleted.
+
+### Phase 17: GPU and LLM inference (7 slices, grill before building)
+
+- 17.1 DCGM ingestion. 17.2 Idle GPUs and per-pod attribution with cost. 17.3 vLLM metrics and memory-reservation Sizings. 17.4 GPU replica floors from queue and KV-cache signals. 17.5 GPU node consolidation. 17.6 GPU sharing by adopting an existing scheduler (KAI or HAMi). 17.7 Batch inference.
+- *Done when:* an idle synthetic GPU Workload is flagged with its cost from fixtures; real GPUs only in a paid sandbox the Operator approves.
+
+### Phase 18: Platform (4 slices, grill before building)
+
+- 18.1 A signed Helm chart (OCI) for the Relay and the Actuator. 18.2 OpenShift values. 18.3 A version-skew rule between Hub and cluster parts. 18.4 Fleet views across Contracts and clusters.
+- *Done when:* a fresh kind cluster goes from `helm install` to a connected Relay in one command, in CI.
+
+### Phase 19: Integrations breadth (about 8 slices, grill before building)
+
+- PagerDuty and Opsgenie, ServiceNow, Microsoft Teams and Google Chat, generic outbound webhooks, managed Prometheus auth (AMP, Azure Monitor, GMP, Grafana Cloud), Datadog and New Relic as metric sources, JVM heap Sizing, Spark and batch sizing.
+- *Done when:* each integration has a probe, a recorded Scenario and a passing eval, through the Phase 4 framework.
+
 ## Deferred
 
 | Item | Why not now | Trigger to revisit |
@@ -314,13 +411,12 @@ There are about 36 slices. Neither current Contract needs a Relay, so Phase 3 st
 | Specialist sub-agents (IncidentFox) | Allowlists and good tools come first | Evals fail on cross-domain Scenarios |
 | Anomaly detection (Prophet) | Needs history and tuning. Alerts already cover it | Repeated misses that no alert catches |
 | Hierarchical retrieval (RAPTOR) | Full-text search over a small corpus is enough | Runbooks outgrow search plus embeddings |
-| Teams, Google Chat | No Contract uses them | A Contract asks |
 | Multi-user RBAC, SSO | One Operator | A second person joins |
 | Sandbox and credential proxy (IncidentFox, BSL) | A Relay keeps credentials out of the Hub | A Direct Contract's threat model demands it |
-| Actions that run without approval | Not without months of evidence | Never by default |
+| Agent actions that run without approval | Not without months of evidence | Never by default. Sizings under Automation are approved as a policy ([ADR 0004](adr/0004-standing-approval-for-sizing.md)) |
 | Fix PRs on GitHub/GitLab (HolmesGPT) | Needs code access per Contract | After Jira, when a Contract grants repo access |
-| Other integrations (Datadog, Splunk, PagerDuty, Opsgenie, ServiceNow, ...) | Added through the Phase 4 framework, each with a Scenario | A Contract uses it |
+| Splunk and other log sources | Phase 19 covers the metric and paging integrations first | After Phase 19 |
 
 ## Next
 
-Phase 4 first (the Operator's choice: no Contract needs a Relay yet). Phase 4 is done. Phase 5 is done: Azure, AWS and GCP, each with a Scenario recorded from a sandbox. The Operator chose Phase 6 next; 6.1, 6.2 and 6.3 are done; 6.4 waits for a Data policy that needs it. Phase 7 is done: 7.1, 7.2, 7.3 and 7.4. Phase 8 is done: 8.1 and 8.2. Next is the Operator's choice: Phase 3 Relay when a Contract needs it, or 6.4 Masking when a Data policy does.
+Phases 0 to 8 are done except 3 (Relay) and 6.4 (Masking). On 2026-10-21 the Operator chose to grow the Hub into a resource optimizer as well (Phases 9 to 19, ADR 0004). Next is 9.1, grilled before it is built.

@@ -1,6 +1,6 @@
 # Alert triage
 
-An agent investigates alerts, questions and scheduled checks for several Contracts, and backs every conclusion with evidence. It changes a Contract's systems only after the Operator approves.
+An agent investigates alerts, questions and scheduled checks for several Contracts, and backs every conclusion with evidence. It changes a Contract's systems only after the Operator approves: each change, or, under Automation, a Sizing policy once ([ADR 0004](docs/adr/0004-standing-approval-for-sizing.md)).
 
 ## Language
 
@@ -29,7 +29,7 @@ _Avoid_: Server, backend
 A way to reach a Contract where the Hub holds the Contract's credentials and calls its APIs itself.
 
 **Relay**:
-A small process inside a client's network that holds that Contract's credentials and runs its tools. It connects out to the Hub, so the client network accepts no inbound connections. The agent's reasoning stays in the Hub. Only tool calls and their results pass through the Relay.
+A small process inside a client's network that holds that Contract's credentials and runs its tools. It connects out to the Hub, so the client network accepts no inbound connections. The agent's reasoning stays in the Hub. Only tool calls and their results pass through the Relay. Under Automation, the same connection also carries approved Sizings to the Actuator.
 _Avoid_: Satellite, agent
 
 ### Input
@@ -139,6 +139,32 @@ _Avoid_: Memory, learning (for a single lesson)
 
 **Shared knowledge**:
 Knowledge the Operator writes that holds no client data, such as general SRE lessons and generic Runbooks. Every Contract can use it. The agent never writes to it, and a file that names a Contract is refused.
+
+### Optimization (planned, Phase 9+)
+
+**Workload**:
+What a Sizing is for: a Deployment, StatefulSet, DaemonSet, Job, CronJob or Rollout, found by following each pod's owners. Usage is summed over a Workload's pods, so a change in replicas doesn't skew it.
+
+**Sizing**:
+The CPU and memory requests (and limits) the Hub computes for one container of a Workload from its usage under a Sizing policy, with the waste or risk it removes. Read-only unless the Workload is under Automation.
+_Avoid_: Recommendation (that is advice for a human), rightsizing recommendation
+
+**Sizing policy**:
+How Sizings are computed: the percentile, the look-back window, headroom, minimums and maximums, and the limit strategy. Built-in policies plus overrides in the Contract's `contract.yaml`.
+
+**Automation**:
+The standing approval for one Workload: the Operator approves its Sizing policy once, in the contracts repo, and the Actuator then applies its Sizings without asking. Off by default.
+_Avoid_: Auto mode, Proposed action (a Sizing under Automation never pauses)
+
+**Actuator**:
+The process in a client cluster that applies approved Sizings, in place first, and reports what it did. It runs only what the Hub approved, and pods start unchanged when it is down.
+_Avoid_: Agent, controller (alone)
+
+**Reflex**:
+A bounded, expiring change the Actuator makes on its own under Automation: memory step-up after an OOM kill, burst CPU headroom, startup CPU boost, rollback of a Sizing that made pods unhealthy.
+
+**Savings**:
+What Sizings would save (available) or saved (realized), in the Contract's own unit prices.
 
 ### Evaluation
 
