@@ -1,4 +1,4 @@
-# The Hub on one VM: Hub + Postgres + Caddy + nightly backups.
+# The Hub on one machine (a VM or a laptop): Hub + Postgres + Caddy + nightly backups.
 # Setup and day-to-day use: README "Running the Hub". Compose reads .env here
 # (see env.example); the Hub reads hub.env (see hub.env.example).
 name: aiops

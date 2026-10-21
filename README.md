@@ -94,9 +94,9 @@ AIOPS_MODEL=openai:<model-name> AIOPS_MODEL_BASE_URL=http://litellm:4000/v1 AIOP
 
 ## Running the Hub
 
-The Hub runs every Contract from one VM you own: [`deploy/hub`](deploy/hub) is a compose stack with the Hub, Postgres, Caddy and nightly backups.
+The Hub runs every Contract from one machine you own, a VM or your laptop: [`deploy/hub`](deploy/hub) is a compose stack with the Hub, Postgres, Caddy and nightly backups. `make hub-smoke` runs it on Linux and macOS.
 
-1. **VM:** Docker with compose, a DNS name pointing at it, and ports 80 and 443 open. Copy `deploy/hub` there.
+1. **Host:** Docker with compose. Copy `deploy/hub` there. For client alerts, a DNS name pointing at it and ports 80 and 443 open. Without them (a laptop behind NAT), set `AIOPS_DOMAIN=localhost` and other ports in `.env`: only senders that reach the machine can alert, such as a local kind cluster or `curl -k`.
 2. **Contracts:** clone your private contracts repo into `deploy/hub/contracts` with a read-only deploy key:
    ```bash
    ssh-keygen -t ed25519 -N '' -f ~/.ssh/aiops-contracts      # add the .pub as a read-only deploy key
@@ -105,7 +105,8 @@ The Hub runs every Contract from one VM you own: [`deploy/hub`](deploy/hub) is a
    ```
 3. **Age keys:** put every Contract's age key in one file that only the Hub's user (uid 10001) can read:
    ```bash
-   cat acme.agekey globex.agekey > age-keys.txt && chmod 0400 age-keys.txt && sudo chown 10001 age-keys.txt
+   cat acme.agekey globex.agekey > age-keys.txt && chmod 0400 age-keys.txt
+   sudo chown 10001 age-keys.txt   # Linux only: Docker Desktop on macOS maps file owners itself
    ```
 4. **Settings:** copy `env.example` to `.env` (Postgres password, domain) and `hub.env.example` to `hub.env` (approver token, model key).
 5. **Start:** `docker compose up -d --wait`. Caddy gets a certificate for your domain.
@@ -116,7 +117,7 @@ The Hub runs every Contract from one VM you own: [`deploy/hub`](deploy/hub) is a
 
 **Updating Contracts:** `./update-contracts.sh` pulls the contracts repo and validates every Contract inside the image before restarting the Hub. If any Contract is invalid, it rolls the clone back and leaves the running Hub alone, because one bad Contract would otherwise stop alerts for all of them.
 
-**Backups:** a `pg_dump` at start and every 24 hours, kept 14 days, in `deploy/hub/backups`. Dumps are owner-only because they hold Contract data (Reports, raw tool results). A dump on the VM is lost with the VM: copy `backups/` somewhere else.
+**Backups:** a `pg_dump` at start and every 24 hours, kept 14 days, in `deploy/hub/backups`. Dumps are owner-only because they hold Contract data (Reports, raw tool results). A dump on the host is lost with the host: copy `backups/` somewhere else.
 
 `make hub-smoke` runs the stack locally and in CI with the demo Contracts. It checks that the stack comes up healthy, that every path except the alert route returns 404 through Caddy (including `../` and `%2F` tricks and oversized bodies), that an alert is stored, that a backup restores, and that a bad contracts update is refused. CI does not cover `tailscale serve`, real Let's Encrypt certificates, the deploy-key clone or the arm64 image.
 
