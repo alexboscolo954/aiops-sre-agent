@@ -134,12 +134,14 @@ def check(prom: Prom, t: Target, at: float | None = None) -> tuple[Target, dict[
     """Which metrics are missing (metric -> what it gives), and the Target with the
     namespace label kube-state-metrics uses here."""
     at = at or time.time()
+    # How kube-state-metrics is scraped, asked of the whole store (within the cluster's
+    # labels), never of the Contract's namespaces: a Contract owning the namespace that
+    # kube-state-metrics runs in would otherwise match every pod's series by it.
+    scoped = ",".join(f"{k}={_string(v)}" for k, v in sorted(t.labels.items()))
+    renamed = f'kube_pod_owner{{exported_namespace!=""{"," + scoped if scoped else ""}}}'
+    if prom.instant(f"count({renamed})", at):
+        t = dataclasses.replace(t, ksm_namespace="exported_namespace")
     found = set()
-    for label in ("namespace", "exported_namespace"):
-        probe = dataclasses.replace(t, ksm_namespace=label)
-        if prom.instant(f"count({selector('kube_pod_owner', probe)})", at):
-            t, found = probe, {"kube_pod_owner"}
-            break
     for metric in (*REQUIRED, *OPTIONAL):
         if metric not in found and prom.instant(f"count({selector(metric, t)})", at):
             found.add(metric)

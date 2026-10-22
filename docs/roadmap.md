@@ -332,7 +332,7 @@ Touches nothing in client clusters. Sizings come from each Direct Contract's Pro
 
 **9.1 Metric contract and Workloads.**
 - The Prometheus queries a Sizing needs (container CPU and memory usage, requests, limits, OOM kills, throttling), checked per Contract; Workloads found through pod owners (ReplicaSet to Deployment, Jobs, StatefulSets, DaemonSets, Rollouts, ownerless pods).
-- Grilled 2026-10-21: owners from kube-state-metrics, the Kubernetes API for pods it misses; a cluster's own Prometheus URL and token and label matchers, else the integration's; memory is the working set; the lab runs kube-prometheus-stack. Part a (code, fake Prometheus, `aiops sizing usage`) built 2026-10-21; part b is the persistent kind lab (`make lab`). The agent's `prometheus` tools move to per-cluster URLs in 9.6.
+- Grilled 2026-10-21: owners from kube-state-metrics, the Kubernetes API for pods it misses; a cluster's own Prometheus URL and token and label matchers, else the integration's; memory is the working set; the lab runs kube-prometheus-stack. Part a (code, fake Prometheus, `aiops sizing usage`) built 2026-10-21; part b, the persistent kind lab (`make lab`: kube-prometheus-stack and nine Workload shapes in namespace `lab`), built 2026-10-21 and read by the Mac Hub's image. Synthetic backfill of weeks of history comes with 9.2, which needs it. The agent's `prometheus` tools move to per-cluster URLs in 9.6.
 - *Done when:* a fake Prometheus in the style of `fake_cluster` (CI has no kubeconfig) yields the right Workloads and usage for flat, diurnal, spike, slow-leak and OOM series.
 
 **9.2 Recommender.**

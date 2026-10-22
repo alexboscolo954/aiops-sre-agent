@@ -1,0 +1,32 @@
+# kube-prometheus-stack for the optimizer lab (`make lab`): the setup most client
+# clusters run, kept small for kind. Prometheus keeps 30 days on a PVC inside the
+# kind node container: `kind delete cluster` erases the lab's history.
+alertmanager:
+  enabled: false
+grafana:
+  enabled: true            # a second opinion on the Hub's numbers: make lab-grafana
+  adminPassword: lab-only  # demo only, reached by port-forward
+kubeEtcd:
+  enabled: false           # kind's control plane isn't scrapeable from pods
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeProxy:
+  enabled: false
+prometheus:
+  service:
+    type: NodePort
+    nodePort: 30090        # the Hub reaches it on kind's network: http://aiops-control-plane:30090
+  prometheusSpec:
+    retention: 30d
+    resources:
+      requests: {cpu: 200m, memory: 1Gi}
+      limits: {memory: 3Gi}
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: 20Gi

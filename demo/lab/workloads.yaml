@@ -1,0 +1,261 @@
+# The optimizer lab's workloads (`make lab`): each has a usage shape a Sizing must get right.
+apiVersion: v1
+kind: Namespace
+metadata: {name: lab}
+---
+# Diurnal: a 24 h day, two replicas pooled into one per-replica Sizing.
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: web, namespace: lab}
+spec:
+  selector:
+    matchLabels: {app: web}
+  template:
+    metadata:
+      labels: {app: web}
+    spec:
+      containers:
+      - name: app
+        image: python:3.12-alpine
+        command: [python, -u, /load/load.py]
+        env:
+        - {name: PROFILE, value: diurnal}
+        - {name: CPU, value: '0.4'}
+        - {name: MEMORY_MIB, value: '96'}
+        resources:
+          requests: {cpu: 500m, memory: 256Mi}
+        volumeMounts:
+        - {name: load, mountPath: /load}
+      volumes:
+      - name: load
+        configMap: {name: load}
+  replicas: 2
+---
+# Over-requested: asks 1 CPU and 1 GiB, uses 0.1 and about 80 MiB. Waste.
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: api, namespace: lab}
+spec:
+  selector:
+    matchLabels: {app: api}
+  template:
+    metadata:
+      labels: {app: api}
+    spec:
+      containers:
+      - name: app
+        image: python:3.12-alpine
+        command: [python, -u, /load/load.py]
+        env:
+        - {name: PROFILE, value: steady}
+        - {name: CPU, value: '0.1'}
+        - {name: MEMORY_MIB, value: '64'}
+        resources:
+          requests: {cpu: '1', memory: 1Gi}
+        volumeMounts:
+        - {name: load, mountPath: /load}
+      volumes:
+      - name: load
+        configMap: {name: load}
+  replicas: 3
+---
+# Spiky: a minute at 0.9 cores every 15 minutes, otherwise idle.
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: spiky, namespace: lab}
+spec:
+  selector:
+    matchLabels: {app: spiky}
+  template:
+    metadata:
+      labels: {app: spiky}
+    spec:
+      containers:
+      - name: app
+        image: python:3.12-alpine
+        command: [python, -u, /load/load.py]
+        env:
+        - {name: PROFILE, value: spiky}
+        - {name: CPU, value: '0.15'}
+        - {name: MEMORY_MIB, value: '48'}
+        resources:
+          requests: {cpu: 200m, memory: 128Mi}
+        volumeMounts:
+        - {name: load, mountPath: /load}
+      volumes:
+      - name: load
+        configMap: {name: load}
+  replicas: 1
+---
+# Slow leak: 4 MiB a minute until the 256 MiB limit OOM-kills it, about hourly.
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: leaky, namespace: lab}
+spec:
+  selector:
+    matchLabels: {app: leaky}
+  template:
+    metadata:
+      labels: {app: leaky}
+    spec:
+      containers:
+      - name: app
+        image: python:3.12-alpine
+        command: [python, -u, /load/load.py]
+        env:
+        - {name: PROFILE, value: leak}
+        - {name: CPU, value: '0.02'}
+        - {name: MEMORY_MIB, value: '32'}
+        - {name: LEAK_MIB_PER_MIN, value: '4'}
+        resources:
+          requests: {cpu: 50m, memory: 128Mi}
+          limits: {memory: 256Mi}
+        volumeMounts:
+        - {name: load, mountPath: /load}
+      volumes:
+      - name: load
+        configMap: {name: load}
+  replicas: 1
+---
+# Throttled: wants 0.5 cores under a 200m limit. Risk.
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: throttled, namespace: lab}
+spec:
+  selector:
+    matchLabels: {app: throttled}
+  template:
+    metadata:
+      labels: {app: throttled}
+    spec:
+      containers:
+      - name: app
+        image: python:3.12-alpine
+        command: [python, -u, /load/load.py]
+        env:
+        - {name: PROFILE, value: steady}
+        - {name: CPU, value: '0.5'}
+        - {name: MEMORY_MIB, value: '48'}
+        resources:
+          requests: {cpu: 100m, memory: 128Mi}
+          limits: {cpu: 200m}
+        volumeMounts:
+        - {name: load, mountPath: /load}
+      volumes:
+      - name: load
+        configMap: {name: load}
+  replicas: 1
+---
+# Idle: asks a full core and 1 GiB, uses almost nothing.
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: idle, namespace: lab}
+spec:
+  selector:
+    matchLabels: {app: idle}
+  template:
+    metadata:
+      labels: {app: idle}
+    spec:
+      containers:
+      - name: app
+        image: python:3.12-alpine
+        command: [python, -u, /load/load.py]
+        env:
+        - {name: PROFILE, value: idle}
+        - {name: MEMORY_MIB, value: '16'}
+        resources:
+          requests: {cpu: '1', memory: 1Gi}
+        volumeMounts:
+        - {name: load, mountPath: /load}
+      volumes:
+      - name: load
+        configMap: {name: load}
+  replicas: 1
+---
+# StatefulSet: steady memory, no ReplicaSet in the owner chain.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: {name: db, namespace: lab}
+spec:
+  selector:
+    matchLabels: {app: db}
+  template:
+    metadata:
+      labels: {app: db}
+    spec:
+      containers:
+      - name: app
+        image: python:3.12-alpine
+        command: [python, -u, /load/load.py]
+        env:
+        - {name: PROFILE, value: steady}
+        - {name: CPU, value: '0.05'}
+        - {name: MEMORY_MIB, value: '200'}
+        resources:
+          requests: {cpu: 100m, memory: 512Mi}
+        volumeMounts:
+        - {name: load, mountPath: /load}
+      volumes:
+      - name: load
+        configMap: {name: load}
+  replicas: 1
+  serviceName: db
+---
+# DaemonSet: one pod per node, owned directly.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata: {name: agent, namespace: lab}
+spec:
+  selector:
+    matchLabels: {app: agent}
+  template:
+    metadata:
+      labels: {app: agent}
+    spec:
+      containers:
+      - name: app
+        image: python:3.12-alpine
+        command: [python, -u, /load/load.py]
+        env:
+        - {name: PROFILE, value: steady}
+        - {name: CPU, value: '0.01'}
+        - {name: MEMORY_MIB, value: '16'}
+        resources:
+          requests: {cpu: 10m, memory: 32Mi}
+        volumeMounts:
+        - {name: load, mountPath: /load}
+      volumes:
+      - name: load
+        configMap: {name: load}
+---
+# CronJob: a minute's batch burst every 10 minutes; its pods end at Job, then CronJob.
+apiVersion: batch/v1
+kind: CronJob
+metadata: {name: report, namespace: lab}
+spec:
+  schedule: '*/10 * * * *'
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: app
+            image: python:3.12-alpine
+            command: [python, -u, /load/load.py]
+            env:
+            - {name: PROFILE, value: burst-once}
+            - {name: CPU, value: '0.8'}
+            - {name: MEMORY_MIB, value: '64'}
+            - {name: DURATION_S, value: '60'}
+            resources:
+              requests: {cpu: '1', memory: 256Mi}
+            volumeMounts:
+            - {name: load, mountPath: /load}
+          volumes:
+          - name: load
+            configMap: {name: load}
+          restartPolicy: Never

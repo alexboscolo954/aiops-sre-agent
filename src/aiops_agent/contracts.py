@@ -396,10 +396,26 @@ def load(directory: Path) -> dict[str, Contract]:
     return contracts
 
 
+def _store(url: str) -> str:
+    """One Prometheus, however its URL is written: scheme and host in lower case, the
+    default port made explicit, no trailing slash. ponytail: two DNS names or an IP for
+    the same store still look different; nothing short of asking it can tell."""
+    u = urlsplit(url.strip())
+    scheme = u.scheme.lower()
+    port = u.port or {"http": 80, "https": 443}.get(scheme)
+    return f"{scheme}://{u.hostname or ''}:{port}{u.path.rstrip('/')}"
+
+
+def _could_match_the_same(a: dict[str, str], b: dict[str, str]) -> bool:
+    """Two sets of label matchers select disjoint series only when they give one label
+    two different values; {cluster: eu} also matches every {cluster: eu, env: prod} series."""
+    return all(a[k] == b[k] for k in a.keys() & b.keys())
+
+
 def _shared_metrics(directory: Path, loaded: Any) -> list[str]:
-    """Two clusters, in one Contract or two, reading the same Prometheus with the same
-    labels and a namespace in common would get each other's usage: Sizings scope by
-    namespace and labels only. prometheus_labels must tell them apart."""
+    """Two clusters, in one Contract or two, reading the same Prometheus with label
+    matchers that can match the same series and a namespace in common would get each
+    other's usage: Sizings scope by namespace and labels only."""
     seen: list[tuple[str, dict[str, str], set[str], str]] = []
     problems = []
     for c in loaded:
@@ -408,13 +424,14 @@ def _shared_metrics(directory: Path, loaded: Any) -> list[str]:
             url = cl.prometheus_url or shared
             if not url:
                 continue
-            here = (url.rstrip("/"), cl.prometheus_labels, set(cl.namespaces), f"{c.id}/{cl.name}")
-            for other in seen:
-                if other[:2] == here[:2] and other[2] & here[2]:
+            here = (_store(url), cl.prometheus_labels, set(cl.namespaces), f"{c.id}/{cl.name}")
+            for store, labels, spaces, name in seen:
+                if store == here[0] and _could_match_the_same(labels, here[1]) and spaces & here[2]:
                     problems.append(
-                        f"{directory}: {other[3]} and {here[3]} read the same Prometheus with "
-                        f"the same labels and share namespaces {sorted(other[2] & here[2])}; "
-                        "set prometheus_labels (like {cluster: <name>}) to tell them apart"
+                        f"{directory}: {name} and {here[3]} read the same Prometheus with "
+                        f"labels that can match the same series and share namespaces "
+                        f"{sorted(spaces & here[2])}; give one label different values in "
+                        "their prometheus_labels (like cluster: <name>)"
                     )
             seen.append(here)
     return problems

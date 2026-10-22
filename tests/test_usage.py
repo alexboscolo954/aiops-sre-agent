@@ -702,16 +702,89 @@ def test_two_contracts_on_one_store_with_a_common_namespace_are_refused() -> Non
 
 
 @pytest.mark.parametrize(
-    "second",
+    ("first", "second"),
     [
-        {"name": "us", "namespaces": ["shop"], "prometheus_labels": {"cluster": "us"}},
-        {"name": "us", "namespaces": ["other"]},
-        {"name": "us", "namespaces": ["shop"], "prometheus_url": "http://us-prometheus:9090"},
+        ({"cluster": "eu"}, {"cluster": "us"}),
+        ({"cluster": "eu", "env": "prod"}, {"cluster": "us"}),
     ],
 )
-def test_labels_other_namespaces_or_another_url_are_fine(second: dict[str, Any]) -> None:
+def test_one_label_with_two_values_keeps_them_apart(
+    first: dict[str, str], second: dict[str, str]
+) -> None:
+    c = shared(
+        "acme",
+        {"name": "eu", "namespaces": ["shop"], "prometheus_labels": first},
+        {"name": "us", "namespaces": ["shop"], "prometheus_labels": second},
+    )
+    assert contracts._shared_metrics(Path("dir"), [c]) == []
+
+
+@pytest.mark.parametrize(
+    "second",
+    [
+        {"name": "us", "namespaces": ["other"]},
+        {"name": "us", "namespaces": ["shop"], "prometheus_url": "http://us-prometheus:9090"},
+        {"name": "us", "namespaces": ["shop"], "prometheus_url": "https://thanos:9090"},
+    ],
+)
+def test_other_namespaces_or_another_store_are_fine(second: dict[str, Any]) -> None:
     c = shared("acme", {"name": "eu", "namespaces": ["shop"]}, second)
     assert contracts._shared_metrics(Path("dir"), [c]) == []
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        (
+            {"cluster": "eu"},
+            {"cluster": "eu", "env": "prod"},
+        ),  # a subset matches the superset's series
+        ({}, {"cluster": "us"}),  # no labels match every cluster's series
+    ],
+)
+def test_labels_that_can_match_the_same_series_are_refused(
+    first: dict[str, str], second: dict[str, str]
+) -> None:
+    a = shared("acme", {"name": "a", "namespaces": ["shop"], "prometheus_labels": first})
+    b = shared("globex", {"name": "b", "namespaces": ["shop"], "prometheus_labels": second})
+    (problem,) = contracts._shared_metrics(Path("dir"), [a, b])
+    assert "acme/a and globex/b" in problem
+
+
+@pytest.mark.parametrize(
+    ("url_a", "url_b"),
+    [
+        ("http://Thanos:9090", "http://thanos:9090/"),
+        ("http://thanos", "http://thanos:80"),
+        ("HTTPS://thanos.example/prom/", "https://THANOS.example:443/prom"),
+    ],
+)
+def test_one_store_written_two_ways_is_one_store(url_a: str, url_b: str) -> None:
+    a = shared("acme", {"name": "a", "namespaces": ["shop"]}, url=url_a)
+    b = shared("globex", {"name": "b", "namespaces": ["shop"]}, url=url_b)
+    assert len(contracts._shared_metrics(Path("dir"), [a, b])) == 1
+
+
+def test_scrape_style_is_asked_of_the_store_not_the_contracts_namespaces() -> None:
+    """kube-state-metrics runs in `monitoring`; a Contract owning `monitoring` must not
+    mistake every pod's series (namespace=monitoring by scrape) for its own."""
+    fake = FakePrometheus()
+    full(fake, ns_label="exported_namespace")
+    fake.add("kube_pod_owner", 1, namespace="monitoring", exported_namespace="bank", pod="x")
+    owns_monitoring = Target("kind", "http://prometheus", None, {}, ["shop", "monitoring"])
+    t, _ = usage.check(usage.Prom(owns_monitoring, fake.client()), owns_monitoring, at=1)
+    assert t.ksm_namespace == "exported_namespace"
+
+
+def test_scrape_style_probe_stays_within_the_clusters_labels() -> None:
+    fake = FakePrometheus()
+    full(fake)
+    fake.add(
+        "kube_pod_owner", 1, namespace="monitoring", exported_namespace="shop", cluster="other"
+    )
+    eu = Target("eu", "http://thanos", None, {"cluster": "eu"}, ["shop"])
+    t, _ = usage.check(usage.Prom(eu, fake.client()), eu, at=1)
+    assert t.ksm_namespace == "namespace"
 
 
 def test_load_refuses_contracts_that_would_mix_usage(
