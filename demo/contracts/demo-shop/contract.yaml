@@ -14,3 +14,15 @@ integrations:
     token_secret: prometheus-token
   - name: runbooks
   - name: incidents
+# Sizing policies (aiops sizing show). Built-ins: production (the default),
+# high-availability, batch (every Job and CronJob unless a rule says otherwise), off.
+sizing:
+  policies:
+    lean-agent:  # a DaemonSet runs on every node: every MiB counts
+      base: production
+      cpu: {headroom: 0.10}
+      memory: {headroom: 0.10, max: 256Mi}
+  rules:  # top to bottom, the first match wins; namespace and name take globs
+    - {namespace: lab, name: db, policy: high-availability}
+    - {namespace: lab, kind: DaemonSet, policy: lean-agent}
+    - {namespace: lab, name: idle, policy: off}

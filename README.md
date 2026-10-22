@@ -386,7 +386,34 @@ clusters:
 ```
 The agent's own `prometheus` tools still use the integration's URL; per-cluster URLs reach them in 9.6.
 
-**Sizings (Phase 9, read-only).** `aiops sizing show --contract <id>` prints each container's Sizing: what its requests should be, and whether that means set, raise, lower or keep. Nothing is applied. CPU is the 95th percentile of the last 7 days, recent hours weighted more (half-life 24 hours: a drop is followed in about 4 days, a rise within hours), plus 15%. Memory is the peak, plus 20%, so it follows a drop only once the old peak leaves the window. Then a floor of 10m and 32 MiB, then the limit: limits are kept, a request never goes above one, and a limit below what the container needs is listed as a risk. Requests are rounded up to a millicore and a MiB, and change only when the difference is at least 10% and at least 10m or 16 MiB. Throttling over 10% of CPU periods or an OOM kill hides the real demand, so CPU is never lowered while throttled, and memory never after an OOM kill; both are listed as risks. A container with under 24 hours of usage is still learning.
+**Sizings (Phase 9, read-only).** `aiops sizing show --contract <id>` prints each container's Sizing under its Sizing policy: what its requests should be, and whether that means set, raise, lower or keep. Nothing is applied. Under `production`, the default, CPU is the 95th percentile of the last 7 days, recent hours weighted more (half-life 24 hours: a drop is followed in about 4 days, a rise within hours), plus 15%. Memory is the peak, plus 20%, so it follows a drop only once the old peak leaves the window. Then a floor of 10m and 32 MiB, then the policy's maximum if it has one (a capped Sizing is listed as a risk), then the limit: limits are kept, a request never goes above one, and a limit below what the container needs is listed as a risk. Requests are rounded up to a millicore and a MiB, and change only when the difference is at least 10% and at least 10m or 16 MiB. Throttling over 10% of CPU periods or an OOM kill hides the real demand, so CPU is never lowered while throttled, and memory never after an OOM kill; both are listed as risks. A container with under 24 hours of usage is still learning.
+
+**Sizing policies.** A policy sets the window, the CPU percentile and its half-life, the headroom, floors and maximums, the change threshold and the history needed before a first Sizing; the throttling and OOM holds are not settings, no policy turns them off. Built-ins:
+
+| | production | high-availability | batch |
+|---|---|---|---|
+| CPU | weighted p95 + 15% | weighted p99 + 30% | weighted p90 + 10% |
+| Memory | peak + 20% | peak + 35% | peak + 15% |
+| Window, half-life, history needed | 7 d, 24 h, 24 h | 14 d, 72 h, 72 h | 14 d, 24 h, 24 h |
+| Floors | 10m, 32 MiB | 50m, 64 MiB | 10m, 32 MiB |
+
+Your own policies and the rules that pick one go in `contract.yaml`; `aiops contracts validate` checks them (ranges, a known `base:`, known policy names in rules):
+```yaml
+sizing:
+  default: production                  # optional; off sizes only what a rule names
+  policies:
+    lean-agent:                        # a built-in with the settings it names replaced
+      base: production                 # production, high-availability or batch
+      window: 3d                       # 1h to 90d; half_life 1h to 30d; history up to the window
+      cpu: {headroom: 0.10, max: "2"}  # percentile 0.5 to 1, headroom 0 to 3, floor, max
+      memory: {floor: 64Mi, max: 4Gi}  # Kubernetes quantities
+      threshold: 0.05                  # 0 to 0.5
+  rules:                               # top to bottom, the first match wins
+    - {namespace: payments, policy: high-availability}
+    - {namespace: "team-*", name: "checkout-*", policy: lean-agent}   # globs: namespace, name
+    - {container: istio-proxy, policy: off}                          # also cluster, kind
+```
+After the rules, a Job or CronJob gets `batch`, everything else the default. Built-in names mean the same in every Contract (a standing approval names a policy, ADR 0004), so they and `off` can't be reused. `off` lists the container as excluded. The output names each container's policy, and `history 3.0d of 14d` when Prometheus holds less than the policy's window. Each window a Contract's policies use is read in full, so a policy's OOM kills and throttling are from its own window.
 
 **The optimizer lab.** `make lab` turns the kind cluster into a persistent lab: kube-prometheus-stack (chart pinned in the Makefile, the setup most client clusters run; Prometheus keeps 30 days, Grafana via `make lab-grafana`) and, in namespace `lab`, Workloads with the usage shapes a Sizing must get right: a 24-hour diurnal Deployment with two replicas, an over-requested one, a spiky one, a slow memory leak that its limit OOM-kills about hourly, a CPU-throttled one, an idle one, a StatefulSet, a DaemonSet and a CronJob. Prometheus is reachable from the Hub on kind's Docker network at `http://aiops-control-plane:30090`, so a Contract's cluster can set it as `prometheus_url` with `lab` in its namespaces. Leave the lab running: real history builds up. Its history lives inside the kind node container, so `kind delete cluster` erases it.
 

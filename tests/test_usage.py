@@ -811,8 +811,8 @@ def test_load_refuses_contracts_that_would_mix_usage(
 def test_sizing_show_command(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """A day of usage at 0.1 core and 80 MiB against 1 CPU and 1 GiB is lowered; a
-    pod with ten minutes of usage is still learning."""
+    """Two days of usage at 0.1 core and 80 MiB against 1 CPU and 1 GiB is lowered; a
+    pod with ten samples (18 minutes at production's 2-minute step) is still learning."""
     from aiops_agent import cli
 
     fake = FakePrometheus()
@@ -835,9 +835,10 @@ def test_sizing_show_command(
     data["integrations"].append({"name": "prometheus", "url": "http://prometheus"})
     monkeypatch.setattr(cli, "contract", lambda settings, cid: contracts.build(data))
     monkeypatch.setattr(usage, "Prom", lambda t: _prom(fake, t))
-    assert cli.main(["sizing", "show", "--contract", "acme", "--window", "2d"]) == 0
+    assert cli.main(["sizing", "show", "--contract", "acme"]) == 0
     out = capsys.readouterr().out
     assert (
-        "test/shop/Deployment/api/app: cpu lower 1000m -> 115m, memory lower 1024Mi -> 96Mi" in out
+        "test/shop/Deployment/api/app (production): cpu lower 1000m -> 115m, memory lower "
+        "1024Mi -> 96Mi" in out
     )
-    assert "test/shop/Deployment/fresh/app: learning (0.1 h of 24 h)" in out
+    assert "test/shop/Deployment/fresh/app (production): learning (0.3 h of 24 h)" in out

@@ -4,7 +4,9 @@ It applies every label matcher in the query (=, !=, =~, !~) exactly as Prometheu
 would, so a query that forgets its namespace or cluster matcher returns other
 Contracts' series and the isolation tests catch it. PromQL functions around the
 selector (rate, max_over_time, increase, last_over_time) are ignored: a fixture
-series holds the values that query would return. `count(...)` counts matches.
+series holds the values that query would return. `count(...)` counts matches. A
+series added with `ago` (seconds) happened that long ago: an instant query over a
+shorter `[...s]` window doesn't see it.
 """
 
 import re
@@ -37,8 +39,8 @@ class FakePrometheus:
     queries: list[str] = field(default_factory=list)
     status: int = 200
 
-    def add(self, metric: str, values: list[float] | float, **labels: str) -> None:
-        self.series.append({"__name__": metric, **labels, "_values": values})
+    def add(self, metric: str, values: list[float] | float, ago: float = 0, **labels: str) -> None:
+        self.series.append({"__name__": metric, **labels, "_values": values, "_ago": ago})
 
     def select(self, promql: str) -> list[dict[str, Any]]:
         m = SELECTOR.search(promql)
@@ -74,6 +76,9 @@ class FakePrometheus:
         elif promql.startswith("count("):
             result = [{"metric": {}, "value": [0, str(len(found))]}] if found else []
         else:
+            window = re.findall(r"\[(\d+)s\]", promql)
+            if window:
+                found = [s for s in found if s["_ago"] <= int(window[-1])]
             result = [
                 {
                     "metric": labels(s),

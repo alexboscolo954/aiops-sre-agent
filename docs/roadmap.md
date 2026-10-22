@@ -342,6 +342,8 @@ Touches nothing in client clusters. Sizings come from each Direct Contract's Pro
 
 **9.3 Sizing policies.**
 - Built-in policies (production, batch, high availability) and overrides in `contract.yaml`, validated by `aiops contracts validate`.
+- Grilled 2026-10-22 (all recommended): production stays 9.2; high-availability p99 + 30%, memory + 35%, 14 d window, 72 h half-life and history, floors 50m and 64 MiB; batch p90 + 10%, memory + 15%, 14 d. A policy owns window, percentile, half-life, headroom, floors, an optional max (a capped Sizing is listed as risk) and the threshold; the holds are not settings; limits only `keep` until Phase 12. Your own policies name a built-in `base:`, and built-in names can't be reused (a standing approval names a policy). Rules on cluster, namespace, kind, name and container (globs on namespace and name), first match wins, then Jobs and CronJobs get batch, then the default; `off` excludes. `sizing show` names the policy and a short history. Built 2026-10-22; `--window` left `sizing show`. Changed from the grilling: each window the Contract's policies can reach is read in full, not the longest once and trimmed, because OOM kills, throttling and requests are read over the whole window (found in review).
+- *Done when:* every setting, rule and bound has a test that fails when it is removed, and on the lab `report` is batch with no rule, `db` high-availability and `agent` a Contract's own policy through rules, `idle` excluded and the rest production (checked 2026-10-22, all still learning).
 
 **9.4 Waste and risk.**
 - Per Workload: waste (requests above use) and risk (OOM kills, throttling, requests below use), stored as aggregates in Postgres per Contract.
@@ -421,4 +423,4 @@ Touches nothing in client clusters. Sizings come from each Direct Contract's Pro
 
 ## Next
 
-Phases 0 to 8 are done except 3 (Relay) and 6.4 (Masking). On 2026-10-21 the Operator chose to grow the Hub into a resource optimizer as well (Phases 9 to 19, ADR 0004). Next is 9.1, grilled before it is built.
+Phases 0 to 8 are done except 3 (Relay) and 6.4 (Masking). On 2026-10-21 the Operator chose to grow the Hub into a resource optimizer as well (Phases 9 to 19, ADR 0004). 9.1 to 9.3 are built; next is 9.2's check on the lab's first day of history, then 9.4, grilled before it is built.

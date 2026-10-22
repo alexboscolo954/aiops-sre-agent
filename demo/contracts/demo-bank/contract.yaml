@@ -15,3 +15,8 @@ integrations:
     token_secret: prometheus-token
   - name: runbooks
   - name: incidents
+sizing:
+  policies:
+    lean-agent:  # same name as demo-shop's, other numbers: each Contract its own
+      base: batch
+      cpu: {headroom: 0.30}

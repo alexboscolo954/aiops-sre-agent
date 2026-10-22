@@ -501,3 +501,15 @@ async def test_teachings_never_cross_contracts(two_contracts: Contracts, databas
             assert await store.decide_teaching(ids[other, "proposed"], cid, True, "x") is None
             assert not await store.retire_teaching(ids[other, "approved"], cid, "x")
         assert {t["status"] for t in await store.teachings()} == {"approved", "proposed"}
+
+
+def test_each_contract_sizes_with_its_own_policies(two_contracts: Contracts) -> None:
+    """Both demo Contracts name a policy lean-agent, with other numbers: each gets its
+    own, and a rule of one never picks a policy for the other's Workloads."""
+    shop, bank = two_contracts["demo-shop"].sizing, two_contracts["demo-bank"].sizing
+    shop_lean, bank_lean = shop.policy("lean-agent"), bank.policy("lean-agent")
+    assert shop_lean and bank_lean
+    assert (shop_lean.cpu.headroom, shop_lean.window) == (0.10, 7 * 86400)
+    assert (bank_lean.cpu.headroom, bank_lean.window) == (0.30, 14 * 86400)
+    assert shop.policy_for("kind", "lab", "DaemonSet", "agent", "agent") == "lean-agent"
+    assert bank.policy_for("kind", "lab", "DaemonSet", "agent", "agent") == "production"

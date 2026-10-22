@@ -21,7 +21,8 @@ import secrets
 import shutil
 import subprocess
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
@@ -29,6 +30,7 @@ from urllib.parse import urlsplit
 import yaml
 from pydantic import (
     BaseModel,
+    BeforeValidator,
     ConfigDict,
     Discriminator,
     Field,
@@ -265,6 +267,197 @@ class DeployChecks(Strict):
     prompt: str | None = Field(None, min_length=1, max_length=1000)
 
 
+def duration_s(text: str) -> int:
+    """`90m`, `6h`, `7d` in seconds."""
+    m = re.fullmatch(r"([1-9][0-9]*)([mhd])", text)
+    if not m:
+        raise ValueError(f"{text!r}: use a number and m, h or d, like 6h or 7d")
+    return int(m.group(1)) * {"m": 60, "h": 3600, "d": 86400}[m.group(2)]
+
+
+def _duration(lo: str, hi: str) -> Callable[[Any], Any]:
+    """Seconds, written `72h` or `7d` in YAML (a number: seconds), from lo to hi."""
+
+    def parse(v: Any) -> Any:
+        if isinstance(v, str):
+            v = duration_s(v)
+        if (
+            isinstance(v, int)
+            and not isinstance(v, bool)
+            and not (duration_s(lo) <= v <= duration_s(hi))
+        ):
+            raise ValueError(f"must be from {lo} to {hi}")
+        return v
+
+    return parse
+
+
+def _quantity(v: Any) -> Any:
+    """A Kubernetes quantity (`500m`, `16Gi`) as a number: cores or bytes."""
+    if isinstance(v, str):
+        from kubernetes.utils import parse_quantity
+
+        try:
+            return float(parse_quantity(v))  # type: ignore[no-untyped-call]
+        except ValueError as e:
+            raise ValueError(f"{v!r} is not a Kubernetes quantity like 500m or 16Gi") from e
+    return v
+
+
+Quantity = Annotated[float, BeforeValidator(_quantity), Field(gt=0)]
+
+
+class ResourcePolicy(Strict):
+    headroom: float = Field(ge=0, le=3)  # 0.15: 15% above the basis
+    floor: Quantity
+    max: Quantity | None = None  # capped there, and listed as a risk
+
+
+class CpuPolicy(ResourcePolicy):
+    percentile: float = Field(ge=0.5, le=1.0)  # of the decay-weighted samples
+
+
+class Policy(Strict):
+    """How a Sizing is computed (CONTEXT.md, Sizing policy). Memory is always the peak:
+    a maximum can't be weighted. The safety holds (throttling, OOM kills) are not here:
+    no policy may turn them off."""
+
+    base: Literal["production", "high-availability", "batch"] | None = None  # yours: required
+    window: Annotated[int, BeforeValidator(_duration("1h", "90d"))]
+    half_life: Annotated[int, BeforeValidator(_duration("1h", "30d"))]
+    history: Annotated[int, BeforeValidator(_duration("1h", "90d"))]  # before a first Sizing
+    threshold: float = Field(ge=0, le=0.5)  # relative change below which a request is kept
+    limits: Literal["keep"] = "keep"  # other strategies when the Actuator writes (Phase 12)
+    cpu: CpuPolicy
+    memory: ResourcePolicy
+
+    @model_validator(mode="after")
+    def _consistent(self) -> "Policy":
+        if self.history > self.window:
+            raise ValueError("history must fit in the window")
+        for name, r in (("cpu", self.cpu), ("memory", self.memory)):
+            if r.max is not None and r.floor > r.max:
+                raise ValueError(f"{name} floor is above its max")
+        return self
+
+
+H, D, MI = 3600, 86400, 2**20
+OFF = "off"  # a Workload (or container) that gets no Sizing
+BUILTIN = {
+    "production": Policy(
+        window=7 * D, half_life=24 * H, history=24 * H, threshold=0.10,
+        cpu=CpuPolicy(percentile=0.95, headroom=0.15, floor=0.010),
+        memory=ResourcePolicy(headroom=0.20, floor=32 * MI),
+    ),
+    "high-availability": Policy(
+        window=14 * D, half_life=72 * H, history=72 * H, threshold=0.10,
+        cpu=CpuPolicy(percentile=0.99, headroom=0.30, floor=0.050),
+        memory=ResourcePolicy(headroom=0.35, floor=64 * MI),
+    ),
+    "batch": Policy(
+        window=14 * D, half_life=24 * H, history=24 * H, threshold=0.10,
+        cpu=CpuPolicy(percentile=0.90, headroom=0.10, floor=0.010),
+        memory=ResourcePolicy(headroom=0.15, floor=32 * MI),
+    ),
+}  # fmt: skip
+BATCH_KINDS = ("Job", "CronJob")
+
+
+def _off(v: Any) -> Any:
+    """YAML reads a bare `off` as false."""
+    return OFF if v is False else v
+
+
+PolicyName = Annotated[str, BeforeValidator(_off)]
+
+
+class SizingRule(Strict):
+    """Which policy a Workload's containers get. Every field set must match; namespace
+    and name take globs (`checkout-*`)."""
+
+    cluster: str | None = None
+    namespace: str | None = None
+    kind: str | None = None  # Deployment, StatefulSet, DaemonSet, CronJob, Job, Rollout, ...
+    name: str | None = None
+    container: str | None = None
+    policy: PolicyName
+
+    @model_validator(mode="after")
+    def _matches_something(self) -> "SizingRule":
+        if not {"cluster", "namespace", "kind", "name", "container"} & self.model_fields_set:
+            raise ValueError("a rule needs cluster, namespace, kind, name or container")
+        return self
+
+    def matches(self, cluster: str, namespace: str, kind: str, name: str, container: str) -> bool:
+        return (
+            self.cluster in (None, cluster)
+            and (self.namespace is None or fnmatchcase(namespace, self.namespace))
+            and self.kind in (None, kind)
+            and (self.name is None or fnmatchcase(name, self.name))
+            and self.container in (None, container)
+        )
+
+
+class SizingConfig(Strict):
+    """Sizing policies: your own, each a built-in (`base:`) with changes, and the
+    rules that pick one per container. The rules first, top to bottom, then a Job or
+    CronJob gets `batch`, then `default`. Built-in names mean the same in every
+    Contract: a standing approval names a policy (ADR 0004)."""
+
+    default: PolicyName = "production"
+    policies: dict[Slug, Policy] = {}
+    rules: list[SizingRule] = []
+
+    @model_validator(mode="before")
+    @classmethod
+    def _bases(cls, data: Any) -> Any:
+        """Each policy is its base's settings with the ones it names replaced."""
+        if not isinstance(data, dict) or not isinstance(data.get("policies"), dict):
+            return data
+        merged: dict[str, Any] = {}
+        for name, p in data["policies"].items():
+            if isinstance(p, Policy):
+                merged[name] = p
+                continue
+            if not isinstance(p, dict) or p.get("base") not in BUILTIN:
+                raise ValueError(f"policy {name}: base must be one of {', '.join(BUILTIN)}")
+            out = BUILTIN[p["base"]].model_dump()
+            for key, value in p.items():
+                if key in ("cpu", "memory") and isinstance(value, dict):
+                    out[key] = {**out[key], **value}
+                else:
+                    out[key] = value
+            merged[name] = out
+        return {**data, "policies": merged}
+
+    @model_validator(mode="after")
+    def _known(self) -> "SizingConfig":
+        if taken := sorted(set(self.policies) & {*BUILTIN, OFF}):
+            raise ValueError(f"policy names taken by the built-ins: {taken}")
+        known = {*self.policies, *BUILTIN, OFF}
+        for where, name in [("default", self.default)] + [
+            (f"rule {i + 1}", r.policy) for i, r in enumerate(self.rules)
+        ]:
+            if name not in known:
+                raise ValueError(f"{where}: unknown policy {name!r}")
+        return self
+
+    def policy_for(self, cluster: str, namespace: str, kind: str, name: str, container: str) -> str:
+        for r in self.rules:
+            if r.matches(cluster, namespace, kind, name, container):
+                return r.policy
+        return "batch" if kind in BATCH_KINDS else self.default
+
+    def policy(self, name: str) -> Policy | None:
+        """The settings for a policy name; None for `off`."""
+        return self.policies.get(name) or BUILTIN.get(name)
+
+    def windows(self) -> list[int]:
+        """Every window a rule, the default or the batch rule can need, shortest first."""
+        names = {self.default, "batch", *(r.policy for r in self.rules)}
+        return sorted({p.window for n in names if (p := self.policy(n))})
+
+
 class Contract(Strict):
     id: Slug
     name: str
@@ -280,6 +473,7 @@ class Contract(Strict):
     related: Related = Related()
     checks: list[Check] = []
     deploy_checks: DeployChecks | None = None  # off unless set
+    sizing: SizingConfig = SizingConfig()
 
     _dir: Path = PrivateAttr(default=Path())
     _secrets: dict[str, SecretStr] = PrivateAttr(default_factory=dict)
@@ -305,6 +499,9 @@ class Contract(Strict):
             spaces = {n for c in self.clusters for n in c.namespaces}
             if outside := sorted(set(self.deploy_checks.namespaces) - spaces):
                 raise ValueError(f"deploy_checks namespaces not in any cluster: {outside}")
+        for i, r in enumerate(self.sizing.rules):
+            if r.cluster is not None and r.cluster not in groups["cluster"]:
+                raise ValueError(f"sizing rule {i + 1}: no cluster {r.cluster!r}")
         return self
 
     @property
