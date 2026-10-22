@@ -238,8 +238,8 @@ class ContainerUsage:
 
     workload: Workload
     container: str
-    cpu: list[float] = field(default_factory=list)  # cores, one per pod per step
-    memory: list[float] = field(default_factory=list)  # working set bytes, peak per step
+    cpu: list[tuple[float, float]] = field(default_factory=list)  # (time, cores) per pod per step
+    memory: list[tuple[float, float]] = field(default_factory=list)  # (time, working set bytes)
     requests: dict[str, float] = field(default_factory=dict)  # cpu (cores), memory (bytes)
     limits: dict[str, float] = field(default_factory=dict)
     pods: set[str] = field(default_factory=set)
@@ -299,7 +299,7 @@ def usage(
             container = label(m, "container")
             r = rows.setdefault((w, container), ContainerUsage(w, container))
             r.pods.add(label(m, "pod"))
-            getattr(r, into).extend(float(v) for _, v in s["values"])
+            getattr(r, into).extend((float(at), float(v)) for at, v in s["values"])
     for metric, into in (
         ("kube_pod_container_resource_requests", "requests"),
         ("kube_pod_container_resource_limits", "limits"),

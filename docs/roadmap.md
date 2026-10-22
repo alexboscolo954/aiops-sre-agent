@@ -337,6 +337,7 @@ Touches nothing in client clusters. Sizings come from each Direct Contract's Pro
 
 **9.2 Recommender.**
 - Percentile, window, headroom, minimum and maximum, change threshold and a node-capacity cap, per container, CPU and memory separately.
+- Grilled 2026-10-21 (all recommended): CPU p95 + 15% and memory peak + 20%; recent usage counts more (24 h half-life, CPU only: a maximum can't decay); limits kept, conflicts flagged; 24 hours before a first Sizing. Added from review: CPU is never lowered while throttled over 10%, memory never after an OOM kill. Built 2026-10-21 (`aiops sizing show`). Moved out: the node-capacity cap goes to 9.3's per-policy maximum and Phase 15 (the read-only RBAC can't list nodes, and node series on a shared store without labels would cross Contracts); synthetic backfill waits for the seasonality work in Phase 14. The kind check against the lab's `api` waits for its first 24 hours (from 2026-10-22 00:18 UTC).
 - *Done when:* every rule has a test that fails when the rule is removed, and a 4x over-requested kind Workload gets a Sizing within headroom of its real p95.
 
 **9.3 Sizing policies.**

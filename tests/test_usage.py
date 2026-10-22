@@ -311,8 +311,8 @@ def test_cpu_samples_of_every_pod_are_pooled_not_summed(shape: list[float]) -> N
     cpu(fake, b, [v / 2 for v in shape])
     rows, unknown = run(fake)
     r = rows[("checkout", "app")]
-    assert sorted(r.cpu) == sorted(shape + [v / 2 for v in shape])
-    assert max(r.cpu) == max(shape)  # a per-replica peak, never a+b
+    assert sorted(v for _, v in r.cpu) == sorted(shape + [v / 2 for v in shape])
+    assert max(v for _, v in r.cpu) == max(shape)  # a per-replica peak, never a+b
     assert r.pods == {a, b} and r.workload == Workload("shop", "Deployment", "checkout")
     assert unknown == []
 
@@ -323,8 +323,8 @@ def test_memory_keeps_a_slow_leak_and_containers_stay_apart() -> None:
     mem(fake, p, LEAK)
     mem(fake, p, [5e6] * 6, container="sidecar")
     rows, _ = run(fake)
-    assert rows[("checkout", "app")].memory == LEAK
-    assert rows[("checkout", "sidecar")].memory == [5e6] * 6
+    assert [v for _, v in rows[("checkout", "app")].memory] == LEAK
+    assert [v for _, v in rows[("checkout", "sidecar")].memory] == [5e6] * 6
 
 
 def test_pause_and_pod_level_cadvisor_series_are_left_out() -> None:
@@ -550,7 +550,7 @@ def test_cluster_labels_keep_two_clusters_apart_on_one_store() -> None:
         cpu(fake, "p", [value] * 6, cluster=cluster)
     eu = Target("eu", "http://thanos", None, {"cluster": "prod-eu"}, ["shop"])
     rows, _ = run(fake, eu)
-    assert rows[("db", "app")].cpu == [0.2] * 6
+    assert [v for _, v in rows[("db", "app")].cpu] == [0.2] * 6
     assert all('cluster="prod-eu"' in q for q in fake.queries)
 
 
@@ -637,7 +637,7 @@ def test_sizing_usage_command(
     assert cli.main(["sizing", "usage", "--contract", "acme", "--window", "1d", "--json"]) == 0
     out, err = capsys.readouterr()
     (row,) = __import__("json").loads(out)
-    assert row["workload"] == "Deployment/checkout" and row["cpu_max"] == 0.9
+    assert row["workload"] == "test/shop/Deployment/checkout/app" and row["cpu_max"] == 0.9
     assert row["memory_max_mib"] == round(300e6 / 2**20, 1)
     assert "missing: kube_pod_container_resource_requests" in err
 
@@ -806,3 +806,38 @@ def test_load_refuses_contracts_that_would_mix_usage(
     mixed = "demo-bank/bank-kind and demo-shop/kind read the same Prometheus"
     with pytest.raises(contracts.ContractError, match=mixed):
         contracts.load(copy)
+
+
+def test_sizing_show_command(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A day of usage at 0.1 core and 80 MiB against 1 CPU and 1 GiB is lowered; a
+    pod with ten minutes of usage is still learning."""
+    from aiops_agent import cli
+
+    fake = FakePrometheus()
+    (old,) = deployment(fake, "api", pods=1)
+    (new,) = deployment(fake, "fresh", pods=1)
+    cpu(fake, old, [0.1] * 1441)
+    mem(fake, old, [80 * 2**20] * 1441)
+    cpu(fake, new, [0.1] * 10)
+    for p in (old, new):
+        for res, value in (("cpu", 1.0), ("memory", 2.0**30)):
+            fake.add(
+                "kube_pod_container_resource_requests",
+                value,
+                namespace="shop",
+                pod=p,
+                container="app",
+                resource=res,
+            )
+    data = make_contract().model_dump()
+    data["integrations"].append({"name": "prometheus", "url": "http://prometheus"})
+    monkeypatch.setattr(cli, "contract", lambda settings, cid: contracts.build(data))
+    monkeypatch.setattr(usage, "Prom", lambda t: _prom(fake, t))
+    assert cli.main(["sizing", "show", "--contract", "acme", "--window", "2d"]) == 0
+    out = capsys.readouterr().out
+    assert (
+        "test/shop/Deployment/api/app: cpu lower 1000m -> 115m, memory lower 1024Mi -> 96Mi" in out
+    )
+    assert "test/shop/Deployment/fresh/app: learning (0.1 h of 24 h)" in out

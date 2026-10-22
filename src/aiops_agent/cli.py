@@ -10,7 +10,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from aiops_agent import agent, contracts, embeddings, evals, usage
+from aiops_agent import agent, contracts, embeddings, evals, sizing, usage
 from aiops_agent.config import Settings, refuse_moved
 from aiops_agent.models import AlertGroup
 from aiops_agent.servers import vendors
@@ -100,9 +100,11 @@ def window_seconds(text: str) -> int:
     return int(m.group(1)) * {"m": 60, "h": 3600, "d": 86400}[m.group(2)]
 
 
-def sizing_usage(contract_id: str, window: str, as_json: bool) -> int:
-    """Every Workload container's usage over the window, per cluster, read-only: what
-    Sizings are computed from (slice 9.1). Missing metrics are named, never guessed."""
+def collect_usage(
+    contract_id: str, window: str
+) -> tuple[list[tuple[str, usage.ContainerUsage]], int]:
+    """Every cluster's container usage over the window, (cluster, usage) pairs, and an
+    exit status. Missing metrics and Workload-less pods are named on stderr."""
     from kubernetes import client as k
 
     from aiops_agent.servers import kubernetes
@@ -112,7 +114,7 @@ def sizing_usage(contract_id: str, window: str, as_json: bool) -> int:
     targets = usage.targets(c)
     if not targets:
         print(f"{c.id}: no cluster has a Prometheus (prometheus integration or prometheus_url)")
-        return 1
+        return [], 1
     for t in targets:
         cluster = next(cl for cl in c.clusters if cl.name == t.cluster)
 
@@ -137,35 +139,87 @@ def sizing_usage(contract_id: str, window: str, as_json: bool) -> int:
             print(f"{c.id}/{t.cluster}: Kubernetes API: {found.fallback_error}", file=sys.stderr)
         if found.unknown:
             print(f"{c.id}/{t.cluster}: no Workload for {len(found.unknown)} pods", file=sys.stderr)
-        for r in sorted(
+        rows = sorted(
             found.rows, key=lambda r: (r.workload.namespace, r.workload.name, r.container)
-        ):
-            out.append(
-                {
-                    "cluster": t.cluster,
-                    "namespace": r.workload.namespace,
-                    "workload": f"{r.workload.kind}/{r.workload.name}",
-                    "container": r.container,
-                    "pods": len(r.pods),
-                    "samples": len(r.cpu),
-                    "cpu_max": round(max(r.cpu), 4) if r.cpu else None,
-                    "memory_max_mib": round(max(r.memory) / 2**20, 1) if r.memory else None,
-                    "requests": r.requests,
-                    "limits": r.limits,
-                    "oom_killed_pods": r.oom_killed_pods,
-                    "throttled": None if r.throttled is None else round(r.throttled, 3),
-                }
-            )
+        )
+        out += [(t.cluster, r) for r in rows]
+    return out, status
+
+
+def _name(cluster: str, r: usage.ContainerUsage | sizing.Sizing) -> str:
+    w = r.workload
+    return f"{cluster}/{w.namespace}/{w.kind}/{w.name}/{r.container}"
+
+
+def sizing_usage(contract_id: str, window: str, as_json: bool) -> int:
+    """Every Workload container's usage over the window, per cluster, read-only: what
+    Sizings are computed from (slice 9.1). Missing metrics are named, never guessed."""
+    found, status = collect_usage(contract_id, window)
+    out = [
+        {
+            "workload": _name(cluster, r),
+            "pods": len(r.pods),
+            "samples": len(r.cpu),
+            "cpu_max": round(max(v for _, v in r.cpu), 4) if r.cpu else None,
+            "memory_max_mib": round(max(v for _, v in r.memory) / 2**20, 1) if r.memory else None,
+            "requests": r.requests,
+            "limits": r.limits,
+            "oom_killed_pods": r.oom_killed_pods,
+            "throttled": None if r.throttled is None else round(r.throttled, 3),
+        }
+        for cluster, r in found
+    ]
     if as_json:
         print(json.dumps(out, indent=2))
-    else:
-        for row in out:
-            print(
-                f"{row['cluster']}/{row['namespace']}/{row['workload']}/{row['container']}: "
-                f"{row['pods']} pods, {row['samples']} samples, cpu max {row['cpu_max']}, "
-                f"memory max {row['memory_max_mib']} MiB, requests {row['requests']}, "
-                f"OOM-killed pods {row['oom_killed_pods']}, throttled {row['throttled']}"
-            )
+    for row in [] if as_json else out:
+        print(
+            f"{row['workload']}: {row['pods']} pods, {row['samples']} samples, cpu max "
+            f"{row['cpu_max']}, memory max {row['memory_max_mib']} MiB, requests "
+            f"{row['requests']}, OOM-killed pods {row['oom_killed_pods']}, throttled "
+            f"{row['throttled']}"
+        )
+    return status
+
+
+def sizing_show(contract_id: str, window: str, as_json: bool) -> int:
+    """Every Workload container's Sizing (slice 9.2), read-only: nothing is applied."""
+    import time
+
+    found, status = collect_usage(contract_id, window)
+    now = time.time()
+    out = []
+    for cluster, u in found:
+        s = sizing.size(u, now)
+        row: dict[str, Any] = {
+            "workload": _name(cluster, s),
+            "state": s.state,
+            "history_h": round(s.history_s / 3600, 1),
+        }
+        for name, res in (("cpu", s.cpu), ("memory", s.memory)):
+            if res:
+                row[name] = {
+                    "action": res.action,
+                    "current": res.current,
+                    "target": res.target,
+                    "basis": res.basis,
+                }
+        row["risks"] = s.risks
+        out.append(row)
+    if as_json:
+        print(json.dumps(out, indent=2))
+        return status
+    for row in out:
+        if row["state"] == "learning":
+            print(f"{row['workload']}: learning ({row['history_h']} h of 24 h)")
+            continue
+        parts = []
+        for name, unit in (("cpu", "cpu"), ("memory", "memory")):
+            if name in row:
+                r = row[name]
+                now_s = "unset" if r["current"] is None else sizing.show(unit, r["current"])
+                parts.append(f"{name} {r['action']} {now_s} -> {sizing.show(unit, r['target'])}")
+        risks = f" | risk: {'; '.join(row['risks'])}" if row["risks"] else ""
+        print(f"{row['workload']}: {', '.join(parts)}{risks}")
     return status
 
 
@@ -275,10 +329,15 @@ def main(argv: list[str] | None = None) -> int:
     zu.add_argument("--contract", required=True, help="a Contract id in AIOPS_CONTRACTS_DIR")
     zu.add_argument("--window", default="7d", help="how far back: 90m, 6h, 7d (default 7d)")
     zu.add_argument("--json", action="store_true")
+    zs = zsub.add_parser("show", help="every Workload container's Sizing; nothing is applied")
+    zs.add_argument("--contract", required=True, help="a Contract id in AIOPS_CONTRACTS_DIR")
+    zs.add_argument("--window", default="7d", help="how far back: 90m, 6h, 7d (default 7d)")
+    zs.add_argument("--json", action="store_true")
 
     args = parser.parse_args(argv)
     if args.cmd == "sizing":
-        return sizing_usage(args.contract, args.window, args.json)
+        run = sizing_show if args.sizing_cmd == "show" else sizing_usage
+        return run(args.contract, args.window, args.json)
     if args.cmd == "incidents":
         return asyncio.run(embed_past(Settings()))
     if args.cmd == "integrations":

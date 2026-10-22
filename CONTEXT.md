@@ -146,7 +146,7 @@ Knowledge the Operator writes that holds no client data, such as general SRE les
 What a Sizing is for: a Deployment, StatefulSet, DaemonSet, CronJob, Job or Rollout (or a pod with no owner), found by following each pod's owners. Its pods' usage is pooled per container, never summed, so a Sizing is per replica whatever the replica count.
 
 **Sizing**:
-The CPU and memory requests (and limits) the Hub computes for one container of a Workload from its usage under a Sizing policy, with the waste or risk it removes. Read-only unless the Workload is under Automation.
+The CPU and memory requests the Hub computes for one container of a Workload from its usage under a Sizing policy, with the risks it can't fix (a limit too low, throttling or OOM kills hiding real demand). Limits are kept. A container with under a day of usage is still *learning* and has none. Read-only unless the Workload is under Automation.
 _Avoid_: Recommendation (that is advice for a human), rightsizing recommendation
 
 **Sizing policy**:
