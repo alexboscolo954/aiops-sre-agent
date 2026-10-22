@@ -67,9 +67,17 @@ class Cluster(Strict):
     # A kubeconfig credential plugin runs as a command on the Hub, next to every other
     # Contract's secrets. Refused unless set here, where review of the contracts repo sees it.
     allow_exec: bool = False
+    # Where this cluster's metrics are for Sizings: its own Prometheus (else the
+    # Contract's prometheus integration), and labels that pick its series out of a
+    # store shared by several clusters (Thanos, Mimir), added to every query.
+    prometheus_url: str | None = None
+    prometheus_token_secret: str | None = None
+    prometheus_labels: dict[Annotated[str, Field(pattern=r"^[a-zA-Z_][a-zA-Z0-9_]*$")], str] = {}
 
     @model_validator(mode="after")
     def _one_source(self) -> "Cluster":
+        if self.prometheus_token_secret and not self.prometheus_url:
+            raise ValueError("prometheus_token_secret needs prometheus_url")
         if (
             self.in_cluster
             + (self.kubeconfig_file is not None)
@@ -379,12 +387,37 @@ def load(directory: Path) -> dict[str, Contract]:
                 f"{directory}: {', '.join(ids)} share age recipient {recipient}; "
                 "each Contract needs its own key"
             )
+    problems += _shared_metrics(directory, contracts.values())
     problems += _client_data_in_shared(directory / SHARED, contracts.values())
     if not contracts and not problems:
         problems.append(f"{directory}: no */contract.yaml found")
     if problems:
         raise ContractError(problems)
     return contracts
+
+
+def _shared_metrics(directory: Path, loaded: Any) -> list[str]:
+    """Two clusters, in one Contract or two, reading the same Prometheus with the same
+    labels and a namespace in common would get each other's usage: Sizings scope by
+    namespace and labels only. prometheus_labels must tell them apart."""
+    seen: list[tuple[str, dict[str, str], set[str], str]] = []
+    problems = []
+    for c in loaded:
+        shared = next((i.url for i in c.integrations if isinstance(i, Prometheus)), None)
+        for cl in c.clusters:
+            url = cl.prometheus_url or shared
+            if not url:
+                continue
+            here = (url.rstrip("/"), cl.prometheus_labels, set(cl.namespaces), f"{c.id}/{cl.name}")
+            for other in seen:
+                if other[:2] == here[:2] and other[2] & here[2]:
+                    problems.append(
+                        f"{directory}: {other[3]} and {here[3]} read the same Prometheus with "
+                        f"the same labels and share namespaces {sorted(other[2] & here[2])}; "
+                        "set prometheus_labels (like {cluster: <name>}) to tell them apart"
+                    )
+            seen.append(here)
+    return problems
 
 
 def identifiers(c: Contract) -> dict[str, str]:
@@ -398,6 +431,9 @@ def identifiers(c: Contract) -> dict[str, str]:
         found[c.slack.operator_channel] = "operator channel"
         if c.slack.client_channel:
             found[c.slack.client_channel] = "client channel"
+    for cl in c.clusters:
+        if cl.prometheus_url:
+            found[_own_host(cl.prometheus_url)] = "Prometheus host"
     for i in c.integrations:
         if isinstance(i, Prometheus | Jira):
             found[_own_host(i.url)] = f"{i.name} host"

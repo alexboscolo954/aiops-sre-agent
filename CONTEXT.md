@@ -143,7 +143,7 @@ Knowledge the Operator writes that holds no client data, such as general SRE les
 ### Optimization (planned, Phase 9+)
 
 **Workload**:
-What a Sizing is for: a Deployment, StatefulSet, DaemonSet, Job, CronJob or Rollout, found by following each pod's owners. Usage is summed over a Workload's pods, so a change in replicas doesn't skew it.
+What a Sizing is for: a Deployment, StatefulSet, DaemonSet, CronJob, Job or Rollout (or a pod with no owner), found by following each pod's owners. Its pods' usage is pooled per container, never summed, so a Sizing is per replica whatever the replica count.
 
 **Sizing**:
 The CPU and memory requests (and limits) the Hub computes for one container of a Workload from its usage under a Sizing policy, with the waste or risk it removes. Read-only unless the Workload is under Automation.

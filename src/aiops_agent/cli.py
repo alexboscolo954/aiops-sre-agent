@@ -1,15 +1,16 @@
 """Command line: `aiops triage`, `aiops serve`, `aiops mcp`, `aiops eval`, `aiops contracts`,
-`aiops integrations`, `aiops incidents`."""
+`aiops integrations`, `aiops incidents`, `aiops sizing`."""
 
 import argparse
 import asyncio
 import json
+import re
 import sys
 import uuid
 from pathlib import Path
 from typing import Any
 
-from aiops_agent import agent, contracts, embeddings, evals
+from aiops_agent import agent, contracts, embeddings, evals, usage
 from aiops_agent.config import Settings, refuse_moved
 from aiops_agent.models import AlertGroup
 from aiops_agent.servers import vendors
@@ -89,6 +90,83 @@ def validate_contracts(directory: Path) -> int:
             f"secrets {secrets}"
         )
     return 0
+
+
+def window_seconds(text: str) -> int:
+    """`90m`, `6h`, `7d` in seconds."""
+    m = re.fullmatch(r"([1-9][0-9]*)([mhd])", text)
+    if not m:
+        raise SystemExit(f"window {text!r}: use a number and m, h or d, like 6h or 7d")
+    return int(m.group(1)) * {"m": 60, "h": 3600, "d": 86400}[m.group(2)]
+
+
+def sizing_usage(contract_id: str, window: str, as_json: bool) -> int:
+    """Every Workload container's usage over the window, per cluster, read-only: what
+    Sizings are computed from (slice 9.1). Missing metrics are named, never guessed."""
+    from kubernetes import client as k
+
+    from aiops_agent.servers import kubernetes
+
+    c = contract(Settings(), contract_id)
+    seconds, status, out = window_seconds(window), 0, []
+    targets = usage.targets(c)
+    if not targets:
+        print(f"{c.id}: no cluster has a Prometheus (prometheus integration or prometheus_url)")
+        return 1
+    for t in targets:
+        cluster = next(cl for cl in c.clusters if cl.name == t.cluster)
+
+        def from_api(cl: contracts.Cluster = cluster, t: usage.Target = t) -> Any:
+            api = kubernetes.api_client(cl, c)
+            return usage.owners_from_api(
+                k.CoreV1Api(api), k.AppsV1Api(api), k.BatchV1Api(api), t.namespaces
+            )
+
+        prom = usage.Prom(t)
+        try:
+            t, missing = usage.check(prom, t)
+            found = usage.usage(prom, t, seconds, fallback=from_api)
+        except usage.UsageError as e:
+            print(f"{c.id}/{t.cluster}: {e}", file=sys.stderr)
+            status = 1
+            continue
+        for metric, what in missing.items():
+            level = "missing" if metric in usage.REQUIRED else "optional, missing"
+            print(f"{c.id}/{t.cluster}: {level}: {metric} ({what})", file=sys.stderr)
+        if found.fallback_error:
+            print(f"{c.id}/{t.cluster}: Kubernetes API: {found.fallback_error}", file=sys.stderr)
+        if found.unknown:
+            print(f"{c.id}/{t.cluster}: no Workload for {len(found.unknown)} pods", file=sys.stderr)
+        for r in sorted(
+            found.rows, key=lambda r: (r.workload.namespace, r.workload.name, r.container)
+        ):
+            out.append(
+                {
+                    "cluster": t.cluster,
+                    "namespace": r.workload.namespace,
+                    "workload": f"{r.workload.kind}/{r.workload.name}",
+                    "container": r.container,
+                    "pods": len(r.pods),
+                    "samples": len(r.cpu),
+                    "cpu_max": round(max(r.cpu), 4) if r.cpu else None,
+                    "memory_max_mib": round(max(r.memory) / 2**20, 1) if r.memory else None,
+                    "requests": r.requests,
+                    "limits": r.limits,
+                    "oom_killed_pods": r.oom_killed_pods,
+                    "throttled": None if r.throttled is None else round(r.throttled, 3),
+                }
+            )
+    if as_json:
+        print(json.dumps(out, indent=2))
+    else:
+        for row in out:
+            print(
+                f"{row['cluster']}/{row['namespace']}/{row['workload']}/{row['container']}: "
+                f"{row['pods']} pods, {row['samples']} samples, cpu max {row['cpu_max']}, "
+                f"memory max {row['memory_max_mib']} MiB, requests {row['requests']}, "
+                f"OOM-killed pods {row['oom_killed_pods']}, throttled {row['throttled']}"
+            )
+    return status
 
 
 def snapshot(vendor: str, check: bool, out: str | None = None) -> int:
@@ -191,7 +269,16 @@ def main(argv: list[str] | None = None) -> int:
     nsub = n.add_subparsers(dest="incidents_cmd", required=True)
     nsub.add_parser("embed", help="embed past Reports for search by meaning (once, after setup)")
 
+    z = sub.add_parser("sizing", help="Workload usage and Sizings, read-only")
+    zsub = z.add_subparsers(dest="sizing_cmd", required=True)
+    zu = zsub.add_parser("usage", help="every Workload container's usage, from Prometheus")
+    zu.add_argument("--contract", required=True, help="a Contract id in AIOPS_CONTRACTS_DIR")
+    zu.add_argument("--window", default="7d", help="how far back: 90m, 6h, 7d (default 7d)")
+    zu.add_argument("--json", action="store_true")
+
     args = parser.parse_args(argv)
+    if args.cmd == "sizing":
+        return sizing_usage(args.contract, args.window, args.json)
     if args.cmd == "incidents":
         return asyncio.run(embed_past(Settings()))
     if args.cmd == "integrations":
