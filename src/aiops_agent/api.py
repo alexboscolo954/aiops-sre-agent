@@ -47,6 +47,7 @@ from aiops_agent import (
     related,
     sizing,
     teachings,
+    usage,
     webapp,
 )
 from aiops_agent.config import Settings
@@ -208,10 +209,11 @@ def create_app(
             await db["checkpointer"].setup()
             await recover()
             await sync_checks()
+            await sync_digests()
             spawn(scheduler())
             app.state.due_checks = due_checks  # for tests: one tick at a given time
             app.state.poll_deploys, app.state.due_deploys = poll_deploys, due_deploys
-            app.state.due_sizings = due_sizings
+            app.state.due_sizings, app.state.due_digests = due_sizings, due_digests
             if settings.slack_app_token:
                 spawn(db["slack"].listen(settings.slack_app_token, on_socket))
             try:
@@ -1098,6 +1100,47 @@ def create_app(
                 log.exception("Sizings %s failed", c.id)
         return done
 
+    def digested() -> dict[str, tuple[contracts.Contract, contracts.Digest]]:
+        """The Contracts that get a weekly digest: Slack, a Prometheus and a bot token."""
+        return {
+            c.id: (c, c.sizing.digest)
+            for c in by_id.values()
+            if c.slack
+            and settings.slack_bot_token
+            and isinstance(c.sizing.digest, contracts.Digest)
+            and usage.targets(c)
+        }
+
+    async def sync_digests() -> None:
+        at = now()
+        await store().sync_digests(
+            {
+                cid: (f"{d.schedule} {d.timezone}", checks.next_due(d.schedule, d.timezone, at))
+                for cid, (_, d) in digested().items()
+            }
+        )
+
+    async def due_digests(at: float | None = None) -> list[str]:
+        """Post every due digest once, to its operator channel only; the Contracts
+        posted. Claimed before posting: a post that fails is lost for that week, never
+        sent twice."""
+        at = now() if at is None else at
+        posted = []
+        for cid, (c, d) in digested().items():
+            try:
+                following = checks.next_due(d.schedule, d.timezone, at)
+                if not await store().claim_digest(cid, at, following):
+                    continue
+                assert c.slack is not None
+                text = await sizing.digest(store(), c, at, settings.console_url)
+                ts = await db["slack"].post(c.slack.operator_channel, text)
+                log.info("sizing digest %s: %s", cid, "posted" if ts else "not posted")
+                if ts:
+                    posted.append(cid)
+            except Exception:
+                log.exception("sizing digest %s failed", cid)
+        return posted
+
     sizing_task: list[asyncio.Task[Any]] = []
 
     async def scheduler() -> None:
@@ -1108,6 +1151,7 @@ def create_app(
                 sizing_task[:] = [asyncio.create_task(due_sizings())]
             try:
                 await due_checks()
+                await due_digests()
                 if time.monotonic() - polled >= deploys.POLL_SECONDS:
                     polled = time.monotonic()
                     await poll_deploys()

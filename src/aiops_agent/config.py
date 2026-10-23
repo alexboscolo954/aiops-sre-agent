@@ -75,6 +75,9 @@ class Settings(BaseSettings):
     # Only behind `tailscale serve`: anything else reaching the port could send the
     # identity header itself (console.py).
     console_operators: set[str] = set()
+    # The console's address (the `tailscale serve` URL): the weekly digest links its
+    # Workloads page. Unset: no link.
+    console_url: str | None = None
 
     @model_validator(mode="after")
     def _embeddings_need_a_gateway(self) -> "Settings":

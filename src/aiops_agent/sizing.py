@@ -17,17 +17,20 @@ policy (contracts.py; the numbers below are `production`'s):
 - Under 24 hours of history a container is still learning and gets no Sizing.
 
 Each risk has a kind, for counting and ranking (slice 9.4). Waste is the request
-above the Sizing, times the average pods over the container's history.
+above the Sizing, times the average pods over the container's history. Each week the
+Operator gets a digest of it (slice 9.5b).
 """
 
 import asyncio
 import bisect
 import math
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 from aiops_agent import usage
 from aiops_agent.contracts import BUILTIN, Contract, Policy
+from aiops_agent.slack import clean
 from aiops_agent.usage import ContainerUsage, Workload
 
 if TYPE_CHECKING:
@@ -328,3 +331,78 @@ async def store_run(
     await store.finish_sizing_run(run_id, c.id, found.clusters, rows(c, found.by_window, at))
     await store.prune_sizings(c.id, at)
     return found
+
+
+WEEK = 7 * 86400.0
+TOP = 5  # Workloads named in the digest
+
+
+def utc(at: float | None) -> str:
+    return "never" if at is None else datetime.fromtimestamp(at, UTC).strftime("%Y-%m-%d %H:%M UTC")
+
+
+def _kinds(report: dict[str, Any]) -> dict[str, set[str]]:
+    return {w["workload"]: {r["kind"] for r in w["risks"]} for w in report["workloads"]}
+
+
+def digest_text(
+    contract_id: str, now: dict[str, Any], week: dict[str, Any], link: str | None = None
+) -> str:
+    """The weekly digest (Slack mrkdwn) from report() now and as of a week ago: total
+    waste and its change, the top Workloads by waste, risk kinds a Workload didn't have
+    a week ago, stale clusters, the containers still learning, then the link."""
+    total = now["total"]
+    lines = [f"*Weekly Sizing digest: {contract_id}*"]
+    if not now["clusters"]:
+        lines.append("No Sizings stored yet.")
+    else:
+        waste = f"Waste: {total['cpu']:.2f} cores, {total['memory'] / 2**30:.2f} GiB"
+        compared = any(st["at"] is not None for st in week["clusters"].values())
+        if compared:
+            then = week["total"]
+            waste += (
+                f" ({total['cpu'] - then['cpu']:+.2f} cores, "
+                f"{(total['memory'] - then['memory']) / 2**30:+.2f} GiB vs 7 days ago)"
+            )
+        else:
+            waste += " (no Sizings from 7 days ago to compare)"
+        lines.append(waste)
+        top = [w for w in now["workloads"] if rank(w) > 0][:TOP]
+        if top:
+            lines.append("*Top Workloads by waste*")
+            lines += [
+                f"{i}. `{w['workload']}`: {w['waste']['cpu']:.2f} cores, "
+                f"{w['waste']['memory'] / 2**30:.2f} GiB"
+                for i, w in enumerate(top, 1)
+            ]
+        before = _kinds(week)
+        new = {
+            name: sorted(kinds - before.get(name, set()) if compared else kinds)
+            for name, kinds in _kinds(now).items()
+        }
+        risky = [f"• `{name}`: {', '.join(k)}" for name, k in new.items() if k]
+        if risky:
+            lines.append("*New risks since last week*" if compared else "*Risks*")
+            lines += risky
+        stale = [
+            f"• {cluster}: stale since {utc(st['since'])}: {st['error']}"
+            if st["error"]
+            else f"• {cluster}: never read"
+            for cluster, st in sorted(now["clusters"].items())
+            if st["error"] or st["at"] is None
+        ]
+        if stale:
+            lines += ["*Stale clusters*", *stale]
+        if now["learning"]:
+            lines.append(f"Containers still learning: {len(now['learning'])}.")
+    text = clean("\n".join(lines))
+    return f"{text}\n<{link}|Open the Workloads page>" if link else text
+
+
+async def digest(store: "Store", c: Contract, at: float, console_url: str | None) -> str:
+    """The Contract's digest as of `at`, from its stored Sizings (as `sizing waste`)."""
+    clusters = {t.cluster for t in usage.targets(c)}
+    now = report(*await store.latest_sizings(c.id, clusters, before=at))
+    week = report(*await store.latest_sizings(c.id, clusters, before=at - WEEK))
+    link = f"{console_url.rstrip('/')}/app/?contract={c.id}" if console_url else None
+    return digest_text(c.id, now, week, link)

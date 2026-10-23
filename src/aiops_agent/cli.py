@@ -9,10 +9,13 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+import httpx
+
 from aiops_agent import agent, contracts, embeddings, evals, sizing, usage
 from aiops_agent.config import Settings, refuse_moved
 from aiops_agent.models import AlertGroup
 from aiops_agent.servers import vendors
+from aiops_agent.slack import Slack
 from aiops_agent.store import Store, connect
 
 
@@ -211,10 +214,7 @@ async def sizing_refresh(contract_id: str) -> int:
     return 1 if any(found.clusters.values()) else 0
 
 
-def _utc(at: float | None) -> str:
-    from datetime import UTC, datetime
-
-    return "never" if at is None else datetime.fromtimestamp(at, UTC).strftime("%Y-%m-%d %H:%M UTC")
+_utc = sizing.utc
 
 
 async def sizing_waste(contract_id: str, as_json: bool) -> int:
@@ -262,6 +262,29 @@ async def sizing_waste(contract_id: str, as_json: bool) -> int:
         print(f"learning: {', '.join(learning)}")
     if out["excluded"]:
         print(f"excluded: {', '.join(r['workload'] for r in out['excluded'])}")
+    return 0
+
+
+async def sizing_digest(contract_id: str, post: bool) -> int:
+    """The weekly Sizing digest (slice 9.5b) now; with post, also to the operator
+    channel. The Hub's schedule is left as it is."""
+    import time
+
+    settings = Settings()
+    c = contract(settings, contract_id)
+    if post and not (c.slack and settings.slack_bot_token):
+        raise SystemExit("--post needs AIOPS_SLACK_BOT_TOKEN and the Contract's slack:")
+    async with connect(_store_url(settings)) as pool:
+        store = Store(pool)
+        await store.migrate()
+        text = await sizing.digest(store, c, time.time(), settings.console_url)
+    print(text)
+    if post:
+        assert c.slack is not None
+        async with httpx.AsyncClient() as http:
+            ts = await Slack(settings.slack_bot_token, http).post(c.slack.operator_channel, text)
+        print(f"posted: {ts}" if ts else "not posted (see the log)", file=sys.stderr)
+        return 0 if ts else 1
     return 0
 
 
@@ -379,6 +402,9 @@ def main(argv: list[str] | None = None) -> int:
     zw = zsub.add_parser("waste", help="Workloads ranked by waste, with risks, as stored")
     zw.add_argument("--contract", required=True, help="a Contract id in AIOPS_CONTRACTS_DIR")
     zw.add_argument("--json", action="store_true")
+    zd = zsub.add_parser("digest", help="the weekly Sizing digest, now")
+    zd.add_argument("--contract", required=True, help="a Contract id in AIOPS_CONTRACTS_DIR")
+    zd.add_argument("--post", action="store_true", help="also post it to the operator channel")
 
     args = parser.parse_args(argv)
     if args.cmd == "sizing":
@@ -388,6 +414,8 @@ def main(argv: list[str] | None = None) -> int:
             return asyncio.run(sizing_refresh(args.contract))
         if args.sizing_cmd == "waste":
             return asyncio.run(sizing_waste(args.contract, args.json))
+        if args.sizing_cmd == "digest":
+            return asyncio.run(sizing_digest(args.contract, args.post))
         return sizing_usage(args.contract, args.window, args.json)
     if args.cmd == "incidents":
         return asyncio.run(embed_past(Settings()))

@@ -398,6 +398,18 @@ class SizingRule(Strict):
         )
 
 
+class Digest(Strict):
+    """The weekly Sizing digest's time: 5-field cron in `timezone` (slice 9.5b)."""
+
+    schedule: str = "0 9 * * 1"  # Monday 09:00
+    timezone: str = "UTC"
+
+    @model_validator(mode="after")
+    def _schedule(self) -> "Digest":
+        checks.validate(self.schedule, self.timezone)
+        return self
+
+
 class SizingConfig(Strict):
     """Sizing policies: your own, each a built-in (`base:`) with changes, and the
     rules that pick one per container. The rules first, top to bottom, then a Job or
@@ -407,6 +419,8 @@ class SizingConfig(Strict):
     default: PolicyName = "production"
     policies: dict[Slug, Policy] = {}
     rules: list[SizingRule] = []
+    # To the operator channel only, when the Contract has one and a Prometheus.
+    digest: Annotated[Digest | Literal["off"], BeforeValidator(_off)] = Digest()
 
     @model_validator(mode="before")
     @classmethod

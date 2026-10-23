@@ -513,3 +513,35 @@ def test_each_contract_sizes_with_its_own_policies(two_contracts: Contracts) -> 
     assert (bank_lean.cpu.headroom, bank_lean.window) == (0.30, 14 * 86400)
     assert shop.policy_for("kind", "lab", "DaemonSet", "agent", "agent") == "lean-agent"
     assert bank.policy_for("kind", "lab", "DaemonSet", "agent", "agent") == "production"
+
+
+@pytest.mark.anyio
+async def test_a_digest_shows_only_its_own_contracts_workloads(
+    two_contracts: Contracts, database_url: str
+) -> None:
+    """Both demo Contracts store Sizings for a Workload of the same name: each one's
+    digest names only its own cluster's, and its schedule claim is its own."""
+    from aiops_agent import sizing
+    from aiops_agent.store import Store, connect
+    from tests.test_sizing_store import NOW, container, rows_of
+
+    async with connect(database_url) as pool:
+        store = Store(pool)
+        await store.migrate()
+        for cid, c in two_contracts.items():
+            run = await store.claim_sizing_run(cid, NOW, 0)
+            assert run is not None
+            cluster = c.clusters[0].name
+            rows = [
+                {**r, "cluster": cluster, "workload": f"{cluster}/{r['workload'].split('/', 1)[1]}"}
+                for r in rows_of(container(pods=1))
+            ]
+            await store.finish_sizing_run(run, cid, {cluster: None}, rows)
+        await store.sync_digests({cid: ("key", NOW) for cid in two_contracts})
+        assert await store.claim_digest("demo-shop", NOW, NOW + 1)
+        assert await store.claim_digest("demo-bank", NOW, NOW + 1)  # not taken by shop's
+        for cid, c in two_contracts.items():
+            text = await sizing.digest(store, c, NOW, None)
+            own, other = ("kind", "bank-kind") if cid == "demo-shop" else ("bank-kind", "kind")
+            assert f"`{own}/shop/Deployment/api`" in text
+            assert f"`{other}/" not in text

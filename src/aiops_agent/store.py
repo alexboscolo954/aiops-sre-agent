@@ -472,15 +472,16 @@ class Store:
         )
 
     async def latest_sizings(
-        self, contract_id: str, clusters: set[str]
+        self, contract_id: str, clusters: set[str], before: float | None = None
     ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
         """Each of `clusters`' rows (the Contract's clusters now: one removed from it is
         gone) from its latest run that read it, and per cluster `at` (that run's time,
         None if never read) and `error` with `since` when the runs after it failed: one
-        failing cluster never blanks another."""
+        failing cluster never blanks another. before: as of then (runs at or before it)."""
         runs = await self._all(
-            "select id, at, clusters from sizing_runs where contract_id = %s order by id desc",
-            (contract_id,),
+            "select id, at, clusters from sizing_runs where contract_id = %s "
+            "and (%s::float8 is null or at <= %s) order by id desc",
+            (contract_id, before, before),
         )
         status: dict[str, dict[str, Any]] = {}
         good: dict[str, int] = {}
@@ -518,6 +519,30 @@ class Store:
             (contract_id, contract_id, *workload, since),
         )
         return [(r["at"], r["row"]) for r in rows]
+
+    async def sync_digests(self, due: dict[str, tuple[str, float]]) -> None:
+        """due: Contract id -> (schedule key, its next fire time), for every Contract
+        that gets a digest; the others' rows go, so turning one back on starts anew."""
+        await self._exec("delete from sizing_digests where not contract_id = any(%s)", (list(due),))
+        for contract_id, (key, next_due) in due.items():
+            await self._exec(
+                "insert into sizing_digests (contract_id, schedule, next_due) "
+                "values (%s, %s, %s) on conflict (contract_id) do update set "
+                "schedule = excluded.schedule, next_due = case when "
+                "sizing_digests.schedule = excluded.schedule then sizing_digests.next_due "
+                "else excluded.next_due end",
+                (contract_id, key, next_due),
+            )
+
+    async def claim_digest(self, contract_id: str, at: float, next_due: float) -> bool:
+        """True once per due time: its next due time moves to `next_due` (computed from
+        now, so missed fire times post once) in the same statement that finds it due."""
+        row = await self._one(
+            "update sizing_digests set next_due = %s, last_at = %s "
+            "where contract_id = %s and next_due <= %s returning contract_id",
+            (next_due, at, contract_id, at),
+        )
+        return row is not None
 
     async def sync_checks(self, contract_id: str, due: dict[str, tuple[str, float]]) -> None:
         """due: name -> (schedule key, its next fire time). A new Check, or one whose
