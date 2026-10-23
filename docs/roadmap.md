@@ -424,4 +424,4 @@ Touches nothing in client clusters. Sizings come from each Direct Contract's Pro
 
 ## Next
 
-Phases 0 to 8 are done except 3 (Relay) and 6.4 (Masking). On 2026-10-21 the Operator chose to grow the Hub into a resource optimizer as well (Phases 9 to 19, ADR 0004). 9.1 to 9.4 are built and checked on kind; next is a release so the Hub stores Sizings hourly, then 9.5, grilled before it is built.
+Phases 0 to 8 are done except 3 (Relay) and 6.4 (Masking). On 2026-10-21 the Operator chose to grow the Hub into a resource optimizer as well (Phases 9 to 19, ADR 0004). 9.1 to 9.4 are built and checked on kind, and v0.3.0 (2026-10-23) stores Sizings hourly on the Mac Hub; next is 9.5, grilled before it is built.
