@@ -30,6 +30,12 @@ def _database(settings: Settings, database_url: str) -> None:
     settings.database_url = SecretStr(database_url)
 
 
+def offline(request: httpx.Request) -> httpx.Response:
+    """Slack's Web API for a test without a fake: unreachable, never the real one (two
+    teachings tests asked slack.com for a socket and hung CI on its DNS, 2026-10-23)."""
+    raise httpx.ConnectError(f"offline in tests: {request.url}")
+
+
 def client(
     settings: Settings,
     fake_cluster: Any,
@@ -43,7 +49,7 @@ def client(
 ) -> TestClient:
     """Contract "acme" (token hook-token) on fake_cluster, plus `more`: id -> (Contract,
     its own fake cluster). The model is shared, so its steps run in alert order.
-    slack: an httpx transport standing in for Slack's Web API."""
+    slack: an httpx transport standing in for Slack's Web API (default: offline)."""
     settings.approver_token = SecretStr("approver-token")
     first = make_contract(
         enable_actions=actions,
@@ -64,7 +70,7 @@ def client(
         return agent.integration_server(c, k8s, settings, {cl.name: fake for cl in c.clusters})[0]
 
     by_id = {cid: c for cid, (c, _) in clusters.items()}
-    http = httpx.AsyncClient(transport=slack) if slack else None
+    http = httpx.AsyncClient(transport=slack or httpx.MockTransport(offline))
     return TestClient(create_app(settings, scripted(*steps), mcp, by_id, http, changes))
 
 
