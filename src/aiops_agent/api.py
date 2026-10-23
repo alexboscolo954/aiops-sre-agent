@@ -37,7 +37,17 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel
 
-from aiops_agent import agent, checks, console, contracts, deploys, embeddings, related, teachings
+from aiops_agent import (
+    agent,
+    checks,
+    console,
+    contracts,
+    deploys,
+    embeddings,
+    related,
+    sizing,
+    teachings,
+)
 from aiops_agent.config import Settings
 from aiops_agent.contracts import Jira, Kubernetes
 from aiops_agent.models import AlertGroup, GrafanaAlertGroup, Investigation
@@ -200,14 +210,15 @@ def create_app(
             spawn(scheduler())
             app.state.due_checks = due_checks  # for tests: one tick at a given time
             app.state.poll_deploys, app.state.due_deploys = poll_deploys, due_deploys
+            app.state.due_sizings = due_sizings
             if settings.slack_app_token:
                 spawn(db["slack"].listen(settings.slack_app_token, on_socket))
             try:
                 yield
             finally:
-                for task in tasks:
+                for task in [*tasks, *sizing_task]:
                     task.cancel()
-                await asyncio.gather(*tasks, return_exceptions=True)
+                await asyncio.gather(*tasks, *sizing_task, return_exceptions=True)
 
     app = FastAPI(title="aiops-sre-agent", lifespan=lifespan)
     bearer = HTTPBearer()
@@ -1073,10 +1084,27 @@ def create_app(
                 started.append(t.id)
         return started
 
+    async def due_sizings(at: float | None = None) -> list[str]:
+        """Store every due Contract's hourly Sizing run; the Contracts run. One
+        Contract's failure never stops the others."""
+        at = now() if at is None else at
+        done = []
+        for c in by_id.values():
+            try:
+                if await sizing.store_run(store(), c, at) is not None:
+                    done.append(c.id)
+            except Exception:
+                log.exception("Sizings %s failed", c.id)
+        return done
+
+    sizing_task: list[asyncio.Task[Any]] = []
+
     async def scheduler() -> None:
         polled = 0.0
         while True:
             await asyncio.sleep(CHECK_TICK)
+            if not sizing_task or sizing_task[0].done():  # a slow Prometheus never overlaps
+                sizing_task[:] = [asyncio.create_task(due_sizings())]
             try:
                 await due_checks()
                 if time.monotonic() - polled >= deploys.POLL_SECONDS:

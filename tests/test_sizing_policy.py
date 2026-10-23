@@ -10,6 +10,7 @@ from pydantic import ValidationError
 
 from aiops_agent import cli, contracts, sizing, usage
 from aiops_agent.contracts import BUILTIN, Policy, SizingConfig
+from aiops_agent.sizing import Risk
 from aiops_agent.usage import ContainerUsage, Workload
 from tests.conftest import make_contract
 from tests.fake_prometheus import FakePrometheus
@@ -334,8 +335,11 @@ def test_the_max_caps_the_sizing_and_says_so() -> None:
     s = sizing.size(use([3.0] * 2, [2 * 2**30] * 2), NOW, p)
     assert s.cpu and s.cpu.target == 2.0 and s.cpu.action == "lower"
     assert s.memory and s.memory.target == 2**30
-    assert "cpu capped at 2000m by the policy: it needs 3450m" in s.risks
-    assert "memory capped at 1024Mi by the policy: it needs 2458Mi" in s.risks
+    assert Risk("capped_by_policy", "cpu capped at 2000m by the policy: it needs 3450m") in s.risks
+    assert (
+        Risk("capped_by_policy", "memory capped at 1024Mi by the policy: it needs 2458Mi")
+        in s.risks
+    )
 
 
 def test_under_the_max_nothing_is_capped() -> None:
@@ -347,8 +351,8 @@ def test_the_limit_still_wins_below_the_max() -> None:
     u = use([3.0] * 2, limits={"cpu": 1.5})
     s = sizing.size(u, NOW, custom(cpu={"max": "2"}))
     assert s.cpu and s.cpu.target == 1.5
-    assert any(r.startswith("cpu capped at 2000m") for r in s.risks)
-    assert "cpu limit 1500m is below the 2000m it needs" in s.risks
+    assert any(r.text.startswith("cpu capped at 2000m") for r in s.risks)
+    assert Risk("limit_below_need", "cpu limit 1500m is below the 2000m it needs") in s.risks
 
 
 # --- aiops sizing show ---------------------------------------------------------------
@@ -501,11 +505,13 @@ def test_show_json_names_the_policy(
     by = {r["workload"].split("/")[3]: r for r in rows}
     assert by["api"]["policy"] == "production" and by["api"]["window_h"] == 168
     assert by["report"]["policy"] == "batch" and by["report"]["needs_h"] == 24
-    assert by["idle"] == {
-        "workload": "test/shop/Deployment/idle/app",
-        "policy": "off",
-        "state": "excluded",
-    }
+    idle = by["idle"]
+    assert (idle["workload"], idle["policy"], idle["state"]) == (
+        "test/shop/Deployment/idle/app",
+        "off",
+        "excluded",
+    )
+    assert "cpu" not in idle and "waste" not in idle
 
 
 def test_show_queries_only_the_windows_the_rules_can_reach(

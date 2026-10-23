@@ -346,7 +346,8 @@ Touches nothing in client clusters. Sizings come from each Direct Contract's Pro
 - *Done when:* every setting, rule and bound has a test that fails when it is removed, and on the lab `report` is batch with no rule, `db` high-availability and `agent` a Contract's own policy through rules, `idle` excluded and the rest production (checked 2026-10-22, all still learning).
 
 **9.4 Waste and risk.**
-- Per Workload: waste (requests above use) and risk (OOM kills, throttling, requests below use), stored as aggregates in Postgres per Contract.
+- Per Workload: waste (requests above the Sizing) and risk (OOM kills, throttling, requests below the Sizing), stored in Postgres per Contract.
+- Grilled 2026-10-22 (all recommended): a row per container per run (policy, state, current and Sizing, average pods, waste, risks), learning and excluded included; the Hub's scheduler runs each Contract with a Prometheus hourly, plus `aiops sizing refresh`; waste is the request above the Sizing times the average pods; risks are `{kind, text}` (oom_killed, throttled, under_requested, limit_below_need, capped_by_policy, request_unset); kept hourly 14 days, then the last of each day for 400; per-cluster status, so a failed cluster stays at its last good run; `aiops sizing waste` ranks Workloads (a core weighs 4 GiB until Phase 10's prices). Built 2026-10-22. Changed from the grilling: a run is due when the Contract's last run started an hour ago, read from the runs table instead of a `next_due` row; average pods counts only the steps the cluster has any sample on, because the lab's Prometheus misses scrapes while the Mac sleeps (found on the lab check, where `api` averaged 2.5 of its 3 pods). Checked on kind 2026-10-23 01:12 UTC into a scratch `aiops_lab` database: `api` tops the list at 2.63 cores and 2.70 GiB over 3 pods; `leaky` oom_killed, `throttled` throttled, `db` learning, `idle` excluded. Open: pods are counted from CPU samples, and `rate` over 5 minutes keeps a series about 5 minutes past its pod's end, so a short Job reads high: `report` (a minute of work every 10 minutes, about 0.1 to 0.15 pods reserved) averages 0.6, 4 to 6 times too much, and ranks second on waste; `leaky` reads 1.1 around its restarts.
 - *Done when:* the isolation test proves Contract A's Sizings never appear for B.
 
 **9.5 Console app and Slack.**
@@ -423,4 +424,4 @@ Touches nothing in client clusters. Sizings come from each Direct Contract's Pro
 
 ## Next
 
-Phases 0 to 8 are done except 3 (Relay) and 6.4 (Masking). On 2026-10-21 the Operator chose to grow the Hub into a resource optimizer as well (Phases 9 to 19, ADR 0004). 9.1 to 9.3 are built and 9.2 is checked on kind; next is 9.4, grilled before it is built.
+Phases 0 to 8 are done except 3 (Relay) and 6.4 (Masking). On 2026-10-21 the Operator chose to grow the Hub into a resource optimizer as well (Phases 9 to 19, ADR 0004). 9.1 to 9.4 are built and checked on kind; next is a release so the Hub stores Sizings hourly, then 9.5, grilled before it is built.

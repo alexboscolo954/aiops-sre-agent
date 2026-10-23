@@ -26,6 +26,9 @@ from aiops_agent.models import AlertGroup, Investigation
 Pool = AsyncConnectionPool[AsyncConnection[DictRow]]
 MIGRATIONS = Path(__file__).parent / "migrations"
 MIGRATION_LOCK = 4_242_001  # pg_advisory_xact_lock key: one Hub migrates at a time
+SIZING_LOCK = 4_242_002  # with the Contract's hash: one Sizing run claimed at a time
+HOURLY_FOR = 14 * 86400  # Sizing runs kept hourly this long, then the last of each day
+DAILY_FOR = 400 * 86400  # and those this long
 COLUMNS = (
     "id, kind, contract_id, title, group_key, group_resolved, status, started, report, "
     "pending, executed_actions, error, deadline, slack_channel, slack_ts, client_sent_at, "
@@ -405,6 +408,116 @@ class Store:
             (investigation_id,),
         )
         return row or {"input_tokens": 0, "output_tokens": 0, "cost_usd": None}
+
+    async def claim_sizing_run(self, contract_id: str, at: float, every: float) -> int | None:
+        """A new Sizing run's id, or None when one started less than `every` seconds
+        before `at`: an hourly run fires once however many ticks or restarts."""
+        async with self.pool.connection() as conn, conn.transaction():
+            await conn.execute(
+                "select pg_advisory_xact_lock(%s, hashtext(%s))", (SIZING_LOCK, contract_id)
+            )
+            recent = await (
+                await conn.execute(
+                    "select 1 from sizing_runs where contract_id = %s and at > %s",
+                    (contract_id, at - every),
+                )
+            ).fetchone()
+            if recent:
+                return None
+            row = await (
+                await conn.execute(
+                    "insert into sizing_runs (contract_id, at) values (%s, %s) returning id",
+                    (contract_id, at),
+                )
+            ).fetchone()
+            assert row is not None
+            return int(row["id"])
+
+    async def finish_sizing_run(
+        self,
+        run_id: int,
+        contract_id: str,
+        clusters: dict[str, str | None],
+        rows: list[dict[str, Any]],
+    ) -> None:
+        """Store a run's rows (sizing.rows()) and each cluster's status, together."""
+        async with self.pool.connection() as conn, conn.transaction():
+            for r in rows:
+                await conn.execute(
+                    "insert into sizings values (%s, %s, %s, %s, %s, %s, %s, %s)",
+                    (
+                        run_id,
+                        contract_id,
+                        r["cluster"],
+                        r["namespace"],
+                        r["kind"],
+                        r["name"],
+                        r["container"],
+                        Jsonb(r),
+                    ),
+                )
+            await conn.execute(
+                "update sizing_runs set clusters = %s where id = %s and contract_id = %s",
+                (Jsonb(clusters), run_id, contract_id),
+            )
+
+    async def prune_sizings(self, contract_id: str, at: float) -> None:
+        """Keep a Contract's runs hourly for HOURLY_FOR, then its last finished run of
+        each UTC day for DAILY_FOR; their rows go with them."""
+        await self._exec(
+            "delete from sizing_runs where contract_id = %s and (at < %s or (at < %s and "
+            "id not in (select max(id) from sizing_runs where contract_id = %s "
+            "and clusters <> '{}' group by floor(at / 86400))))",
+            (contract_id, at - DAILY_FOR, at - HOURLY_FOR, contract_id),
+        )
+
+    async def latest_sizings(
+        self, contract_id: str, clusters: set[str]
+    ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+        """Each of `clusters`' rows (the Contract's clusters now: one removed from it is
+        gone) from its latest run that read it, and per cluster `at` (that run's time,
+        None if never read) and `error` with `since` when the runs after it failed: one
+        failing cluster never blanks another."""
+        runs = await self._all(
+            "select id, at, clusters from sizing_runs where contract_id = %s order by id desc",
+            (contract_id,),
+        )
+        status: dict[str, dict[str, Any]] = {}
+        good: dict[str, int] = {}
+        for run in runs:
+            for cluster, error in run["clusters"].items():
+                if cluster not in clusters:
+                    continue
+                st = status.setdefault(cluster, {"at": None, "error": None, "since": None})
+                if cluster in good:
+                    continue
+                if error is None:
+                    good[cluster] = run["id"]
+                    st["at"] = run["at"]
+                else:
+                    st["error"] = st["error"] or error
+                    st["since"] = run["at"]
+        rows = []
+        for cluster, run_id in sorted(good.items()):
+            rows += await self._all(
+                "select row from sizings where contract_id = %s and run_id = %s and cluster = %s",
+                (contract_id, run_id, cluster),
+            )
+        return [r["row"] for r in rows], status
+
+    async def sizing_history(
+        self, contract_id: str, workload: tuple[str, str, str, str, str], since: float
+    ) -> list[tuple[float, dict[str, Any]]]:
+        """One container's stored rows since `since`, oldest first. workload: cluster,
+        namespace, kind, name, container."""
+        rows = await self._all(
+            "select r.at, s.row from sizings s join sizing_runs r on r.id = s.run_id "
+            "where s.contract_id = %s and r.contract_id = %s and s.cluster = %s "
+            "and s.namespace = %s and s.kind = %s and s.name = %s and s.container = %s "
+            "and r.at >= %s order by r.at",
+            (contract_id, contract_id, *workload, since),
+        )
+        return [(r["at"], r["row"]) for r in rows]
 
     async def sync_checks(self, contract_id: str, due: dict[str, tuple[str, float]]) -> None:
         """due: name -> (schedule key, its next fire time). A new Check, or one whose

@@ -5,7 +5,7 @@ import math
 import pytest
 
 from aiops_agent import sizing
-from aiops_agent.sizing import weighted_percentile
+from aiops_agent.sizing import Risk, weighted_percentile
 from aiops_agent.usage import ContainerUsage, Workload
 
 H = 3600
@@ -133,8 +133,8 @@ def test_a_request_never_goes_above_its_limit_and_the_conflict_is_flagged() -> N
     )
     assert s.cpu and s.cpu.target == 0.2
     assert s.memory and s.memory.target == 256 * MI
-    assert "cpu limit 200m is below the 345m it needs" in s.risks
-    assert "memory limit 256Mi is below the 360Mi it needs" in s.risks
+    assert Risk("limit_below_need", "cpu limit 200m is below the 345m it needs") in s.risks
+    assert Risk("limit_below_need", "memory limit 256Mi is below the 360Mi it needs") in s.risks
 
 
 def test_a_container_without_a_request_always_gets_one() -> None:
@@ -192,8 +192,10 @@ def test_a_throttled_container_is_never_lowered() -> None:
     u = usage(cpu=[0.167] * 50, requests={"cpu": 1.0}, limits={"cpu": 0.2}, throttled=0.64)
     s = sizing.size(u, NOW)
     assert s.cpu and s.cpu.action == "keep" and s.cpu.target == 1.0
-    assert "throttled 64% of CPU periods: its real CPU demand is higher" in s.risks
-    assert "CPU kept: throttling hides how much it needs" in s.risks
+    assert (
+        Risk("throttled", "throttled 64% of CPU periods: its real CPU demand is higher") in s.risks
+    )
+    assert Risk("throttled", "CPU kept: throttling hides how much it needs") in s.risks
 
 
 def test_a_throttled_container_may_still_be_raised() -> None:
@@ -213,8 +215,10 @@ def test_after_an_oom_kill_memory_is_never_lowered() -> None:
     u = usage(memory=[100 * MI] * 50, requests={"memory": 512 * MI}, oom_killed_pods=2)
     s = sizing.size(u, NOW)
     assert s.memory and s.memory.action == "keep" and s.memory.target == 512 * MI
-    assert "OOM-killed in 2 pods: its peak is its limit, not its demand" in s.risks
-    assert "memory kept: OOM kills hide how much it needs" in s.risks
+    assert (
+        Risk("oom_killed", "OOM-killed in 2 pods: its peak is its limit, not its demand") in s.risks
+    )
+    assert Risk("oom_killed", "memory kept: OOM kills hide how much it needs") in s.risks
 
 
 def test_an_oom_killed_leak_at_its_limit_asks_for_more_than_the_limit() -> None:
@@ -227,7 +231,7 @@ def test_an_oom_killed_leak_at_its_limit_asks_for_more_than_the_limit() -> None:
     )
     s = sizing.size(u, NOW)
     assert s.memory and s.memory.action == "raise" and s.memory.target == 256 * MI
-    assert "memory limit 256Mi is below the 308Mi it needs" in s.risks
+    assert Risk("limit_below_need", "memory limit 256Mi is below the 308Mi it needs") in s.risks
 
 
 def test_the_limit_wins_over_the_floor() -> None:

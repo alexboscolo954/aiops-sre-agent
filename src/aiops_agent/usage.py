@@ -21,7 +21,7 @@ from typing import Any
 import httpx
 from pydantic import SecretStr
 
-from aiops_agent.contracts import Contract, Prometheus
+from aiops_agent.contracts import Cluster, Contract, Prometheus
 
 MAX_POINTS = 10_000  # Prometheus refuses a range query over 11,000 points per series
 CONTAINERS = 'container!="",container!="POD"'  # cAdvisor's pod-level and pause series
@@ -345,4 +345,58 @@ def _sum_by_row(
     for s in series:
         if r := _known(rows, owners, s["metric"]):
             out[(r.workload, r.container)] += float(s["value"][1])
+    return out
+
+
+@dataclass
+class Collected:
+    """A Contract's usage per window, (cluster, usage) pairs, and per cluster None when
+    it was read or why it wasn't. `notes`: missing metrics and Workload-less pods."""
+
+    by_window: dict[int, list[tuple[str, ContainerUsage]]]
+    clusters: dict[str, str | None]
+    notes: list[str] = field(default_factory=list)
+
+
+def collect(c: Contract, windows: list[int], end: float | None = None) -> Collected:
+    """Every cluster's container usage over each window, ending at `end`. A cluster
+    that fails is named in `clusters` and never stops the others."""
+    from kubernetes import client as k
+
+    from aiops_agent.servers import kubernetes
+
+    end = end or time.time()
+    out = Collected({w: [] for w in windows}, {})
+    for t in targets(c):
+        cluster = next(cl for cl in c.clusters if cl.name == t.cluster)
+
+        def from_api(cl: Cluster = cluster, t: Target = t) -> Any:
+            api = kubernetes.api_client(cl, c)
+            return owners_from_api(
+                k.CoreV1Api(api), k.AppsV1Api(api), k.BatchV1Api(api), t.namespaces
+            )
+
+        prom = Prom(t)
+        try:
+            t, missing = check(prom, t, end)
+            # ponytail: each window queried in full (a 7d and a 14d policy read the 14d
+            # range twice), so a policy's OOM kills, throttling and step are its own
+            by_window = {w: usage(prom, t, w, end, fallback=from_api) for w in windows}
+        except UsageError as e:
+            out.clusters[t.cluster] = str(e)
+            continue
+        out.clusters[t.cluster] = None
+        for w, found in by_window.items():
+            rows = sorted(
+                found.rows, key=lambda r: (r.workload.namespace, r.workload.name, r.container)
+            )
+            out.by_window[w] += [(t.cluster, r) for r in rows]
+        found = by_window[windows[-1]]
+        for metric, what in missing.items():
+            level = "missing" if metric in REQUIRED else "optional, missing"
+            out.notes.append(f"{c.id}/{t.cluster}: {level}: {metric} ({what})")
+        if found.fallback_error:
+            out.notes.append(f"{c.id}/{t.cluster}: Kubernetes API: {found.fallback_error}")
+        if found.unknown:
+            out.notes.append(f"{c.id}/{t.cluster}: no Workload for {len(found.unknown)} pods")
     return out

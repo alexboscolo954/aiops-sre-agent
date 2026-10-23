@@ -152,6 +152,10 @@ _Avoid_: Recommendation (that is advice for a human), rightsizing recommendation
 **Sizing policy**:
 How Sizings are computed: the percentile, the look-back window, headroom, minimums and maximums, and the limit strategy. Built-ins (production, high-availability, batch) mean the same in every Contract; a Contract's own policies, each a built-in with some settings changed, and the rules that pick one per container are in its `contract.yaml`. The policy `off` gives a container no Sizing.
 
+**Waste**:
+The requests above a Workload's Sizings, times its average pods: what the Sizings would free with headroom kept. A container that is learning, needs more, or is held by throttling or an OOM kill has none. Stored hourly with the Sizings and their risks.
+_Avoid_: Savings (that is waste priced, Phase 10), over-provisioning (for the number)
+
 **Automation**:
 The standing approval for one Workload: the Operator approves its Sizing policy once, in the contracts repo, and the Actuator then applies its Sizings without asking. Off by default.
 _Avoid_: Auto mode, Proposed action (a Sizing under Automation never pauses)

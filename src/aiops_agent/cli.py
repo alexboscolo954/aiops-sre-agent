@@ -99,58 +99,22 @@ def window_seconds(text: str) -> int:
         raise SystemExit(f"window {e}") from None
 
 
-def collect_usage(
-    c: contracts.Contract, windows: list[int]
-) -> tuple[dict[int, list[tuple[str, usage.ContainerUsage]]], int]:
-    """Every cluster's container usage over each window, (cluster, usage) pairs per
-    window, and an exit status. Missing metrics and Workload-less pods are named on
-    stderr, for the longest window."""
-    from kubernetes import client as k
-
-    from aiops_agent.servers import kubernetes
-
-    status = 0
-    out: dict[int, list[tuple[str, usage.ContainerUsage]]] = {w: [] for w in windows}
-    targets = usage.targets(c)
-    if not targets:
+def collect_usage(c: contracts.Contract, windows: list[int]) -> tuple[usage.Collected, int]:
+    """usage.collect, with missing metrics, Workload-less pods and failed clusters on
+    stderr, and an exit status."""
+    found = usage.collect(c, windows)
+    if not found.clusters:
         print(f"{c.id}: no cluster has a Prometheus (prometheus integration or prometheus_url)")
-        return out, 1
-    for t in targets:
-        cluster = next(cl for cl in c.clusters if cl.name == t.cluster)
-
-        def from_api(cl: contracts.Cluster = cluster, t: usage.Target = t) -> Any:
-            api = kubernetes.api_client(cl, c)
-            return usage.owners_from_api(
-                k.CoreV1Api(api), k.AppsV1Api(api), k.BatchV1Api(api), t.namespaces
-            )
-
-        prom = usage.Prom(t)
-        try:
-            t, missing = usage.check(prom, t)
-            # ponytail: each window queried in full (a 7d and a 14d policy read the 14d
-            # range twice), so a policy's OOM kills, throttling and step are its own
-            by_window = {w: usage.usage(prom, t, w, fallback=from_api) for w in windows}
-        except usage.UsageError as e:
-            print(f"{c.id}/{t.cluster}: {e}", file=sys.stderr)
-            status = 1
-            continue
-        for w, found in by_window.items():
-            rows = sorted(
-                found.rows, key=lambda r: (r.workload.namespace, r.workload.name, r.container)
-            )
-            out[w] += [(t.cluster, r) for r in rows]
-        found = by_window[windows[-1]]
-        for metric, what in missing.items():
-            level = "missing" if metric in usage.REQUIRED else "optional, missing"
-            print(f"{c.id}/{t.cluster}: {level}: {metric} ({what})", file=sys.stderr)
-        if found.fallback_error:
-            print(f"{c.id}/{t.cluster}: Kubernetes API: {found.fallback_error}", file=sys.stderr)
-        if found.unknown:
-            print(f"{c.id}/{t.cluster}: no Workload for {len(found.unknown)} pods", file=sys.stderr)
-    return out, status
+        return found, 1
+    for cluster, error in found.clusters.items():
+        if error:
+            print(f"{c.id}/{cluster}: {error}", file=sys.stderr)
+    for note in found.notes:
+        print(note, file=sys.stderr)
+    return found, 1 if any(found.clusters.values()) else 0
 
 
-def _name(cluster: str, r: usage.ContainerUsage | sizing.Sizing) -> str:
+def _name(cluster: str, r: usage.ContainerUsage) -> str:
     w = r.workload
     return f"{cluster}/{w.namespace}/{w.kind}/{w.name}/{r.container}"
 
@@ -159,8 +123,8 @@ def sizing_usage(contract_id: str, window: str, as_json: bool) -> int:
     """Every Workload container's usage over the window, per cluster, read-only: what
     Sizings are computed from (slice 9.1). Missing metrics are named, never guessed."""
     seconds = window_seconds(window)
-    by_window, status = collect_usage(contract(Settings(), contract_id), [seconds])
-    found = by_window[seconds]
+    collected, status = collect_usage(contract(Settings(), contract_id), [seconds])
+    found = collected.by_window[seconds]
     out = [
         {
             "workload": _name(cluster, r),
@@ -193,41 +157,8 @@ def sizing_show(contract_id: str, as_json: bool) -> int:
     import time
 
     c = contract(Settings(), contract_id)
-    by_window, status = collect_usage(c, c.sizing.windows())
-    now = time.time()
-    rows: dict[str, dict[str, Any]] = {}
-    for window, found in by_window.items():
-        for cluster, u in found:
-            w = u.workload
-            name = c.sizing.policy_for(cluster, w.namespace, w.kind, w.name, u.container)
-            policy = c.sizing.policy(name)
-            if policy is None:
-                rows[_name(cluster, u)] = {
-                    "workload": _name(cluster, u), "policy": name, "state": "excluded"
-                }  # fmt: skip
-                continue
-            if policy.window != window:
-                continue
-            s = sizing.size(u, now, policy)
-            row: dict[str, Any] = {
-                "workload": _name(cluster, s),
-                "policy": name,
-                "state": s.state,
-                "history_h": round(s.history_s / 3600, 1),
-                "needs_h": round(policy.history / 3600, 1),
-                "window_h": round(window / 3600, 1),
-            }
-            for res_name, res in (("cpu", s.cpu), ("memory", s.memory)):
-                if res:
-                    row[res_name] = {
-                        "action": res.action,
-                        "current": res.current,
-                        "target": res.target,
-                        "basis": res.basis,
-                    }
-            row["risks"] = s.risks
-            rows[row["workload"]] = row
-    out = [rows[k] for k in sorted(rows)]
+    collected, status = collect_usage(c, c.sizing.windows())
+    out = sizing.rows(c, collected.by_window, time.time())
     if as_json:
         print(json.dumps(out, indent=2))
         return status
@@ -248,9 +179,118 @@ def sizing_show(contract_id: str, as_json: bool) -> int:
                 parts.append(f"{res_name} {r['action']} {now_s} -> {target}")
         days, of = row["history_h"] / 24, row["window_h"] / 24
         short = f" | history {days:.1f}d of {of:g}d" if round(days, 1) < of else ""
-        risks = f" | risk: {'; '.join(row['risks'])}" if row["risks"] else ""
+        texts = [r["text"] for r in row["risks"] if r["kind"] not in sizing.DERIVED]
+        risks = f" | risk: {'; '.join(texts)}" if texts else ""
         print(f"{head}: {', '.join(parts)}{short}{risks}")
     return status
+
+
+def _store_url(settings: Settings) -> str:
+    if not settings.database_url:
+        raise SystemExit("set AIOPS_DATABASE_URL")
+    return settings.database_url.get_secret_value()
+
+
+async def sizing_refresh(contract_id: str) -> int:
+    """Store a Sizing run for the Contract now, as the Hub does hourly (slice 9.4)."""
+    import time
+
+    settings = Settings()
+    c = contract(settings, contract_id)
+    async with connect(_store_url(settings)) as pool:
+        store = Store(pool)
+        await store.migrate()
+        found = await sizing.store_run(store, c, time.time(), every=0)
+    if found is None:
+        print(f"{c.id}: no cluster has a Prometheus (prometheus integration or prometheus_url)")
+        return 1
+    for note in found.notes:
+        print(note, file=sys.stderr)
+    for cluster, error in sorted(found.clusters.items()):
+        print(f"{c.id}/{cluster}: {error or 'stored'}")
+    return 1 if any(found.clusters.values()) else 0
+
+
+def _utc(at: float | None) -> str:
+    from datetime import UTC, datetime
+
+    return "never" if at is None else datetime.fromtimestamp(at, UTC).strftime("%Y-%m-%d %H:%M UTC")
+
+
+def rank(workload: dict[str, Any]) -> float:
+    # ponytail: a core weighs as much as 4 GiB (a common node shape) until Phase 10
+    # prices each Contract's cores and GiB
+    return float(workload["waste"]["cpu"] + workload["waste"]["memory"] / 2**30 / 4)
+
+
+async def sizing_waste(contract_id: str, as_json: bool) -> int:
+    """The Contract's Workloads ranked by waste (requests above their Sizings), with
+    their risks, from each cluster's latest stored run (slice 9.4)."""
+    settings = Settings()
+    c = contract(settings, contract_id)
+    async with connect(_store_url(settings)) as pool:
+        store = Store(pool)
+        await store.migrate()
+        rows, clusters = await store.latest_sizings(c.id, {t.cluster for t in usage.targets(c)})
+    workloads: dict[str, dict[str, Any]] = {}
+    learning, excluded = [], []
+    for r in rows:
+        if r["state"] == "excluded":
+            excluded.append(r["workload"])
+            continue
+        if r["state"] == "learning":
+            learning.append(f"{r['workload']} ({r['history_h']:g} h of {r['needs_h']:g} h)")
+            continue
+        name = r["workload"].rsplit("/", 1)[0]
+        w = workloads.setdefault(
+            name, {"workload": name, "pods": 0.0, "waste": {"cpu": 0.0, "memory": 0.0}, "risks": []}
+        )
+        w["pods"] = max(w["pods"], r["pods"])
+        for res in ("cpu", "memory"):
+            w["waste"][res] += r["waste"].get(res, 0.0)
+        w["risks"] += [{**risk, "container": r["container"]} for risk in r["risks"]]
+    ranked = sorted(workloads.values(), key=lambda w: (-rank(w), w["workload"]))
+    total = {res: sum(w["waste"][res] for w in ranked) for res in ("cpu", "memory")}
+    out = {
+        "contract": c.id,
+        "clusters": clusters,
+        "total": total,
+        "workloads": ranked,
+        "learning": learning,
+        "excluded": excluded,
+    }
+    if as_json:
+        print(json.dumps(out, indent=2))
+        return 0
+    if not clusters:
+        print(
+            f"{c.id}: no Sizings stored yet (the Hub stores them hourly; or `aiops sizing refresh`)"
+        )
+        return 1
+    for cluster, st in sorted(clusters.items()):
+        line = f"{cluster}: Sizings as of {_utc(st['at'])}"
+        if st["error"]:
+            line += f"; stale since {_utc(st['since'])}: {st['error']}"
+        print(line)
+    print(f"{c.id}: waste {total['cpu']:.2f} cores, {total['memory'] / 2**30:.2f} GiB")
+    quiet = 0
+    for w in ranked:
+        kinds = sorted({r["kind"] for r in w["risks"]})
+        if not kinds and rank(w) == 0:
+            quiet += 1
+            continue
+        risk = f" | risk: {', '.join(kinds)}" if kinds else ""
+        print(
+            f"{w['workload']}: {w['waste']['cpu']:.2f} cores, "
+            f"{w['waste']['memory'] / 2**30:.2f} GiB, avg {w['pods']:g} pods{risk}"
+        )
+    if quiet:
+        print(f"{quiet} more Workloads: no waste, no risk")
+    if learning:
+        print(f"learning: {', '.join(learning)}")
+    if excluded:
+        print(f"excluded: {', '.join(excluded)}")
+    return 0
 
 
 def snapshot(vendor: str, check: bool, out: str | None = None) -> int:
@@ -362,11 +402,20 @@ def main(argv: list[str] | None = None) -> int:
     zs = zsub.add_parser("show", help="every Workload container's Sizing; nothing is applied")
     zs.add_argument("--contract", required=True, help="a Contract id in AIOPS_CONTRACTS_DIR")
     zs.add_argument("--json", action="store_true")
+    zr = zsub.add_parser("refresh", help="store a Sizing run now, as the Hub does hourly")
+    zr.add_argument("--contract", required=True, help="a Contract id in AIOPS_CONTRACTS_DIR")
+    zw = zsub.add_parser("waste", help="Workloads ranked by waste, with risks, as stored")
+    zw.add_argument("--contract", required=True, help="a Contract id in AIOPS_CONTRACTS_DIR")
+    zw.add_argument("--json", action="store_true")
 
     args = parser.parse_args(argv)
     if args.cmd == "sizing":
         if args.sizing_cmd == "show":
             return sizing_show(args.contract, args.json)
+        if args.sizing_cmd == "refresh":
+            return asyncio.run(sizing_refresh(args.contract))
+        if args.sizing_cmd == "waste":
+            return asyncio.run(sizing_waste(args.contract, args.json))
         return sizing_usage(args.contract, args.window, args.json)
     if args.cmd == "incidents":
         return asyncio.run(embed_past(Settings()))
