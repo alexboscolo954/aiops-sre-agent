@@ -249,6 +249,7 @@ def rows(
                     "current": res.current,
                     "target": res.target,
                     "basis": res.basis,
+                    "limit": u.limits.get(name),  # None: no limit (stored since 9.6)
                 }
                 if res.action == "set":
                     risks.append(Risk("request_unset", f"{name} has no request"))

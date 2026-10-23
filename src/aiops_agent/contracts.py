@@ -137,6 +137,10 @@ class Incidents(Strict):
     embeddings: bool = True
 
 
+class Sizings(Strict):
+    name: Literal["sizing"]  # the agent reads the Hub's stored Sizings (slice 9.6a)
+
+
 class Probe(Strict):
     tool: str  # one of the vendor's tools listed `read`
     args: dict[str, Any] = {}
@@ -197,7 +201,7 @@ class Vendor(Strict):
         return self
 
 
-BUILTINS = ("kubernetes", "prometheus", "runbooks", "jira", "aws", "incidents")
+BUILTINS = ("kubernetes", "prometheus", "runbooks", "jira", "aws", "incidents", "sizing")
 
 
 def _kind(value: Any) -> str:
@@ -212,6 +216,7 @@ Integration = Annotated[
     | Annotated[Jira, Tag("jira")]
     | Annotated[Aws, Tag("aws")]
     | Annotated[Incidents, Tag("incidents")]
+    | Annotated[Sizings, Tag("sizing")]
     | Annotated[Vendor, Tag("vendor")],
     Discriminator(_kind),
 ]
@@ -516,6 +521,11 @@ class Contract(Strict):
         for i, r in enumerate(self.sizing.rules):
             if r.cluster is not None and r.cluster not in groups["cluster"]:
                 raise ValueError(f"sizing rule {i + 1}: no cluster {r.cluster!r}")
+        shared = any(isinstance(i, Prometheus) for i in self.integrations)
+        if any(isinstance(i, Sizings) for i in self.integrations) and not any(
+            shared or c.prometheus_url for c in self.clusters
+        ):
+            raise ValueError("the sizing integration needs a cluster with a Prometheus")
         return self
 
     @property

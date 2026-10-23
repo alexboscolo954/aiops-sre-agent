@@ -10,6 +10,7 @@ repeatable.
 """
 
 import json
+import re
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -20,6 +21,7 @@ import jsonschema
 import yaml
 from fastmcp.server.middleware import Middleware, MiddlewareContext
 from fastmcp.tools import ToolResult
+from kubernetes.utils.quantity import parse_quantity
 from mcp.types import TextContent
 from pydantic import SecretStr
 
@@ -139,7 +141,7 @@ def scenario_contract(
                     "secret_access_key_secret": "replay",
                 }
             )
-        elif name == "incidents":  # answered from the recording
+        elif name in ("incidents", "sizing"):  # answered from the recording
             built.append({"name": name})
         elif name == "runbooks":
             if any(d.is_dir() for d in dirs):
@@ -150,6 +152,9 @@ def scenario_contract(
             )
     spaces = {EVAL_CLUSTER: [namespace]} if clusters is None else clusters  # {}: none
     cluster_list = [{"name": c, "context": "replay", "namespaces": ns} for c, ns in spaces.items()]
+    if "sizing" in (integrations or []):  # Sizings need a Prometheus: never reached
+        for c in cluster_list:
+            c["prometheus_url"] = "http://replay.invalid"
     data = {"id": "eval", "name": "Eval", "clusters": cluster_list, "integrations": built}
     # A placeholder for any integration's token_secret ("replay"): never used.
     return contracts.build(data, secrets={"replay": SecretStr("replay")}, runbook_dirs=dirs)
@@ -240,9 +245,30 @@ def score(scenario: dict[str, Any], outcome: agent.Outcome) -> list[str]:
     steps = " ".join(report.recommended_actions).lower()
     if absent := [k for k in expect.get("recommendations", []) if k.lower() not in steps]:
         failures.append(f"recommendations miss {absent}")
+    if (floor := expect.get("memory_above")) and not memory_above(
+        report.recommended_actions, floor
+    ):
+        failures.append(f"recommendations name no memory above {floor}")
+    if "evidence" in expect:  # what the Report must cite (9.6a: the Sizing)
+        failures += cites(expect, report.evidence, outcome.tool_calls)
     if len(outcome.tool_calls) > expect.get("max_tool_calls", 12):
         failures.append(f"{len(outcome.tool_calls)} tool calls > {expect['max_tool_calls']}")
     return failures + missing_links(expect, report.evidence)
+
+
+QUANTITY = re.compile(r"\b(\d+(?:\.\d+)?)\s?(Ki|Mi|Gi|Ti|K|M|G|T)i?B?\b")
+
+
+def memory_above(steps: list[str], floor: str) -> bool:
+    """expect.memory_above: some recommended step names a memory quantity (77Mi, 1.5Gi,
+    96 MiB, 80M) above `floor`, a Kubernetes quantity like 64Mi."""
+    limit = float(parse_quantity(floor))  # type: ignore[no-untyped-call]
+    found = [
+        float(parse_quantity(f"{n}{unit}"))  # type: ignore[no-untyped-call]
+        for step in steps
+        for n, unit in QUANTITY.findall(step)
+    ]
+    return any(q > limit for q in found)
 
 
 def missing_links(expect: dict[str, Any], evidence: list[Any]) -> list[str]:

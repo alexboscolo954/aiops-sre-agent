@@ -40,7 +40,7 @@ from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.types import Command
 from pydantic import BaseModel
 
-from aiops_agent import embeddings
+from aiops_agent import embeddings, usage
 from aiops_agent.config import Settings
 from aiops_agent.contracts import (
     Aws,
@@ -51,6 +51,7 @@ from aiops_agent.contracts import (
     Kubernetes,
     Prometheus,
     Runbooks,
+    Sizings,
     Vendor,
 )
 from aiops_agent.models import AlertGroup, Answer, CheckResult, TriageReport
@@ -64,6 +65,7 @@ from aiops_agent.servers import (
     kubernetes,
     prometheus,
     runbooks,
+    sizing,
     vendors,
 )
 from aiops_agent.store import Store
@@ -295,8 +297,8 @@ def build_mcp(
     root. Nothing of another Contract is reachable from it.
     k8s_apis: cluster name -> (CoreV1Api, AppsV1Api) instead of connecting, for tests.
     snapshots: vendors' tools from their schema snapshots, never started (replay).
-    store: the Hub's database, for past incidents; without it (the CLI) they're left
-    out, guide and all."""
+    store: the Hub's database, for past incidents and Sizings; without it (the CLI)
+    they're left out, guide and all."""
     root, access, guides = FastMCP(f"aiops-{contract.id}"), dict[str, Access](), []
     link_tools: set[str] = set()
     for i in contract.integrations:
@@ -307,6 +309,12 @@ def build_mcp(
             past = incidents.build_server(contract.id, store, embedder)
             mount(root, access, i.name, past, incidents.ACCESS)
             guides.append(incidents.GUIDE)
+            continue
+        if isinstance(i, Sizings):
+            if store is None and not snapshots:
+                continue
+            mount(root, access, i.name, sizing.build_server(contract, store), sizing.ACCESS)
+            guides.append(sizing.GUIDE)
             continue
         server = integration_server(contract, i, settings, k8s_apis, snapshots)
         mount(root, access, i.name, *server)
@@ -354,6 +362,14 @@ def probes(contract: Contract) -> list[tuple[str, str | None, dict[str, Any]]]:
             checks.append(("aws", "aws_describe_alarms", {"state": "ALARM"}))
         elif isinstance(i, Incidents):
             checks.append(("incidents", "incidents_search", {"keywords": "health", "limit": 1}))
+        elif isinstance(i, Sizings):
+            c = next(
+                c
+                for c in contract.clusters
+                if c.name in {t.cluster for t in usage.targets(contract)}
+            )
+            where = {"cluster": c.name, "namespace": sorted(c.namespaces)[0], "name": "health"}
+            checks.append(("sizing", "sizing_for_workload", where))
         elif i.probe:
             checks.append((i.name, f"{i.name}_{i.probe.tool}", i.probe.args))
         elif probe := vendors.VENDORS[i.vendor].probe:  # one authenticated read

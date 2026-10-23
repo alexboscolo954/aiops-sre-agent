@@ -545,3 +545,52 @@ async def test_a_digest_shows_only_its_own_contracts_workloads(
             own, other = ("kind", "bank-kind") if cid == "demo-shop" else ("bank-kind", "kind")
             assert f"`{own}/shop/Deployment/api`" in text
             assert f"`{other}/" not in text
+
+
+@pytest.mark.anyio
+async def test_sizing_for_workload_reads_only_its_own_contracts(
+    two_contracts: Contracts, database_url: str
+) -> None:
+    """Both demo Contracts store a Sizing for a Workload named api: each one's tool
+    finds only its own, and can't name the other's cluster."""
+    from aiops_agent.servers import sizing as tool
+    from aiops_agent.store import Store, connect
+    from tests.test_sizing_store import NOW, container, rows_of
+
+    where = {
+        cid: (c.clusters[0].name, sorted(c.clusters[0].namespaces)[0])
+        for cid, c in two_contracts.items()
+    }
+    async with connect(database_url) as pool:
+        store = Store(pool)
+        await store.migrate()
+        for cid, (cluster, namespace) in where.items():
+            rows = [
+                {
+                    **r,
+                    "cluster": cluster,
+                    "namespace": namespace,
+                    "workload": f"{cluster}/{namespace}/Deployment/api/app",
+                }
+                for r in rows_of(container(pods=1))
+            ]
+            run = await store.claim_sizing_run(cid, NOW, 0)
+            assert run is not None
+            await store.finish_sizing_run(run, cid, {cluster: None}, rows)
+        for cid, c in two_contracts.items():
+            (cluster, namespace), (other, theirs) = (
+                where[cid],
+                next(v for k, v in where.items() if k != cid),
+            )
+            async with Client(tool.build_server(c, store)) as client:
+                args = {"cluster": cluster, "namespace": namespace, "name": "api"}
+                mine = await client.call_tool("for_workload", args, raise_on_error=False)
+                cross = await client.call_tool(
+                    "for_workload",
+                    {"cluster": other, "namespace": theirs, "name": "api"},
+                    raise_on_error=False,
+                )
+            assert mine.structured_content is not None
+            (w,) = mine.structured_content["workloads"]
+            assert w["workload"] == f"{cluster}/{namespace}/Deployment/api"
+            assert cross.is_error

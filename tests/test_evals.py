@@ -248,6 +248,32 @@ def test_recommendations_are_scored_when_the_scenario_asks() -> None:
     assert evals.score({"expect": expect}, outcome) == ["recommendations miss ['rollout undo']"]
 
 
+def test_a_triage_must_cite_the_evidence_and_memory_its_scenario_asks_for() -> None:
+    """9.6a: an OOM Report cites the Sizing and recommends memory above the peak."""
+    evidence = [{"source": "sizing_for_workload", "finding": "OOM-killed at its 64Mi limit"}]
+    steps = ["Raise the memory request and limit to 77Mi."]
+    report = TriageReport.model_validate(
+        {**REPORT, "evidence": evidence, "recommended_actions": steps}
+    )
+    expect = {
+        "category": ["resource_limits"],
+        "evidence": ["sizing_for_workload"],
+        "memory_above": "64Mi",
+    }
+    ran = agent.Outcome("t", report=report, tool_calls=["sizing_for_workload"])
+    assert evals.score({"expect": expect}, ran) == []
+    never = agent.Outcome("t", report=report, tool_calls=[])
+    assert evals.score({"expect": expect}, never) == [
+        "evidence cites tools that never ran: ['sizing_for_workload']"
+    ]
+    other = TriageReport.model_validate({**REPORT, "recommended_actions": ["Keep 64Mi."]})
+    assert evals.score({"expect": expect}, agent.Outcome("t", report=other)) == [
+        "recommendations name no memory above 64Mi",
+        "evidence doesn't cite ['sizing_for_workload']",
+        f"evidence cites tools that never ran: {sorted({e['source'] for e in REPORT['evidence']})}",
+    ]
+
+
 EMPTY = {"incidents": [], "note": "No past Report in the last 90 days matches."}
 CITED = [
     {"source": "kubernetes_pod_logs", "finding": "OutOfMemoryError"},

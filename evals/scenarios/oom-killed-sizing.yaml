@@ -1,0 +1,432 @@
+description: 'The lab''s leaky Workload leaks memory (its LEAK_MIB_PER_MIN env var says so) and is OOM-killed
+  at its limit about hourly: a leak is app_error, a limit too low resource_limits, and either reading
+  is fair. The Report must recommend a memory request above what it was killed at (256Mi) and cite the
+  Hub''s Sizing.'
+namespace: lab
+integrations:
+- kubernetes
+- sizing
+alert:
+  status: firing
+  commonLabels:
+    alertname: KubePodCrashLooping
+    namespace: lab
+  alerts:
+  - status: firing
+    labels:
+      alertname: KubePodCrashLooping
+      namespace: lab
+      pod: leaky-8555f7bc7c-mtzbj
+      severity: warning
+    annotations:
+      summary: Pod is crash looping.
+expect:
+  category:
+  - app_error
+  - resource_limits
+  keywords:
+  - memory
+  memory_above: 256Mi
+  evidence:
+  - sizing_for_workload
+  max_tool_calls: 10
+tools:
+  kubernetes_list_pods:
+  - name: agent-nn8ql
+    phase: Running
+    ready: 1/1
+    restarts: 3
+    containers:
+      app:
+        running_since: 9h
+    last_terminated:
+      app:
+        terminated: Unknown
+        exit_code: 255
+        finished: 9h
+        message: null
+    node: aiops-control-plane
+    age: 1d
+  - name: api-696b5789fd-p5vgt
+    phase: Running
+    ready: 1/1
+    restarts: 3
+    containers:
+      app:
+        running_since: 9h
+    last_terminated:
+      app:
+        terminated: Unknown
+        exit_code: 255
+        finished: 9h
+        message: null
+    node: aiops-control-plane
+    age: 1d
+  - name: api-696b5789fd-qdzj8
+    phase: Running
+    ready: 1/1
+    restarts: 3
+    containers:
+      app:
+        running_since: 9h
+    last_terminated:
+      app:
+        terminated: Unknown
+        exit_code: 255
+        finished: 9h
+        message: null
+    node: aiops-control-plane
+    age: 1d
+  - name: api-696b5789fd-whxf7
+    phase: Running
+    ready: 1/1
+    restarts: 3
+    containers:
+      app:
+        running_since: 9h
+    last_terminated:
+      app:
+        terminated: Unknown
+        exit_code: 255
+        finished: 9h
+        message: null
+    node: aiops-control-plane
+    age: 1d
+  - name: db-0
+    phase: Running
+    ready: 1/1
+    restarts: 3
+    containers:
+      app:
+        running_since: 9h
+    last_terminated:
+      app:
+        terminated: Unknown
+        exit_code: 255
+        finished: 9h
+        message: null
+    node: aiops-control-plane
+    age: 1d
+  - name: idle-7974d8b67-29fgk
+    phase: Running
+    ready: 1/1
+    restarts: 3
+    containers:
+      app:
+        running_since: 9h
+    last_terminated:
+      app:
+        terminated: Unknown
+        exit_code: 255
+        finished: 9h
+        message: null
+    node: aiops-control-plane
+    age: 1d
+  - name: leaky-8555f7bc7c-mtzbj
+    phase: Running
+    ready: 1/1
+    restarts: 35
+    containers:
+      app:
+        running_since: 27m
+    last_terminated:
+      app:
+        terminated: OOMKilled
+        exit_code: 137
+        finished: 27m
+        message: null
+    node: aiops-control-plane
+    age: 1d
+  - name: report-29879850-z8g4n
+    phase: Succeeded
+    ready: 0/1
+    restarts: 0
+    containers:
+      app:
+        terminated: Completed
+        exit_code: 0
+        finished: 14m
+        message: null
+    last_terminated: {}
+    node: aiops-control-plane
+    age: 15m
+  - name: report-29879860-8wxrn
+    phase: Succeeded
+    ready: 0/1
+    restarts: 0
+    containers:
+      app:
+        terminated: Completed
+        exit_code: 0
+        finished: 4m
+        message: null
+    last_terminated: {}
+    node: aiops-control-plane
+    age: 5m
+  - name: spiky-db64d8d85-5hbzf
+    phase: Running
+    ready: 1/1
+    restarts: 3
+    containers:
+      app:
+        running_since: 9h
+    last_terminated:
+      app:
+        terminated: Unknown
+        exit_code: 255
+        finished: 9h
+        message: null
+    node: aiops-control-plane
+    age: 1d
+  - name: throttled-64f4d747c5-k86kl
+    phase: Running
+    ready: 1/1
+    restarts: 3
+    containers:
+      app:
+        running_since: 9h
+    last_terminated:
+      app:
+        terminated: Unknown
+        exit_code: 255
+        finished: 9h
+        message: null
+    node: aiops-control-plane
+    age: 1d
+  - name: web-57d6b698f9-jkrpv
+    phase: Running
+    ready: 1/1
+    restarts: 3
+    containers:
+      app:
+        running_since: 9h
+    last_terminated:
+      app:
+        terminated: Unknown
+        exit_code: 255
+        finished: 9h
+        message: null
+    node: aiops-control-plane
+    age: 1d
+  - name: web-57d6b698f9-t9f9n
+    phase: Running
+    ready: 1/1
+    restarts: 3
+    containers:
+      app:
+        running_since: 9h
+    last_terminated:
+      app:
+        terminated: Unknown
+        exit_code: 255
+        finished: 9h
+        message: null
+    node: aiops-control-plane
+    age: 1d
+  kubernetes_list_deployments:
+  - name: api
+    ready: 3/3
+    updated: 3
+    images:
+    - python:3.12-alpine
+    problems: []
+  - name: idle
+    ready: 1/1
+    updated: 1
+    images:
+    - python:3.12-alpine
+    problems: []
+  - name: leaky
+    ready: 1/1
+    updated: 1
+    images:
+    - python:3.12-alpine
+    problems: []
+  - name: spiky
+    ready: 1/1
+    updated: 1
+    images:
+    - python:3.12-alpine
+    problems: []
+  - name: throttled
+    ready: 1/1
+    updated: 1
+    images:
+    - python:3.12-alpine
+    problems: []
+  - name: web
+    ready: 2/2
+    updated: 2
+    images:
+    - python:3.12-alpine
+    problems: []
+  kubernetes_get_events: []
+  kubernetes_recent_changes: []
+  kubernetes_describe_pod:
+  - match:
+      name: leaky-8555f7bc7c-mtzbj
+    result:
+      name: leaky-8555f7bc7c-mtzbj
+      phase: Running
+      node: aiops-control-plane
+      owner:
+      - ReplicaSet/leaky-8555f7bc7c
+      conditions:
+      - type: PodReadyToStartContainers
+        status: 'True'
+        reason: null
+      - type: Initialized
+        status: 'True'
+        reason: null
+      - type: Ready
+        status: 'True'
+        reason: null
+      - type: ContainersReady
+        status: 'True'
+        reason: null
+      - type: PodScheduled
+        status: 'True'
+        reason: null
+      containers:
+      - name: app
+        image: python:3.12-alpine
+        requests:
+          cpu: 50m
+          memory: 128Mi
+        limits:
+          memory: 256Mi
+        env:
+        - PROFILE
+        - CPU
+        - MEMORY_MIB
+        - LEAK_MIB_PER_MIN
+        env_from: []
+        liveness: null
+        readiness: null
+        state:
+          running_since: 27m
+        last_state:
+          terminated: OOMKilled
+          exit_code: 137
+          finished: 27m
+          message: null
+        restarts: 35
+      events:
+      - type: Normal
+        reason: Pulled
+        object: Pod/leaky-8555f7bc7c-mtzbj
+        message: Container image "python:3.12-alpine" already present on machine and can be accessed by
+          the pod
+        count: 9
+        last_seen: 27m
+      - type: Normal
+        reason: Created
+        object: Pod/leaky-8555f7bc7c-mtzbj
+        message: Container created
+        count: 9
+        last_seen: 27m
+      - type: Normal
+        reason: Started
+        object: Pod/leaky-8555f7bc7c-mtzbj
+        message: Container started
+        count: 9
+        last_seen: 27m
+  kubernetes_describe_deployment:
+  - match:
+      name: leaky
+    result:
+      name: leaky
+      replicas:
+        desired: 1
+        ready: 1
+      strategy: RollingUpdate
+      containers:
+      - name: app
+        image: python:3.12-alpine
+        requests:
+          cpu: 50m
+          memory: 128Mi
+        limits:
+          memory: 256Mi
+        env:
+        - PROFILE
+        - CPU
+        - MEMORY_MIB
+        - LEAK_MIB_PER_MIN
+        env_from: []
+      conditions:
+      - type: Progressing
+        status: 'True'
+        reason: NewReplicaSetAvailable
+        message: ReplicaSet "leaky-8555f7bc7c" has successfully progressed.
+      - type: Available
+        status: 'True'
+        reason: MinimumReplicasAvailable
+        message: Deployment has minimum availability.
+      rollout_history:
+      - revision: '1'
+        replicaset: leaky-8555f7bc7c
+        created: 1d
+        replicas: 1
+        images:
+        - python:3.12-alpine
+        config:
+          app:
+            env:
+            - PROFILE
+            - CPU
+            - MEMORY_MIB
+            - LEAK_MIB_PER_MIN
+            env_from: []
+  kubernetes_pod_logs:
+  - match:
+      name: leaky-8555f7bc7c-mtzbj
+      previous: true
+    result: <no output>
+  - match:
+      name: leaky-8555f7bc7c-mtzbj
+      previous: false
+    result: <no output>
+  - match:
+      name: leaky-8555f7bc7c-mtzbj
+    result: <no output>
+  sizing_for_workload:
+  - match:
+      name: leaky-8555f7bc7c-mtzbj
+    result: &id001
+      workloads:
+      - workload: kind/lab/Deployment/leaky
+        kind: Deployment
+        name: leaky
+        as_of: 2026-10-23 21:45 UTC
+        containers:
+        - container: app
+          policy: production
+          state: ready
+          cpu:
+            request: 50m
+            limit: null
+            sizing: 24m
+            action: lower
+            p95: 21m
+          memory:
+            request: 128Mi
+            limit: 256Mi
+            sizing: 256Mi
+            action: raise
+            peak: 255Mi
+          avg_pods: 1.0
+          waste:
+            cpu: 26m
+            memory: 0Mi
+          risks:
+          - 'OOM-killed in 3 pods: its peak is its limit, not its demand'
+          - memory limit 256Mi is below the 307Mi it needs
+          - memory request 128Mi is below the 256Mi it needs
+          suggested:
+            memory_request: 308Mi
+            memory_limit: 308Mi
+            why: 'OOM-killed at its 256Mi limit: its peak is the limit, not its demand, so 20% above it'
+  - match:
+      name: leaky
+    result: *id001
