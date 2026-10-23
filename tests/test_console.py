@@ -169,7 +169,7 @@ def test_the_token_form_sets_a_cookie_that_proves_the_token(
     cookie = ok.headers["set-cookie"]
     assert cookie.startswith(f"{COOKIE}={action_key('approver-token')};")
     assert "approver-token" not in cookie
-    for flag in ("HttpOnly", "Secure", "SameSite=strict", "Path=/console"):
+    for flag in ("HttpOnly", "Secure", "SameSite=strict", "Path=/;"):
         assert flag in cookie, flag
 
 

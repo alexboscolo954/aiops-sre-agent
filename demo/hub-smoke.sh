@@ -96,6 +96,9 @@ big=$(code -X POST "$alert" -H "Authorization: Bearer $token" -H 'Content-Type: 
 [[ $big == 413 ]] || fail "a 2 MB body got $big, want 413"
 as_operator=(-H 'Tailscale-User-Login: smoke@example.com')
 [[ $(code "${as_operator[@]}" "$public/console") == 404 ]] || fail "the console is public"
+for path in /app/ /api/v1/contracts; do
+  [[ $(code "${as_operator[@]}" "$public$path") == 404 ]] || fail "$path is public"
+done
 echo "ok   only the alert route is public; bodies over 1 MB refused"
 
 local_api=http://127.0.0.1:18000
@@ -126,6 +129,14 @@ curl -sf --max-time 60 "${with_token[@]}" "$local_api/console/health" | grep -q 
   fail "console health"   # no cluster in the container: the kubernetes checks fail, and say so
 [[ $(code "$local_api/console") == 403 ]] || fail "console without an identity"
 [[ $(code "${as_operator[@]}" "$local_api/console") == 303 ]] || fail "console without the token"
+# The console app (9.5a): its page and built files are in the image, behind the
+# identity; its API also wants the token.
+page=$(curl -sf "${as_operator[@]}" "$local_api/app/") || fail "console app page"
+js=$(grep -o '/app/assets/[A-Za-z0-9._-]*\.js' <<<"$page" | head -1)
+[[ -n $js && $(code "${as_operator[@]}" "$local_api$js") == 200 ]] || fail "console app files"
+curl -sf "${with_token[@]}" "$local_api/api/v1/contracts" | grep -q '"demo-shop"' || fail "console API"
+[[ $(code "${as_operator[@]}" "$local_api/api/v1/contracts") == 401 ]] || fail "console API without the token"
+[[ $(code "$local_api/app/") == 403 ]] || fail "console app without an identity"
 echo "ok   console renders on 127.0.0.1 for the Operator with the token only, and is 404 through Caddy"
 
 dc exec -T backup /backup.sh once >/dev/null || fail "backup"

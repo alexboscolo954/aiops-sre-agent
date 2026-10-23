@@ -8,3 +8,5 @@ evals
 demo
 deploy
 recordings
+console/node_modules
+console/dist

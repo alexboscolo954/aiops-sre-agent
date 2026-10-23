@@ -2,7 +2,7 @@ CLUSTER := aiops
 CTX     := kind-$(CLUSTER)
 PG      := pgvector/pgvector:0.8.7-pg17-trixie
 
-.PHONY: lint test db cluster demo lgtm lab lab-grafana integration image snapshots deploy-smoke hub-smoke rbac-check down
+.PHONY: console-dev console-types console-check lint test db cluster demo lgtm lab lab-grafana integration image snapshots deploy-smoke hub-smoke rbac-check down
 
 lint:
 	uv run ruff check .
@@ -57,6 +57,25 @@ integration: ## real MCP tools on the kind demo, as the demo Contracts (kind con
 
 image:
 	docker build -t aiops-sre-agent:ci .
+
+NODE := node:22-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914
+NPM := docker run --rm -v "$(CURDIR)/console:/w" -w /w $(NODE) npm
+
+console-types: ## the console app's API types, from the Hub's OpenAPI (commit both)
+	uv run python -c "from aiops_agent.webapp import openapi; print(openapi(), end='')" > console/openapi.json
+	$(NPM) run -s types
+
+console-check: ## the console app: install, types in sync, typecheck, lint, test, build
+	$(NPM) ci --ignore-scripts --no-fund --no-audit
+	$(MAKE) console-types
+	git diff --exit-code console/openapi.json console/src/api-types.ts
+	$(NPM) run -s typecheck
+	$(NPM) run -s lint
+	$(NPM) test
+	$(NPM) run -s build
+
+console-dev: ## Vite on 127.0.0.1:5173 against a local Hub (AIOPS_DEV_HUB, AIOPS_DEV_LOGIN)
+	cd console && npm ci --no-fund --no-audit && npm run dev
 
 snapshots: image ## vendors' tool schemas, from the pinned binaries in the image
 	docker run --rm aiops-sre-agent:ci integrations snapshot grafana --out - \

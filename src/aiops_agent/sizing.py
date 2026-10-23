@@ -266,6 +266,50 @@ def rows(
     return [out[k] for k in sorted(out)]
 
 
+def rank(workload: dict[str, Any]) -> float:
+    """A Workload's waste as one number to sort by."""
+    # ponytail: a core weighs as much as 4 GiB (a common node shape) until Phase 10
+    # prices each Contract's cores and GiB
+    return float(workload["waste"]["cpu"] + workload["waste"]["memory"] / 2**30 / 4)
+
+
+def report(rows: list[dict[str, Any]], clusters: dict[str, Any]) -> dict[str, Any]:
+    """Stored rows (one per container) as Workloads ranked by waste, each with its
+    containers and risks, plus the total, the learning and excluded rows and each
+    cluster's status: what `sizing waste` and the console show."""
+    workloads: dict[str, dict[str, Any]] = {}
+    learning: list[dict[str, Any]] = []
+    excluded: list[dict[str, Any]] = []
+    for r in rows:
+        if r["state"] != "ready":
+            (learning if r["state"] == "learning" else excluded).append(r)
+            continue
+        w = workloads.setdefault(
+            r["workload"].rsplit("/", 1)[0],
+            {
+                "workload": r["workload"].rsplit("/", 1)[0],
+                **{k: r[k] for k in ("cluster", "namespace", "kind", "name")},
+                "pods": 0.0,
+                "waste": {"cpu": 0.0, "memory": 0.0},
+                "risks": [],
+                "containers": [],
+            },
+        )
+        w["pods"] = max(w["pods"], r["pods"])
+        for res in ("cpu", "memory"):
+            w["waste"][res] += r["waste"].get(res, 0.0)
+        w["risks"] += [{**risk, "container": r["container"]} for risk in r["risks"]]
+        w["containers"].append(r)
+    ranked = sorted(workloads.values(), key=lambda w: (-rank(w), w["workload"]))
+    return {
+        "clusters": clusters,
+        "total": {res: sum(w["waste"][res] for w in ranked) for res in ("cpu", "memory")},
+        "workloads": ranked,
+        "learning": learning,
+        "excluded": excluded,
+    }
+
+
 HOURLY = 3600.0  # seconds between a Contract's stored Sizing runs
 
 

@@ -217,12 +217,6 @@ def _utc(at: float | None) -> str:
     return "never" if at is None else datetime.fromtimestamp(at, UTC).strftime("%Y-%m-%d %H:%M UTC")
 
 
-def rank(workload: dict[str, Any]) -> float:
-    # ponytail: a core weighs as much as 4 GiB (a common node shape) until Phase 10
-    # prices each Contract's cores and GiB
-    return float(workload["waste"]["cpu"] + workload["waste"]["memory"] / 2**30 / 4)
-
-
 async def sizing_waste(contract_id: str, as_json: bool) -> int:
     """The Contract's Workloads ranked by waste (requests above their Sizings), with
     their risks, from each cluster's latest stored run (slice 9.4)."""
@@ -232,33 +226,8 @@ async def sizing_waste(contract_id: str, as_json: bool) -> int:
         store = Store(pool)
         await store.migrate()
         rows, clusters = await store.latest_sizings(c.id, {t.cluster for t in usage.targets(c)})
-    workloads: dict[str, dict[str, Any]] = {}
-    learning, excluded = [], []
-    for r in rows:
-        if r["state"] == "excluded":
-            excluded.append(r["workload"])
-            continue
-        if r["state"] == "learning":
-            learning.append(f"{r['workload']} ({r['history_h']:g} h of {r['needs_h']:g} h)")
-            continue
-        name = r["workload"].rsplit("/", 1)[0]
-        w = workloads.setdefault(
-            name, {"workload": name, "pods": 0.0, "waste": {"cpu": 0.0, "memory": 0.0}, "risks": []}
-        )
-        w["pods"] = max(w["pods"], r["pods"])
-        for res in ("cpu", "memory"):
-            w["waste"][res] += r["waste"].get(res, 0.0)
-        w["risks"] += [{**risk, "container": r["container"]} for risk in r["risks"]]
-    ranked = sorted(workloads.values(), key=lambda w: (-rank(w), w["workload"]))
-    total = {res: sum(w["waste"][res] for w in ranked) for res in ("cpu", "memory")}
-    out = {
-        "contract": c.id,
-        "clusters": clusters,
-        "total": total,
-        "workloads": ranked,
-        "learning": learning,
-        "excluded": excluded,
-    }
+    out = {"contract": c.id, **sizing.report(rows, clusters)}
+    ranked, total = out["workloads"], out["total"]
     if as_json:
         print(json.dumps(out, indent=2))
         return 0
@@ -276,7 +245,7 @@ async def sizing_waste(contract_id: str, as_json: bool) -> int:
     quiet = 0
     for w in ranked:
         kinds = sorted({r["kind"] for r in w["risks"]})
-        if not kinds and rank(w) == 0:
+        if not kinds and sizing.rank(w) == 0:
             quiet += 1
             continue
         risk = f" | risk: {', '.join(kinds)}" if kinds else ""
@@ -286,10 +255,13 @@ async def sizing_waste(contract_id: str, as_json: bool) -> int:
         )
     if quiet:
         print(f"{quiet} more Workloads: no waste, no risk")
-    if learning:
+    if out["learning"]:
+        learning = [
+            f"{r['workload']} ({r['history_h']:g} h of {r['needs_h']:g} h)" for r in out["learning"]
+        ]
         print(f"learning: {', '.join(learning)}")
-    if excluded:
-        print(f"excluded: {', '.join(excluded)}")
+    if out["excluded"]:
+        print(f"excluded: {', '.join(r['workload'] for r in out['excluded'])}")
     return 0
 
 

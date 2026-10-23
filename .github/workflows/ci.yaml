@@ -19,6 +19,16 @@ jobs:
       - run: make lint
       - run: make test
 
+  console:
+    # The console app (console/): API types in sync with the Hub, typecheck, lint,
+    # tests and the build, in the same pinned Node the image builds with.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.0
+      - run: uv sync --locked
+      - run: make console-check
+
   integration:
     # Real MCP tools + a scripted agent run against broken workloads on kind.
     runs-on: ubuntu-latest
@@ -60,7 +70,7 @@ jobs:
   publish:
     # Image for deploy/: ghcr.io/alexboscolo954/aiops-sre-agent:<version>, on tags only.
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [lint-test, integration, hub-smoke]
+    needs: [lint-test, console, integration, hub-smoke]
     runs-on: ubuntu-latest
     permissions:
       contents: read

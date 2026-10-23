@@ -1,0 +1,656 @@
+{
+  "components": {
+    "schemas": {
+      "ClusterStatus": {
+        "properties": {
+          "at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "At"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "since": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Since"
+          }
+        },
+        "required": [
+          "at",
+          "error",
+          "since"
+        ],
+        "title": "ClusterStatus",
+        "type": "object"
+      },
+      "Container": {
+        "properties": {
+          "cluster": {
+            "title": "Cluster",
+            "type": "string"
+          },
+          "container": {
+            "title": "Container",
+            "type": "string"
+          },
+          "cpu": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Resource"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "history_h": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "History H"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "memory": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Resource"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "namespace": {
+            "title": "Namespace",
+            "type": "string"
+          },
+          "needs_h": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Needs H"
+          },
+          "pods": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pods"
+          },
+          "policy": {
+            "title": "Policy",
+            "type": "string"
+          },
+          "risks": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/Risk"
+            },
+            "title": "Risks",
+            "type": "array"
+          },
+          "state": {
+            "enum": [
+              "ready",
+              "learning",
+              "excluded"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "waste": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Waste"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "workload": {
+            "title": "Workload",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workload",
+          "cluster",
+          "namespace",
+          "kind",
+          "name",
+          "container",
+          "policy",
+          "state"
+        ],
+        "title": "Container",
+        "type": "object"
+      },
+      "ContractSummary": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "ContractSummary",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "History": {
+        "properties": {
+          "points": {
+            "items": {
+              "$ref": "#/components/schemas/Point"
+            },
+            "title": "Points",
+            "type": "array"
+          }
+        },
+        "required": [
+          "points"
+        ],
+        "title": "History",
+        "type": "object"
+      },
+      "Point": {
+        "properties": {
+          "at": {
+            "title": "At",
+            "type": "number"
+          },
+          "cpu": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Resource"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "memory": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Resource"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pods": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pods"
+          }
+        },
+        "required": [
+          "at"
+        ],
+        "title": "Point",
+        "type": "object"
+      },
+      "Resource": {
+        "properties": {
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "basis": {
+            "title": "Basis",
+            "type": "number"
+          },
+          "current": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current"
+          },
+          "target": {
+            "title": "Target",
+            "type": "number"
+          }
+        },
+        "required": [
+          "action",
+          "current",
+          "target",
+          "basis"
+        ],
+        "title": "Resource",
+        "type": "object"
+      },
+      "Risk": {
+        "properties": {
+          "container": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Container"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "text"
+        ],
+        "title": "Risk",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      },
+      "Waste": {
+        "properties": {
+          "cpu": {
+            "default": 0.0,
+            "title": "Cpu",
+            "type": "number"
+          },
+          "memory": {
+            "default": 0.0,
+            "title": "Memory",
+            "type": "number"
+          }
+        },
+        "title": "Waste",
+        "type": "object"
+      },
+      "Workload": {
+        "properties": {
+          "cluster": {
+            "title": "Cluster",
+            "type": "string"
+          },
+          "containers": {
+            "items": {
+              "$ref": "#/components/schemas/Container"
+            },
+            "title": "Containers",
+            "type": "array"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "namespace": {
+            "title": "Namespace",
+            "type": "string"
+          },
+          "pods": {
+            "title": "Pods",
+            "type": "number"
+          },
+          "risks": {
+            "items": {
+              "$ref": "#/components/schemas/Risk"
+            },
+            "title": "Risks",
+            "type": "array"
+          },
+          "waste": {
+            "$ref": "#/components/schemas/Waste"
+          },
+          "workload": {
+            "title": "Workload",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workload",
+          "cluster",
+          "namespace",
+          "kind",
+          "name",
+          "pods",
+          "waste",
+          "risks",
+          "containers"
+        ],
+        "title": "Workload",
+        "type": "object"
+      },
+      "Workloads": {
+        "properties": {
+          "clusters": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ClusterStatus"
+            },
+            "title": "Clusters",
+            "type": "object"
+          },
+          "contract": {
+            "title": "Contract",
+            "type": "string"
+          },
+          "excluded": {
+            "items": {
+              "$ref": "#/components/schemas/Container"
+            },
+            "title": "Excluded",
+            "type": "array"
+          },
+          "learning": {
+            "items": {
+              "$ref": "#/components/schemas/Container"
+            },
+            "title": "Learning",
+            "type": "array"
+          },
+          "total": {
+            "$ref": "#/components/schemas/Waste"
+          },
+          "workloads": {
+            "items": {
+              "$ref": "#/components/schemas/Workload"
+            },
+            "title": "Workloads",
+            "type": "array"
+          }
+        },
+        "required": [
+          "contract",
+          "clusters",
+          "total",
+          "workloads",
+          "learning",
+          "excluded"
+        ],
+        "title": "Workloads",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "aiops console",
+    "version": "1"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/v1/contracts": {
+      "get": {
+        "operationId": "contracts_api_v1_contracts_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ContractSummary"
+                  },
+                  "title": "Response Contracts Api V1 Contracts Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Contracts"
+      }
+    },
+    "/api/v1/contracts/{contract_id}/history": {
+      "get": {
+        "operationId": "history_api_v1_contracts__contract_id__history_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "contract_id",
+            "required": true,
+            "schema": {
+              "title": "Contract Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cluster",
+            "required": true,
+            "schema": {
+              "title": "Cluster",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "namespace",
+            "required": true,
+            "schema": {
+              "title": "Namespace",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "kind",
+            "required": true,
+            "schema": {
+              "title": "Kind",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "container",
+            "required": true,
+            "schema": {
+              "title": "Container",
+              "type": "string"
+            }
+          },
+          {
+            "description": "14 (hourly) or 400 (daily)",
+            "in": "query",
+            "name": "days",
+            "required": false,
+            "schema": {
+              "default": 14,
+              "description": "14 (hourly) or 400 (daily)",
+              "title": "Days",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/History"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "History"
+      }
+    },
+    "/api/v1/contracts/{contract_id}/workloads": {
+      "get": {
+        "operationId": "workloads_api_v1_contracts__contract_id__workloads_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "contract_id",
+            "required": true,
+            "schema": {
+              "title": "Contract Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Workloads"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Workloads"
+      }
+    }
+  }
+}

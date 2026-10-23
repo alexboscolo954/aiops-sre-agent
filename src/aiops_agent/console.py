@@ -385,7 +385,7 @@ def router(
             COOKIE,
             key,
             max_age=COOKIE_DAYS * 86400,
-            path="/console",
+            path="/",  # the console app's API (/api/v1) needs it too
             secure=True,
             httponly=True,
             samesite="strict",

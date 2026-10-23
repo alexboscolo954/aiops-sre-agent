@@ -70,6 +70,14 @@ RUN uv sync --locked --no-dev --no-install-project
 COPY src ./src
 RUN uv sync --locked --no-dev --no-editable
 
+# The console app (console/, slice 9.5a): built here, only its static files ship.
+FROM node:22-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914 AS console
+WORKDIR /console
+COPY console/package.json console/package-lock.json ./
+RUN npm ci --ignore-scripts --no-fund --no-audit
+COPY console/ ./
+RUN npm run build
+
 FROM python:3.12-slim
 RUN useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin aiops
 WORKDIR /app
@@ -77,6 +85,7 @@ COPY --from=build /app/.venv /app/.venv
 COPY --from=build /usr/local/bin/sops /usr/local/bin/sops
 COPY --from=build /usr/local/bin/mcp-grafana /usr/local/bin/mcp-grafana
 COPY --from=build /opt/azmcp /opt/azmcp
+COPY --from=console /console/dist /opt/aiops/app
 ENV PATH=/app/.venv/bin:$PATH PYTHONUNBUFFERED=1
 USER 10001
 EXPOSE 8080

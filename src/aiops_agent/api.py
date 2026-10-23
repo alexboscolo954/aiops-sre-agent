@@ -47,6 +47,7 @@ from aiops_agent import (
     related,
     sizing,
     teachings,
+    webapp,
 )
 from aiops_agent.config import Settings
 from aiops_agent.contracts import Jira, Kubernetes
@@ -1327,6 +1328,9 @@ def create_app(
                 console_feedback,
                 console_decide_teaching,
             )
+        )
+        app.include_router(
+            webapp.router(settings.console_operators, by_id, store, approver_token, now)
         )
 
     @app.get("/healthz")

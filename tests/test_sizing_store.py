@@ -433,7 +433,7 @@ def test_waste_ranks_a_core_like_4_gib() -> None:
         return {"waste": {"cpu": 0.0, "memory": n * 2**30}}
 
     core = {"waste": {"cpu": 1.0, "memory": 0.0}}
-    assert cli.rank(gib(3)) < cli.rank(core) == cli.rank(gib(4)) < cli.rank(gib(5))
+    assert sizing.rank(gib(3)) < sizing.rank(core) == sizing.rank(gib(4)) < sizing.rank(gib(5))
 
 
 def test_waste_without_a_run_says_so(
