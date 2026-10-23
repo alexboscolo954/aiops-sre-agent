@@ -659,6 +659,21 @@ def _prom(fake: FakePrometheus, t: Target) -> usage.Prom:
     return REAL_PROM(t, fake.client())
 
 
+def test_running_pods_come_from_their_phase_in_the_targets_namespaces() -> None:
+    """A time per Running pod per step; a step it wasn't Running (0), another phase or
+    another namespace's pod of the same name doesn't count."""
+    fake = FakePrometheus()
+    (p,) = deployment(fake, pods=1)
+    cpu(fake, p, FLAT)
+    fake.add("kube_pod_status_phase", [1, 1, 0, 0, 1, 1], namespace="shop", pod=p, phase="Running")
+    fake.add("kube_pod_status_phase", [0, 0, 1, 1, 0, 0], namespace="shop", pod=p, phase="Pending")
+    fake.add("kube_pod_status_phase", [1] * 6, namespace="bank", pod=p, phase="Running")
+    found = usage.usage(prom(fake), SHOP, DAY, end=DAY)
+    (row,) = found.rows
+    step = usage.step_for(DAY)
+    assert row.running == [i * step for i in (0, 1, 4, 5)]
+
+
 def test_a_failing_api_fallback_leaves_the_rest_read() -> None:
     fake = FakePrometheus()
     (known,) = deployment(fake, pods=1)

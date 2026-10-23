@@ -102,6 +102,18 @@ def test_a_cronjob_averages_its_pods_over_its_history() -> None:
     assert row["waste"]["cpu"] == pytest.approx((1.0 - 0.11) * len(u.cpu) / steps)
 
 
+def test_pods_are_counted_from_their_running_phase() -> None:
+    """CPU samples outlive a pod by `rate`'s 5 minutes; kube-state-metrics' phase
+    doesn't: a pod Running a third of the steps averages a third, whatever its CPU."""
+    u = container(pods=1, hours=24)
+    times = sorted({t for t, _ in u.cpu})
+    u.running = times[::3]
+    always = container(pods=1, hours=24)
+    always.workload = Workload("shop", "Deployment", "web")
+    api, _web = rows_of(u, always)
+    assert api["pods"] == round(len(times[::3]) / len(times), 1) == 0.3
+
+
 def test_a_gap_in_prometheus_counts_for_no_one() -> None:
     """Every pod missed six hours of scrapes: still three pods."""
     (row,) = rows_of(container(gap=(30, 24)))

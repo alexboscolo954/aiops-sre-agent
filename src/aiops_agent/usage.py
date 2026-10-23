@@ -37,6 +37,7 @@ OPTIONAL = {
     "kube_job_owner": "CronJobs behind Jobs",
     "kube_pod_container_status_last_terminated_reason": "OOM kills",
     "container_cpu_cfs_throttled_periods_total": "CPU throttling",
+    "kube_pod_status_phase": "pods running, for waste (else counted from CPU samples)",
 }
 KSM = {m for m in (*REQUIRED, *OPTIONAL) if m.startswith("kube_")}
 
@@ -245,6 +246,7 @@ class ContainerUsage:
     pods: set[str] = field(default_factory=set)
     oom_killed_pods: int = 0
     throttled: float | None = None  # share of CFS periods throttled, None: no data
+    running: list[float] = field(default_factory=list)  # a time per Running pod per step
 
 
 @dataclass
@@ -322,6 +324,15 @@ def usage(
     for key, total in periods.items():
         if total > 0:
             rows[key].throttled = throttled.get(key, 0.0) / total
+    # Pods counted from their phase, not from CPU samples: `rate` over 5 minutes
+    # outlives a pod by that long, which makes a one-minute Job look like six.
+    running: dict[tuple[str, str], set[float]] = defaultdict(set)
+    phase = selector("kube_pod_status_phase", t, 'phase="Running"')
+    for s in prom.range(phase, start, end, step):
+        pod = (label(s["metric"], "namespace"), label(s["metric"], "pod"))
+        running[pod].update(float(at) for at, v in s["values"] if float(v) > 0)
+    for (w, _), r in rows.items():
+        r.running = sorted(at for pod in r.pods for at in running.get((w.namespace, pod), ()))
     unknown = sorted(f"{n}/{p}" for n, p in pods - owners.keys())
     return Usage(list(rows.values()), unknown, error)
 

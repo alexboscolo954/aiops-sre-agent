@@ -181,12 +181,18 @@ def size(u: ContainerUsage, now: float, policy: Policy = PRODUCTION) -> Sizing:
     return s
 
 
+def pod_times(u: ContainerUsage) -> list[float]:
+    """A time per pod per step: Running pods from kube-state-metrics, else (no phase
+    series) its CPU samples, which outlive a pod by `rate`'s 5 minutes."""
+    return u.running or [t for t, _ in u.cpu or u.memory]
+
+
 def avg_pods(u: ContainerUsage, seen: list[float]) -> float:
-    """Pods per step from the container's first sample to its last, over the steps its
-    cluster has any sample (`seen`, sorted): a CronJob that runs an hour a day averages
-    a twenty-fourth of its pods, as its requests reserve, and a gap in Prometheus
-    (a scrape missed by every pod) counts for no one."""
-    times = [t for t, _ in u.cpu or u.memory]
+    """Pods per step from the container's first pod time to its last, over the steps
+    its cluster has any (`seen`, sorted): a CronJob that runs an hour a day averages a
+    twenty-fourth of its pods, as its requests reserve, and a gap in Prometheus (a
+    scrape missed by every pod) counts for no one."""
+    times = pod_times(u)
     if not times:
         return 0.0
     steps = bisect.bisect_right(seen, max(times)) - bisect.bisect_left(seen, min(times))
@@ -202,7 +208,7 @@ def rows(
     for window, found in by_window.items():
         seen: dict[str, set[float]] = {}
         for cluster, u in found:
-            seen.setdefault(cluster, set()).update(t for t, _ in u.cpu or u.memory)
+            seen.setdefault(cluster, set()).update(pod_times(u))
         steps = {cluster: sorted(times) for cluster, times in seen.items()}
         for cluster, u in found:
             w = u.workload
