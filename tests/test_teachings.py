@@ -177,6 +177,8 @@ def test_a_correction_proposes_a_teaching_and_approve_takes_it_once(
         assert f":-1: <@U0OPERATOR1> marked this Report wrong: {CORRECTION}" in replies(slack)
         ts, approve = posted(slack)["teaching_approve"]
         assert set(posted(slack)) >= {"teaching_approve", "teaching_edit", "teaching_reject"}
+        # the Hub stores the message's ts once Slack has answered the post
+        until(lambda: rows(database_url, "select slack_ts from teachings") == [(ts,)])
         ((tid_, status, text, source, slack_ts),) = rows(
             database_url, "select id, status, text, source_id, slack_ts from teachings"
         )
