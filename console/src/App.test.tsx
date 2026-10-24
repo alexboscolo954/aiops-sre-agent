@@ -126,6 +126,8 @@ test("the Cost page lists namespaces by what their requests cost, each linking i
           { group: "kind/lab", workloads: 9, requests: { cpu: 5, memory: 8 * GI }, waste: { cpu: 2, memory: GI }, cost: { requests: 148.5, waste: 74.65 } },
           { group: "kind/demo", workloads: 1, requests: { cpu: 0.1, memory: 0 }, waste: { cpu: 0, memory: 0 }, cost: { requests: 2.31, waste: 0 } },
         ],
+        groupings: ["namespace"],
+        warnings: [],
       },
     ],
   });
@@ -136,6 +138,52 @@ test("the Cost page lists namespaces by what their requests cost, each linking i
   expect(screen.getByText("150.81 USD/month")).toBeTruthy(); // the total of the requests
   const rows = screen.getAllByRole("link").map((a) => a.textContent).filter((t) => t?.startsWith("kind/"));
   expect(rows).toEqual(["kind/lab", "kind/demo"]);
+});
+
+test("the Cost page groups by team on request, with no Workloads links and the Hub's warnings as text", async () => {
+  history.replaceState(null, "", "/app/?view=cost&by=team");
+  answer({
+    "/api/v1/contracts": [200, [{ id: "demo-shop", name: "demo-shop" }]],
+    "/api/v1/contracts/demo-shop/cost": [
+      200,
+      {
+        contract: "demo-shop",
+        by: "team",
+        currency: null,
+        groups: [
+          { group: "<b>payments</b>", workloads: 3, requests: { cpu: 2, memory: 4 * GI }, waste: { cpu: 1, memory: GI }, cost: null },
+          { group: "(no team)", workloads: 1, requests: { cpu: 0.5, memory: 0 }, waste: { cpu: 0, memory: 0 }, cost: null },
+        ],
+        groupings: ["namespace", "team", "label:team"],
+        warnings: ["kind: no pod has label team; kube-state-metrics needs --metric-labels-allowlist=pods=[team]"],
+      },
+    ],
+  });
+  const { container: page } = render(<App />);
+  expect(await screen.findByText("demo-shop: Cost by team")).toBeTruthy();
+  expect(screen.getByText("<b>payments</b>")).toBeTruthy();
+  expect(page.querySelector("b")).toBeNull();
+  expect(screen.getByText(/no pod has label team/)).toBeTruthy();
+  expect(screen.queryByRole("link", { name: "(no team)" })).toBeNull();
+  const calls = (fetch as unknown as { mock: { calls: string[][] } }).mock.calls.map((c) => c[0]);
+  expect(calls).toContain("/api/v1/contracts/demo-shop/cost?by=team");
+  const options = [...page.querySelectorAll("option")].map((o) => o.textContent);
+  expect(options).toEqual(["namespace", "team", "label team"]);
+});
+
+test("another Contract's Cost page starts by namespace", async () => {
+  history.replaceState(null, "", "/app/?view=cost&by=team");
+  const body = { contract: "demo-shop", by: "team", currency: null, groups: [], groupings: ["namespace", "team"], warnings: [] };
+  answer({
+    "/api/v1/contracts": [200, [{ id: "demo-shop", name: "demo-shop" }, { id: "demo-bank", name: "demo-bank" }]],
+    "/api/v1/contracts/demo-shop/cost": [200, body],
+    "/api/v1/contracts/demo-bank/cost": [200, { ...body, contract: "demo-bank", by: "namespace", groupings: ["namespace"] }],
+  });
+  render(<App />);
+  fireEvent.change(await screen.findByLabelText("Contract"), { target: { value: "demo-bank" } });
+  await screen.findByText("demo-bank: Cost by namespace");
+  const calls = (fetch as unknown as { mock: { calls: string[][] } }).mock.calls.map((c) => c[0]);
+  expect(calls).toContain("/api/v1/contracts/demo-bank/cost?by=namespace");
 });
 
 test("without the approver cookie it links the token page", async () => {

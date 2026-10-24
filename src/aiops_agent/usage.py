@@ -14,14 +14,14 @@ import math
 import re
 import time
 from collections import defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
 from pydantic import SecretStr
 
-from aiops_agent.contracts import Cluster, Contract, Prometheus
+from aiops_agent.contracts import Cluster, Contract, Prometheus, ksm_label
 
 MAX_POINTS = 10_000  # Prometheus refuses a range query over 11,000 points per series
 CONTAINERS = 'container!="",container!="POD"'  # cAdvisor's pod-level and pause series
@@ -86,7 +86,7 @@ def _any_of(values: list[str]) -> str:
 def selector(metric: str, t: Target, *extra: str) -> str:
     """`metric{...}` limited to the Target's namespaces and labels: no other Contract's
     or cluster's series can match."""
-    ns = t.ksm_namespace if metric in KSM else "namespace"
+    ns = t.ksm_namespace if metric.startswith("kube_") else "namespace"
     matchers = [f"{ns}=~{_any_of(t.namespaces)}"]
     matchers += [f"{k}={_string(v)}" for k, v in sorted(t.labels.items())]
     return f"{metric}{{{','.join([*matchers, *extra])}}}"
@@ -247,6 +247,7 @@ class ContainerUsage:
     oom_killed_pods: int = 0
     throttled: float | None = None  # share of CFS periods throttled, None: no data
     running: list[float] = field(default_factory=list)  # a time per Running pod per step
+    labels: dict[str, str] = field(default_factory=dict)  # the allocation's, newest pod's
 
 
 @dataclass
@@ -262,11 +263,13 @@ def usage(
     window_s: int,
     end: float | None = None,
     fallback: Callable[[], dict[tuple[str, str], Workload]] | None = None,
+    labels: Sequence[str] = (),
 ) -> Usage:
     """Every container's pooled usage over the window, and the pods whose Workload
     nobody knows. `fallback` (the Kubernetes API) is asked once, only when a pod with
     usage isn't in kube-state-metrics; kube-state-metrics wins where both know a pod.
-    A fallback that fails leaves those pods unknown, never the rest unread."""
+    A fallback that fails leaves those pods unknown, never the rest unread. `labels`:
+    the pod label keys each Workload gets from kube_pod_labels, its newest pod's."""
     end = end or time.time()
     start, step = end - window_s, step_for(window_s)
     window = f"{window_s}s"
@@ -333,8 +336,46 @@ def usage(
         running[pod].update(float(at) for at, v in s["values"] if float(v) > 0)
     for (w, _), r in rows.items():
         r.running = sorted(at for pod in r.pods for at in running.get((w.namespace, pod), ()))
+    if labels:
+        newest = _newest_labels(at_end, t, window, owners, labels)
+        for (w, _), r in rows.items():
+            r.labels = newest.get(w, {})
     unknown = sorted(f"{n}/{p}" for n, p in pods - owners.keys())
     return Usage(list(rows.values()), unknown, error)
+
+
+def _newest_labels(
+    at_end: Callable[[str], list[dict[str, Any]]],
+    t: Target,
+    window: str,
+    owners: dict[tuple[str, str], Workload],
+    keys: Sequence[str],
+) -> dict[Workload, dict[str, str]]:
+    """Each Workload's labels (only `keys`) from its newest pod by kube_pod_created,
+    so a relabel shows once the rollout starts; pods without it order by name. A pod
+    can have several series (a kube-state-metrics restart, a StatefulSet pod's name
+    reused): each pod incarnation is its uid, and of one pod's series the one with
+    the most listed labels wins. ponytail: so a label removed in place shows only once
+    the old series leaves the window; an instant query at `end` would show it at once."""
+
+    def pod_id(m: dict[str, str]) -> tuple[str, str, str]:
+        return label(m, "namespace"), label(m, "pod"), m.get("uid", "")
+
+    created = {
+        pod_id(s["metric"]): float(s["value"][1])
+        for s in at_end(f"last_over_time({selector('kube_pod_created', t)}[{window}])")
+    }
+    newest: dict[Workload, tuple[Any, dict[str, str]]] = {}
+    for s in at_end(f"last_over_time({selector('kube_pod_labels', t)}[{window}])"):
+        m = s["metric"]
+        pod = pod_id(m)
+        if (w := owners.get(pod[:2])) is None:
+            continue
+        found = {k: m[ksm_label(k)] for k in keys if m.get(ksm_label(k))}
+        order = (created.get(pod, 0.0), len(found), sorted(found.items()), pod[1])
+        if w not in newest or order > newest[w][0]:
+            newest[w] = (order, found)
+    return {w: found for w, (_, found) in newest.items()}
 
 
 def _known(
@@ -392,7 +433,10 @@ def collect(c: Contract, windows: list[int], end: float | None = None) -> Collec
             t, missing = check(prom, t, end)
             # ponytail: each window queried in full (a 7d and a 14d policy read the 14d
             # range twice), so a policy's OOM kills, throttling and step are its own
-            by_window = {w: usage(prom, t, w, end, fallback=from_api) for w in windows}
+            by_window = {
+                w: usage(prom, t, w, end, fallback=from_api, labels=c.allocation.labels)
+                for w in windows
+            }
         except UsageError as e:
             out.clusters[t.cluster] = str(e)
             continue

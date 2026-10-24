@@ -6,7 +6,8 @@ listed Operator's Tailscale identity; every API call also needs the approver coo
 and answers 401 with the token page's address without it. The app is built in the
 image's Docker build (console/, Vite) into AIOPS_APP_DIR; nothing loads from a CDN,
 and its CSP allows nothing but the Hub's own origin. Model-written text never reaches
-this API yet; Sizings and risks are the Hub's own words, rendered as text all the same.
+this API yet; Sizings and risks are the Hub's own words, but pod label values come
+from client clusters: everything is rendered as text.
 """
 
 import hmac
@@ -97,7 +98,7 @@ class Workload(BaseModel):
 
 
 class Group(BaseModel):
-    group: str  # cluster/namespace
+    group: str  # cluster/namespace, a team or a label value
     workloads: int
     requests: Waste  # cores and bytes, ready or not
     waste: Waste
@@ -106,9 +107,11 @@ class Group(BaseModel):
 
 class Allocation(BaseModel):
     contract: str
-    by: Literal["namespace"]
+    by: str  # namespace, team or label:<key>
     currency: str | None = None
     groups: list[Group]  # ranked by what their requests cost
+    groupings: list[str]  # what this Contract can be grouped by
+    warnings: list[str]  # clusters where no pod has a label the grouping reads
 
 
 class ClusterStatus(BaseModel):
@@ -214,8 +217,10 @@ def router(
         return Workloads.model_validate({"contract": c.id, **sizing.report(rows, clusters, c)})
 
     @api.get("/contracts/{contract_id}/cost")
-    async def cost(contract_id: str, by: Literal["namespace"] = "namespace") -> Allocation:
+    async def cost(contract_id: str, by: str = "namespace") -> Allocation:
         c = contract(contract_id)
+        if by not in sizing.groupings(c):
+            raise HTTPException(422, f"by is one of {', '.join(sizing.groupings(c))}")
         rows, _ = await store().latest_sizings(c.id, {t.cluster for t in usage.targets(c)})
         return Allocation.model_validate({"contract": c.id, **sizing.allocate(rows, c, by)})
 

@@ -33,8 +33,8 @@ export const contracts = () => get<ContractSummary[]>("/contracts");
 export const workloads = (contract: string) =>
   get<Workloads>(`/contracts/${encodeURIComponent(contract)}/workloads`);
 
-export const cost = (contract: string) =>
-  get<Allocation>(`/contracts/${encodeURIComponent(contract)}/cost?by=namespace`);
+export const cost = (contract: string, by: string) =>
+  get<Allocation>(`/contracts/${encodeURIComponent(contract)}/cost?by=${encodeURIComponent(by)}`);
 
 export function history(contract: string, c: Container, days: 14 | 400) {
   const q = new URLSearchParams({

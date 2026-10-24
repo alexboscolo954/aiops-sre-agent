@@ -4,7 +4,6 @@
       "Allocation": {
         "properties": {
           "by": {
-            "const": "namespace",
             "title": "By",
             "type": "string"
           },
@@ -23,18 +22,34 @@
             ],
             "title": "Currency"
           },
+          "groupings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Groupings",
+            "type": "array"
+          },
           "groups": {
             "items": {
               "$ref": "#/components/schemas/Group"
             },
             "title": "Groups",
             "type": "array"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
           }
         },
         "required": [
           "contract",
           "by",
-          "groups"
+          "groups",
+          "groupings",
+          "warnings"
         ],
         "title": "Allocation",
         "type": "object"
@@ -659,7 +674,6 @@
             "name": "by",
             "required": false,
             "schema": {
-              "const": "namespace",
               "default": "namespace",
               "title": "By",
               "type": "string"

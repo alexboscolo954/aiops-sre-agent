@@ -1,6 +1,6 @@
 // Workloads per Contract (slice 9.5a): each Workload's waste and risks from the
 // Hub's latest stored Sizings, and one container's requests vs Sizing over time.
-// Cost (slice 10.2): what each namespace's requests and waste cost.
+// Cost (slice 10.2): what each namespace's, team's or label value's requests and waste cost.
 // Everything from the API is rendered as text.
 import { useEffect, useMemo, useState } from "react";
 import * as api from "./api";
@@ -24,6 +24,7 @@ export default function App() {
   const [contracts, setContracts] = useState<api.ContractSummary[]>([]);
   const [contract, setContract] = useParam("contract");
   const [view] = useParam("view");
+  const [by, setBy] = useParam("by");
   const [data, setData] = useState<Workloads | null>(null);
   const [allocation, setAllocation] = useState<Allocation | null>(null);
   const [error, setError] = useState<Error | null>(null);
@@ -37,9 +38,9 @@ export default function App() {
     if (!shown) return;
     setData(null);
     setAllocation(null);
-    if (costView) api.cost(shown).then(setAllocation, setError);
+    if (costView) api.cost(shown, by || "namespace").then(setAllocation, setError);
     else api.workloads(shown).then(setData, setError);
-  }, [shown, costView]);
+  }, [shown, costView, by]);
   const here = shown ? `contract=${encodeURIComponent(shown)}` : "";
 
   return (
@@ -67,7 +68,13 @@ export default function App() {
         {contracts.length > 1 && (
           <label>
             Contract{" "}
-            <select value={shown} onChange={(e) => setContract(e.target.value)}>
+            <select
+              value={shown}
+              onChange={(e) => {
+                setBy(""); // another Contract may not have this grouping
+                setContract(e.target.value);
+              }}
+            >
               {contracts.map((c) => (
                 <option key={c.id} value={c.id}>{c.name}</option>
               ))}
@@ -75,7 +82,7 @@ export default function App() {
           </label>
         )}
         {data && !costView && <Page contract={shown} data={data} />}
-        {allocation && costView && <CostPage data={allocation} />}
+        {allocation && costView && <CostPage data={allocation} setBy={setBy} />}
       </main>
     </>
   );
@@ -190,13 +197,27 @@ function Page({ contract, data }: { contract: string; data: Workloads }) {
   );
 }
 
-function CostPage({ data }: { data: Allocation }) {
+function CostPage({ data, setBy }: { data: Allocation; setBy: (v: string) => void }) {
   const currency = data.currency;
   const total = data.groups.reduce((sum, g) => sum + (g.cost?.requests ?? 0), 0);
+  const label = data.by.replace(/^label:/, "label ");
   return (
     <>
-      <h1>{data.contract}: Cost by namespace</h1>
+      <h1>{data.contract}: Cost by {label}</h1>
       <p className="hint">Requests in the Contract's namespaces, not the nodes; waste is the requests above the Sizings.</p>
+      {data.groupings.length > 1 && (
+        <label>
+          Group by{" "}
+          <select value={data.by} onChange={(e) => setBy(e.target.value)}>
+            {data.groupings.map((g) => (
+              <option key={g} value={g}>{g.replace(/^label:/, "label ")}</option>
+            ))}
+          </select>
+        </label>
+      )}
+      {data.warnings.map((w) => (
+        <p key={w} className="notice">{w}</p>
+      ))}
       {currency && (
         <p className="total">
           Requests: <strong>{money(total, currency)}</strong>
@@ -206,7 +227,7 @@ function CostPage({ data }: { data: Allocation }) {
       <table>
         <thead>
           <tr>
-            <th>Namespace</th>
+            <th>{label[0].toUpperCase() + label.slice(1)}</th>
             <th>Workloads</th>
             <th>Requests</th>
             <th>Waste</th>
@@ -218,9 +239,7 @@ function CostPage({ data }: { data: Allocation }) {
             const q = new URLSearchParams({ contract: data.contract, cluster, namespace });
             return (
               <tr key={g.group}>
-                <td>
-                  <a href={`/app/?${q}`}>{g.group}</a>
-                </td>
+                <td>{data.by === "namespace" ? <a href={`/app/?${q}`}>{g.group}</a> : g.group}</td>
                 <td>{g.workloads}</td>
                 <td>
                   {currency && g.cost

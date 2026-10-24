@@ -222,6 +222,9 @@ async def sizing_cost(contract_id: str, by: str, as_json: bool) -> int:
     cluster's latest stored run."""
     settings = Settings()
     c = contract(settings, contract_id)
+    if by not in sizing.groupings(c):
+        print(f"--by: {c.id} groups by {', '.join(sizing.groupings(c))}", file=sys.stderr)
+        return 2
     async with connect(_store_url(settings)) as pool:
         store = Store(pool)
         await store.migrate()
@@ -245,6 +248,8 @@ async def sizing_cost(contract_id: str, by: str, as_json: bool) -> int:
             asked, wasted = sizing.quantities(g["requests"]), sizing.quantities(g["waste"])
             line = f"requests {asked}, waste {wasted}"
         print(f"{g['group']}: {line}, {g['workloads']} Workloads")
+    for w in out["warnings"]:
+        print(f"warning: {w}", file=sys.stderr)
     return 0
 
 
@@ -448,7 +453,7 @@ def main(argv: list[str] | None = None) -> int:
     zw.add_argument("--json", action="store_true")
     zc = zsub.add_parser("cost", help="requests and waste grouped, by what they cost")
     zc.add_argument("--contract", required=True, help="a Contract id in AIOPS_CONTRACTS_DIR")
-    zc.add_argument("--by", choices=sizing.GROUPINGS, default="namespace")
+    zc.add_argument("--by", default="namespace", help="namespace, team or label:<key>")
     zc.add_argument("--json", action="store_true")
     zd = zsub.add_parser("digest", help="the weekly Sizing digest, now")
     zd.add_argument("--contract", required=True, help="a Contract id in AIOPS_CONTRACTS_DIR")

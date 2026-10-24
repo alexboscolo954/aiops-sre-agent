@@ -30,3 +30,6 @@ prometheus:
           resources:
             requests:
               storage: 20Gi
+kube-state-metrics:
+  metricLabelsAllowlist:
+  - pods=[team]            # kube_pod_labels carries label_team, for Cost by team (10.2b)

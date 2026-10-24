@@ -78,17 +78,18 @@ export interface components {
     schemas: {
         /** Allocation */
         Allocation: {
-            /**
-             * By
-             * @constant
-             */
-            by: "namespace";
+            /** By */
+            by: string;
             /** Contract */
             contract: string;
             /** Currency */
             currency?: string | null;
+            /** Groupings */
+            groupings: string[];
             /** Groups */
             groups: components["schemas"]["Group"][];
+            /** Warnings */
+            warnings: string[];
         };
         /** ClusterStatus */
         ClusterStatus: {
@@ -299,7 +300,7 @@ export interface operations {
     cost_api_v1_contracts__contract_id__cost_get: {
         parameters: {
             query?: {
-                by?: "namespace";
+                by?: string;
             };
             header?: never;
             path: {

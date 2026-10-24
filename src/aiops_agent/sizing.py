@@ -224,6 +224,8 @@ def rows(
                 "container": u.container,
                 "policy": c.sizing.policy_for(cluster, w.namespace, w.kind, w.name, u.container),
             }
+            if c.allocation.labels:  # stored since 10.2b; teams are matched when shown
+                row["labels"] = u.labels
             # What its requests cost, whatever its state (stored since 10.1)
             pods = avg_pods(u, steps[cluster])
             row["requests"] = {name: u.requests.get(name) for name in ("cpu", "memory")}
@@ -369,16 +371,54 @@ def report(
     return out
 
 
-GROUPINGS = ("namespace",)  # 10.2b adds team and label:<key>
+def groupings(c: Contract) -> list[str]:
+    """What allocate() can group the Contract's rows by."""
+    teams = ["team"] if c.allocation.teams else []
+    return ["namespace", *teams, *(f"label:{k}" for k in c.allocation.labels)]
+
+
+def _group(r: dict[str, Any], c: Contract, by: str) -> str:
+    if by == "namespace":
+        return f"{r['cluster']}/{r['namespace']}"
+    labels: dict[str, str] = r.get("labels") or {}  # rows stored before 10.2b have none
+    if by == "team":
+        return c.allocation.team(r["cluster"], r["namespace"], labels)
+    key = by.removeprefix("label:")
+    return labels.get(key, f"(no {key})")
+
+
+def _warnings(rows: list[dict[str, Any]], c: Contract, by: str) -> list[str]:
+    """A cluster where no pod has a label the grouping reads: kube-state-metrics
+    doesn't allowlist it, or nobody sets it."""
+    if by == "namespace":
+        return []
+    keys = (
+        sorted({k for t in c.allocation.teams for k in t.labels})
+        if by == "team"
+        else [by.removeprefix("label:")]
+    )
+    seen: dict[str, set[str]] = {}
+    for r in rows:
+        seen.setdefault(r["cluster"], set()).update(r.get("labels") or {})
+    return [
+        f"{cluster}: no pod has label {key}; kube-state-metrics needs "
+        f"--metric-labels-allowlist=pods=[{key}]"
+        for cluster, found in sorted(seen.items())
+        for key in keys
+        if key not in found
+    ]
 
 
 def allocate(rows: list[dict[str, Any]], c: Contract, by: str = "namespace") -> dict[str, Any]:
-    """Stored rows grouped (slice 10.2): each group's requests (every container, ready
-    or not) and waste (sized ones), in money when the Contract has prices, ranked by
-    what its requests cost. A namespace is its cluster's: kind/lab, not lab."""
+    """Stored rows grouped (slice 10.2) by namespace, team or a label: each group's
+    requests (every container, ready or not) and waste (sized ones), in money when
+    the Contract has prices, ranked by what its requests cost. A namespace is its
+    cluster's (kind/lab, not lab); a team or a label value spans clusters."""
+    if by not in groupings(c):
+        raise ValueError(f"{c.id} groups by {', '.join(groupings(c))}, not {by!r}")
     groups: dict[str, dict[str, Any]] = {}
     for r in rows:
-        key = f"{r['cluster']}/{r['namespace']}"
+        key = _group(r, c, by)
         g = groups.setdefault(
             key,
             {
@@ -410,7 +450,13 @@ def allocate(rows: list[dict[str, Any]], c: Contract, by: str = "namespace") -> 
             g["group"],
         )
     )
-    return {"by": by, "currency": c.prices.currency if c.prices else None, "groups": out}
+    return {
+        "by": by,
+        "currency": c.prices.currency if c.prices else None,
+        "groups": out,
+        "groupings": groupings(c),
+        "warnings": _warnings(rows, c, by),
+    }
 
 
 HOURLY = 3600.0  # seconds between a Contract's stored Sizing runs

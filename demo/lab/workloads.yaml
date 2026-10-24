@@ -12,7 +12,7 @@ spec:
     matchLabels: {app: web}
   template:
     metadata:
-      labels: {app: web}
+      labels: {app: web, team: storefront}
     spec:
       containers:
       - name: app
@@ -40,7 +40,7 @@ spec:
     matchLabels: {app: api}
   template:
     metadata:
-      labels: {app: api}
+      labels: {app: api, team: storefront}
     spec:
       containers:
       - name: app
@@ -68,7 +68,7 @@ spec:
     matchLabels: {app: spiky}
   template:
     metadata:
-      labels: {app: spiky}
+      labels: {app: spiky, team: payments}
     spec:
       containers:
       - name: app
@@ -96,7 +96,7 @@ spec:
     matchLabels: {app: leaky}
   template:
     metadata:
-      labels: {app: leaky}
+      labels: {app: leaky, team: payments}
     spec:
       containers:
       - name: app
@@ -126,7 +126,7 @@ spec:
     matchLabels: {app: throttled}
   template:
     metadata:
-      labels: {app: throttled}
+      labels: {app: throttled, team: payments}
     spec:
       containers:
       - name: app
@@ -182,7 +182,7 @@ spec:
     matchLabels: {app: db}
   template:
     metadata:
-      labels: {app: db}
+      labels: {app: db, team: data}
     spec:
       containers:
       - name: app
@@ -211,7 +211,7 @@ spec:
     matchLabels: {app: agent}
   template:
     metadata:
-      labels: {app: agent}
+      labels: {app: agent, team: platform}
     spec:
       containers:
       - name: app
@@ -241,6 +241,8 @@ spec:
   jobTemplate:
     spec:
       template:
+        metadata:
+          labels: {team: data}
         spec:
           containers:
           - name: app

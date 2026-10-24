@@ -227,6 +227,39 @@ def test_cost_groups_only_the_contracts_own_namespaces(
     assert wrong.status_code == 422
 
 
+def test_cost_by_team_and_label_from_the_stored_labels(
+    settings: Settings, fake_cluster: Any, database_url: str, app_dir: Path
+) -> None:
+    """Teams are matched when shown, from the labels stored on each row (slice 10.2b)."""
+    asked = {"requests": {"cpu": 2.0, "memory": 0.0}}
+
+    async def go() -> None:  # one run, two rows
+        async with connect(database_url) as pool:
+            store = Store(pool)
+            await store.migrate()
+            pay = row("api", labels={"team": "pay"}, **asked)
+            await stored(store, "acme", NOW, {"test": None}, pay, row("web", **asked))
+
+    asyncio.run(go())
+    settings.database_url = SecretStr(database_url)
+    settings.console_operators = {OPERATOR}
+    acme = {
+        "integrations": INTEGRATIONS,
+        "allocation": {
+            "labels": ["team"],
+            "teams": [{"team": "payments", "labels": {"team": "pay"}}],
+        },
+    }
+    with client(settings, fake_cluster, acme=acme) as c:
+        teams = c.get("/api/v1/contracts/acme/cost?by=team", headers=VIEW).json()
+        label = c.get("/api/v1/contracts/acme/cost?by=label:team", headers=VIEW).json()
+        wrong = c.get("/api/v1/contracts/acme/cost?by=label:owner", headers=VIEW)
+    assert {g["group"] for g in teams["groups"]} == {"payments", "(no team)"}
+    assert teams["groupings"] == ["namespace", "team", "label:team"] and teams["warnings"] == []
+    assert {g["group"] for g in label["groups"]} == {"pay", "(no team)"}
+    assert wrong.status_code == 422
+
+
 def test_history_is_hourly_for_14_days_and_daily_for_400(
     settings: Settings, fake_cluster: Any, database_url: str, app_dir: Path
 ) -> None:

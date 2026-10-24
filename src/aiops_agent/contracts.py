@@ -514,6 +514,64 @@ class DataPolicy(Strict):
     mask: Mask | None = None
 
 
+# A Kubernetes label key: an optional DNS prefix and a name (app.kubernetes.io/team)
+LabelKey = Annotated[
+    str,
+    Field(pattern=r"^([a-z0-9]([-a-z0-9.]*[a-z0-9])?/)?[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?$"),
+]
+NO_TEAM = "(no team)"
+
+
+def ksm_label(key: str) -> str:
+    """kube-state-metrics' name for a pod label on kube_pod_labels."""
+    return "label_" + re.sub(r"[^a-zA-Z0-9_]", "_", key)
+
+
+class TeamRule(Strict):
+    """Which team a Workload's cost goes to (slice 10.2b). Every field set must match;
+    namespace takes a glob, labels are values of the allocation's labels."""
+
+    team: str = Field(min_length=1, pattern=r"^[^(]")  # "(no team)" is for none
+    cluster: str | None = None
+    namespace: str | None = None
+    labels: dict[str, str] = {}
+
+    @model_validator(mode="after")
+    def _matches_something(self) -> "TeamRule":
+        if self.cluster is None and self.namespace is None and not self.labels:
+            raise ValueError("a team rule needs cluster, namespace or labels")
+        return self
+
+    def matches(self, cluster: str, namespace: str, labels: dict[str, str]) -> bool:
+        return (
+            self.cluster in (None, cluster)
+            and (self.namespace is None or fnmatchcase(namespace, self.namespace))
+            and all(labels.get(k) == v for k, v in self.labels.items())
+        )
+
+
+class Allocation(Strict):
+    """Cost by label and team (slice 10.2b): the pod labels the Hub reads from
+    kube-state-metrics' kube_pod_labels (which must allowlist them), and the team
+    rules, first match wins."""
+
+    labels: list[LabelKey] = []
+    teams: list[TeamRule] = []
+
+    @model_validator(mode="after")
+    def _known(self) -> "Allocation":
+        names = [ksm_label(k) for k in self.labels]
+        if clash := sorted({k for k in self.labels if names.count(ksm_label(k)) > 1}):
+            raise ValueError(f"labels {clash} are one label in kube-state-metrics")
+        for i, r in enumerate(self.teams):
+            if unknown := sorted(set(r.labels) - set(self.labels)):
+                raise ValueError(f"team rule {i + 1}: labels {unknown} are not in labels")
+        return self
+
+    def team(self, cluster: str, namespace: str, labels: dict[str, str]) -> str:
+        return next((r.team for r in self.teams if r.matches(cluster, namespace, labels)), NO_TEAM)
+
+
 class Contract(Strict):
     id: Slug
     name: str
@@ -532,6 +590,7 @@ class Contract(Strict):
     sizing: SizingConfig = SizingConfig()
     data_policy: DataPolicy = DataPolicy()
     prices: Prices | None = None  # none: Sizings in cores and GiB, no money
+    allocation: Allocation = Allocation()
 
     _dir: Path = PrivateAttr(default=Path())
     _secrets: dict[str, SecretStr] = PrivateAttr(default_factory=dict)
@@ -562,6 +621,9 @@ class Contract(Strict):
         for i, r in enumerate(self.sizing.rules):
             if r.cluster is not None and r.cluster not in groups["cluster"]:
                 raise ValueError(f"sizing rule {i + 1}: no cluster {r.cluster!r}")
+        for i, t in enumerate(self.allocation.teams):
+            if t.cluster is not None and t.cluster not in groups["cluster"]:
+                raise ValueError(f"team rule {i + 1}: no cluster {t.cluster!r}")
         shared = any(isinstance(i, Prometheus) for i in self.integrations)
         if any(isinstance(i, Sizings) for i in self.integrations) and not any(
             shared or c.prometheus_url for c in self.clusters
