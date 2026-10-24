@@ -369,6 +369,50 @@ def report(
     return out
 
 
+GROUPINGS = ("namespace",)  # 10.2b adds team and label:<key>
+
+
+def allocate(rows: list[dict[str, Any]], c: Contract, by: str = "namespace") -> dict[str, Any]:
+    """Stored rows grouped (slice 10.2): each group's requests (every container, ready
+    or not) and waste (sized ones), in money when the Contract has prices, ranked by
+    what its requests cost. A namespace is its cluster's: kind/lab, not lab."""
+    groups: dict[str, dict[str, Any]] = {}
+    for r in rows:
+        key = f"{r['cluster']}/{r['namespace']}"
+        g = groups.setdefault(
+            key,
+            {
+                "group": key,
+                "workloads": set(),
+                "requests": {"cpu": 0.0, "memory": 0.0},
+                "waste": {"cpu": 0.0, "memory": 0.0},
+                "cost": {"requests": 0.0, "waste": 0.0},
+            },
+        )
+        g["workloads"].add(r["workload"].rsplit("/", 1)[0])
+        cpu, memory = requested(r)
+        waste = r.get("waste", {})  # only sized rows carry it
+        g["requests"]["cpu"] += cpu
+        g["requests"]["memory"] += memory
+        for res in ("cpu", "memory"):
+            g["waste"][res] += waste.get(res, 0.0)
+        if p := c.price(r["cluster"]):
+            g["cost"]["requests"] += monthly(p, cpu, memory)
+            g["cost"]["waste"] += monthly(p, waste.get("cpu", 0.0), waste.get("memory", 0.0))
+    priced = c.prices is not None
+    out = [
+        {**g, "workloads": len(g["workloads"]), "cost": g["cost"] if priced else None}
+        for g in groups.values()
+    ]
+    out.sort(
+        key=lambda g: (
+            -(g["cost"]["requests"] if priced else rank({"waste": g["requests"]})),
+            g["group"],
+        )
+    )
+    return {"by": by, "currency": c.prices.currency if c.prices else None, "groups": out}
+
+
 HOURLY = 3600.0  # seconds between a Contract's stored Sizing runs
 
 

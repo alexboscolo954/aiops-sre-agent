@@ -1,9 +1,10 @@
 // Workloads per Contract (slice 9.5a): each Workload's waste and risks from the
 // Hub's latest stored Sizings, and one container's requests vs Sizing over time.
+// Cost (slice 10.2): what each namespace's requests and waste cost.
 // Everything from the API is rendered as text.
 import { useEffect, useMemo, useState } from "react";
 import * as api from "./api";
-import type { Container, Point, Workload, Workloads } from "./api";
+import type { Allocation, Container, Point, Workload, Workloads } from "./api";
 import Chart from "./Chart";
 import { cores, cpu, gib, memory, money, rank, when } from "./format";
 
@@ -22,18 +23,24 @@ function useParam(name: string): [string, (v: string) => void] {
 export default function App() {
   const [contracts, setContracts] = useState<api.ContractSummary[]>([]);
   const [contract, setContract] = useParam("contract");
+  const [view] = useParam("view");
   const [data, setData] = useState<Workloads | null>(null);
+  const [allocation, setAllocation] = useState<Allocation | null>(null);
   const [error, setError] = useState<Error | null>(null);
 
   useEffect(() => {
     api.contracts().then(setContracts, setError);
   }, []);
   const shown = contract || contracts[0]?.id || "";
+  const costView = view === "cost";
   useEffect(() => {
     if (!shown) return;
     setData(null);
-    api.workloads(shown).then(setData, setError);
-  }, [shown]);
+    setAllocation(null);
+    if (costView) api.cost(shown).then(setAllocation, setError);
+    else api.workloads(shown).then(setData, setError);
+  }, [shown, costView]);
+  const here = shown ? `contract=${encodeURIComponent(shown)}` : "";
 
   return (
     <>
@@ -43,7 +50,8 @@ export default function App() {
           <a href="/console">Investigations</a>
           <a href="/console/teachings">Teachings</a>
           <a href="/console/health">Health</a>
-          <a href="/app/" aria-current="page">Workloads</a>
+          <a href={`/app/?${here}`} aria-current={costView ? undefined : "page"}>Workloads</a>
+          <a href={`/app/?${here}&view=cost`} aria-current={costView ? "page" : undefined}>Cost</a>
           <a href="/console/token">Approver token</a>
         </nav>
       </header>
@@ -66,7 +74,8 @@ export default function App() {
             </select>
           </label>
         )}
-        {data && <Page contract={shown} data={data} />}
+        {data && !costView && <Page contract={shown} data={data} />}
+        {allocation && costView && <CostPage data={allocation} />}
       </main>
     </>
   );
@@ -177,6 +186,57 @@ function Page({ contract, data }: { contract: string; data: Workloads }) {
         </p>
       )}
       {data.excluded.length > 0 && <p>Excluded: {data.excluded.map((c) => c.workload).join(", ")}</p>}
+    </>
+  );
+}
+
+function CostPage({ data }: { data: Allocation }) {
+  const currency = data.currency;
+  const total = data.groups.reduce((sum, g) => sum + (g.cost?.requests ?? 0), 0);
+  return (
+    <>
+      <h1>{data.contract}: Cost by namespace</h1>
+      <p className="hint">Requests in the Contract's namespaces, not the nodes; waste is the requests above the Sizings.</p>
+      {currency && (
+        <p className="total">
+          Requests: <strong>{money(total, currency)}</strong>
+        </p>
+      )}
+      {data.groups.length === 0 && <p>No Sizings stored yet: the Hub stores them hourly.</p>}
+      <table>
+        <thead>
+          <tr>
+            <th>Namespace</th>
+            <th>Workloads</th>
+            <th>Requests</th>
+            <th>Waste</th>
+          </tr>
+        </thead>
+        <tbody>
+          {data.groups.map((g) => {
+            const [cluster, namespace] = g.group.split("/");
+            const q = new URLSearchParams({ contract: data.contract, cluster, namespace });
+            return (
+              <tr key={g.group}>
+                <td>
+                  <a href={`/app/?${q}`}>{g.group}</a>
+                </td>
+                <td>{g.workloads}</td>
+                <td>
+                  {currency && g.cost
+                    ? money(g.cost.requests, currency)
+                    : `${cores(g.requests.cpu ?? 0)}, ${gib(g.requests.memory ?? 0)}`}
+                </td>
+                <td>
+                  {currency && g.cost
+                    ? money(g.cost.waste, currency)
+                    : `${cores(g.waste.cpu ?? 0)}, ${gib(g.waste.memory ?? 0)}`}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </>
   );
 }

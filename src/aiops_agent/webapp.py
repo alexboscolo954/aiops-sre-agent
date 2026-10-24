@@ -96,6 +96,21 @@ class Workload(BaseModel):
     containers: list[Container]
 
 
+class Group(BaseModel):
+    group: str  # cluster/namespace
+    workloads: int
+    requests: Waste  # cores and bytes, ready or not
+    waste: Waste
+    cost: Cost | None = None  # None: the Contract has no prices
+
+
+class Allocation(BaseModel):
+    contract: str
+    by: Literal["namespace"]
+    currency: str | None = None
+    groups: list[Group]  # ranked by what their requests cost
+
+
 class ClusterStatus(BaseModel):
     at: float | None  # the latest run that read it
     error: str | None  # why the runs since failed
@@ -197,6 +212,12 @@ def router(
         c = contract(contract_id)
         rows, clusters = await store().latest_sizings(c.id, {t.cluster for t in usage.targets(c)})
         return Workloads.model_validate({"contract": c.id, **sizing.report(rows, clusters, c)})
+
+    @api.get("/contracts/{contract_id}/cost")
+    async def cost(contract_id: str, by: Literal["namespace"] = "namespace") -> Allocation:
+        c = contract(contract_id)
+        rows, _ = await store().latest_sizings(c.id, {t.cluster for t in usage.targets(c)})
+        return Allocation.model_validate({"contract": c.id, **sizing.allocate(rows, c, by)})
 
     @api.get("/contracts/{contract_id}/history")
     async def history(

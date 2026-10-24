@@ -1,6 +1,44 @@
 {
   "components": {
     "schemas": {
+      "Allocation": {
+        "properties": {
+          "by": {
+            "const": "namespace",
+            "title": "By",
+            "type": "string"
+          },
+          "contract": {
+            "title": "Contract",
+            "type": "string"
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currency"
+          },
+          "groups": {
+            "items": {
+              "$ref": "#/components/schemas/Group"
+            },
+            "title": "Groups",
+            "type": "array"
+          }
+        },
+        "required": [
+          "contract",
+          "by",
+          "groups"
+        ],
+        "title": "Allocation",
+        "type": "object"
+      },
       "ClusterStatus": {
         "properties": {
           "at": {
@@ -204,6 +242,42 @@
           "requests"
         ],
         "title": "Cost",
+        "type": "object"
+      },
+      "Group": {
+        "properties": {
+          "cost": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Cost"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "group": {
+            "title": "Group",
+            "type": "string"
+          },
+          "requests": {
+            "$ref": "#/components/schemas/Waste"
+          },
+          "waste": {
+            "$ref": "#/components/schemas/Waste"
+          },
+          "workloads": {
+            "title": "Workloads",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "group",
+          "workloads",
+          "requests",
+          "waste"
+        ],
+        "title": "Group",
         "type": "object"
       },
       "HTTPValidationError": {
@@ -565,6 +639,56 @@
           }
         },
         "summary": "Contracts"
+      }
+    },
+    "/api/v1/contracts/{contract_id}/cost": {
+      "get": {
+        "operationId": "cost_api_v1_contracts__contract_id__cost_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "contract_id",
+            "required": true,
+            "schema": {
+              "title": "Contract Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "by",
+            "required": false,
+            "schema": {
+              "const": "namespace",
+              "default": "namespace",
+              "title": "By",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Allocation"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cost"
       }
     },
     "/api/v1/contracts/{contract_id}/history": {

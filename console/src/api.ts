@@ -8,6 +8,8 @@ export type Workload = Schemas["Workload"];
 export type Container = Schemas["Container"];
 export type Point = Schemas["Point"];
 export type ContractSummary = Schemas["ContractSummary"];
+export type Allocation = Schemas["Allocation"];
+export type Group = Schemas["Group"];
 
 /** The API answered 401: this browser hasn't pasted the approver token. */
 export class NeedsToken extends Error {
@@ -30,6 +32,9 @@ export const contracts = () => get<ContractSummary[]>("/contracts");
 
 export const workloads = (contract: string) =>
   get<Workloads>(`/contracts/${encodeURIComponent(contract)}/workloads`);
+
+export const cost = (contract: string) =>
+  get<Allocation>(`/contracts/${encodeURIComponent(contract)}/cost?by=namespace`);
 
 export function history(contract: string, c: Container, days: 14 | 400) {
   const q = new URLSearchParams({

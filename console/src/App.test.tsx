@@ -112,6 +112,32 @@ test("with prices, Workloads rank by the monthly cost of their waste and show it
   expect(screen.queryByText(/a core ranks like 4 GiB/)).toBeNull();
 });
 
+test("the Cost page lists namespaces by what their requests cost, each linking its Workloads", async () => {
+  history.replaceState(null, "", "/app/?view=cost");
+  answer({
+    "/api/v1/contracts": [200, [{ id: "demo-shop", name: "demo-shop" }]],
+    "/api/v1/contracts/demo-shop/cost": [
+      200,
+      {
+        contract: "demo-shop",
+        by: "namespace",
+        currency: "USD",
+        groups: [
+          { group: "kind/lab", workloads: 9, requests: { cpu: 5, memory: 8 * GI }, waste: { cpu: 2, memory: GI }, cost: { requests: 148.5, waste: 74.65 } },
+          { group: "kind/demo", workloads: 1, requests: { cpu: 0.1, memory: 0 }, waste: { cpu: 0, memory: 0 }, cost: { requests: 2.31, waste: 0 } },
+        ],
+      },
+    ],
+  });
+  render(<App />);
+  const lab = await screen.findByRole("link", { name: "kind/lab" });
+  expect(lab.getAttribute("href")).toBe("/app/?contract=demo-shop&cluster=kind&namespace=lab");
+  expect(screen.getByText("74.65 USD/month")).toBeTruthy();
+  expect(screen.getByText("150.81 USD/month")).toBeTruthy(); // the total of the requests
+  const rows = screen.getAllByRole("link").map((a) => a.textContent).filter((t) => t?.startsWith("kind/"));
+  expect(rows).toEqual(["kind/lab", "kind/demo"]);
+});
+
 test("without the approver cookie it links the token page", async () => {
   answer({ "/api/v1/contracts": [401, { detail: { token_url: "/console/token" } }] });
   render(<App />);
