@@ -352,8 +352,13 @@ def probes(contract: Contract) -> list[tuple[str, str | None, dict[str, Any]]]:
             for c in contract.clusters:
                 where = {"cluster": c.name, "namespace": sorted(c.namespaces)[0]}
                 checks.append((f"kubernetes {c.name}", "kubernetes_list_deployments", where))
-        elif isinstance(i, Prometheus):
+        elif isinstance(i, Prometheus) and not contract.clusters:
             checks.append(("prometheus", "prometheus_query", {"promql": "vector(1)"}))
+        elif isinstance(i, Prometheus):  # one per cluster with PromQL tools
+            for t in usage.targets(contract):
+                if not t.labels and t.cluster not in contract.shared_stores:
+                    where = {"cluster": t.cluster, "promql": "vector(1)"}
+                    checks.append((f"prometheus {t.cluster}", "prometheus_query", where))
         elif isinstance(i, Runbooks):
             checks.append(("runbooks", "runbooks_search_runbooks", {"keywords": "health"}))
         elif isinstance(i, Jira):
@@ -394,8 +399,14 @@ def integration_server(
         limit = settings.tool_output_limit
         return kubernetes.build_server(contract, integration, limit, k8s_apis), kubernetes.ACCESS
     if isinstance(integration, Prometheus):
+        if contract.clusters:  # each cluster's own Prometheus, none on a shared store
+            found = usage.targets(contract)
+            off = {t.cluster for t in found if t.labels} | contract.shared_stores
+            stores = {t.cluster: (t.url, t.token) for t in found if t.cluster not in off}
+            shared = [t.cluster for t in found if t.cluster in off]
+            return prometheus.build_server(stores, True, shared=shared), prometheus.ACCESS
         token = contract.secret(integration.token_secret) if integration.token_secret else None
-        return prometheus.build_server(integration.url, token), prometheus.ACCESS
+        return prometheus.build_server({"": (integration.url, token)}, False), prometheus.ACCESS
     if isinstance(integration, Runbooks):
         return runbooks.build_server(contract.runbook_dirs), runbooks.ACCESS
     if isinstance(integration, Jira):

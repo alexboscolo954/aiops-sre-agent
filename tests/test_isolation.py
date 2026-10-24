@@ -594,3 +594,52 @@ async def test_sizing_for_workload_reads_only_its_own_contracts(
             (w,) = mine.structured_content["workloads"]
             assert w["workload"] == f"{cluster}/{namespace}/Deployment/api"
             assert cross.is_error
+
+
+@pytest.mark.anyio
+async def test_promql_names_only_the_contracts_own_clusters(
+    two_contracts: Contracts, settings: Settings
+) -> None:
+    """Each demo Contract's prometheus tools take only its own cluster, and a call
+    naming the other's is refused before any request."""
+    for cid, c in two_contracts.items():
+        own = c.clusters[0].name
+        other = next(o.clusters[0].name for k, o in two_contracts.items() if k != cid)
+        prom = next(i for i in c.integrations if i.name == "prometheus")
+        server, _ = agent.integration_server(c, prom, settings)
+        async with Client(server) as client:
+            tools = {t.name: t for t in await client.list_tools()}
+            enum = tools["query"].input_schema["properties"]["cluster"]["enum"]
+            r = await client.call_tool(
+                "query", {"cluster": other, "promql": "up"}, raise_on_error=False
+            )
+        assert enum == [own]
+        assert r.is_error
+
+
+@pytest.mark.anyio
+async def test_no_promql_on_a_prometheus_another_contract_reads(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any, settings: Settings
+) -> None:
+    """demo-bank pointed at demo-shop's Prometheus, in its own namespaces: loading
+    allows it (the Hub's queries are scoped), but free PromQL could read the other's
+    series, so neither gets PromQL tools or a Prometheus check; the Kubernetes tools stay."""
+    import shutil
+
+    from tests.conftest import DEMO_CONTRACTS, use_age_keys
+
+    use_age_keys(monkeypatch, tmp_path, "demo-shop", "demo-bank")
+    copy = tmp_path / "contracts"
+    shutil.copytree(DEMO_CONTRACTS, copy, ignore=shutil.ignore_patterns("test-keys"))
+    bank = copy / "demo-bank" / "contract.yaml"
+    bank.write_text(bank.read_text().replace("http://localhost:9091", "http://localhost:9090/"))
+    loaded = contracts.load(copy)
+    for c in loaded.values():
+        assert c.shared_stores == {c.clusters[0].name}
+        prom = next(i for i in c.integrations if i.name == "prometheus")
+        server, _ = agent.integration_server(c, prom, settings)
+        async with Client(server) as client:
+            assert await client.list_tools() == []
+        assert not [p for p in agent.probes(c) if p[1] == "prometheus_query"]
+    apart = contracts.load(DEMO_CONTRACTS)  # their own Prometheus each: PromQL stays
+    assert all(not c.shared_stores for c in apart.values())

@@ -497,6 +497,8 @@ class Contract(Strict):
     _dir: Path = PrivateAttr(default=Path())
     _secrets: dict[str, SecretStr] = PrivateAttr(default_factory=dict)
     _runbook_dirs: list[Path] = PrivateAttr(default_factory=list)
+    # Its clusters whose Prometheus another loaded Contract reads too: no PromQL there
+    _shared_stores: set[str] = PrivateAttr(default_factory=set)
 
     @model_validator(mode="after")
     def _consistent(self) -> "Contract":
@@ -531,6 +533,11 @@ class Contract(Strict):
     @property
     def dir(self) -> Path:
         return self._dir
+
+    @property
+    def shared_stores(self) -> set[str]:
+        """Clusters whose Prometheus another Contract also reads (set by load())."""
+        return self._shared_stores
 
     @property
     def runbook_dirs(self) -> list[Path]:
@@ -609,6 +616,7 @@ def load(directory: Path) -> dict[str, Contract]:
                 "each Contract needs its own key"
             )
     problems += _shared_metrics(directory, contracts.values())
+    _mark_shared_stores(contracts.values())
     problems += _client_data_in_shared(directory / SHARED, contracts.values())
     if not contracts and not problems:
         problems.append(f"{directory}: no */contract.yaml found")
@@ -631,6 +639,25 @@ def _could_match_the_same(a: dict[str, str], b: dict[str, str]) -> bool:
     """Two sets of label matchers select disjoint series only when they give one label
     two different values; {cluster: eu} also matches every {cluster: eu, env: prod} series."""
     return all(a[k] == b[k] for k in a.keys() & b.keys())
+
+
+def _mark_shared_stores(loaded: Any) -> None:
+    """Each Contract's clusters whose Prometheus another Contract reads too, even in
+    other namespaces: the agent's free PromQL there could read that Contract's series
+    (slice 9.6b), where the Hub's own queries are scoped."""
+    readers: dict[str, set[str]] = defaultdict(set)
+    for c in loaded:
+        shared = next((i.url for i in c.integrations if isinstance(i, Prometheus)), None)
+        for cl in c.clusters:
+            if url := cl.prometheus_url or shared:
+                readers[_store(url)].add(c.id)
+    for c in loaded:
+        shared = next((i.url for i in c.integrations if isinstance(i, Prometheus)), None)
+        c._shared_stores = {
+            cl.name
+            for cl in c.clusters
+            if (url := cl.prometheus_url or shared) and len(readers[_store(url)]) > 1
+        }
 
 
 def _shared_metrics(directory: Path, loaded: Any) -> list[str]:

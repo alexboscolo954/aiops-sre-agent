@@ -20,7 +20,7 @@ from tests.test_restart import wait_for
 
 SECRET = "token=abcdefghijklmnop1234"
 LIST = ("kubernetes_list_pods", {"cluster": "test", "namespace": "shop"})
-PROM = ("prometheus_query", {"promql": "up"})
+PROM = ("prometheus_query", {"cluster": "test", "promql": "up"})
 SEARCH = ("runbooks_search_runbooks", {"keywords": "oom"})
 ANSWER = {
     "answer": "checkout is crash looping.",

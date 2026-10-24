@@ -50,7 +50,7 @@ def test_truncate_keeps_tail_for_logs() -> None:
 
 def prom(handler: Any) -> Client:  # type: ignore[type-arg]
     http = httpx.Client(transport=httpx.MockTransport(handler), base_url="http://prom")
-    return Client(prometheus.build_server("http://prom", http=http))
+    return Client(prometheus.build_server({"": ("http://prom", None)}, False, {"": http}))
 
 
 @pytest.mark.anyio
