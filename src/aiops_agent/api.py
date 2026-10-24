@@ -44,6 +44,7 @@ from aiops_agent import (
     contracts,
     deploys,
     embeddings,
+    masking,
     related,
     sizing,
     teachings,
@@ -324,6 +325,16 @@ def create_app(
 
         return used
 
+    maskers = {c.id: masking.for_contract(c) for c in by_id.values()}  # None: no mask
+
+    def masked_sink(t: Investigation) -> masking.MaskSink:
+        """What each model call masked, for the console's count."""
+
+        async def seen(placeholders: list[str]) -> None:
+            await store().record_masked(t.id, t.contract_id, placeholders)
+
+        return seen
+
     async def taught(t: Investigation) -> str:
         """The Contract's approved Teachings for this Run's prompt: a Triage's for its
         alert names first, then the general ones; a Question's, every one."""
@@ -377,6 +388,7 @@ def create_app(
                 correction,
                 approved,
                 usage_sink(t),
+                maskers[contract.id],
             )
         except Exception:
             log.exception("investigation %s: no Teaching drafted", t.id)
@@ -550,6 +562,8 @@ def create_app(
                     kind=agent_kind(t),
                     usage=usage_sink(t),
                     taught=await taught(t),
+                    masker=maskers[t.contract_id],
+                    masked=masked_sink(t),
                 ) as a:
                     apply(t, await step(a))
             except Exception as e:  # report every failure, never lose an alert silently

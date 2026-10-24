@@ -13,6 +13,7 @@ from typing import Any
 
 import httpx
 
+from aiops_agent import masking
 from aiops_agent.config import Settings
 from aiops_agent.contracts import Contract, Incidents
 from aiops_agent.models import TriageReport
@@ -40,15 +41,18 @@ class Embedder:
         store: Store,
         contract_id: str,
         transport: httpx.AsyncBaseTransport | None = None,
+        masker: masking.Masker | None = None,
     ) -> None:
         assert settings.embedding_model  # Settings: and a gateway
         self.settings, self.store, self.contract_id = settings, store, contract_id
         self.model = settings.embedding_model
         self.max_distance = settings.embedding_max_distance
-        self.transport = transport
+        self.transport, self.masker = transport, masker
 
     async def vector(self, text: str) -> tuple[list[float], int]:
-        """The embedding and its input tokens."""
+        """The embedding and its input tokens. The text goes out as the model sees it:
+        redacted, and masked by the Contract's Data policy (slice 6.4)."""
+        text = masking.outgoing(self.masker, text)
         s = self.settings
         key = s.model_api_key.get_secret_value() if s.model_api_key else ""
         async with httpx.AsyncClient(transport=self.transport, timeout=15) as http:
@@ -103,4 +107,4 @@ def for_contract(settings: Settings, store: Store | None, contract: Contract) ->
     """The Contract's Embedder, when on() and there is a database."""
     if store is None or not on(settings, contract):
         return None
-    return Embedder(settings, store, contract.id)
+    return Embedder(settings, store, contract.id, masker=masking.for_contract(contract))

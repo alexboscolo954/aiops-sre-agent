@@ -477,6 +477,31 @@ class SizingConfig(Strict):
         return sorted({p.window for n in names if (p := self.policy(n))})
 
 
+MASK_KEY = "mask-key"  # the secret the placeholders are keyed with (masking.py)
+
+
+class Mask(Strict):
+    """Identifiers replaced with placeholders before the LLM sees them (masking.py).
+    A term is matched case-insensitively as a whole word; a domain covers its
+    subdomains. Kubernetes names are never matched unless a term says so."""
+
+    terms: list[Annotated[str, Field(min_length=3)]] = []
+    emails: bool = True
+    ips: bool = True
+
+    @model_validator(mode="after")
+    def _something(self) -> "Mask":
+        if not (self.terms or self.emails or self.ips):
+            raise ValueError("mask masks nothing: list terms or turn on emails or ips")
+        return self
+
+
+class DataPolicy(Strict):
+    """What may be sent to the LLM. No Data policy, no restrictions (CONTEXT.md)."""
+
+    mask: Mask | None = None
+
+
 class Contract(Strict):
     id: Slug
     name: str
@@ -493,6 +518,7 @@ class Contract(Strict):
     checks: list[Check] = []
     deploy_checks: DeployChecks | None = None  # off unless set
     sizing: SizingConfig = SizingConfig()
+    data_policy: DataPolicy = DataPolicy()
 
     _dir: Path = PrivateAttr(default=Path())
     _secrets: dict[str, SecretStr] = PrivateAttr(default_factory=dict)
@@ -561,6 +587,8 @@ class Contract(Strict):
                     refs.add(value)
                 elif field.endswith("_secrets"):
                     refs.update(value.values())
+        if self.data_policy.mask:
+            refs.add(MASK_KEY)
         return refs
 
 
@@ -688,10 +716,13 @@ def _shared_metrics(directory: Path, loaded: Any) -> list[str]:
 def identifiers(c: Contract) -> dict[str, str]:
     """What names this Contract, as term -> what it is: its id and name, kube
     contexts, the hosts of its integration URLs, Jira project, Slack channels, AWS
-    key id and vendor settings. Namespaces and cluster names are left out: generic
-    names like `prod` would match everywhere. ponytail: terms under 4 characters too."""
+    key id, vendor settings and the terms it masks. Namespaces and cluster names are
+    left out: generic names like `prod` would match everywhere. ponytail: terms under
+    4 characters too."""
     found = {c.id: "id", c.name: "name"}
     found |= {cl.context: "kube context" for cl in c.clusters if cl.context}
+    if c.data_policy.mask:
+        found |= {t: "masked term" for t in c.data_policy.mask.terms}
     if c.slack:
         found[c.slack.operator_channel] = "operator channel"
         if c.slack.client_channel:

@@ -15,6 +15,10 @@ integrations:
     token_secret: prometheus-token
   - name: runbooks
   - name: incidents
+# Masked for the LLM (README: Masking): placeholders keyed with its mask-key secret
+data_policy:
+  mask:
+    terms: [bank.example]
 sizing:
   policies:
     lean-agent:  # same name as demo-shop's, other numbers: each Contract its own

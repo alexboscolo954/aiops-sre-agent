@@ -11,7 +11,7 @@ from typing import Any
 
 import httpx
 
-from aiops_agent import agent, contracts, embeddings, evals, sizing, usage
+from aiops_agent import agent, contracts, embeddings, evals, masking, sizing, usage
 from aiops_agent.config import Settings, refuse_moved
 from aiops_agent.models import AlertGroup
 from aiops_agent.servers import vendors
@@ -46,7 +46,7 @@ async def triage(group: AlertGroup, contract_id: str, as_json: bool, auto_reject
     c = contract(settings, contract_id)
     toolbox = agent.build_mcp(c, settings)
     model = agent.build_model(agent.for_contract(settings, c))
-    async with agent.open_agent(settings, toolbox, model) as a:
+    async with agent.open_agent(settings, toolbox, model, masker=masking.for_contract(c)) as a:
         outcome = await agent.start(a, group, thread_id=str(uuid.uuid4()))
         while outcome.pending:
             decisions = [ask(action, auto_reject) for action in outcome.pending]

@@ -15,7 +15,7 @@ from langchain.agents.structured_output import ProviderStrategy
 from langchain_core.language_models import BaseChatModel
 from pydantic import BaseModel, Field
 
-from aiops_agent import agent
+from aiops_agent import agent, masking
 from aiops_agent.config import Settings
 
 LIMIT = 500  # characters of one Teaching
@@ -68,11 +68,12 @@ async def draft(
     correction: str,
     approved: list[dict[str, Any]],
     usage: agent.UsageSink | None = None,
+    masker: masking.Masker | None = None,
 ) -> TeachingDraft:
     """approved: the Contract's approved Teachings, the only ones the model sees. An id
     it names that isn't one of them is dropped. Raises ValueError on an unusable draft."""
     schema = ProviderStrategy(TeachingDraft) if settings.model_base_url else TeachingDraft
-    middleware = [agent.record_usage(usage)] if usage else []
+    middleware = [*([agent.record_usage(usage)] if usage else []), masking.on_the_wire(masker)]
     drafter = create_agent(
         model, [], system_prompt=PROMPT, response_format=schema, middleware=middleware
     )

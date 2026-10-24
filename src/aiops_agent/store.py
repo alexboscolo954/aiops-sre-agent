@@ -409,6 +409,25 @@ class Store:
         )
         return row or {"input_tokens": 0, "output_tokens": 0, "cost_usd": None}
 
+    async def record_masked(
+        self, investigation_id: str, contract_id: str, placeholders: list[str]
+    ) -> None:
+        """Placeholders one model call sent (masking.py), each kept once."""
+        await self._exec(
+            "insert into masked (investigation_id, contract_id, placeholder) "
+            "select %s, %s, unnest(%s::text[]) on conflict do nothing",
+            (investigation_id, contract_id, placeholders),
+        )
+
+    async def masked_counts(self, investigation_id: str) -> dict[str, int]:
+        """How many distinct values of each kind were masked for the LLM."""
+        rows = await self._all(
+            "select split_part(trim(leading '<' from placeholder), '-', 1) as kind, "
+            "count(*) as n from masked where investigation_id = %s group by 1 order by 1",
+            (investigation_id,),
+        )
+        return {r["kind"]: r["n"] for r in rows}
+
     async def claim_sizing_run(self, contract_id: str, at: float, every: float) -> int | None:
         """A new Sizing run's id, or None when one started less than `every` seconds
         before `at`: an hourly run fires once however many ticks or restarts."""

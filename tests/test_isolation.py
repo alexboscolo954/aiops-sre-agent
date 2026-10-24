@@ -12,7 +12,7 @@ import pytest
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
 
-from aiops_agent import agent, contracts
+from aiops_agent import agent, contracts, masking
 from aiops_agent.config import Settings
 
 Contracts = dict[str, contracts.Contract]
@@ -643,3 +643,20 @@ async def test_no_promql_on_a_prometheus_another_contract_reads(
         assert not [p for p in agent.probes(c) if p[1] == "prometheus_query"]
     apart = contracts.load(DEMO_CONTRACTS)  # their own Prometheus each: PromQL stays
     assert all(not c.shared_stores for c in apart.values())
+
+
+def test_the_same_value_masks_differently_in_each_contract(two_contracts: Contracts) -> None:
+    """Each Contract keys its placeholders with its own mask-key: one Contract's
+    placeholder means nothing in another's request (slice 6.4)."""
+    shop = masking.for_contract(two_contracts["demo-shop"])
+    bank = masking.for_contract(two_contracts["demo-bank"])
+    assert shop and bank
+    text = "10.9.8.7 paged ops@example.org"
+    seen_shop: masking.Seen = {}
+    seen_bank: masking.Seen = {}
+    in_shop, in_bank = shop.mask(text, seen_shop), bank.mask(text, seen_bank)
+    assert in_shop != in_bank and "10.9.8.7" not in in_shop + in_bank
+    assert masking.unmask(in_shop, seen_bank) == in_shop  # the bank can't read the shop's
+    assert masking.unmask(in_shop, seen_shop) == text
+    assert "shop.example" not in shop.mask("db.shop.example", {})
+    assert "db.shop.example" in bank.mask("db.shop.example", {})  # not one of its terms

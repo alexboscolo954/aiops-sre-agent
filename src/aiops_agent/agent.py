@@ -40,7 +40,7 @@ from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.types import Command
 from pydantic import BaseModel
 
-from aiops_agent import embeddings, usage
+from aiops_agent import embeddings, masking, usage
 from aiops_agent.config import Settings
 from aiops_agent.contracts import (
     Aws,
@@ -660,9 +660,13 @@ async def open_agent(
     kind: Kind = "triage",
     usage: UsageSink | None = None,
     taught: str = "",
+    masker: masking.Masker | None = None,
+    masked: masking.MaskSink | None = None,
 ) -> AsyncIterator[Any]:
     """The only way to build the agent, so every caller gets the Hub's list.
     record(tool, args, raw result, is_error) gets every tool result, uncapped.
+    masker: the Contract's (masking.for_contract); secrets are redacted on the wire
+    either way. masked gets the placeholders each model call sent.
     A Question gets no tool that would need approval: it only reads."""
     async with MCPAdapter(toolbox.mcp) as adapter:
         tools = await load_tools(adapter, toolbox.access)
@@ -689,6 +693,7 @@ async def open_agent(
                 spill_tool_output(settings.tool_output_limit),
                 *([record_tool_results(record)] if record else []),
                 *([record_usage(usage)] if usage else []),
+                masking.on_the_wire(masker, masked),  # innermost: the rest see plaintext
             ],
             checkpointer=checkpointer or InMemorySaver(serde=CHECKPOINT_SERDE),
         )

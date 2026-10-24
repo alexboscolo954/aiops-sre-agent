@@ -308,6 +308,19 @@ def test_the_drafter_sees_only_the_contracts_approved_teachings(
         assert never not in sent, never
 
 
+def test_the_drafter_is_masked_by_the_contracts_data_policy(
+    settings: Settings, fake_cluster: Any, buttons: FakeSocket
+) -> None:
+    """The Report it learns from names checkout: the drafter sees a placeholder."""
+    slack = FakeSlack(buttons.url)
+    acme = {"data_policy": {"mask": {"terms": ["checkout"]}}, "secrets": {"mask-key": "k"}}
+    with done(settings, fake_cluster, slack, draft(), acme=acme) as (_c, _tid):
+        correct_it(buttons, slack, "Wrong: checkout's limit is the platform team's.")
+        until(lambda: "teaching_approve" in posted(slack))
+    sent = " ".join(str(m.content) for m in Recording.sent[-1])
+    assert "<name-" in sent and "checkout" not in sent.lower()
+
+
 def test_a_duplicate_is_not_queued(
     settings: Settings, fake_cluster: Any, buttons: FakeSocket, database_url: str
 ) -> None:

@@ -204,3 +204,11 @@ def test_the_hub_mounts_the_contracts_repo_read_only() -> None:
     mounts = {m["mountPath"]: m for m in agent_container["volumeMounts"]}
     contract_mounts = [m for p, m in mounts.items() if p.startswith("/contracts")]
     assert contract_mounts and all(m.get("readOnly") for m in contract_mounts)
+
+
+def test_the_terms_a_contract_masks_name_it() -> None:
+    """They are its identifiers by its own account (slice 6.4)."""
+    data = copy.deepcopy(FULL) | {"data_policy": {"mask": {"terms": ["globex.example"]}}}
+    secrets = {k: SecretStr("x") for k in ("jira", "aws", "gcp", "mask-key")}
+    found = contracts.identifiers(contracts.build(data, secrets=secrets))
+    assert found["globex.example"] == "masked term"

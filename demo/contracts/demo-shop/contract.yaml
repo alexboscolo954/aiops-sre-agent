@@ -14,6 +14,10 @@ integrations:
     token_secret: prometheus-token
   - name: runbooks
   - name: incidents
+# Masked for the LLM (README: Masking): placeholders keyed with its mask-key secret
+data_policy:
+  mask:
+    terms: [shop.example]
 # Sizing policies (aiops sizing show). Built-ins: production (the default),
 # high-availability, batch (every Job and CronJob unless a rule says otherwise), off.
 sizing:

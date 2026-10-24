@@ -25,7 +25,7 @@ from kubernetes.utils.quantity import parse_quantity
 from mcp.types import TextContent
 from pydantic import SecretStr
 
-from aiops_agent import agent, contracts, teachings
+from aiops_agent import agent, contracts, masking, teachings
 from aiops_agent.config import Settings
 from aiops_agent.contracts import Contract, Integration, Vendor
 from aiops_agent.models import AlertGroup, Investigation
@@ -101,6 +101,7 @@ def scenario_contract(
     runbook_dirs: Path | list[Path],
     clusters: dict[str, list[str]] | None = None,
     integrations: list[str | dict[str, Any]] | None = None,
+    data_policy: dict[str, Any] | None = None,
 ) -> Contract:
     """The Contract a Scenario runs in, offering the same tools production did. A
     saved Scenario names its clusters (with namespaces) and integrations; an older
@@ -108,7 +109,8 @@ def scenario_contract(
     Integrations get placeholder config: the replay answers before any real call.
     A vendor is {name, vendor, tools, env?}: its tools come from the vendor's schema
     snapshot, the Hub's list is the one the Contract had, and env holds what its
-    guide needs (gcp's project)."""
+    guide needs (gcp's project). data_policy: the Contract's, so a Scenario can show
+    the agent still finds the cause when it sees placeholders (slice 6.4)."""
     dirs = [runbook_dirs] if isinstance(runbook_dirs, Path) else runbook_dirs
     built: list[dict[str, Any]] = []
     for name in integrations or ["kubernetes", "runbooks"]:
@@ -155,9 +157,18 @@ def scenario_contract(
     if "sizing" in (integrations or []):  # Sizings need a Prometheus: never reached
         for c in cluster_list:
             c["prometheus_url"] = "http://replay.invalid"
-    data = {"id": "eval", "name": "Eval", "clusters": cluster_list, "integrations": built}
-    # A placeholder for any integration's token_secret ("replay"): never used.
-    return contracts.build(data, secrets={"replay": SecretStr("replay")}, runbook_dirs=dirs)
+    data: dict[str, Any] = {
+        "id": "eval",
+        "name": "Eval",
+        "clusters": cluster_list,
+        "integrations": built,
+    }
+    if data_policy:
+        data["data_policy"] = data_policy
+    # A placeholder for any integration's token_secret ("replay"): never used. The
+    # mask key is a real one, but only placeholders' look depends on it.
+    secrets = {"replay": SecretStr("replay"), contracts.MASK_KEY: SecretStr("eval")}
+    return contracts.build(data, secrets=secrets, runbook_dirs=dirs)
 
 
 def replay_server(
@@ -350,6 +361,7 @@ async def run(
             runbook_dirs,
             scenario.get("clusters"),
             scenario.get("integrations"),
+            scenario.get("data_policy"),
         )
         question, spec, thread = (
             scenario.get("question"),
@@ -364,6 +376,7 @@ async def run(
                 replay_server(contract, settings, scenario["tools"]),
                 kind=kind,
                 taught=scenario_taught(scenario),
+                masker=masking.for_contract(contract),
             ) as a:
                 if question:
                     outcome, proposed = await agent.ask(a, question, thread), list[dict[str, Any]]()

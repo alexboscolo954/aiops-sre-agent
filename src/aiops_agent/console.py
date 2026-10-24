@@ -190,6 +190,7 @@ def router(
             t=t,
             jira=jira_of(t),
             usage=await store().investigation_usage(t.id),
+            masked=await store().masked_counts(t.id),
             tool_calls=await store().tool_calls(t.id),
             decisions=await store().decisions(t.id),
             related=await store().related(t.id),
