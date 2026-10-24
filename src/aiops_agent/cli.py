@@ -226,8 +226,8 @@ async def sizing_waste(contract_id: str, as_json: bool) -> int:
         store = Store(pool)
         await store.migrate()
         rows, clusters = await store.latest_sizings(c.id, {t.cluster for t in usage.targets(c)})
-    out = {"contract": c.id, **sizing.report(rows, clusters)}
-    ranked, total = out["workloads"], out["total"]
+    out = {"contract": c.id, **sizing.report(rows, clusters, c)}
+    ranked, total, currency = out["workloads"], out["total"], out.get("currency")
     if as_json:
         print(json.dumps(out, indent=2))
         return 0
@@ -241,7 +241,15 @@ async def sizing_waste(contract_id: str, as_json: bool) -> int:
         if st["error"]:
             line += f"; stale since {_utc(st['since'])}: {st['error']}"
         print(line)
-    print(f"{c.id}: waste {total['cpu']:.2f} cores, {total['memory'] / 2**30:.2f} GiB")
+    if currency:
+        cost = out["cost"]
+        print(
+            f"{c.id}: waste {sizing.money(cost['waste'], currency)} "
+            f"({sizing.quantities(total)}); "
+            f"requests cost {sizing.money(cost['requests'], currency)}"
+        )
+    else:
+        print(f"{c.id}: waste {sizing.quantities(total)}")
     quiet = 0
     for w in ranked:
         kinds = sorted({r["kind"] for r in w["risks"]})
@@ -249,9 +257,14 @@ async def sizing_waste(contract_id: str, as_json: bool) -> int:
             quiet += 1
             continue
         risk = f" | risk: {', '.join(kinds)}" if kinds else ""
+        cost = (
+            f"{sizing.money(w['cost']['waste'], currency)} of "
+            f"{sizing.money(w['cost']['requests'], currency)}, "
+            if currency
+            else ""
+        )
         print(
-            f"{w['workload']}: {w['waste']['cpu']:.2f} cores, "
-            f"{w['waste']['memory'] / 2**30:.2f} GiB, avg {w['pods']:g} pods{risk}"
+            f"{w['workload']}: {cost}{sizing.quantities(w['waste'])}, avg {w['pods']:g} pods{risk}"
         )
     if quiet:
         print(f"{quiet} more Workloads: no waste, no risk")

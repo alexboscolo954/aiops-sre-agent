@@ -187,6 +187,25 @@
         "title": "ContractSummary",
         "type": "object"
       },
+      "Cost": {
+        "description": "Monthly, in the Contract's currency (slice 10.1).",
+        "properties": {
+          "requests": {
+            "title": "Requests",
+            "type": "number"
+          },
+          "waste": {
+            "title": "Waste",
+            "type": "number"
+          }
+        },
+        "required": [
+          "waste",
+          "requests"
+        ],
+        "title": "Cost",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -393,6 +412,16 @@
             "title": "Containers",
             "type": "array"
           },
+          "cost": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Cost"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "kind": {
             "title": "Kind",
             "type": "string"
@@ -450,6 +479,27 @@
           "contract": {
             "title": "Contract",
             "type": "string"
+          },
+          "cost": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Cost"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currency"
           },
           "excluded": {
             "items": {

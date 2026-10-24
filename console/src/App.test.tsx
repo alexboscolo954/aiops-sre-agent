@@ -87,6 +87,31 @@ test("Workloads rank by waste, a core like 4 GiB", async () => {
   expect(screen.getByText(/Learning: kind\/lab\/StatefulSet\/db\/app \(24 h of 72 h\)/)).toBeTruthy();
 });
 
+test("with prices, Workloads rank by the monthly cost of their waste and show it", async () => {
+  // cpu-heavy wastes 1 core, memory-heavy 5 GiB: by cost, CPU's price puts it first
+  const priced: Workloads = {
+    ...DATA,
+    currency: "EUR",
+    cost: { waste: 1234.5, requests: 5000 },
+    workloads: [
+      { ...workload("memory-heavy", 0, 5 * GI), cost: { waste: 15.33, requests: 40 } },
+      { ...workload("cpu-heavy", 1, 0, []), cost: { waste: 1219.17, requests: 4960 } },
+    ],
+  };
+  answer({
+    "/api/v1/contracts": [200, [{ id: "demo-shop", name: "demo-shop" }]],
+    "/api/v1/contracts/demo-shop/workloads": [200, priced],
+  });
+  render(<App />);
+  await screen.findByText("Deployment/memory-heavy");
+  const names = screen.getAllByRole("button").map((b) => b.textContent);
+  expect(names.slice(0, 2)).toEqual(["Deployment/cpu-heavy", "Deployment/memory-heavy"]);
+  expect(screen.getByText("1,234.50 EUR/month")).toBeTruthy();
+  expect(screen.getByText("1,219.17 EUR/month")).toBeTruthy();
+  expect(screen.getByText("4,960.00 EUR/month")).toBeTruthy();
+  expect(screen.queryByText(/a core ranks like 4 GiB/)).toBeNull();
+});
+
 test("without the approver cookie it links the token page", async () => {
   answer({ "/api/v1/contracts": [401, { detail: { token_url: "/console/token" } }] });
   render(<App />);

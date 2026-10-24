@@ -18,6 +18,8 @@ integrations:
 data_policy:
   mask:
     terms: [shop.example]
+# Unit prices (README: Unit prices): Sizings show what their waste and requests cost
+prices: {currency: USD, cpu: 0.0316, memory: 0.0042}  # per vCPU-hour, per GiB-hour
 # Sizing policies (aiops sizing show). Built-ins: production (the default),
 # high-availability, batch (every Job and CronJob unless a rule says otherwise), off.
 sizing:

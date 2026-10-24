@@ -545,6 +545,7 @@ async def test_a_digest_shows_only_its_own_contracts_workloads(
             own, other = ("kind", "bank-kind") if cid == "demo-shop" else ("bank-kind", "kind")
             assert f"`{own}/shop/Deployment/api`" in text
             assert f"`{other}/" not in text
+            assert ("USD/month" in text) == (cid == "demo-shop")  # its prices only (10.1)
 
 
 @pytest.mark.anyio

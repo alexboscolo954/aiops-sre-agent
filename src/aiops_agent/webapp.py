@@ -58,6 +58,13 @@ class Waste(BaseModel):
     memory: float = 0.0  # bytes
 
 
+class Cost(BaseModel):
+    """Monthly, in the Contract's currency (slice 10.1)."""
+
+    waste: float  # its requests above the Sizings
+    requests: float  # every request, ready or not
+
+
 class Container(BaseModel):
     workload: str
     cluster: str
@@ -84,6 +91,7 @@ class Workload(BaseModel):
     name: str
     pods: float
     waste: Waste
+    cost: Cost | None = None  # None: the Contract has no prices
     risks: list[Risk]
     containers: list[Container]
 
@@ -98,7 +106,9 @@ class Workloads(BaseModel):
     contract: str
     clusters: dict[str, ClusterStatus]
     total: Waste
-    workloads: list[Workload]  # ranked by waste
+    currency: str | None = None  # the Contract's prices', when it has them
+    cost: Cost | None = None
+    workloads: list[Workload]  # ranked by waste, by its cost when priced
     learning: list[Container]
     excluded: list[Container]
 
@@ -186,7 +196,7 @@ def router(
     async def workloads(contract_id: str) -> Workloads:
         c = contract(contract_id)
         rows, clusters = await store().latest_sizings(c.id, {t.cluster for t in usage.targets(c)})
-        return Workloads.model_validate({"contract": c.id, **sizing.report(rows, clusters)})
+        return Workloads.model_validate({"contract": c.id, **sizing.report(rows, clusters, c)})
 
     @api.get("/contracts/{contract_id}/history")
     async def history(

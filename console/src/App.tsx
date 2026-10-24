@@ -5,7 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import * as api from "./api";
 import type { Container, Point, Workload, Workloads } from "./api";
 import Chart from "./Chart";
-import { cores, cpu, gib, memory, rank, when } from "./format";
+import { cores, cpu, gib, memory, money, rank, when } from "./format";
 
 function useParam(name: string): [string, (v: string) => void] {
   const [value, set] = useState(() => new URLSearchParams(location.search).get(name) ?? "");
@@ -102,10 +102,18 @@ function Page({ contract, data }: { contract: string; data: Workloads }) {
         })}
       </ul>
       {clusters.length === 0 && <p>No Sizings stored yet: the Hub stores them hourly.</p>}
-      <p className="total">
-        Waste: <strong>{cores(data.total.cpu ?? 0)}</strong>, <strong>{gib(data.total.memory ?? 0)}</strong>{" "}
-        <span className="hint">(requests above the Sizings; a core ranks like 4 GiB)</span>
-      </p>
+      {data.currency && data.cost ? (
+        <p className="total">
+          Waste: <strong>{money(data.cost.waste, data.currency)}</strong> ({cores(data.total.cpu ?? 0)},{" "}
+          {gib(data.total.memory ?? 0)}) of {money(data.cost.requests, data.currency)} in requests{" "}
+          <span className="hint">(requests above the Sizings; requests are what pods reserve, not the nodes)</span>
+        </p>
+      ) : (
+        <p className="total">
+          Waste: <strong>{cores(data.total.cpu ?? 0)}</strong>, <strong>{gib(data.total.memory ?? 0)}</strong>{" "}
+          <span className="hint">(requests above the Sizings; a core ranks like 4 GiB)</span>
+        </p>
+      )}
       <div className="filters">
         <label>
           Cluster{" "}
@@ -129,6 +137,8 @@ function Page({ contract, data }: { contract: string; data: Workloads }) {
             <th>Pods</th>
             <th>CPU waste</th>
             <th>Memory waste</th>
+            {data.currency && <th>Waste cost</th>}
+            {data.currency && <th>Requests cost</th>}
             <th>Risks</th>
           </tr>
         </thead>
@@ -146,6 +156,8 @@ function Page({ contract, data }: { contract: string; data: Workloads }) {
               <td>{w.pods}</td>
               <td>{cores(w.waste.cpu ?? 0)}</td>
               <td>{gib(w.waste.memory ?? 0)}</td>
+              {data.currency && <td>{w.cost ? money(w.cost.waste, data.currency) : "-"}</td>}
+              {data.currency && <td>{w.cost ? money(w.cost.requests, data.currency) : "-"}</td>}
               <td>
                 {[...new Set(w.risks.map((r) => r.kind))].sort().map((k) => (
                   <span key={k} className="chip">{k}</span>

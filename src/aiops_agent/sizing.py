@@ -29,7 +29,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 from aiops_agent import usage
-from aiops_agent.contracts import BUILTIN, Contract, Policy
+from aiops_agent.contracts import BUILTIN, ClusterPrices, Contract, Policy
 from aiops_agent.slack import clean
 from aiops_agent.usage import ContainerUsage, Workload
 
@@ -224,14 +224,16 @@ def rows(
                 "container": u.container,
                 "policy": c.sizing.policy_for(cluster, w.namespace, w.kind, w.name, u.container),
             }
+            # What its requests cost, whatever its state (stored since 10.1)
+            pods = avg_pods(u, steps[cluster])
+            row["requests"] = {name: u.requests.get(name) for name in ("cpu", "memory")}
             policy = c.sizing.policy(row["policy"])
             if policy is None:
-                out[row["workload"]] = {**row, "state": "excluded"}
+                out[row["workload"]] = {**row, "state": "excluded", "pods": round(pods, 1)}
                 continue
             if policy.window != window:
                 continue
             s = size(u, now, policy)
-            pods = avg_pods(u, steps[cluster])
             row |= {
                 "state": s.state,
                 "history_h": round(s.history_s / 3600, 1),
@@ -270,17 +272,56 @@ def rows(
     return [out[k] for k in sorted(out)]
 
 
+GIB = 2**30
+MONTH = 730.0  # hours in a month, as cloud price sheets count them
+
+
 def rank(workload: dict[str, Any]) -> float:
-    """A Workload's waste as one number to sort by."""
-    # ponytail: a core weighs as much as 4 GiB (a common node shape) until Phase 10
-    # prices each Contract's cores and GiB
-    return float(workload["waste"]["cpu"] + workload["waste"]["memory"] / 2**30 / 4)
+    """A Workload's waste as one number to sort by: its monthly cost when priced."""
+    if workload.get("cost"):
+        return float(workload["cost"]["waste"])
+    # Unpriced: a core weighs as much as 4 GiB (a common node shape)
+    return float(workload["waste"]["cpu"] + workload["waste"]["memory"] / GIB / 4)
 
 
-def report(rows: list[dict[str, Any]], clusters: dict[str, Any]) -> dict[str, Any]:
+def monthly(p: ClusterPrices, cpu: float, memory: float) -> float:
+    """Cores and bytes held for a month, in the prices' currency."""
+    return (cpu * p.cpu + memory / GIB * p.memory) * MONTH
+
+
+def money(value: float, currency: str) -> str:
+    return f"{value:,.2f} {currency}/month"
+
+
+def quantities(waste: dict[str, float]) -> str:
+    return f"{waste['cpu']:.2f} cores, {waste['memory'] / GIB:.2f} GiB"
+
+
+def requested(r: dict[str, Any]) -> tuple[float, float]:
+    """A row's requests times its average pods. A row stored before 10.1 has its
+    requests only when ready."""
+    req = r.get("requests") or {res: (r.get(res) or {}).get("current") for res in ("cpu", "memory")}
+    pods = r.get("pods") or 0.0
+    return (req.get("cpu") or 0.0) * pods, (req.get("memory") or 0.0) * pods
+
+
+def report(
+    rows: list[dict[str, Any]], clusters: dict[str, Any], contract: Contract | None = None
+) -> dict[str, Any]:
     """Stored rows (one per container) as Workloads ranked by waste, each with its
     containers and risks, plus the total, the learning and excluded rows and each
-    cluster's status: what `sizing waste` and the console show."""
+    cluster's status: what `sizing waste` and the console show. A Contract with
+    prices adds each Workload's monthly cost of its waste and of its requests, and the
+    totals; its requests count every container, ready or not (slice 10.1)."""
+    priced = contract is not None and contract.prices is not None
+    asked: dict[str, float] = {}  # Workload -> its requests' monthly cost
+    if priced:
+        assert contract is not None
+        for r in rows:
+            p = contract.price(r["cluster"])
+            assert p is not None  # the Contract's prices back every cluster
+            key = r["workload"].rsplit("/", 1)[0]
+            asked[key] = asked.get(key, 0.0) + monthly(p, *requested(r))
     workloads: dict[str, dict[str, Any]] = {}
     learning: list[dict[str, Any]] = []
     excluded: list[dict[str, Any]] = []
@@ -304,14 +345,28 @@ def report(rows: list[dict[str, Any]], clusters: dict[str, Any]) -> dict[str, An
             w["waste"][res] += r["waste"].get(res, 0.0)
         w["risks"] += [{**risk, "container": r["container"]} for risk in r["risks"]]
         w["containers"].append(r)
+    if priced:
+        assert contract is not None
+        for key, w in workloads.items():
+            p = contract.price(w["cluster"])
+            assert p is not None
+            w["cost"] = {"waste": monthly(p, **w["waste"]), "requests": asked[key]}
     ranked = sorted(workloads.values(), key=lambda w: (-rank(w), w["workload"]))
-    return {
+    out = {
         "clusters": clusters,
         "total": {res: sum(w["waste"][res] for w in ranked) for res in ("cpu", "memory")},
         "workloads": ranked,
         "learning": learning,
         "excluded": excluded,
     }
+    if priced:
+        assert contract is not None and contract.prices is not None
+        out["currency"] = contract.prices.currency
+        out["cost"] = {
+            "waste": sum(w["cost"]["waste"] for w in ranked),
+            "requests": sum(asked.values()),
+        }
+    return out
 
 
 HOURLY = 3600.0  # seconds between a Contract's stored Sizing runs
@@ -357,23 +412,39 @@ def digest_text(
     if not now["clusters"]:
         lines.append("No Sizings stored yet.")
     else:
-        waste = f"Waste: {total['cpu']:.2f} cores, {total['memory'] / 2**30:.2f} GiB"
+        currency = now.get("currency")
         compared = any(st["at"] is not None for st in week["clusters"].values())
-        if compared:
-            then = week["total"]
-            waste += (
-                f" ({total['cpu'] - then['cpu']:+.2f} cores, "
-                f"{(total['memory'] - then['memory']) / 2**30:+.2f} GiB vs 7 days ago)"
+        then = week["total"]
+        if not compared:
+            change = "no Sizings from 7 days ago to compare"
+        elif currency:  # today's prices on both weeks: a change of usage, not of price
+            change = (
+                f"{now['cost']['waste'] - week['cost']['waste']:+,.2f} {currency} vs 7 days ago"
             )
         else:
-            waste += " (no Sizings from 7 days ago to compare)"
+            change = (
+                f"{total['cpu'] - then['cpu']:+.2f} cores, "
+                f"{(total['memory'] - then['memory']) / GIB:+.2f} GiB vs 7 days ago"
+            )
+        if currency:
+            waste = (
+                f"Waste: {money(now['cost']['waste'], currency)} ({change}): {quantities(total)}"
+            )
+        else:
+            waste = f"Waste: {quantities(total)} ({change})"
         lines.append(waste)
+        if currency:
+            lines.append(f"Requests cost {money(now['cost']['requests'], currency)}.")
         top = [w for w in now["workloads"] if rank(w) > 0][:TOP]
         if top:
             lines.append("*Top Workloads by waste*")
             lines += [
-                f"{i}. `{w['workload']}`: {w['waste']['cpu']:.2f} cores, "
-                f"{w['waste']['memory'] / 2**30:.2f} GiB"
+                f"{i}. `{w['workload']}`: "
+                + (
+                    f"{money(w['cost']['waste'], currency)} ({quantities(w['waste'])})"
+                    if currency
+                    else quantities(w["waste"])
+                )
                 for i, w in enumerate(top, 1)
             ]
         before = _kinds(week)
@@ -403,7 +474,7 @@ def digest_text(
 async def digest(store: "Store", c: Contract, at: float, console_url: str | None) -> str:
     """The Contract's digest as of `at`, from its stored Sizings (as `sizing waste`)."""
     clusters = {t.cluster for t in usage.targets(c)}
-    now = report(*await store.latest_sizings(c.id, clusters, before=at))
-    week = report(*await store.latest_sizings(c.id, clusters, before=at - WEEK))
+    now = report(*await store.latest_sizings(c.id, clusters, before=at), c)
+    week = report(*await store.latest_sizings(c.id, clusters, before=at - WEEK), c)
     link = f"{console_url.rstrip('/')}/app/?contract={c.id}" if console_url else None
     return digest_text(c.id, now, week, link)

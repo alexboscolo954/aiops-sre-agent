@@ -111,6 +111,16 @@ export interface components {
             /** Name */
             name: string;
         };
+        /**
+         * Cost
+         * @description Monthly, in the Contract's currency (slice 10.1).
+         */
+        Cost: {
+            /** Requests */
+            requests: number;
+            /** Waste */
+            waste: number;
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -182,6 +192,7 @@ export interface components {
             cluster: string;
             /** Containers */
             containers: components["schemas"]["Container"][];
+            cost?: components["schemas"]["Cost"] | null;
             /** Kind */
             kind: string;
             /** Name */
@@ -204,6 +215,9 @@ export interface components {
             };
             /** Contract */
             contract: string;
+            cost?: components["schemas"]["Cost"] | null;
+            /** Currency */
+            currency?: string | null;
             /** Excluded */
             excluded: components["schemas"]["Container"][];
             /** Learning */

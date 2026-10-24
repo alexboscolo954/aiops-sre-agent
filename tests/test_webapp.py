@@ -177,6 +177,29 @@ def test_workloads_are_the_latest_runs_ranked(
 RISK = {"kind": "oom_killed", "text": "<img src=x onerror=alert(1)>"}
 
 
+def test_a_priced_contracts_workloads_carry_their_monthly_cost(
+    settings: Settings, fake_cluster: Any, database_url: str, app_dir: Path
+) -> None:
+    """1 core wasted of 2 requested, over 1 pod, at 0.05 per vCPU-hour (slice 10.1)."""
+    asked = {"requests": {"cpu": 2.0, "memory": 0.0}}
+    seed(database_url, ("acme", NOW, row("api", **asked)), ("bank", NOW, row("api", **asked)))
+    settings.database_url = SecretStr(database_url)
+    settings.console_operators = {OPERATOR}
+    bank = make_contract(contract_id="bank", integrations=INTEGRATIONS)
+    acme = {
+        "integrations": INTEGRATIONS,
+        "prices": {"currency": "EUR", "cpu": 0.05, "memory": 0.01},
+    }
+    with client(settings, fake_cluster, acme=acme, more={"bank": (bank, fake_cluster)}) as c:
+        priced = c.get("/api/v1/contracts/acme/workloads", headers=VIEW).json()
+        plain = c.get("/api/v1/contracts/bank/workloads", headers=VIEW).json()
+    assert priced["currency"] == "EUR"
+    assert priced["cost"] == pytest.approx({"waste": 36.5, "requests": 73.0})
+    assert priced["workloads"][0]["cost"] == pytest.approx({"waste": 36.5, "requests": 73.0})
+    assert plain["currency"] is None and plain["cost"] is None  # acme's prices are its own
+    assert plain["workloads"][0]["cost"] is None
+
+
 def test_history_is_hourly_for_14_days_and_daily_for_400(
     settings: Settings, fake_cluster: Any, database_url: str, app_dir: Path
 ) -> None:

@@ -55,6 +55,17 @@ class Strict(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
 
+class ClusterPrices(Strict):
+    """Unit prices (slice 10.1), in the Contract's currency."""
+
+    cpu: float = Field(ge=0)  # per vCPU-hour
+    memory: float = Field(ge=0)  # per GiB-hour
+
+
+class Prices(ClusterPrices):
+    currency: str = Field("USD", pattern=r"^[A-Z]{3}$")  # never converted
+
+
 class Cluster(Strict):
     name: Slug
     namespaces: list[str] = Field(min_length=1)
@@ -75,6 +86,7 @@ class Cluster(Strict):
     prometheus_url: str | None = None
     prometheus_token_secret: str | None = None
     prometheus_labels: dict[Annotated[str, Field(pattern=r"^[a-zA-Z_][a-zA-Z0-9_]*$")], str] = {}
+    prices: ClusterPrices | None = None  # else the Contract's
 
     @model_validator(mode="after")
     def _one_source(self) -> "Cluster":
@@ -519,6 +531,7 @@ class Contract(Strict):
     deploy_checks: DeployChecks | None = None  # off unless set
     sizing: SizingConfig = SizingConfig()
     data_policy: DataPolicy = DataPolicy()
+    prices: Prices | None = None  # none: Sizings in cores and GiB, no money
 
     _dir: Path = PrivateAttr(default=Path())
     _secrets: dict[str, SecretStr] = PrivateAttr(default_factory=dict)
@@ -554,7 +567,15 @@ class Contract(Strict):
             shared or c.prometheus_url for c in self.clusters
         ):
             raise ValueError("the sizing integration needs a cluster with a Prometheus")
+        if not self.prices and (priced := [c.name for c in self.clusters if c.prices]):
+            # one cluster in money and another by the 4 GiB weighting can't be ranked
+            raise ValueError(f"clusters {priced} set prices: set the Contract's prices too")
         return self
+
+    def price(self, cluster: str) -> ClusterPrices | None:
+        """A cluster's unit prices: its own, else the Contract's; None when unpriced."""
+        own = next((c.prices for c in self.clusters if c.name == cluster), None)
+        return own or self.prices
 
     @property
     def dir(self) -> Path:
