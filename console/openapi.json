@@ -7,6 +7,16 @@
             "title": "By",
             "type": "string"
           },
+          "compare": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Comparison"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "contract": {
             "title": "Contract",
             "type": "string"
@@ -36,6 +46,9 @@
             "title": "Groups",
             "type": "array"
           },
+          "total": {
+            "$ref": "#/components/schemas/Change"
+          },
           "warnings": {
             "items": {
               "type": "string"
@@ -47,11 +60,38 @@
         "required": [
           "contract",
           "by",
+          "total",
           "groups",
           "groupings",
           "warnings"
         ],
         "title": "Allocation",
+        "type": "object"
+      },
+      "Change": {
+        "properties": {
+          "cost": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Cost"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "requests": {
+            "$ref": "#/components/schemas/Waste"
+          },
+          "waste": {
+            "$ref": "#/components/schemas/Waste"
+          }
+        },
+        "required": [
+          "requests",
+          "waste"
+        ],
+        "title": "Change",
         "type": "object"
       },
       "ClusterStatus": {
@@ -96,6 +136,71 @@
           "since"
         ],
         "title": "ClusterStatus",
+        "type": "object"
+      },
+      "Compared": {
+        "properties": {
+          "at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "At"
+          },
+          "oldest": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oldest"
+          }
+        },
+        "required": [
+          "at",
+          "oldest"
+        ],
+        "title": "Compared",
+        "type": "object"
+      },
+      "Comparison": {
+        "properties": {
+          "change": {
+            "$ref": "#/components/schemas/Change"
+          },
+          "clusters": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Compared"
+            },
+            "title": "Clusters",
+            "type": "object"
+          },
+          "left_out": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Left Out",
+            "type": "array"
+          },
+          "since": {
+            "title": "Since",
+            "type": "number"
+          }
+        },
+        "required": [
+          "since",
+          "clusters",
+          "change",
+          "left_out"
+        ],
+        "title": "Comparison",
         "type": "object"
       },
       "Container": {
@@ -261,6 +366,16 @@
       },
       "Group": {
         "properties": {
+          "change": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Change"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "cost": {
             "anyOf": [
               {
@@ -677,6 +792,26 @@
               "default": "namespace",
               "title": "By",
               "type": "string"
+            }
+          },
+          {
+            "description": "days ago",
+            "in": "query",
+            "name": "compare",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 400,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "days ago",
+              "title": "Compare"
             }
           }
         ],

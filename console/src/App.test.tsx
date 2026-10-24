@@ -128,14 +128,16 @@ test("the Cost page lists namespaces by what their requests cost, each linking i
         ],
         groupings: ["namespace"],
         warnings: [],
+        total: { requests: { cpu: 5.1, memory: 8 * GI }, waste: { cpu: 2, memory: GI }, cost: { requests: 150.81, waste: 74.65 } },
       },
     ],
   });
   render(<App />);
   const lab = await screen.findByRole("link", { name: "kind/lab" });
   expect(lab.getAttribute("href")).toBe("/app/?contract=demo-shop&cluster=kind&namespace=lab");
-  expect(screen.getByText("74.65 USD/month")).toBeTruthy();
+  expect(screen.getAllByText("74.65 USD/month")).toHaveLength(2); // kind/lab's and the total Savings
   expect(screen.getByText("150.81 USD/month")).toBeTruthy(); // the total of the requests
+  expect(screen.queryByText("Δ requests")).toBeNull(); // nothing compared
   const rows = screen.getAllByRole("link").map((a) => a.textContent).filter((t) => t?.startsWith("kind/"));
   expect(rows).toEqual(["kind/lab", "kind/demo"]);
 });
@@ -156,6 +158,7 @@ test("the Cost page groups by team on request, with no Workloads links and the H
         ],
         groupings: ["namespace", "team", "label:team"],
         warnings: ["kind: no pod has label team; kube-state-metrics needs --metric-labels-allowlist=pods=[team]"],
+        total: { requests: { cpu: 2.5, memory: 4 * GI }, waste: { cpu: 1, memory: GI }, cost: null },
       },
     ],
   });
@@ -167,13 +170,15 @@ test("the Cost page groups by team on request, with no Workloads links and the H
   expect(screen.queryByRole("link", { name: "(no team)" })).toBeNull();
   const calls = (fetch as unknown as { mock: { calls: string[][] } }).mock.calls.map((c) => c[0]);
   expect(calls).toContain("/api/v1/contracts/demo-shop/cost?by=team");
-  const options = [...page.querySelectorAll("option")].map((o) => o.textContent);
+  const options = [...screen.getByLabelText("Group by").querySelectorAll("option")].map((o) => o.textContent);
   expect(options).toEqual(["namespace", "team", "label team"]);
 });
 
 test("another Contract's Cost page starts by namespace", async () => {
   history.replaceState(null, "", "/app/?view=cost&by=team");
-  const body = { contract: "demo-shop", by: "team", currency: null, groups: [], groupings: ["namespace", "team"], warnings: [] };
+  const zero = { cpu: 0, memory: 0 };
+  const total = { requests: zero, waste: zero, cost: null };
+  const body = { contract: "demo-shop", by: "team", currency: null, groups: [], groupings: ["namespace", "team"], warnings: [], total };
   answer({
     "/api/v1/contracts": [200, [{ id: "demo-shop", name: "demo-shop" }, { id: "demo-bank", name: "demo-bank" }]],
     "/api/v1/contracts/demo-shop/cost": [200, body],
@@ -184,6 +189,48 @@ test("another Contract's Cost page starts by namespace", async () => {
   await screen.findByText("demo-bank: Cost by namespace");
   const calls = (fetch as unknown as { mock: { calls: string[][] } }).mock.calls.map((c) => c[0]);
   expect(calls).toContain("/api/v1/contracts/demo-bank/cost?by=namespace");
+});
+
+test("comparing shows each group's change, a group gone since and what was left out", async () => {
+  history.replaceState(null, "", "/app/?view=cost");
+  const zero = { cpu: 0, memory: 0 };
+  const change = (requests: number, waste: number) => ({ requests: zero, waste: zero, cost: { requests, waste } });
+  answer({
+    "/api/v1/contracts": [200, [{ id: "demo-shop", name: "demo-shop" }]],
+    "/api/v1/contracts/demo-shop/cost": [
+      200,
+      {
+        contract: "demo-shop",
+        by: "namespace",
+        currency: "USD",
+        groups: [
+          { group: "kind/lab", workloads: 9, requests: zero, waste: zero, cost: { requests: 147.29, waste: 74.65 }, change: change(-36.5, -18.25) },
+          { group: "kind/old", workloads: 0, requests: zero, waste: zero, cost: { requests: 0, waste: 0 }, change: change(-9.12, 0) },
+        ],
+        groupings: ["namespace"],
+        warnings: [],
+        total: { requests: zero, waste: zero, cost: { requests: 147.29, waste: 74.65 } },
+        compare: {
+          since: 86400,
+          clusters: { kind: { at: 86400, oldest: 0 }, eu: { at: null, oldest: 172800 } },
+          change: change(-45.62, -18.25),
+          left_out: ["kind/lab/StatefulSet/db/db"],
+        },
+      },
+    ],
+  });
+  render(<App />);
+  fireEvent.change(await screen.findByLabelText("Compare with"), { target: { value: "7" } });
+  expect(await screen.findByText("-36.50 USD/month")).toBeTruthy();
+  expect(screen.getByText("-9.12 USD/month")).toBeTruthy(); // kind/old, gone since
+  expect(screen.getAllByText("+0.00 USD/month")).toHaveLength(1);
+  expect(screen.getByText(/\(-45\.62 USD\/month, -18\.25 USD\/month\)/)).toBeTruthy();
+  expect(screen.getByText("kind: compared with its run of 1970-01-02 00:00 UTC")).toBeTruthy();
+  expect(screen.getByText(/eu: no run that old, oldest 1970-01-03 00:00 UTC/)).toBeTruthy();
+  expect(screen.getByText(/kind\/lab\/StatefulSet\/db\/db/)).toBeTruthy();
+  const calls = (fetch as unknown as { mock: { calls: string[][] } }).mock.calls.map((c) => c[0]);
+  expect(calls).toContain("/api/v1/contracts/demo-shop/cost?by=namespace&compare=7");
+  expect(location.search).toContain("compare=7");
 });
 
 test("without the approver cookie it links the token page", async () => {

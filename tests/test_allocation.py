@@ -87,7 +87,7 @@ def test_sizing_cost_prints_each_namespace(
     assert cli.main(["sizing", "cost", "--contract", "acme"]) == 0
     out = capsys.readouterr().out.splitlines()
     assert out[0] == "acme by namespace: requests in its namespaces, not the nodes"
-    assert out[1].startswith("test/shop: requests ") and " USD/month, waste " in out[1]
+    assert out[1].startswith("test/shop: requests ") and " USD/month, savings available " in out[1]
     assert cli.main(["sizing", "cost", "--contract", "acme", "--json"]) == 0
     body = json.loads(capsys.readouterr().out)
     assert body["contract"] == "acme" and body["groups"][0]["group"] == "test/shop"

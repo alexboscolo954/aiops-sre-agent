@@ -323,3 +323,37 @@ def test_the_committed_openapi_is_the_apis() -> None:
 def test_the_openapi_has_no_page_routes() -> None:
     paths = json.loads(webapp.openapi())["paths"]
     assert all(p.startswith("/api/v1/") for p in paths)
+
+
+def test_cost_compares_each_contract_with_its_own_runs(
+    settings: Settings, fake_cluster: Any, database_url: str, app_dir: Path
+) -> None:
+    """acme asked 2 cores a day ago and 1 now; bank has no run that old, and acme's
+    old run never dates it (slice 10.3a)."""
+    day = 24 * H
+    seed(
+        database_url,
+        ("acme", NOW - day, row("api", requests={"cpu": 2.0, "memory": 0.0})),
+        ("acme", NOW, row("api", requests={"cpu": 1.0, "memory": 0.0})),
+        ("bank", NOW, row("api", requests={"cpu": 7.0, "memory": 0.0})),
+    )
+    settings.database_url = SecretStr(database_url)
+    settings.console_operators = {OPERATOR}
+    bank = make_contract(contract_id="bank", integrations=INTEGRATIONS)
+    acme = {"integrations": INTEGRATIONS, "prices": {"cpu": 0.05, "memory": 0.01}}
+    with client(settings, fake_cluster, acme=acme, more={"bank": (bank, fake_cluster)}) as c:
+        mine = c.get("/api/v1/contracts/acme/cost?compare=1", headers=VIEW).json()
+        theirs = c.get("/api/v1/contracts/bank/cost?compare=1", headers=VIEW).json()
+        plain = c.get("/api/v1/contracts/acme/cost", headers=VIEW).json()
+        bad = [
+            c.get(f"/api/v1/contracts/acme/cost?compare={d}", headers=VIEW).status_code
+            for d in ("0", "401", "soon")
+        ]
+    (g,) = mine["groups"]
+    assert g["change"]["cost"] == pytest.approx({"requests": -36.5, "waste": 0.0})
+    assert mine["compare"]["clusters"] == {"test": {"at": NOW - day, "oldest": NOW - day}}
+    assert mine["total"]["cost"] == pytest.approx({"requests": 36.5, "waste": 36.5})
+    assert theirs["compare"]["clusters"] == {"test": {"at": None, "oldest": NOW}}
+    assert theirs["groups"][0]["change"]["requests"] == {"cpu": 0.0, "memory": 0.0}
+    assert plain["compare"] is None and plain["groups"][0]["change"] is None
+    assert bad == [422, 422, 422]

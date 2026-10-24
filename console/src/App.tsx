@@ -1,12 +1,13 @@
 // Workloads per Contract (slice 9.5a): each Workload's waste and risks from the
 // Hub's latest stored Sizings, and one container's requests vs Sizing over time.
-// Cost (slice 10.2): what each namespace's, team's or label value's requests and waste cost.
+// Cost (slice 10.2): what each namespace's, team's or label value's requests and waste cost;
+// the waste's cost is the available Savings, compared with N days ago on request (10.3a).
 // Everything from the API is rendered as text.
 import { useEffect, useMemo, useState } from "react";
 import * as api from "./api";
 import type { Allocation, Container, Point, Workload, Workloads } from "./api";
 import Chart from "./Chart";
-import { cores, cpu, gib, memory, money, rank, when } from "./format";
+import { change, cores, cpu, gib, memory, money, rank, when } from "./format";
 
 function useParam(name: string): [string, (v: string) => void] {
   const [value, set] = useState(() => new URLSearchParams(location.search).get(name) ?? "");
@@ -25,6 +26,7 @@ export default function App() {
   const [contract, setContract] = useParam("contract");
   const [view] = useParam("view");
   const [by, setBy] = useParam("by");
+  const [compare, setCompare] = useParam("compare");
   const [data, setData] = useState<Workloads | null>(null);
   const [allocation, setAllocation] = useState<Allocation | null>(null);
   const [error, setError] = useState<Error | null>(null);
@@ -38,9 +40,9 @@ export default function App() {
     if (!shown) return;
     setData(null);
     setAllocation(null);
-    if (costView) api.cost(shown, by || "namespace").then(setAllocation, setError);
+    if (costView) api.cost(shown, by || "namespace", compare).then(setAllocation, setError);
     else api.workloads(shown).then(setData, setError);
-  }, [shown, costView, by]);
+  }, [shown, costView, by, compare]);
   const here = shown ? `contract=${encodeURIComponent(shown)}` : "";
 
   return (
@@ -82,7 +84,7 @@ export default function App() {
           </label>
         )}
         {data && !costView && <Page contract={shown} data={data} />}
-        {allocation && costView && <CostPage data={allocation} setBy={setBy} />}
+        {allocation && costView && <CostPage data={allocation} setBy={setBy} compare={compare} setCompare={setCompare} />}
       </main>
     </>
   );
@@ -197,14 +199,31 @@ function Page({ contract, data }: { contract: string; data: Workloads }) {
   );
 }
 
-function CostPage({ data, setBy }: { data: Allocation; setBy: (v: string) => void }) {
+const AGO = [1, 7, 30, 90];
+
+function CostPage({
+  data,
+  setBy,
+  compare,
+  setCompare,
+}: {
+  data: Allocation;
+  setBy: (v: string) => void;
+  compare: string;
+  setCompare: (v: string) => void;
+}) {
   const currency = data.currency;
-  const total = data.groups.reduce((sum, g) => sum + (g.cost?.requests ?? 0), 0);
   const label = data.by.replace(/^label:/, "label ");
+  const shown = (g: { cost?: { requests: number; waste: number } | null; requests: { cpu?: number; memory?: number }; waste: { cpu?: number; memory?: number } }, key: "requests" | "waste") =>
+    currency && g.cost ? money(g.cost[key], currency) : `${cores(g[key].cpu ?? 0)}, ${gib(g[key].memory ?? 0)}`;
+  const cmp = data.compare;
   return (
     <>
       <h1>{data.contract}: Cost by {label}</h1>
-      <p className="hint">Requests in the Contract's namespaces, not the nodes; waste is the requests above the Sizings.</p>
+      <p className="hint">
+        Requests in the Contract's namespaces, not the nodes; the available Savings is what the requests above the
+        Sizings cost.
+      </p>
       {data.groupings.length > 1 && (
         <label>
           Group by{" "}
@@ -214,15 +233,35 @@ function CostPage({ data, setBy }: { data: Allocation; setBy: (v: string) => voi
             ))}
           </select>
         </label>
-      )}
+      )}{" "}
+      <label>
+        Compare with{" "}
+        <select value={compare} onChange={(e) => setCompare(e.target.value)}>
+          <option value="">nothing</option>
+          {AGO.map((d) => (
+            <option key={d} value={String(d)}>{d === 1 ? "1 day ago" : `${d} days ago`}</option>
+          ))}
+        </select>
+      </label>
       {data.warnings.map((w) => (
         <p key={w} className="notice">{w}</p>
       ))}
-      {currency && (
-        <p className="total">
-          Requests: <strong>{money(total, currency)}</strong>
-        </p>
+      {cmp &&
+        Object.entries(cmp.clusters).map(([cluster, c]) => (
+          <p key={cluster} className={c.at == null ? "notice" : "hint"}>
+            {c.at == null
+              ? `${cluster}: no run that old, oldest ${when(c.oldest)}; left out of the change`
+              : `${cluster}: compared with its run of ${when(c.at)}`}
+          </p>
+        ))}
+      {cmp && cmp.left_out.length > 0 && (
+        <p className="notice">Left out of the change, requests or labels unknown then: {cmp.left_out.join(", ")}</p>
       )}
+      <p className="total">
+        Requests: <strong>{shown(data.total, "requests")}</strong>, Savings available:{" "}
+        <strong>{shown(data.total, "waste")}</strong>
+        {cmp && ` (${change(cmp.change, "requests", currency)}, ${change(cmp.change, "waste", currency)})`}
+      </p>
       {data.groups.length === 0 && <p>No Sizings stored yet: the Hub stores them hourly.</p>}
       <table>
         <thead>
@@ -230,7 +269,9 @@ function CostPage({ data, setBy }: { data: Allocation; setBy: (v: string) => voi
             <th>{label[0].toUpperCase() + label.slice(1)}</th>
             <th>Workloads</th>
             <th>Requests</th>
-            <th>Waste</th>
+            <th>Savings available</th>
+            {cmp && <th>Δ requests</th>}
+            {cmp && <th>Δ savings</th>}
           </tr>
         </thead>
         <tbody>
@@ -241,16 +282,10 @@ function CostPage({ data, setBy }: { data: Allocation; setBy: (v: string) => voi
               <tr key={g.group}>
                 <td>{data.by === "namespace" ? <a href={`/app/?${q}`}>{g.group}</a> : g.group}</td>
                 <td>{g.workloads}</td>
-                <td>
-                  {currency && g.cost
-                    ? money(g.cost.requests, currency)
-                    : `${cores(g.requests.cpu ?? 0)}, ${gib(g.requests.memory ?? 0)}`}
-                </td>
-                <td>
-                  {currency && g.cost
-                    ? money(g.cost.waste, currency)
-                    : `${cores(g.waste.cpu ?? 0)}, ${gib(g.waste.memory ?? 0)}`}
-                </td>
+                <td>{shown(g, "requests")}</td>
+                <td>{shown(g, "waste")}</td>
+                {cmp && <td>{g.change ? change(g.change, "requests", currency) : "-"}</td>}
+                {cmp && <td>{g.change ? change(g.change, "waste", currency) : "-"}</td>}
               </tr>
             );
           })}

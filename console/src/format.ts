@@ -16,6 +16,16 @@ export function when(at: number | null | undefined): string {
 export const money = (v: number, currency: string) =>
   `${v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}/month`;
 
+const sign = (v: number) => (v < 0 ? "-" : "+");
+
+/** A change since the compared run: money when priced, else cores and GiB. */
+export function change(c: { cost?: { requests: number; waste: number } | null; requests: { cpu?: number; memory?: number }; waste: { cpu?: number; memory?: number } }, key: "requests" | "waste", currency: string | null | undefined): string {
+  if (currency && c.cost) return sign(c.cost[key]) + money(Math.abs(c.cost[key]), currency);
+  const cpu = c[key].cpu ?? 0;
+  const mem = c[key].memory ?? 0;
+  return `${sign(cpu)}${cores(Math.abs(cpu))}, ${sign(mem)}${gib(Math.abs(mem))}`;
+}
+
 /** One number to sort by: the waste's monthly cost when the Contract has prices, else
  * cores and GiB with a core weighing as much as 4 GiB. */
 export const rank = (w: {

@@ -97,19 +97,40 @@ class Workload(BaseModel):
     containers: list[Container]
 
 
+class Change(BaseModel):
+    requests: Waste
+    waste: Waste
+    cost: Cost | None = None  # None: the Contract has no prices
+
+
 class Group(BaseModel):
     group: str  # cluster/namespace, a team or a label value
     workloads: int
     requests: Waste  # cores and bytes, ready or not
-    waste: Waste
+    waste: Waste  # priced, the available Savings
     cost: Cost | None = None  # None: the Contract has no prices
+    change: Change | None = None  # since the compared run; None: not compared
+
+
+class Compared(BaseModel):
+    at: float | None  # the cluster's run compared with; None: none that old, left out
+    oldest: float | None  # its oldest stored run
+
+
+class Comparison(BaseModel):
+    since: float
+    clusters: dict[str, Compared]
+    change: Change  # the Contract's, of what both sides know
+    left_out: list[str]  # containers whose requests or labels were unknown then
 
 
 class Allocation(BaseModel):
     contract: str
     by: str  # namespace, team or label:<key>
     currency: str | None = None
-    groups: list[Group]  # ranked by what their requests cost
+    total: Change
+    groups: list[Group]  # ranked by what their requests cost; then any gone since
+    compare: Comparison | None = None
     groupings: list[str]  # what this Contract can be grouped by
     warnings: list[str]  # clusters where no pod has a label the grouping reads
 
@@ -217,12 +238,16 @@ def router(
         return Workloads.model_validate({"contract": c.id, **sizing.report(rows, clusters, c)})
 
     @api.get("/contracts/{contract_id}/cost")
-    async def cost(contract_id: str, by: str = "namespace") -> Allocation:
+    async def cost(
+        contract_id: str,
+        by: str = "namespace",
+        compare: int | None = Query(None, ge=1, le=400, description="days ago"),
+    ) -> Allocation:
         c = contract(contract_id)
         if by not in sizing.groupings(c):
             raise HTTPException(422, f"by is one of {', '.join(sizing.groupings(c))}")
-        rows, _ = await store().latest_sizings(c.id, {t.cluster for t in usage.targets(c)})
-        return Allocation.model_validate({"contract": c.id, **sizing.allocate(rows, c, by)})
+        back = None if compare is None else compare * DAY
+        return Allocation.model_validate(await sizing.cost(store(), c, by, now(), back))
 
     @api.get("/contracts/{contract_id}/history")
     async def history(

@@ -80,6 +80,7 @@ export interface components {
         Allocation: {
             /** By */
             by: string;
+            compare?: components["schemas"]["Comparison"] | null;
             /** Contract */
             contract: string;
             /** Currency */
@@ -88,8 +89,15 @@ export interface components {
             groupings: string[];
             /** Groups */
             groups: components["schemas"]["Group"][];
+            total: components["schemas"]["Change"];
             /** Warnings */
             warnings: string[];
+        };
+        /** Change */
+        Change: {
+            cost?: components["schemas"]["Cost"] | null;
+            requests: components["schemas"]["Waste"];
+            waste: components["schemas"]["Waste"];
         };
         /** ClusterStatus */
         ClusterStatus: {
@@ -99,6 +107,25 @@ export interface components {
             error: string | null;
             /** Since */
             since: number | null;
+        };
+        /** Compared */
+        Compared: {
+            /** At */
+            at: number | null;
+            /** Oldest */
+            oldest: number | null;
+        };
+        /** Comparison */
+        Comparison: {
+            change: components["schemas"]["Change"];
+            /** Clusters */
+            clusters: {
+                [key: string]: components["schemas"]["Compared"];
+            };
+            /** Left Out */
+            left_out: string[];
+            /** Since */
+            since: number;
         };
         /** Container */
         Container: {
@@ -155,6 +182,7 @@ export interface components {
         };
         /** Group */
         Group: {
+            change?: components["schemas"]["Change"] | null;
             cost?: components["schemas"]["Cost"] | null;
             /** Group */
             group: string;
@@ -301,6 +329,8 @@ export interface operations {
         parameters: {
             query?: {
                 by?: string;
+                /** @description days ago */
+                compare?: number | null;
             };
             header?: never;
             path: {

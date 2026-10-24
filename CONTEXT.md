@@ -168,7 +168,7 @@ _Avoid_: Agent, controller (alone)
 A bounded, expiring change the Actuator makes on its own under Automation: memory step-up after an OOM kill, burst CPU headroom, startup CPU boost, rollback of a Sizing that made pods unhealthy.
 
 **Savings**:
-What Sizings would save (available) or saved (realized), in the Contract's own unit prices.
+What Sizings would save (available: the waste's cost) or saved (realized), in the Contract's own unit prices, or in cores and GiB when it has none.
 
 ### Evaluation
 

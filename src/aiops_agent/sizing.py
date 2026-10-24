@@ -387,16 +387,19 @@ def _group(r: dict[str, Any], c: Contract, by: str) -> str:
     return labels.get(key, f"(no {key})")
 
 
+def _label_keys(c: Contract, by: str) -> list[str]:
+    """The pod labels a grouping reads."""
+    if by == "team":
+        return sorted({k for t in c.allocation.teams for k in t.labels})
+    return [by.removeprefix("label:")] if by.startswith("label:") else []
+
+
 def _warnings(rows: list[dict[str, Any]], c: Contract, by: str) -> list[str]:
     """A cluster where no pod has a label the grouping reads: kube-state-metrics
     doesn't allowlist it, or nobody sets it."""
     if by == "namespace":
         return []
-    keys = (
-        sorted({k for t in c.allocation.teams for k in t.labels})
-        if by == "team"
-        else [by.removeprefix("label:")]
-    )
+    keys = _label_keys(c, by)
     seen: dict[str, set[str]] = {}
     for r in rows:
         seen.setdefault(r["cluster"], set()).update(r.get("labels") or {})
@@ -409,13 +412,9 @@ def _warnings(rows: list[dict[str, Any]], c: Contract, by: str) -> list[str]:
     ]
 
 
-def allocate(rows: list[dict[str, Any]], c: Contract, by: str = "namespace") -> dict[str, Any]:
-    """Stored rows grouped (slice 10.2) by namespace, team or a label: each group's
-    requests (every container, ready or not) and waste (sized ones), in money when
-    the Contract has prices, ranked by what its requests cost. A namespace is its
-    cluster's (kind/lab, not lab); a team or a label value spans clusters."""
-    if by not in groupings(c):
-        raise ValueError(f"{c.id} groups by {', '.join(groupings(c))}, not {by!r}")
+def _sums(rows: list[dict[str, Any]], c: Contract, by: str) -> dict[str, dict[str, Any]]:
+    """Each group's Workloads, requests (every container, ready or not) and waste
+    (sized ones), and their monthly cost when the Contract has prices."""
     groups: dict[str, dict[str, Any]] = {}
     for r in rows:
         key = _group(r, c, by)
@@ -439,7 +438,33 @@ def allocate(rows: list[dict[str, Any]], c: Contract, by: str = "namespace") -> 
         if p := c.price(r["cluster"]):
             g["cost"]["requests"] += monthly(p, cpu, memory)
             g["cost"]["waste"] += monthly(p, waste.get("cpu", 0.0), waste.get("memory", 0.0))
+    return groups
+
+
+def _total(groups: Any, priced: bool) -> dict[str, Any]:
+    """Groups' requests, waste and cost added up."""
+    groups = list(groups)
+    return {
+        **{
+            k: {res: sum(g[k][res] for g in groups) for res in ("cpu", "memory")}
+            for k in ("requests", "waste")
+        },
+        "cost": {k: sum(g["cost"][k] for g in groups) for k in ("requests", "waste")}
+        if priced
+        else None,
+    }
+
+
+def allocate(rows: list[dict[str, Any]], c: Contract, by: str = "namespace") -> dict[str, Any]:
+    """Stored rows grouped (slice 10.2) by namespace, team or a label: each group's
+    requests (every container, ready or not) and waste (sized ones), in money when
+    the Contract has prices, ranked by what its requests cost, and the Contract's
+    total; the waste's cost is the available Savings (10.3a). A namespace is its
+    cluster's (kind/lab, not lab); a team or a label value spans clusters."""
+    if by not in groupings(c):
+        raise ValueError(f"{c.id} groups by {', '.join(groupings(c))}, not {by!r}")
     priced = c.prices is not None
+    groups = _sums(rows, c, by)
     out = [
         {**g, "workloads": len(g["workloads"]), "cost": g["cost"] if priced else None}
         for g in groups.values()
@@ -453,10 +478,100 @@ def allocate(rows: list[dict[str, Any]], c: Contract, by: str = "namespace") -> 
     return {
         "by": by,
         "currency": c.prices.currency if c.prices else None,
+        "total": _total(groups.values(), priced),
         "groups": out,
         "groupings": groupings(c),
         "warnings": _warnings(rows, c, by),
     }
+
+
+def _minus(a: dict[str, Any] | None, b: dict[str, Any] | None, priced: bool) -> dict[str, Any]:
+    """Group a's requests, waste and cost less b's; a missing group counts as nothing."""
+    zero = {"cpu": 0.0, "memory": 0.0}
+    a = a or {"requests": zero, "waste": zero, "cost": {"requests": 0.0, "waste": 0.0}}
+    b = b or {"requests": zero, "waste": zero, "cost": {"requests": 0.0, "waste": 0.0}}
+    return {
+        **{
+            k: {res: a[k][res] - b[k][res] for res in ("cpu", "memory")}
+            for k in ("requests", "waste")
+        },
+        "cost": {k: a["cost"][k] - b["cost"][k] for k in ("requests", "waste")} if priced else None,
+    }
+
+
+def compare(
+    out: dict[str, Any],
+    now: list[dict[str, Any]],
+    then: list[dict[str, Any]],
+    status: dict[str, dict[str, Any]],
+    oldest: dict[str, float],
+    c: Contract,
+    since: float,
+) -> dict[str, Any]:
+    """allocate()'s `out` with each group's change since then (slice 10.3a): snapshots,
+    each cluster's latest run at or before `since` against its latest now, both at
+    today's prices. Only what both sides know is compared: a cluster with no run that
+    old (named, with its oldest), a container whose requests were unknown then (learning
+    or excluded before 10.1) and, when the grouping reads labels, those of a cluster
+    where no pod had them then but some do now are left out of both. A group gone
+    since shows its whole drop."""
+    by, priced = out["by"], c.prices is not None
+    clusters = {r["cluster"] for r in now} | set(status)
+    missing = {k for k in clusters if (status.get(k) or {}).get("at") is None}
+    keys = _label_keys(c, by)
+    unknown = {r["workload"] for r in then if r["state"] != "ready" and "requests" not in r}
+
+    def labelled(rows: list[dict[str, Any]]) -> set[str]:
+        return {r["cluster"] for r in rows if set(keys) & set(r.get("labels") or {})}
+
+    # A cluster whose pods got the labels since (stored before the Contract listed
+    # them, or before kube-state-metrics exported them): every Workload would seem to
+    # change group. A run stores labels on all its rows or on none.
+    unlabelled = labelled(now) - labelled(then) if keys else set()
+    unknown |= {r["workload"] for r in now + then if r["cluster"] in unlabelled}
+
+    def known(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [r for r in rows if r["cluster"] not in missing and r["workload"] not in unknown]
+
+    a, b = _sums(known(now), c, by), _sums(known(then), c, by)
+    groups = [
+        {**g, "change": _minus(a.get(g["group"]), b.get(g["group"]), priced)} for g in out["groups"]
+    ]
+    zero = {"cpu": 0.0, "memory": 0.0}
+    for key in sorted(set(b) - {g["group"] for g in out["groups"]}):  # gone since
+        cost = {"requests": 0.0, "waste": 0.0} if priced else None
+        groups.append(
+            {"group": key, "workloads": 0, "requests": zero, "waste": zero, "cost": cost}
+            | {"change": _minus(None, b[key], priced)}
+        )
+    return {
+        **out,
+        "groups": groups,
+        "compare": {
+            "since": since,
+            "clusters": {
+                k: {"at": (status.get(k) or {}).get("at"), "oldest": oldest.get(k)}
+                for k in sorted(clusters)
+            },
+            "change": _minus(_total(a.values(), True), _total(b.values(), True), priced),
+            "left_out": sorted(unknown),
+        },
+    }
+
+
+async def cost(
+    store: "Store", c: Contract, by: str, now: float, back: float | None = None
+) -> dict[str, Any]:
+    """What `sizing cost` and the Cost page show: allocate() of each cluster's latest
+    stored run, compared with `back` seconds before `now` when given."""
+    clusters = {t.cluster for t in usage.targets(c)}
+    rows, status = await store.latest_sizings(c.id, clusters)
+    out = {"contract": c.id, "clusters": status, **allocate(rows, c, by)}
+    if back is None:
+        return out
+    then, before = await store.latest_sizings(c.id, clusters, before=now - back)
+    oldest = await store.first_sizings(c.id, clusters)
+    return compare(out, rows, then, {k: before.get(k, {}) for k in clusters}, oldest, c, now - back)
 
 
 HOURLY = 3600.0  # seconds between a Contract's stored Sizing runs

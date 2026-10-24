@@ -217,37 +217,67 @@ async def sizing_refresh(contract_id: str) -> int:
 _utc = sizing.utc
 
 
-async def sizing_cost(contract_id: str, by: str, as_json: bool) -> int:
+def _signed(change: dict[str, Any], key: str, currency: str | None) -> str:
+    """A change in a group's requests or waste: money when priced, else cores and GiB."""
+    if currency:
+        return f"{change['cost'][key]:+,.2f} {currency}/month"
+    q = change[key]
+    return f"{q['cpu']:+.2f} cores, {q['memory'] / sizing.GIB:+.2f} GiB"
+
+
+async def sizing_cost(contract_id: str, by: str, back: str | None, as_json: bool) -> int:
     """What the Contract's requests and waste cost, grouped (slice 10.2), from each
-    cluster's latest stored run."""
+    cluster's latest stored run; with --compare, the change since then (10.3a)."""
+    import time
+
     settings = Settings()
     c = contract(settings, contract_id)
     if by not in sizing.groupings(c):
         print(f"--by: {c.id} groups by {', '.join(sizing.groupings(c))}", file=sys.stderr)
         return 2
+    try:
+        seconds = None if back is None else contracts.duration_s(back)
+    except ValueError as e:
+        print(f"--compare: {e}", file=sys.stderr)
+        return 2
     async with connect(_store_url(settings)) as pool:
         store = Store(pool)
         await store.migrate()
-        rows, clusters = await store.latest_sizings(c.id, {t.cluster for t in usage.targets(c)})
-    out = {"contract": c.id, **sizing.allocate(rows, c, by)}
+        out = await sizing.cost(store, c, by, time.time(), seconds)
     if as_json:
         print(json.dumps(out, indent=2))
         return 0
-    if not clusters:
+    if not out.pop("clusters"):
         print(f"{c.id}: no Sizings stored yet (`aiops sizing refresh`)")
         return 1
-    currency = out["currency"]
+    currency, cmp = out["currency"], out.get("compare")
+
+    def line(g: dict[str, Any]) -> str:
+        if currency:
+            asked = sizing.money(g["cost"]["requests"], currency)
+            saved = sizing.money(g["cost"]["waste"], currency)
+        else:
+            asked, saved = sizing.quantities(g["requests"]), sizing.quantities(g["waste"])
+        if cmp:
+            asked += f" ({_signed(g['change'], 'requests', currency)})"
+            saved += f" ({_signed(g['change'], 'waste', currency)})"
+        return f"requests {asked}, savings available {saved}"
+
     print(f"{c.id} by {by}: requests in its namespaces, not the nodes")
     for g in out["groups"]:
-        if currency:
-            line = (
-                f"requests {sizing.money(g['cost']['requests'], currency)}, "
-                f"waste {sizing.money(g['cost']['waste'], currency)}"
+        print(f"{g['group']}: {line(g)}, {g['workloads']} Workloads")
+    print(f"total: {line({**out['total'], 'change': cmp and cmp['change']})}")
+    if cmp:
+        for cluster, at in cmp["clusters"].items():
+            if at["at"] is None:
+                print(f"{cluster}: no run that old, oldest {_utc(at['oldest'])}; left out")
+            else:
+                print(f"{cluster}: compared with its run of {_utc(at['at'])}")
+        if cmp["left_out"]:
+            print(
+                f"left out, requests or labels unknown then: {', '.join(cmp['left_out'])}",
+                file=sys.stderr,
             )
-        else:
-            asked, wasted = sizing.quantities(g["requests"]), sizing.quantities(g["waste"])
-            line = f"requests {asked}, waste {wasted}"
-        print(f"{g['group']}: {line}, {g['workloads']} Workloads")
     for w in out["warnings"]:
         print(f"warning: {w}", file=sys.stderr)
     return 0
@@ -454,6 +484,7 @@ def main(argv: list[str] | None = None) -> int:
     zc = zsub.add_parser("cost", help="requests and waste grouped, by what they cost")
     zc.add_argument("--contract", required=True, help="a Contract id in AIOPS_CONTRACTS_DIR")
     zc.add_argument("--by", default="namespace", help="namespace, team or label:<key>")
+    zc.add_argument("--compare", metavar="AGO", help="the change since then: 1d, 7d, 30d")
     zc.add_argument("--json", action="store_true")
     zd = zsub.add_parser("digest", help="the weekly Sizing digest, now")
     zd.add_argument("--contract", required=True, help="a Contract id in AIOPS_CONTRACTS_DIR")
@@ -468,7 +499,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.sizing_cmd == "waste":
             return asyncio.run(sizing_waste(args.contract, args.json))
         if args.sizing_cmd == "cost":
-            return asyncio.run(sizing_cost(args.contract, args.by, args.json))
+            return asyncio.run(sizing_cost(args.contract, args.by, args.compare, args.json))
         if args.sizing_cmd == "digest":
             return asyncio.run(sizing_digest(args.contract, args.post))
         return sizing_usage(args.contract, args.window, args.json)

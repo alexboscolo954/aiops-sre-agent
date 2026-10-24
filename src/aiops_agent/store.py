@@ -525,6 +525,16 @@ class Store:
             )
         return [r["row"] for r in rows], status
 
+    async def first_sizings(self, contract_id: str, clusters: set[str]) -> dict[str, float]:
+        """Each of `clusters`' oldest stored run that read it: how far back it compares."""
+        rows = await self._all(
+            "select e.key as cluster, min(r.at) as at from sizing_runs r, "
+            "jsonb_each(r.clusters) e where r.contract_id = %s and e.key = any(%s) "
+            "and e.value = 'null'::jsonb group by e.key",
+            (contract_id, sorted(clusters)),
+        )
+        return {r["cluster"]: r["at"] for r in rows}
+
     async def sizing_history(
         self, contract_id: str, workload: tuple[str, str, str, str, str], since: float
     ) -> list[tuple[float, dict[str, Any]]]:
