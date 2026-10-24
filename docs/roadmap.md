@@ -430,4 +430,4 @@ Touches nothing in client clusters. Sizings come from each Direct Contract's Pro
 
 ## Next
 
-Phases 0 to 8 are done except 3 (Relay) and 6.4 (Masking). On 2026-10-21 the Operator chose to grow the Hub into a resource optimizer as well (Phases 9 to 19, ADR 0004). 9.1 to 9.4 are built and checked on kind, and v0.3.0 (2026-10-23) stores Sizings hourly on the Mac Hub. v0.4.0 (2026-10-23) has the console app (9.5a) and v0.5.0 (2026-10-23) the weekly Sizing digest (9.5b); next is grilling 9.6.
+Phases 0 to 8 are done except 3 (Relay) and 6.4 (Masking). On 2026-10-21 the Operator chose to grow the Hub into a resource optimizer as well (Phases 9 to 19, ADR 0004). 9.1 to 9.4 are built and checked on kind, and v0.3.0 (2026-10-23) stores Sizings hourly on the Mac Hub. v0.4.0 (2026-10-23) has the console app (9.5a) and v0.5.0 (2026-10-23) the weekly Sizing digest (9.5b). v0.6.0 (2026-10-23) gives the agent Sizings (9.6a) and per-cluster PromQL (9.6b).
