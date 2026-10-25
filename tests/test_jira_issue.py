@@ -114,7 +114,9 @@ def test_the_operator_files_the_report_once_from_slack(
         until(lambda: any(":ticket: Filed as OPS-1" in r for r in replies(slack)))
         until(lambda: len(ephemerals(slack)) == 1)
         assert buttons(slack) == {}
-        assert ":ticket: OPS-1" in slack.calls[-2][1]["text"]  # the parent, updated
+        # The parent, updated (the double click's reply may come before or after it)
+        updates = [p for m, p, _ in slack.calls if m == "chat.update"]
+        assert ":ticket: OPS-1" in updates[-1]["text"]
         page = c.get(f"/console/investigations/{tid}", headers=VIEW).text
     (create,) = fake.creates
     assert create.headers["authorization"] == BASIC and TOKEN not in str(create.headers)
