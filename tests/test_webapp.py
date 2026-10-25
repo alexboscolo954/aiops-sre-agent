@@ -357,3 +357,42 @@ def test_cost_compares_each_contract_with_its_own_runs(
     assert theirs["groups"][0]["change"]["requests"] == {"cpu": 0.0, "memory": 0.0}
     assert plain["compare"] is None and plain["groups"][0]["change"] is None
     assert bad == [422, 422, 422]
+
+
+def test_the_cost_api_carries_only_the_contracts_own_realized_savings(
+    settings: Settings, fake_cluster: Any, database_url: str, app_dir: Path
+) -> None:
+    """acme lowered api to its Sizing; bank, with the same names, sees none (10.3b)."""
+    from aiops_agent import sizing
+    from tests.test_realized import sized
+
+    async def go() -> None:
+        async with connect(database_url) as pool:
+            store = Store(pool)
+            await store.migrate()
+            for cid in ("acme", "bank"):
+                await stored(store, cid, NOW - H, {"test": None}, sized(1.0, 0.115))
+            before, status = await store.latest_sizings("acme", {"test"})
+            await stored(store, "acme", NOW, {"test": None}, sized(0.115, 0.115))
+            await stored(store, "bank", NOW, {"test": None}, sized(1.0, 0.115))
+            acme = make_contract(integrations=INTEGRATIONS)
+            now = [sized(0.115, 0.115)]
+            await sizing.realize(store, acme, NOW, before, status, now, {"test": None})
+
+    asyncio.run(go())
+    settings.database_url = SecretStr(database_url)
+    settings.console_operators = {OPERATOR}
+    bank = make_contract(contract_id="bank", integrations=INTEGRATIONS)
+    acme = {"integrations": INTEGRATIONS, "prices": {"cpu": 0.04, "memory": 0.005}}
+    with client(settings, fake_cluster, acme=acme, more={"bank": (bank, fake_cluster)}) as c:
+        mine = c.get("/api/v1/contracts/acme/cost", headers=VIEW).json()["realized"]
+        theirs = c.get("/api/v1/contracts/bank/cost", headers=VIEW).json()["realized"]
+    (d,) = mine["drops"]
+    assert (d["workload"], d["resource"], d["before"], d["after"]) == (
+        "test/shop/Deployment/api/app",
+        "cpu",
+        1.0,
+        0.115,
+    )
+    assert mine["cost"]["rate"] == pytest.approx(0.885 * 3 * 0.04 * 730)
+    assert theirs["drops"] == [] and theirs["cost"] is None

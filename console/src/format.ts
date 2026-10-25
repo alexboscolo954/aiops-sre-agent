@@ -13,8 +13,9 @@ export function when(at: number | null | undefined): string {
   return new Date(at * 1000).toISOString().slice(0, 16).replace("T", " ") + " UTC";
 }
 
-export const money = (v: number, currency: string) =>
-  `${v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}/month`;
+export const amount = (v: number, currency: string) =>
+  `${v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}`;
+export const money = (v: number, currency: string) => `${amount(v, currency)}/month`;
 
 const sign = (v: number) => (v < 0 ? "-" : "+");
 

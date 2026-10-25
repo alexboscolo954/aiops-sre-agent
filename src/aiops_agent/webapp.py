@@ -124,6 +124,38 @@ class Comparison(BaseModel):
     left_out: list[str]  # containers whose requests or labels were unknown then
 
 
+class SpentCost(BaseModel):
+    rate: float
+    accrued: float
+
+
+class SavingsCost(BaseModel):
+    rate: float  # a month's worth, at today's prices
+    accrued: float  # since each drop
+    week: float  # the rate of the drops of the last 7 days
+
+
+class Drop(BaseModel):
+    workload: str  # cluster/namespace/kind/name/container
+    resource: Literal["cpu", "memory"]
+    at: float  # the run that saw it
+    before: float  # the request per pod
+    after: float
+    sizing: float
+    pods: float  # in the container's latest run
+    saved: float  # cores or bytes: (before - after) x pods
+    cost: SpentCost | None = None
+
+
+class Realized(BaseModel):
+    currency: str | None = None
+    rate: Waste  # cores and bytes held less, now
+    accrued: Waste  # core-hours and byte-hours
+    week: Waste
+    cost: SavingsCost | None = None  # None: the Contract has no prices
+    drops: list[Drop]  # by what they save
+
+
 class Allocation(BaseModel):
     contract: str
     by: str  # namespace, team or label:<key>
@@ -131,6 +163,7 @@ class Allocation(BaseModel):
     total: Change
     groups: list[Group]  # ranked by what their requests cost; then any gone since
     compare: Comparison | None = None
+    realized: Realized
     groupings: list[str]  # what this Contract can be grouped by
     warnings: list[str]  # clusters where no pod has a label the grouping reads
 

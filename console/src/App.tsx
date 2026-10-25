@@ -1,13 +1,14 @@
 // Workloads per Contract (slice 9.5a): each Workload's waste and risks from the
 // Hub's latest stored Sizings, and one container's requests vs Sizing over time.
 // Cost (slice 10.2): what each namespace's, team's or label value's requests and waste cost;
-// the waste's cost is the available Savings, compared with N days ago on request (10.3a).
+// the waste's cost is the available Savings, compared with N days ago on request (10.3a),
+// and the realized Savings, requests lowered to their Sizings (10.3b).
 // Everything from the API is rendered as text.
 import { useEffect, useMemo, useState } from "react";
 import * as api from "./api";
 import type { Allocation, Container, Point, Workload, Workloads } from "./api";
 import Chart from "./Chart";
-import { change, cores, cpu, gib, memory, money, rank, when } from "./format";
+import { amount, change, cores, cpu, gib, memory, money, rank, when } from "./format";
 
 function useParam(name: string): [string, (v: string) => void] {
   const [value, set] = useState(() => new URLSearchParams(location.search).get(name) ?? "");
@@ -262,6 +263,7 @@ function CostPage({
         <strong>{shown(data.total, "waste")}</strong>
         {cmp && ` (${change(cmp.change, "requests", currency)}, ${change(cmp.change, "waste", currency)})`}
       </p>
+      <Realized data={data.realized} />
       {data.groups.length === 0 && <p>No Sizings stored yet: the Hub stores them hourly.</p>}
       <table>
         <thead>
@@ -292,6 +294,31 @@ function CostPage({
         </tbody>
       </table>
     </>
+  );
+}
+
+function Realized({ data }: { data: Allocation["realized"] }) {
+  if (data.drops.length === 0)
+    return <p className="hint">Savings realized: none yet. A request lowered to its Sizing shows after the next hourly run.</p>;
+  const cur = data.currency;
+  return (
+    <p className="total">
+      Savings realized:{" "}
+      {cur && data.cost ? (
+        <>
+          <strong>{money(data.cost.rate, cur)}</strong>, {amount(data.cost.accrued, cur)} so far,{" "}
+          {money(data.cost.week, cur)} from this week's
+        </>
+      ) : (
+        <>
+          <strong>
+            {cores(data.rate.cpu ?? 0)}, {gib(data.rate.memory ?? 0)}
+          </strong>
+          , {cores(data.week.cpu ?? 0)}, {gib(data.week.memory ?? 0)} from this week's
+        </>
+      )}{" "}
+      ({data.drops.length} {data.drops.length === 1 ? "request" : "requests"} lowered to {data.drops.length === 1 ? "its Sizing" : "their Sizings"})
+    </p>
   );
 }
 

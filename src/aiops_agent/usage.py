@@ -248,6 +248,7 @@ class ContainerUsage:
     throttled: float | None = None  # share of CFS periods throttled, None: no data
     running: list[float] = field(default_factory=list)  # a time per Running pod per step
     labels: dict[str, str] = field(default_factory=dict)  # the allocation's, newest pod's
+    live: bool = False  # requests or limits read from pods seen in the last 5 minutes
 
 
 @dataclass
@@ -309,13 +310,25 @@ def usage(
         ("kube_pod_container_resource_requests", "requests"),
         ("kube_pod_container_resource_limits", "limits"),
     ):
-        for s in at_end(f"last_over_time({selector(metric, t)}[{window}])"):
-            m = s["metric"]
-            if m.get("resource") in ("cpu", "memory") and (hit := _known(rows, owners, m)):
-                # ponytail: the largest across the window's pods; mid-rollout that is
-                # the old or the new value, whichever is bigger
+        # The live pods' (seen in the last 5 minutes), so a lowered request shows the
+        # next run (slice 10.3b); a container with none live keeps the window's (a
+        # CronJob between runs, a Workload scaled to 0).
+        live: set[tuple[int, str]] = set()
+        for span in ("300s", window):
+            for s in at_end(f"last_over_time({selector(metric, t)}[{span}])"):
+                m = s["metric"]
+                res = m.get("resource")
+                if res not in ("cpu", "memory") or not (hit := _known(rows, owners, m)):
+                    continue
+                if span == window and (id(hit), res) in live:
+                    continue
+                if span != window:
+                    live.add((id(hit), res))
+                    hit.live = True
+                # ponytail: the largest across those pods; mid-rollout that is the old
+                # or the new value, whichever is bigger, until the old pods are gone
                 current = getattr(hit, into)
-                current[m["resource"]] = max(current.get(m["resource"], 0.0), float(s["value"][1]))
+                current[res] = max(current.get(res, 0.0), float(s["value"][1]))
     oom = selector("kube_pod_container_status_last_terminated_reason", t, 'reason="OOMKilled"')
     for s in at_end(f"max_over_time({oom}[{window}])"):
         if float(s["value"][1]) > 0 and (hit := _known(rows, owners, s["metric"])):

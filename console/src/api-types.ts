@@ -89,6 +89,7 @@ export interface components {
             groupings: string[];
             /** Groups */
             groups: components["schemas"]["Group"][];
+            realized: components["schemas"]["Realized"];
             total: components["schemas"]["Change"];
             /** Warnings */
             warnings: string[];
@@ -180,6 +181,29 @@ export interface components {
             /** Waste */
             waste: number;
         };
+        /** Drop */
+        Drop: {
+            /** After */
+            after: number;
+            /** At */
+            at: number;
+            /** Before */
+            before: number;
+            cost?: components["schemas"]["SpentCost"] | null;
+            /** Pods */
+            pods: number;
+            /**
+             * Resource
+             * @enum {string}
+             */
+            resource: "cpu" | "memory";
+            /** Saved */
+            saved: number;
+            /** Sizing */
+            sizing: number;
+            /** Workload */
+            workload: string;
+        };
         /** Group */
         Group: {
             change?: components["schemas"]["Change"] | null;
@@ -210,6 +234,17 @@ export interface components {
             /** Pods */
             pods?: number | null;
         };
+        /** Realized */
+        Realized: {
+            accrued: components["schemas"]["Waste"];
+            cost?: components["schemas"]["SavingsCost"] | null;
+            /** Currency */
+            currency?: string | null;
+            /** Drops */
+            drops: components["schemas"]["Drop"][];
+            rate: components["schemas"]["Waste"];
+            week: components["schemas"]["Waste"];
+        };
         /** Resource */
         Resource: {
             /** Action */
@@ -229,6 +264,22 @@ export interface components {
             kind: string;
             /** Text */
             text: string;
+        };
+        /** SavingsCost */
+        SavingsCost: {
+            /** Accrued */
+            accrued: number;
+            /** Rate */
+            rate: number;
+            /** Week */
+            week: number;
+        };
+        /** SpentCost */
+        SpentCost: {
+            /** Accrued */
+            accrued: number;
+            /** Rate */
+            rate: number;
         };
         /** ValidationError */
         ValidationError: {

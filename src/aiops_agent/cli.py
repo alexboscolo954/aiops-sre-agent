@@ -283,6 +283,54 @@ async def sizing_cost(contract_id: str, by: str, back: str | None, as_json: bool
     return 0
 
 
+async def sizing_savings(contract_id: str, as_json: bool) -> int:
+    """The Contract's realized Savings (slice 10.3b): each request lowered to a Sizing
+    and still in place, at today's prices."""
+    import time
+
+    settings = Settings()
+    c = contract(settings, contract_id)
+    async with connect(_store_url(settings)) as pool:
+        store = Store(pool)
+        await store.migrate()
+        out = {"contract": c.id, **await sizing.savings(store, c, time.time())}
+    if as_json:
+        print(json.dumps(out, indent=2))
+        return 0
+    if not out["drops"]:
+        print(f"{c.id}: no realized Savings: a request lowered to its Sizing shows the next run")
+        return 0
+    currency = out["currency"]
+    if currency:
+        cost = out["cost"]
+        print(
+            f"{c.id}: realized Savings {sizing.money(cost['rate'], currency)}, "
+            f"{cost['accrued']:,.2f} {currency} so far; "
+            f"{sizing.money(cost['week'], currency)} from this week's"
+        )
+    else:
+        hours = out["accrued"]
+        print(
+            f"{c.id}: realized Savings {sizing.quantities(out['rate'])}, "
+            f"{hours['cpu']:,.1f} core-hours and {hours['memory'] / sizing.GIB:,.1f} GiB-hours "
+            f"so far; {sizing.quantities(out['week'])} from this week's"
+        )
+    for d in out["drops"]:
+        res = d["resource"]
+        worth = (
+            f"{sizing.money(d['cost']['rate'], currency)}, "
+            f"{d['cost']['accrued']:,.2f} {currency} so far"
+            if d["cost"]
+            else sizing.show(res, d["saved"])
+        )
+        print(
+            f"{d['workload']} {res}: {sizing.show(res, d['before'])} to "
+            f"{sizing.show(res, d['after'])} (Sizing {sizing.show(res, d['sizing'])}) "
+            f"since {_utc(d['at'])}, {d['pods']:g} pods: {worth}"
+        )
+    return 0
+
+
 async def sizing_waste(contract_id: str, as_json: bool) -> int:
     """The Contract's Workloads ranked by waste (requests above their Sizings), with
     their risks, from each cluster's latest stored run (slice 9.4)."""
@@ -486,6 +534,9 @@ def main(argv: list[str] | None = None) -> int:
     zc.add_argument("--by", default="namespace", help="namespace, team or label:<key>")
     zc.add_argument("--compare", metavar="AGO", help="the change since then: 1d, 7d, 30d")
     zc.add_argument("--json", action="store_true")
+    zv = zsub.add_parser("savings", help="requests lowered to their Sizings, and their worth")
+    zv.add_argument("--contract", required=True, help="a Contract id in AIOPS_CONTRACTS_DIR")
+    zv.add_argument("--json", action="store_true")
     zd = zsub.add_parser("digest", help="the weekly Sizing digest, now")
     zd.add_argument("--contract", required=True, help="a Contract id in AIOPS_CONTRACTS_DIR")
     zd.add_argument("--post", action="store_true", help="also post it to the operator channel")
@@ -500,6 +551,8 @@ def main(argv: list[str] | None = None) -> int:
             return asyncio.run(sizing_waste(args.contract, args.json))
         if args.sizing_cmd == "cost":
             return asyncio.run(sizing_cost(args.contract, args.by, args.compare, args.json))
+        if args.sizing_cmd == "savings":
+            return asyncio.run(sizing_savings(args.contract, args.json))
         if args.sizing_cmd == "digest":
             return asyncio.run(sizing_digest(args.contract, args.post))
         return sizing_usage(args.contract, args.window, args.json)

@@ -46,6 +46,9 @@
             "title": "Groups",
             "type": "array"
           },
+          "realized": {
+            "$ref": "#/components/schemas/Realized"
+          },
           "total": {
             "$ref": "#/components/schemas/Change"
           },
@@ -62,6 +65,7 @@
           "by",
           "total",
           "groups",
+          "realized",
           "groupings",
           "warnings"
         ],
@@ -364,6 +368,68 @@
         "title": "Cost",
         "type": "object"
       },
+      "Drop": {
+        "properties": {
+          "after": {
+            "title": "After",
+            "type": "number"
+          },
+          "at": {
+            "title": "At",
+            "type": "number"
+          },
+          "before": {
+            "title": "Before",
+            "type": "number"
+          },
+          "cost": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SpentCost"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pods": {
+            "title": "Pods",
+            "type": "number"
+          },
+          "resource": {
+            "enum": [
+              "cpu",
+              "memory"
+            ],
+            "title": "Resource",
+            "type": "string"
+          },
+          "saved": {
+            "title": "Saved",
+            "type": "number"
+          },
+          "sizing": {
+            "title": "Sizing",
+            "type": "number"
+          },
+          "workload": {
+            "title": "Workload",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workload",
+          "resource",
+          "at",
+          "before",
+          "after",
+          "sizing",
+          "pods",
+          "saved"
+        ],
+        "title": "Drop",
+        "type": "object"
+      },
       "Group": {
         "properties": {
           "change": {
@@ -483,6 +549,55 @@
         "title": "Point",
         "type": "object"
       },
+      "Realized": {
+        "properties": {
+          "accrued": {
+            "$ref": "#/components/schemas/Waste"
+          },
+          "cost": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SavingsCost"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currency"
+          },
+          "drops": {
+            "items": {
+              "$ref": "#/components/schemas/Drop"
+            },
+            "title": "Drops",
+            "type": "array"
+          },
+          "rate": {
+            "$ref": "#/components/schemas/Waste"
+          },
+          "week": {
+            "$ref": "#/components/schemas/Waste"
+          }
+        },
+        "required": [
+          "rate",
+          "accrued",
+          "week",
+          "drops"
+        ],
+        "title": "Realized",
+        "type": "object"
+      },
       "Resource": {
         "properties": {
           "action": {
@@ -545,6 +660,47 @@
           "text"
         ],
         "title": "Risk",
+        "type": "object"
+      },
+      "SavingsCost": {
+        "properties": {
+          "accrued": {
+            "title": "Accrued",
+            "type": "number"
+          },
+          "rate": {
+            "title": "Rate",
+            "type": "number"
+          },
+          "week": {
+            "title": "Week",
+            "type": "number"
+          }
+        },
+        "required": [
+          "rate",
+          "accrued",
+          "week"
+        ],
+        "title": "SavingsCost",
+        "type": "object"
+      },
+      "SpentCost": {
+        "properties": {
+          "accrued": {
+            "title": "Accrued",
+            "type": "number"
+          },
+          "rate": {
+            "title": "Rate",
+            "type": "number"
+          }
+        },
+        "required": [
+          "rate",
+          "accrued"
+        ],
+        "title": "SpentCost",
         "type": "object"
       },
       "ValidationError": {

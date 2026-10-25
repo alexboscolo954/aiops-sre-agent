@@ -226,9 +226,11 @@ def rows(
             }
             if c.allocation.labels:  # stored since 10.2b; teams are matched when shown
                 row["labels"] = u.labels
-            # What its requests cost, whatever its state (stored since 10.1)
+            # What its requests cost, whatever its state (stored since 10.1), and
+            # whether they are its live pods' (since 10.3b)
             pods = avg_pods(u, steps[cluster])
             row["requests"] = {name: u.requests.get(name) for name in ("cpu", "memory")}
+            row["live"] = u.live
             policy = c.sizing.policy(row["policy"])
             if policy is None:
                 out[row["workload"]] = {**row, "state": "excluded", "pods": round(pods, 1)}
@@ -566,7 +568,12 @@ async def cost(
     stored run, compared with `back` seconds before `now` when given."""
     clusters = {t.cluster for t in usage.targets(c)}
     rows, status = await store.latest_sizings(c.id, clusters)
-    out = {"contract": c.id, "clusters": status, **allocate(rows, c, by)}
+    out = {
+        "contract": c.id,
+        "clusters": status,
+        **allocate(rows, c, by),
+        "realized": await savings(store, c, now, rows),
+    }
     if back is None:
         return out
     then, before = await store.latest_sizings(c.id, clusters, before=now - back)
@@ -589,9 +596,147 @@ async def store_run(
     if run_id is None:
         return None
     found = await asyncio.to_thread(usage.collect, c, c.sizing.windows(), at)
-    await store.finish_sizing_run(run_id, c.id, found.clusters, rows(c, found.by_window, at))
+    # Each cluster's last good run, read before this one finishes (it would compare
+    # with itself)
+    before, status = await store.latest_sizings(c.id, set(found.clusters))
+    now = rows(c, found.by_window, at)
+    await store.finish_sizing_run(run_id, c.id, found.clusters, now)
+    await realize(store, c, at, before, status, now, found.clusters)
     await store.prune_sizings(c.id, at)
     return found
+
+
+MATCH = 0.10  # a lowered request within 10% of a Sizing followed it
+SHOWN_FOR = 14 * 86400.0  # how far back that Sizing may have been shown
+
+
+def _key(r: dict[str, Any]) -> tuple[str, ...]:
+    return tuple(r[k] for k in ("cluster", "namespace", "kind", "name", "container"))
+
+
+async def realize(
+    store: "Store",
+    c: Contract,
+    at: float,
+    before: list[dict[str, Any]],
+    status: dict[str, dict[str, Any]],
+    now: list[dict[str, Any]],
+    clusters: dict[str, str | None],
+) -> None:
+    """Realized Savings (slice 10.3b), per container and resource, against each read
+    cluster's previous good run: a request lowered to within 10% of a Sizing below the
+    old one, shown in the 14 days before, is stored as a drop. A rise raises the
+    drops' `after` back toward their `before` (never past it) and a drop back at
+    `before` is deleted, as is every drop of a container gone from a read cluster or
+    whose request was removed. Fewer pods change nothing here: they count when shown.
+    Only rows read from live pods start, raise or end a drop: a container with none
+    (kube-state-metrics down, scaled to 0) reads its window's largest request, the
+    old one. ponytail: a CronJob whose pods are cleaned up between runs rarely has
+    two live runs in a row, so it rarely realizes; read the newest pod's to fix."""
+    read = {k for k, error in clusters.items() if error is None}
+    then = {_key(r): r for r in before if r["cluster"] in read}
+    current = {_key(r): r for r in now if r["cluster"] in read}
+    raised: dict[int, float] = {}
+    ended: set[int] = set()
+    for e in await store.realized(c.id):
+        key = _key(e)
+        if e["cluster"] not in read:
+            continue  # a failed read ends nothing
+        r = current.get(key)
+        if r is not None and not r.get("live"):
+            continue  # its requests are the window's, not what runs now
+        asked = (r or {}).get("requests", {}).get(e["resource"])
+        if asked is None:  # gone, or its request removed: not a Sizing's saving
+            ended.add(e["id"])
+            continue
+        after = max(e["after"], asked)
+        if after >= e["before"]:
+            ended.add(e["id"])
+        elif after != e["after"]:
+            raised[e["id"]] = after
+    added = []
+    for key, r in current.items():
+        old = then.get(key)
+        if old is None or not (old.get("live") and r.get("live")):  # unmarked before 10.3b
+            continue
+        for res in ("cpu", "memory"):
+            was = (old.get("requests") or {}).get(res)  # None before 10.1
+            asked = (r.get("requests") or {}).get(res)
+            if was is None or asked is None or asked >= was:
+                continue
+            shown = [
+                row[res]["target"]
+                for t, row in await store.sizing_history(c.id, key, at - SHOWN_FOR)  # type: ignore[arg-type]
+                if t < at and row.get(res) and row[res]["target"] < was
+            ]
+            near = [s for s in shown if abs(asked - s) <= MATCH * s]
+            if near:
+                added.append(
+                    {k: r[k] for k in ("cluster", "namespace", "kind", "name", "container")}
+                    | {
+                        "resource": res,
+                        "at": at,
+                        "prev_run": status[r["cluster"]]["run"],
+                        "before": was,
+                        "after": asked,
+                        "sizing": min(near, key=lambda s: abs(asked - s)),
+                    }
+                )
+    if added or raised or ended:
+        await store.save_realized(c.id, added, raised, ended)
+
+
+async def savings(
+    store: "Store", c: Contract, now: float, rows: list[dict[str, Any]] | None = None
+) -> dict[str, Any]:
+    """The Contract's realized Savings as of `now`: each stored drop still in place,
+    worth (before - after) x the container's pods in its latest run, at today's prices
+    (cores and GiB without them), as a monthly run rate and accrued since the drop
+    (that rate x the hours since, so a later partial rise lowers it too), and the rate
+    of the drops of the last 7 days. The pods are the latest run's average, as its
+    waste's. Only the Contract's current clusters count."""
+    if rows is None:  # else the latest rows, already read
+        clusters = {t.cluster for t in usage.targets(c)}
+        rows, _ = await store.latest_sizings(c.id, clusters, before=now)
+    latest = {_key(r): r for r in rows}
+    priced = c.prices is not None
+    zero = {"cpu": 0.0, "memory": 0.0}
+    out: dict[str, Any] = {
+        "currency": c.prices.currency if c.prices else None,
+        "rate": dict(zero),  # cores and bytes held less, now
+        "accrued": dict(zero),  # core-hours and byte-hours since each drop
+        "week": dict(zero),
+        "cost": {"rate": 0.0, "accrued": 0.0, "week": 0.0} if priced else None,
+        "drops": [],
+    }
+    for e in await store.realized(c.id):
+        r = latest.get(_key(e))
+        if e["at"] > now or r is None:  # gone, or its cluster no longer the Contract's
+            continue
+        res = e["resource"]
+        saved = (e["before"] - e["after"]) * (r.get("pods") or 0.0)
+        hours = (now - e["at"]) / 3600
+        drop = {
+            "workload": "/".join(_key(e)),
+            **{k: e[k] for k in ("resource", "at", "before", "after", "sizing")},
+            "pods": r.get("pods") or 0.0,
+            "saved": saved,
+            "cost": None,
+        }
+        out["rate"][res] += saved
+        out["accrued"][res] += saved * hours
+        if e["at"] >= now - WEEK:
+            out["week"][res] += saved
+        if p := c.price(e["cluster"]):
+            rate = monthly(p, saved, 0.0) if res == "cpu" else monthly(p, 0.0, saved)
+            drop["cost"] = {"rate": rate, "accrued": rate / MONTH * hours}
+            out["cost"]["rate"] += rate
+            out["cost"]["accrued"] += drop["cost"]["accrued"]
+            if e["at"] >= now - WEEK:
+                out["cost"]["week"] += rate
+        out["drops"].append(drop)
+    out["drops"].sort(key=lambda d: (-(d["cost"] or {}).get("rate", d["saved"]), d["workload"]))
+    return out
 
 
 WEEK = 7 * 86400.0
@@ -606,12 +751,30 @@ def _kinds(report: dict[str, Any]) -> dict[str, set[str]]:
     return {w["workload"]: {r["kind"] for r in w["risks"]} for w in report["workloads"]}
 
 
+def realized_line(r: dict[str, Any]) -> str | None:
+    """The digest's line on realized Savings, or None when nothing was realized."""
+    if not any(r["rate"].values()):
+        return None
+    if r["cost"]:
+        cur = r["currency"]
+        return (
+            f"Realized this week: {money(r['cost']['week'], cur)} "
+            f"({money(r['cost']['rate'], cur)} in all)."
+        )
+    return f"Realized this week: {quantities(r['week'])} ({quantities(r['rate'])} in all)."
+
+
 def digest_text(
-    contract_id: str, now: dict[str, Any], week: dict[str, Any], link: str | None = None
+    contract_id: str,
+    now: dict[str, Any],
+    week: dict[str, Any],
+    link: str | None = None,
+    realized: dict[str, Any] | None = None,
 ) -> str:
     """The weekly digest (Slack mrkdwn) from report() now and as of a week ago: total
-    waste and its change, the top Workloads by waste, risk kinds a Workload didn't have
-    a week ago, stale clusters, the containers still learning, then the link."""
+    waste and its change, the realized Savings (10.3b), the top Workloads by waste,
+    risk kinds a Workload didn't have a week ago, stale clusters, the containers still
+    learning, then the link."""
     total = now["total"]
     lines = [f"*Weekly Sizing digest: {contract_id}*"]
     if not now["clusters"]:
@@ -640,6 +803,8 @@ def digest_text(
         lines.append(waste)
         if currency:
             lines.append(f"Requests cost {money(now['cost']['requests'], currency)}.")
+        if realized and (line := realized_line(realized)):
+            lines.append(line)
         top = [w for w in now["workloads"] if rank(w) > 0][:TOP]
         if top:
             lines.append("*Top Workloads by waste*")
@@ -682,4 +847,4 @@ async def digest(store: "Store", c: Contract, at: float, console_url: str | None
     now = report(*await store.latest_sizings(c.id, clusters, before=at), c)
     week = report(*await store.latest_sizings(c.id, clusters, before=at - WEEK), c)
     link = f"{console_url.rstrip('/')}/app/?contract={c.id}" if console_url else None
-    return digest_text(c.id, now, week, link)
+    return digest_text(c.id, now, week, link, await savings(store, c, at))

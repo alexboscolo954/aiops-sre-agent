@@ -508,12 +508,14 @@ class Store:
             for cluster, error in run["clusters"].items():
                 if cluster not in clusters:
                     continue
-                st = status.setdefault(cluster, {"at": None, "error": None, "since": None})
+                st = status.setdefault(
+                    cluster, {"at": None, "run": None, "error": None, "since": None}
+                )
                 if cluster in good:
                     continue
                 if error is None:
                     good[cluster] = run["id"]
-                    st["at"] = run["at"]
+                    st["at"], st["run"] = run["at"], run["id"]
                 else:
                     st["error"] = st["error"] or error
                     st["since"] = run["at"]
@@ -534,6 +536,47 @@ class Store:
             (contract_id, sorted(clusters)),
         )
         return {r["cluster"]: r["at"] for r in rows}
+
+    async def realized(self, contract_id: str) -> list[dict[str, Any]]:
+        """The Contract's realized request drops still saving (slice 10.3b)."""
+        return await self._all(
+            "select id, cluster, namespace, kind, name, container, resource, at, before, "
+            "after, sizing from realized where contract_id = %s order by at, id",
+            (contract_id,),
+        )
+
+    async def save_realized(
+        self,
+        contract_id: str,
+        added: list[dict[str, Any]],
+        raised: dict[int, float],
+        ended: set[int],
+    ) -> None:
+        """New drops (a drop already stored against the same previous run is kept as
+        it was), `after` raised by a later rise, and those no longer saving deleted."""
+        async with self.pool.connection() as conn, conn.transaction():
+            for e in added:
+                await conn.execute(
+                    "insert into realized (contract_id, cluster, namespace, kind, name, "
+                    "container, resource, at, prev_run, before, after, sizing) values "
+                    "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) on conflict do nothing",
+                    (
+                        contract_id,
+                        *(e[k] for k in ("cluster", "namespace", "kind", "name", "container")),
+                        *(e[k] for k in ("resource", "at", "prev_run", "before", "after")),
+                        e["sizing"],
+                    ),
+                )
+            for event_id, after in raised.items():
+                await conn.execute(
+                    "update realized set after = %s where id = %s and contract_id = %s",
+                    (after, event_id, contract_id),
+                )
+            if ended:
+                await conn.execute(
+                    "delete from realized where contract_id = %s and id = any(%s)",
+                    (contract_id, sorted(ended)),
+                )
 
     async def sizing_history(
         self, contract_id: str, workload: tuple[str, str, str, str, str], since: float

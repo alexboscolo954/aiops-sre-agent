@@ -129,6 +129,14 @@ test("the Cost page lists namespaces by what their requests cost, each linking i
         groupings: ["namespace"],
         warnings: [],
         total: { requests: { cpu: 5.1, memory: 8 * GI }, waste: { cpu: 2, memory: GI }, cost: { requests: 150.81, waste: 74.65 } },
+        realized: {
+          currency: "USD",
+          rate: { cpu: 2.655, memory: 0 },
+          accrued: { cpu: 26.55, memory: 0 },
+          week: { cpu: 2.655, memory: 0 },
+          cost: { rate: 77.53, accrued: 1.06, week: 77.53 },
+          drops: [{ workload: "kind/lab/Deployment/api/app", resource: "cpu", at: 0, before: 1, after: 0.115, sizing: 0.115, pods: 3, saved: 2.655, cost: { rate: 77.53, accrued: 1.06 } }],
+        },
       },
     ],
   });
@@ -138,6 +146,9 @@ test("the Cost page lists namespaces by what their requests cost, each linking i
   expect(screen.getAllByText("74.65 USD/month")).toHaveLength(2); // kind/lab's and the total Savings
   expect(screen.getByText("150.81 USD/month")).toBeTruthy(); // the total of the requests
   expect(screen.queryByText("Δ requests")).toBeNull(); // nothing compared
+  expect(screen.getByText("77.53 USD/month")).toBeTruthy(); // realized
+  expect(screen.getByText(/1\.06 USD so far, 77\.53 USD\/month from this week's/)).toBeTruthy();
+  expect(screen.getByText(/1 request lowered to its Sizing/)).toBeTruthy();
   const rows = screen.getAllByRole("link").map((a) => a.textContent).filter((t) => t?.startsWith("kind/"));
   expect(rows).toEqual(["kind/lab", "kind/demo"]);
 });
@@ -159,6 +170,7 @@ test("the Cost page groups by team on request, with no Workloads links and the H
         groupings: ["namespace", "team", "label:team"],
         warnings: ["kind: no pod has label team; kube-state-metrics needs --metric-labels-allowlist=pods=[team]"],
         total: { requests: { cpu: 2.5, memory: 4 * GI }, waste: { cpu: 1, memory: GI }, cost: null },
+        realized: { currency: null, rate: { cpu: 0, memory: 0 }, accrued: { cpu: 0, memory: 0 }, week: { cpu: 0, memory: 0 }, cost: null, drops: [] },
       },
     ],
   });
@@ -167,6 +179,7 @@ test("the Cost page groups by team on request, with no Workloads links and the H
   expect(screen.getByText("<b>payments</b>")).toBeTruthy();
   expect(page.querySelector("b")).toBeNull();
   expect(screen.getByText(/no pod has label team/)).toBeTruthy();
+  expect(screen.getByText(/Savings realized: none yet/)).toBeTruthy();
   expect(screen.queryByRole("link", { name: "(no team)" })).toBeNull();
   const calls = (fetch as unknown as { mock: { calls: string[][] } }).mock.calls.map((c) => c[0]);
   expect(calls).toContain("/api/v1/contracts/demo-shop/cost?by=team");
@@ -178,7 +191,8 @@ test("another Contract's Cost page starts by namespace", async () => {
   history.replaceState(null, "", "/app/?view=cost&by=team");
   const zero = { cpu: 0, memory: 0 };
   const total = { requests: zero, waste: zero, cost: null };
-  const body = { contract: "demo-shop", by: "team", currency: null, groups: [], groupings: ["namespace", "team"], warnings: [], total };
+  const realized = { currency: null, rate: zero, accrued: zero, week: zero, cost: null, drops: [] };
+  const body = { contract: "demo-shop", by: "team", currency: null, groups: [], groupings: ["namespace", "team"], warnings: [], total, realized };
   answer({
     "/api/v1/contracts": [200, [{ id: "demo-shop", name: "demo-shop" }, { id: "demo-bank", name: "demo-bank" }]],
     "/api/v1/contracts/demo-shop/cost": [200, body],
@@ -210,6 +224,7 @@ test("comparing shows each group's change, a group gone since and what was left 
         groupings: ["namespace"],
         warnings: [],
         total: { requests: zero, waste: zero, cost: { requests: 147.29, waste: 74.65 } },
+        realized: { currency: "USD", rate: zero, accrued: zero, week: zero, cost: { rate: 0, accrued: 0, week: 0 }, drops: [] },
         compare: {
           since: 86400,
           clusters: { kind: { at: 86400, oldest: 0 }, eu: { at: null, oldest: 172800 } },

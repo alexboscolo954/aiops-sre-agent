@@ -571,6 +571,45 @@ def test_mid_rollout_the_larger_request_counts() -> None:
     assert rows[("checkout", "app")].requests == {"cpu": 1.0}
 
 
+def test_after_a_rollout_the_live_pods_request_counts() -> None:
+    """The old pod asked 1 core and is gone an hour; the new one asks 115m: Realized
+    Savings sees the drop the next run, not when the old pod leaves the window
+    (slice 10.3b). With no live pod, the window's request stands (a CronJob)."""
+    fake = FakePrometheus()
+    a, b = deployment(fake)
+    for p, req, ago in ((a, 1.0, 3600), (b, 0.115, 0)):
+        cpu(fake, p, FLAT)
+        for metric, res, value in (("requests", "cpu", req), ("limits", "memory", req * 2)):
+            fake.add(
+                f"kube_pod_container_resource_{metric}",
+                value,
+                ago=ago,
+                namespace="shop",
+                pod=p,
+                container="app",
+                resource=res,
+            )
+    rows, _ = run(fake)
+    assert rows[("checkout", "app")].requests == {"cpu": 0.115}
+    assert rows[("checkout", "app")].limits == {"memory": 0.23}
+    assert rows[("checkout", "app")].live
+    gone = FakePrometheus()
+    (c, _) = deployment(gone)
+    cpu(gone, c, FLAT)
+    gone.add(
+        "kube_pod_container_resource_requests",
+        0.5,
+        ago=3600,
+        namespace="shop",
+        pod=c,
+        container="app",
+        resource="cpu",
+    )
+    rows, _ = run(gone)
+    assert rows[("checkout", "app")].requests == {"cpu": 0.5}
+    assert not rows[("checkout", "app")].live
+
+
 def test_api_owners_prefer_the_controller_reference() -> None:
     other = k.V1OwnerReference(api_version="v1", kind="Foo", name="x", uid="1", controller=False)
     ctrl = k.V1OwnerReference(

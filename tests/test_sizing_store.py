@@ -228,14 +228,14 @@ async def test_a_run_is_claimed_once_an_hour(store: Store) -> None:
 
 @pytest.mark.anyio
 async def test_each_cluster_keeps_its_last_good_run(store: Store) -> None:
-    await stored(store, "acme", NOW, {"a": None, "b": None}, row("x", "a"), row("y", "b"))
+    first = await stored(store, "acme", NOW, {"a": None, "b": None}, row("x", "a"), row("y", "b"))
     await stored(store, "acme", NOW + H, {"a": None, "b": "boom"}, row("x2", "a"))
-    await stored(store, "acme", NOW + 2 * H, {"a": None, "b": "bust"}, row("x3", "a"))
+    last = await stored(store, "acme", NOW + 2 * H, {"a": None, "b": "bust"}, row("x3", "a"))
     await store.claim_sizing_run("acme", NOW + 3 * H, 0)  # still running: no clusters yet
     rows, status = await store.latest_sizings("acme", {"a", "b"})
     assert sorted(r["name"] for r in rows) == ["x3", "y"]
-    assert status["a"] == {"at": NOW + 2 * H, "error": None, "since": None}
-    assert status["b"] == {"at": NOW, "error": "bust", "since": NOW + H}
+    assert status["a"] == {"at": NOW + 2 * H, "run": last, "error": None, "since": None}
+    assert status["b"] == {"at": NOW, "run": first, "error": "bust", "since": NOW + H}
 
 
 @pytest.mark.anyio
@@ -249,7 +249,12 @@ async def test_a_cluster_no_longer_in_the_contract_is_gone(store: Store) -> None
 async def test_a_cluster_never_read_has_no_rows(store: Store) -> None:
     await stored(store, "acme", NOW, {"a": "unreachable"})
     rows, status = await store.latest_sizings("acme", {"a"})
-    assert rows == [] and status["a"] == {"at": None, "error": "unreachable", "since": NOW}
+    assert rows == [] and status["a"] == {
+        "at": None,
+        "run": None,
+        "error": "unreachable",
+        "since": NOW,
+    }
 
 
 @pytest.mark.anyio
