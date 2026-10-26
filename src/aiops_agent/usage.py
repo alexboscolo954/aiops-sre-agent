@@ -22,6 +22,7 @@ import httpx
 from pydantic import SecretStr
 
 from aiops_agent.contracts import Cluster, Contract, Prometheus, ksm_label
+from aiops_agent.listprices import SAFE
 
 MAX_POINTS = 10_000  # Prometheus refuses a range query over 11,000 points per series
 CONTAINERS = 'container!="",container!="POD"'  # cAdvisor's pod-level and pause series
@@ -448,7 +449,7 @@ def nodes(prom: Prom, t: Target, end: float, provider: str | None = None) -> dic
         scheme = info[name].get("provider_id", "").partition(":")[0]
         who = provider or PROVIDERS.get(scheme)
         cpu, memory = capacity["cpu"].get(name), capacity["memory"].get(name)
-        if not (kind and region and who and cpu and memory):
+        if not (SAFE.fullmatch(kind) and SAFE.fullmatch(region) and who and cpu and memory):
             lacking += 1
         out.append(
             {

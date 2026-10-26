@@ -9,6 +9,7 @@ prices add back up to the nodes' price exactly. Typed prices always win; a clust
 list can't price says why and the Contract stays unpriced rather than half in money.
 """
 
+import re
 import tempfile
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
@@ -29,6 +30,10 @@ AWS = (
 )
 AZURE = "https://prices.azure.com/api/retail/prices"
 GCP = "https://cloudbilling.googleapis.com/v1/services/6F81-5844-456A/skus"  # Compute Engine
+
+# A region and an instance type come from a cluster's labels, so from its owner: only
+# plain names may reach a URL path or an OData filter.
+SAFE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 
 Key = tuple[str, str, str]  # provider, region, instance type
 Wanted = dict[str, tuple[float, float]]  # instance type -> (vCPU, GiB) of a node of it
@@ -145,6 +150,9 @@ def gcp(http: httpx.Client, region: str, wanted: Wanted, key: str) -> dict[str, 
 def fetch(
     http: httpx.Client, provider: str, region: str, wanted: Wanted, gcp_key: str | None
 ) -> dict[str, float | None]:
+    for name in (region, *wanted):
+        if not SAFE.fullmatch(name):
+            raise ValueError(f"not a region or instance type name: {name[:40]!r}")
     if provider == "aws":
         return aws(http, region, wanted)
     if provider == "azure":

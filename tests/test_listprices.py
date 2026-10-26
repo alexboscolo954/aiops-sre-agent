@@ -151,6 +151,33 @@ def test_a_node_the_list_cant_price_says_why() -> None:
     assert "kube_node_info is missing" in read(FakePrometheus())["problem"]
 
 
+def test_a_hostile_label_never_reaches_a_url_or_a_filter() -> None:
+    """Instance types and regions are the cluster owner's labels."""
+    for kind, region in (
+        ("x' or armSkuName ne '", "us-east-1"),
+        ("m5.large", "../../etc"),
+        ("m5.large", "us-east-1/../x"),
+        ("m5 large", "us-east-1"),
+    ):
+        fake = FakePrometheus()
+        node(fake, "a", kind, region)
+        assert "1 of 1" in read(fake)["problem"]
+    asked: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        asked.append(request)
+        return httpx.Response(200, json={"Items": []})
+
+    for provider, region, kind in (
+        ("azure", "eastus", "x' or armSkuName ne '"),
+        ("aws", "../../x", "m5.large"),
+        ("gcp", "us-central1", "n2 standard"),
+    ):
+        with pytest.raises(ValueError, match="not a region or instance type name"):
+            listprices.fetch(http_of(handler), provider, region, {kind: (1, 1)}, "KEY")
+    assert asked == []
+
+
 def test_a_nodes_capacity_is_needed_too() -> None:
     fake = FakePrometheus()
     node(fake, "a")
