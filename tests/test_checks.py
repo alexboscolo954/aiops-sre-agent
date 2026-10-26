@@ -429,6 +429,13 @@ def test_same_named_checks_of_two_contracts_stay_apart(
         started = tick(c, now() + DAY)
         found = [wait_for(c, tid, "done") for tid in started]
         until(lambda: len([p for p in posts(slack) if p[1] is None]) == 2)
+        # the Open failure is set after the post returns: wait for it, not just the post
+        until(
+            lambda: (
+                len(got := rows(database_url, "select failing_id from check_schedules")) == 2
+                and all(r[0] for r in got)
+            )
+        )
     prompts = {"acme": CHECK["prompt"], "bank": theirs["prompt"]}
     assert sorted(t["contract_id"] for t in found) == ["acme", "bank"]
     for t in found:
