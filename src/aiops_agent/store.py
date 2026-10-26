@@ -498,28 +498,31 @@ class Store:
         )
         return {r["cluster"]: {"at": r["at"], **r["facts"]} for r in rows}
 
-    async def list_prices(self) -> dict[tuple[str, str, str], dict[str, Any]]:
-        """Every looked-up list price, by (provider, region, instance type)."""
-        rows = await self._all("select * from list_prices")
+    async def list_prices(
+        self, currency: str = "USD"
+    ) -> dict[tuple[str, str, str], dict[str, Any]]:
+        """Every list price looked up in `currency`, by (provider, region, instance type)."""
+        rows = await self._all("select * from list_prices where currency = %s", (currency,))
         return {(r["provider"], r["region"], r["instance_type"]): r for r in rows}
 
     async def put_list_price(
         self,
         key: tuple[str, str, str],
-        usd_hour: float | None,
+        hour_price: float | None,
         error: str | None,
         at: float,
+        currency: str = "USD",
     ) -> None:
         """A lookup's outcome: a price replaces the last good one; a failure keeps it
         (and its age) and records why."""
         await self._exec(
-            "insert into list_prices (provider, region, instance_type, usd_hour, ok_at, "
-            "tried_at, error) values (%s, %s, %s, %s, %s, %s, %s) "
-            "on conflict (provider, region, instance_type) do update set "
-            "usd_hour = coalesce(excluded.usd_hour, list_prices.usd_hour), "
-            "ok_at = case when excluded.usd_hour is null then list_prices.ok_at "
+            "insert into list_prices (currency, provider, region, instance_type, hour_price, "
+            "ok_at, tried_at, error) values (%s, %s, %s, %s, %s, %s, %s, %s) "
+            "on conflict (currency, provider, region, instance_type) do update set "
+            "hour_price = coalesce(excluded.hour_price, list_prices.hour_price), "
+            "ok_at = case when excluded.hour_price is null then list_prices.ok_at "
             "else excluded.ok_at end, tried_at = excluded.tried_at, error = excluded.error",
-            (*key, usd_hour, None if usd_hour is None else at, at, error),
+            (currency, *key, hour_price, None if hour_price is None else at, at, error),
         )
 
     async def save_bill(

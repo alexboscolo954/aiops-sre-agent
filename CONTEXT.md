@@ -168,10 +168,10 @@ _Avoid_: Agent, controller (alone)
 A bounded, expiring change the Actuator makes on its own under Automation: memory step-up after an OOM kill, burst CPU headroom, startup CPU boost, rollback of a Sizing that made pods unhealthy.
 
 **List price**:
-What a cloud charges on demand per hour for an instance type in a region, from its public price list (USD, no discounts). A cluster with no typed prices gets its nodes' list prices, split into a CPU and a GiB price by one weight, so they add back up to the nodes' price.
+What a cloud charges on demand per hour for an instance type in a region, from its public price list (USD unless the Contract asks for another currency, which only Azure's catalog gives; no discounts). A cluster with no typed prices gets its nodes' list prices, split into a CPU and a GiB price by one weight, so they add back up to the nodes' price.
 
 **Bill**:
-What the cloud says a cluster's compute cost each UTC day, read from its billing API (AWS Cost Explorer, usage before credits, lines carrying the cluster's `billing` tag). The Hub sets it beside the estimate (the cluster's node-hours at its unit prices): within 5% it reconciles, else it is flagged. A Bill never changes a shown cost.
+What the cloud says a cluster's compute cost each UTC day, read from its billing API (AWS Cost Explorer or Azure Cost Management, usage before credits, lines carrying the cluster's `billing` tag). The Hub sets it beside the estimate (the cluster's node-hours at its unit prices): within 5% it reconciles, else it is flagged. A Bill never changes a shown cost.
 
 **Savings**:
 What Sizings would save (available: the waste's cost) or saved (realized), in the Contract's own unit prices, or in cores and GiB when it has none.

@@ -1,6 +1,7 @@
-"""AWS bills (slice 10.5a): what Cost Explorer says a cluster's tagged EC2 compute cost,
-set beside what its node-hours cost at the Hub's prices. Read-only; a shown cost never
-changes (a billed rate feeding prices is a later slice)."""
+"""Cloud bills (slices 10.5a, 10.5b): what Cost Explorer (AWS) or Cost Management
+(Azure) says a cluster's tagged compute cost, set beside what its node-hours cost at the
+Hub's prices. Read-only; a shown cost never changes (a billed rate feeding prices is a
+later slice)."""
 
 import asyncio
 import json
@@ -11,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 from aiops_agent import listprices, usage
-from aiops_agent.contracts import Aws, Contract
+from aiops_agent.contracts import Aws, Cluster, Contract
 from aiops_agent.servers.aws import authorization
 
 if TYPE_CHECKING:
@@ -23,8 +24,10 @@ KEPT_DAYS = 30  # days read each time, and the most `--days` takes
 DAY = 86400
 HOUR = 3600
 HOST = "ce.us-east-1.amazonaws.com"  # Cost Explorer has this one endpoint
-COMPUTE = "Amazon Elastic Compute Cloud - Compute"
+AZURE_HOST = "management.azure.com"
+LOGIN = "https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
 Bill = dict[str, tuple[float, str, bool]]  # day -> amount, currency, still estimated
+COMPUTE = "Amazon Elastic Compute Cloud - Compute"
 
 
 def utc_day(at: float) -> date:
@@ -66,7 +69,7 @@ def parse(body: dict[str, Any]) -> Bill:
     return out
 
 
-def fetch(
+def aws_fetch(
     http: httpx.Client, key_id: str, secret: str, tag: str, start: str, end: str, now: float
 ) -> Bill:
     """The tag's billed days from `start` up to (not including) `end`."""
@@ -95,12 +98,110 @@ def fetch(
             return out
 
 
+def azure_request(tag: str, start: str, end: str) -> dict[str, Any]:
+    """Cost Management's query body: the tag's Virtual Machines usage (before credits)
+    a day at a time; `end` is exclusive, Azure's `to` is not."""
+    key, _, value = tag.partition("=")
+    last = date.fromisoformat(end) - timedelta(days=1)
+    return {
+        "type": "ActualCost",
+        "timeframe": "Custom",
+        "timePeriod": {"from": f"{start}T00:00:00Z", "to": f"{last}T23:59:59Z"},
+        "dataset": {
+            "granularity": "Daily",
+            "aggregation": {"totalCost": {"name": "PreTaxCost", "function": "Sum"}},
+            "filter": {
+                "and": [
+                    {"tags": {"name": key, "operator": "In", "values": [value]}},
+                    {"dimensions": {"name": "ServiceName", "operator": "In",
+                                    "values": ["Virtual Machines"]}},
+                    {"dimensions": {"name": "ChargeType", "operator": "In", "values": ["Usage"]}},
+                ]
+            },
+        },
+    }  # fmt: skip
+
+
+def azure_parse(body: dict[str, Any]) -> Bill:
+    props = body["properties"]
+    names = [c["name"] for c in props["columns"]]
+    cost, day, unit = (names.index(n) for n in ("PreTaxCost", "UsageDate", "Currency"))
+    out: Bill = {}
+    for row in props["rows"]:
+        d = str(row[day])
+        out[f"{d[:4]}-{d[4:6]}-{d[6:]}"] = (float(row[cost]), row[unit], False)
+    return out
+
+
+def azure_fetch(
+    http: httpx.Client,
+    tenant: str,
+    client_id: str,
+    secret: str,
+    subscription: str,
+    tag: str,
+    start: str,
+    end: str,
+) -> Bill:
+    """The tag's billed days from `start` up to (not including) `end`. Azure sends no row
+    for a day without usage: a day before the latest one with a row is filled in as 0."""
+    resp = http.post(
+        LOGIN.format(tenant=tenant),
+        data={
+            "grant_type": "client_credentials",
+            "client_id": client_id,
+            "client_secret": secret,
+            "scope": "https://management.azure.com/.default",
+        },
+    )
+    resp.raise_for_status()  # the token is used for this read and dropped
+    headers = {"authorization": f"Bearer {resp.json()['access_token']}"}
+    url: str | None = (
+        f"https://{AZURE_HOST}/subscriptions/{subscription}"
+        "/providers/Microsoft.CostManagement/query?api-version=2023-11-01"
+    )
+    data = azure_request(tag, start, end)
+    out: Bill = {}
+    while url:
+        resp = http.post(url, json=data, headers=headers)
+        resp.raise_for_status()
+        body = resp.json()
+        out |= azure_parse(body)
+        url = body["properties"].get("nextLink")
+    if out:
+        unit = next(iter(out.values()))[1]
+        day = date.fromisoformat(start)
+        while day.isoformat() < max(out):
+            out.setdefault(day.isoformat(), (0.0, unit, False))
+            day += timedelta(days=1)
+    return out
+
+
 def client() -> httpx.Client:
     return httpx.Client(timeout=30)
 
 
-def _aws(c: Contract) -> Aws:
-    return next(i for i in c.integrations if isinstance(i, Aws))
+def reader(c: Contract, cl: Cluster) -> Callable[[httpx.Client, str, str, str, float], Bill]:
+    """The call that reads this cluster's bill, with its credentials bound: (http, tag,
+    start, end, now) -> Bill."""
+    if c.bill_provider(cl) == "azure":
+        vendor = c.azure_vendor()
+        assert vendor is not None
+
+        def var(name: str) -> str:
+            return vendor.env[name] if name in vendor.env else (
+                c.secret(vendor.env_secrets[name]).get_secret_value()
+            )  # fmt: skip
+
+        return lambda http, tag, start, end, now: azure_fetch(
+            http, var("AZURE_TENANT_ID"), var("AZURE_CLIENT_ID"), var("AZURE_CLIENT_SECRET"),
+            var("AZURE_SUBSCRIPTION_ID"), tag, start, end,
+        )  # fmt: skip
+    aws = next(i for i in c.integrations if isinstance(i, Aws))
+    return lambda http, tag, start, end, now: aws_fetch(
+        http, aws.access_key_id, c.secret(aws.secret_access_key_secret).get_secret_value(),
+        tag, start, end, now,
+    )  # fmt: skip
 
 
 async def refresh(
@@ -120,7 +221,6 @@ async def refresh(
         billed = [cl for cl in c.clusters if cl.billing]
         if not billed:
             continue
-        aws = _aws(c)
         _, tries = await store.bills(c.id)
         for cl in billed:
             assert cl.billing is not None
@@ -132,14 +232,7 @@ async def refresh(
             reads += 1
             try:
                 got = await asyncio.to_thread(
-                    fetch,
-                    http,
-                    aws.access_key_id,
-                    c.secret(aws.secret_access_key_secret).get_secret_value(),
-                    cl.billing.tag,
-                    start,
-                    end.isoformat(),
-                    now,
+                    reader(c, cl), http, cl.billing.tag, start, end.isoformat(), now
                 )
             except (httpx.HTTPError, ValueError, KeyError) as e:
                 await store.fail_bill(c.id, cl.name, listprices.why(e, None), now)
@@ -196,7 +289,7 @@ async def report(
                 f"the bill failed to read: {tried['error']}"
                 if tried and tried["error"]
                 else f"no bill for {len(missing)} of {days} days yet "
-                f"(first {missing[0]}): read daily, and AWS settles a day in 1 to 2"
+                f"(first {missing[0]}): read daily, and the cloud settles a day in 1 to 2"
                 if tried
                 else "the bill is not read yet: the next hourly run reads it"
             )

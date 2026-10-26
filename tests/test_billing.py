@@ -129,7 +129,7 @@ def test_the_days_are_parsed_with_their_unit_and_whether_aws_may_still_change_th
 
 def test_the_request_is_signed_and_the_secret_never_sent() -> None:
     ce = CostExplorer()
-    got = billing.fetch(
+    got = billing.aws_fetch(
         ce.client(), "AKIAIOSFODNN7EXAMPLE", SECRET, TAG, DAYS[0], "1972-09-26", NOW
     )
     assert got[DAYS[0]] == (2.2, "USD", False)
@@ -154,7 +154,7 @@ def test_every_page_is_read() -> None:
         return httpx.Response(200, json=pages[len(tokens) - 1])
 
     http = httpx.Client(transport=httpx.MockTransport(handler))
-    got = billing.fetch(http, "AKIAIOSFODNN7EXAMPLE", SECRET, TAG, DAYS[0], DAYS[2], NOW)
+    got = billing.aws_fetch(http, "AKIAIOSFODNN7EXAMPLE", SECRET, TAG, DAYS[0], DAYS[2], NOW)
     assert tokens == [None, "t2"] and set(got) == {DAYS[0], DAYS[1]}
 
 
@@ -346,7 +346,7 @@ def test_the_estimate_counts_the_clusters_node_hours() -> None:
 @pytest.mark.parametrize(
     ("change", "message"),
     [
-        ({"aws": False}, "set billing: it reads the aws integration"),
+        ({"aws": False}, "set billing: it reads the aws or azure"),
         ({"prometheus": False}, "set billing: they need a Prometheus"),
     ],
 )
@@ -398,3 +398,217 @@ def test_the_hub_reads_the_bill_with_its_hourly_run(
         ce.status = 503
         tick(NOW + 25 * H)  # a bill that is down never stops the runs
         assert len(ce.asked) == 2
+
+
+# --- Azure (slice 10.5b) ---------------------------------------------------------------
+
+TENANT = "11111111-1111-1111-1111-111111111111"
+CLIENT = "22222222-2222-2222-2222-222222222222"
+SUB = "33333333-3333-3333-3333-333333333333"
+AZ_SECRET = "azure~client~secret"
+AZURE = {
+    "name": "azure",
+    "vendor": "azure",
+    "tools": {"subscription_list": "read"},
+    "env": {"AZURE_TENANT_ID": TENANT, "AZURE_CLIENT_ID": CLIENT, "AZURE_SUBSCRIPTION_ID": SUB},
+    "env_secrets": {"AZURE_CLIENT_SECRET": "az-secret"},
+}
+
+
+def azure_billed(
+    currency: str = "USD", with_aws: bool = False, **cluster: Any
+) -> contracts.Contract:
+    data = make_contract().model_dump()
+    data["integrations"] += [{"name": "prometheus", "url": "http://prometheus"}, AZURE]
+    if with_aws:
+        data["integrations"].append(AWS)
+    data["prices"] = {"currency": currency, "cpu": 0.03, "memory": 0.004}
+    data["clusters"][0]["billing"] = {"tag": TAG}
+    data["clusters"][0].update(cluster)
+    return contracts.build(
+        data, secrets={"az-secret": SecretStr(AZ_SECRET), "aws-key": SecretStr(SECRET)}
+    )
+
+
+def azure_body(amounts: dict[str, float], unit: str = "BRL") -> dict[str, Any]:
+    return {
+        "properties": {
+            "columns": [
+                {"name": "PreTaxCost", "type": "Number"},
+                {"name": "UsageDate", "type": "Number"},
+                {"name": "Currency", "type": "String"},
+            ],
+            "rows": [[a, int(d.replace("-", "")), unit] for d, a in amounts.items()],
+        }
+    }
+
+
+class CostManagement:
+    """Entra's token endpoint and Cost Management's query, counting what was asked."""
+
+    def __init__(self, amounts: dict[str, float] | None = None, unit: str = "BRL") -> None:
+        self.asked: list[httpx.Request] = []
+        self.amounts = amounts if amounts is not None else dict.fromkeys(DAYS, 2.2)
+        self.unit = unit
+        self.status = 200
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.asked.append(request)
+        if request.url.host == "login.microsoftonline.com":
+            return httpx.Response(200, json={"access_token": "tok"})
+        if self.status != 200:
+            return httpx.Response(self.status, json={"error": AZ_SECRET})
+        return httpx.Response(200, json=azure_body(self.amounts, self.unit))
+
+    def client(self) -> httpx.Client:
+        return httpx.Client(transport=httpx.MockTransport(self))
+
+
+def test_the_azure_request_asks_for_the_tags_vm_usage_before_credits() -> None:
+    sent = billing.azure_request(TAG, "1972-09-01", "1972-09-26")
+    assert sent["type"] == "ActualCost" and sent["timeframe"] == "Custom"
+    assert sent["timePeriod"] == {"from": "1972-09-01T00:00:00Z", "to": "1972-09-25T23:59:59Z"}
+    data = sent["dataset"]
+    assert data["granularity"] == "Daily"
+    assert data["aggregation"] == {"totalCost": {"name": "PreTaxCost", "function": "Sum"}}
+    assert data["filter"]["and"] == [
+        {"tags": {"name": "aiops-cluster", "operator": "In", "values": ["kind"]}},
+        {"dimensions": {"name": "ServiceName", "operator": "In", "values": ["Virtual Machines"]}},
+        {"dimensions": {"name": "ChargeType", "operator": "In", "values": ["Usage"]}},
+    ]
+    equals = billing.azure_request("k=a=b", "1972-09-01", "1972-09-26")
+    assert equals["dataset"]["filter"]["and"][0]["tags"]["values"] == ["a=b"]
+
+
+def test_azure_days_are_parsed_by_column_with_their_currency() -> None:
+    assert billing.azure_parse(azure_body({"1972-09-25": 2.5})) == {
+        "1972-09-25": (2.5, "BRL", False)
+    }
+
+
+def test_azure_asks_for_a_token_then_the_query_and_sends_the_secret_only_for_the_token() -> None:
+    cm = CostManagement()
+    got = billing.azure_fetch(
+        cm.client(), TENANT, CLIENT, AZ_SECRET, SUB, TAG, DAYS[0], "1972-09-26"
+    )
+    assert got[DAYS[0]] == (2.2, "BRL", False)
+    token, query = cm.asked
+    assert str(token.url) == f"https://login.microsoftonline.com/{TENANT}/oauth2/v2.0/token"
+    assert f"client_secret={AZ_SECRET.replace('~', '%7E')}" in token.content.decode() or (
+        AZ_SECRET in token.content.decode()
+    )
+    assert "scope=https%3A%2F%2Fmanagement.azure.com%2F.default" in token.content.decode()
+    assert query.url.host == "management.azure.com"
+    assert query.url.path == f"/subscriptions/{SUB}/providers/Microsoft.CostManagement/query"
+    assert query.url.params["api-version"] == "2023-11-01"
+    assert query.headers["authorization"] == "Bearer tok"
+    assert AZ_SECRET not in str(query.headers) + query.content.decode()
+
+
+def test_a_day_without_usage_before_the_latest_day_reads_as_zero() -> None:
+    cm = CostManagement({DAYS[0]: 2.0, DAYS[3]: 3.0})
+    got = billing.azure_fetch(cm.client(), TENANT, CLIENT, AZ_SECRET, SUB, TAG, DAYS[0], DAYS[5])
+    assert got == {
+        DAYS[0]: (2.0, "BRL", False),
+        DAYS[1]: (0.0, "BRL", False),
+        DAYS[2]: (0.0, "BRL", False),
+        DAYS[3]: (3.0, "BRL", False),
+    }  # DAYS[4] may just not have settled: left missing
+    empty = CostManagement({})
+    assert (
+        billing.azure_fetch(empty.client(), TENANT, CLIENT, AZ_SECRET, SUB, TAG, DAYS[0], DAYS[5])
+        == {}
+    )
+
+
+def test_every_azure_page_is_read() -> None:
+    pages = [
+        {
+            **azure_body({DAYS[0]: 1.0}),
+            "properties": {
+                **azure_body({DAYS[0]: 1.0})["properties"],
+                "nextLink": "https://management.azure.com/next",
+            },
+        },
+        azure_body({DAYS[1]: 2.0}),
+    ]
+    urls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "login.microsoftonline.com":
+            return httpx.Response(200, json={"access_token": "tok"})
+        urls.append(str(request.url))
+        return httpx.Response(200, json=pages[len(urls) - 1])
+
+    http = httpx.Client(transport=httpx.MockTransport(handler))
+    got = billing.azure_fetch(http, TENANT, CLIENT, AZ_SECRET, SUB, TAG, DAYS[0], DAYS[2])
+    assert urls[1] == "https://management.azure.com/next" and set(got) == {DAYS[0], DAYS[1]}
+
+
+@pytest.mark.anyio
+async def test_an_azure_bill_is_read_with_the_integrations_credentials(store: Store) -> None:
+    c, cm = azure_billed(), CostManagement()
+    assert await billing.refresh(store, [c], cm.client(), NOW) == 1
+    token, query = cm.asked
+    assert TENANT in str(token.url) and f"client_id={CLIENT}" in token.content.decode()
+    assert SUB in query.url.path
+    days, _ = await store.bills(c.id)
+    assert days["test"][DAYS[0]]["currency"] == "BRL"
+
+
+@pytest.mark.anyio
+async def test_a_throttled_azure_read_is_named_and_tried_again_after_an_hour(store: Store) -> None:
+    c, cm = azure_billed(), CostManagement()
+    cm.status = 429
+    http = cm.client()
+    assert await billing.refresh(store, [c], http, NOW) == 1
+    assert await billing.refresh(store, [c], http, NOW + H / 2) == 0
+    assert await billing.refresh(store, [c], http, NOW + 1.5 * H) == 1
+    _, tries = await store.bills(c.id)
+    assert tries["test"]["error"] == "HTTP 429 from management.azure.com"
+    assert AZ_SECRET not in tries["test"]["error"]
+
+
+@pytest.mark.anyio
+async def test_a_cluster_reads_the_bill_of_its_provider(store: Store) -> None:
+    both = azure_billed(with_aws=True, provider="azure")
+    cm = CostManagement()
+    await billing.refresh(store, [both], cm.client(), NOW)
+    assert {r.url.host for r in cm.asked} == {"login.microsoftonline.com", "management.azure.com"}
+    aws = azure_billed(with_aws=True, provider="aws")
+    ce = CostExplorer()
+    await billing.refresh(store, [aws], ce.client(), NOW, force=True)
+    assert {r.url.host for r in ce.asked} == {"ce.us-east-1.amazonaws.com"}
+
+
+@pytest.mark.anyio
+async def test_a_brl_bill_is_compared_with_brl_prices_and_not_with_usd_ones(store: Store) -> None:
+    fake = FakePrometheus()
+    nodes(fake)
+    brl = azure_billed("BRL")
+    await store.save_bill(brl.id, "test", {d: (2.2, "BRL", False) for d in DAYS}, NOW)
+    got = await row(store, brl, fake)
+    assert got["currency"] == "BRL" and got["gap"] is not None and got["note"] is None
+    usd = azure_billed("USD")
+    got = await row(store, usd, fake)
+    assert got["gap"] is None and "BRL" in got["note"] and "USD" in got["note"]
+
+
+def test_billing_needs_one_clear_cloud_integration() -> None:
+    with pytest.raises(ValidationError, match="aws or azure"):
+        azure_billed(with_aws=True)  # both, no provider
+    with pytest.raises(ValidationError, match="aws or azure"):
+        azure_billed(provider="aws")  # provider aws, only azure held
+    with pytest.raises(ValidationError, match="aws or azure"):
+        azure_billed(provider="gcp")
+    data = azure_billed().model_dump()
+    data["integrations"] = [i for i in data["integrations"] if i["name"] != "azure"]
+    with pytest.raises(ValidationError, match="aws or azure"):
+        contracts.build(data)
+    assert (
+        azure_billed(with_aws=True, provider="azure").bill_provider(
+            azure_billed(with_aws=True, provider="azure").clusters[0]
+        )
+        == "azure"
+    )
+    assert azure_billed().bill_provider(azure_billed().clusters[0]) == "azure"

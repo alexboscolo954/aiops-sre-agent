@@ -45,7 +45,7 @@ def client() -> httpx.Client:
 
 
 def aws(http: httpx.Client, region: str, wanted: Wanted) -> dict[str, float | None]:
-    """Linux, shared-tenancy, on-demand USD per hour. The region's offer file is
+    """Linux, shared-tenancy, on-demand USD per hour (AWS is USD only). The region's offer file is
     hundreds of MB: streamed to disk once, then read twice (products, then terms)."""
     with tempfile.TemporaryFile() as f:
         with http.stream("GET", AWS.format(region=region)) as r:
@@ -78,14 +78,17 @@ def aws(http: httpx.Client, region: str, wanted: Wanted) -> dict[str, float | No
     return {t: out.get(t) for t in wanted}
 
 
-def azure(http: httpx.Client, region: str, wanted: Wanted) -> dict[str, float | None]:
-    """Linux, pay-as-you-go (no Spot, no Low Priority) USD per hour; the cheapest
-    meter when a size has several."""
+def azure(
+    http: httpx.Client, region: str, wanted: Wanted, currency: str = "USD"
+) -> dict[str, float | None]:
+    """Linux, pay-as-you-go (no Spot, no Low Priority) price per hour in `currency`;
+    the cheapest meter when a size has several."""
     types = " or ".join(f"armSkuName eq '{t}'" for t in sorted(wanted))
     url: str | None = AZURE
     params: dict[str, str] | None = {
+        "currencyCode": currency,
         "$filter": f"serviceName eq 'Virtual Machines' and armRegionName eq '{region}' "
-        f"and priceType eq 'Consumption' and ({types})"
+        f"and priceType eq 'Consumption' and ({types})",
     }
     best: dict[str, float] = {}
     while url:
@@ -148,7 +151,12 @@ def gcp(http: httpx.Client, region: str, wanted: Wanted, key: str) -> dict[str, 
 
 
 def fetch(
-    http: httpx.Client, provider: str, region: str, wanted: Wanted, gcp_key: str | None
+    http: httpx.Client,
+    provider: str,
+    region: str,
+    wanted: Wanted,
+    gcp_key: str | None,
+    currency: str = "USD",
 ) -> dict[str, float | None]:
     for name in (region, *wanted):
         if not SAFE.fullmatch(name):
@@ -156,7 +164,7 @@ def fetch(
     if provider == "aws":
         return aws(http, region, wanted)
     if provider == "azure":
-        return azure(http, region, wanted)
+        return azure(http, region, wanted, currency)
     if provider == "gcp":
         if not gcp_key:
             raise ValueError("no GCP pricing key: set list_prices.gcp_key_secret")
@@ -166,15 +174,17 @@ def fetch(
 
 def wanted_by_group(
     nodes: Iterable[tuple[Contract, dict[str, Any]]],
-) -> dict[tuple[str, str], Wanted]:
-    """(provider, region) -> the instance types the clusters run, with a node's
-    capacity; a cluster with a node that can't be priced asks for nothing."""
-    out: dict[tuple[str, str], Wanted] = {}
-    for _, facts in nodes:
+) -> dict[tuple[str, str, str], Wanted]:
+    """(currency, provider, region) -> the instance types the clusters run, with a
+    node's capacity; a cluster with a node that can't be priced asks for nothing."""
+    out: dict[tuple[str, str, str], Wanted] = {}
+    for c, facts in nodes:
         if facts.get("problem"):
             continue
+        assert c.list_prices is not None
         for n in facts["nodes"]:
-            out.setdefault((n["provider"], n["region"]), {})[n["type"]] = (n["vcpu"], n["gib"])
+            group = (c.list_prices.currency, n["provider"], n["region"])
+            out.setdefault(group, {})[n["type"]] = (n["vcpu"], n["gib"])
     return out
 
 
@@ -195,7 +205,6 @@ async def refresh(
     A failure keeps the last good price and its age."""
     import asyncio
 
-    have = await store.list_prices()
     facts: list[tuple[Contract, dict[str, Any]]] = []
     keys: dict[str, str | None] = {}  # provider -> a GCP key, from any Contract with one
     for c in contracts:
@@ -205,7 +214,9 @@ async def refresh(
             keys.setdefault("gcp", c.secret(c.list_prices.gcp_key_secret).get_secret_value())
         facts += [(c, f) for f in (await store.latest_nodes(c.id)).values()]
     looked = 0
-    for (provider, region), wanted in sorted(wanted_by_group(facts).items()):
+    stored: dict[str, dict[Key, dict[str, Any]]] = {}
+    for (currency, provider, region), wanted in sorted(wanted_by_group(facts).items()):
+        have = stored[currency] = stored.get(currency) or await store.list_prices(currency)
         due: Wanted = {}
         for t, capacity in wanted.items():
             row = have.get((provider, region, t))
@@ -217,14 +228,16 @@ async def refresh(
             continue
         looked += len(due)
         try:
-            found = await asyncio.to_thread(fetch, http, provider, region, due, keys.get("gcp"))
+            found = await asyncio.to_thread(
+                fetch, http, provider, region, due, keys.get("gcp"), currency
+            )
             error = None
         except (httpx.HTTPError, ValueError, KeyError, ijson.JSONError) as e:
             found, error = {}, why(e, keys.get("gcp"))
         for t in due:
             price = found.get(t)
             what = error or (None if price else "not in the price list")
-            await store.put_list_price((provider, region, t), price, what, now)
+            await store.put_list_price((provider, region, t), price, what, now, currency)
     return looked
 
 
@@ -266,10 +279,10 @@ def _from_list(
     shapes: dict[str, int] = {}
     for n in facts["nodes"]:
         row = rows.get((n["provider"], n["region"], n["type"]))
-        if row is None or row["usd_hour"] is None:
+        if row is None or row["hour_price"] is None:
             why = f" ({row['error']})" if row and row["error"] else " (looked up daily)"
             return f"no list price yet for {n['provider']} {n['type']} in {n['region']}{why}"
-        total += row["usd_hour"]
+        total += row["hour_price"]
         vcpu += n["vcpu"]
         gib += n["gib"]
         oldest = min(oldest, row["ok_at"])
@@ -292,7 +305,9 @@ async def effective(store: "Store", c: Contract, now: float) -> Contract:
     can't be ranked), and `price_notes` saying where each price came from."""
     if not c.list_prices or c._price_notes:  # none to resolve, or already resolved
         return c
-    prices, notes = resolve(c, await store.latest_nodes(c.id), await store.list_prices(), now)
+    prices, notes = resolve(
+        c, await store.latest_nodes(c.id), await store.list_prices(c.list_prices.currency), now
+    )
     out = c.model_copy()
     if len(prices) == len(c.clusters):
         every = list(prices.values())
@@ -302,7 +317,7 @@ async def effective(store: "Store", c: Contract, now: float) -> Contract:
                     cl.model_copy(update={"prices": prices[cl.name]}) for cl in c.clusters
                 ],
                 "prices": Prices(
-                    currency="USD",
+                    currency=c.list_prices.currency,
                     cpu=sum(p.cpu for p in every) / len(every),
                     memory=sum(p.memory for p in every) / len(every),
                 ),

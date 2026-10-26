@@ -67,8 +67,8 @@ class Prices(ClusterPrices):
 
 
 class Billing(Strict):
-    """Which AWS bill lines are this cluster's (slice 10.5a): the ones carrying this
-    cost-allocation tag, `key=value`. The tag must be activated in AWS Billing."""
+    """Which bill lines are this cluster's (slices 10.5a, 10.5b): the ones carrying this
+    tag, `key=value`. In AWS the tag must be activated in Billing; Azure needs nothing."""
 
     tag: str = Field(pattern=r"^[A-Za-z0-9_.:/+@ -]{1,128}=[A-Za-z0-9_.:/+@ -]{1,256}$")
 
@@ -583,9 +583,11 @@ class Allocation(Strict):
 
 class ListPrices(Strict):
     """Cloud list prices (slice 10.4): a cluster with no typed prices gets its nodes'
-    on-demand list price, in USD. `weight`: how many GiB one vCPU is worth when a
+    on-demand list price, in USD unless `currency` says otherwise (Azure's catalog only;
+    slice 10.5b). `weight`: how many GiB one vCPU is worth when a
     node's price is split; `discount`: what a deal takes off the list price."""
 
+    currency: str = Field("USD", pattern=r"^[A-Z]{3}$")  # never converted
     weight: float = Field(7.0, gt=0)
     discount: float = Field(1.0, gt=0, le=1)
     gcp_key_secret: str | None = None  # GCP's catalog needs an API key; AWS and Azure don't
@@ -667,15 +669,46 @@ class Contract(Strict):
             and not any(c.prometheus_url for c in self.clusters)
         ):
             raise ValueError("list_prices reads node labels: it needs a cluster with a Prometheus")
-        if billed := [c.name for c in self.clusters if c.billing]:
-            if not any(isinstance(i, Aws) for i in self.integrations):
-                raise ValueError(f"clusters {billed} set billing: it reads the aws integration")
+        if (
+            self.list_prices
+            and self.list_prices.currency != "USD"
+            and (other := [c.name for c in self.clusters if c.provider != "azure"])
+        ):
+            raise ValueError(
+                f"list_prices currency is {self.list_prices.currency}: only Azure's catalog "
+                f"offers it, so clusters {other} need provider: azure"
+            )
+        if billed := [c for c in self.clusters if c.billing]:
+            for c in billed:
+                if self.bill_provider(c) is None:
+                    raise ValueError(
+                        f"clusters {[c.name]} set billing: it reads the aws or azure "
+                        "integration (set provider: when the Contract has both)"
+                    )
             shared = any(isinstance(i, Prometheus) for i in self.integrations)
-            if lacking := [c.name for c in self.clusters if c.billing and not (
-                shared or c.prometheus_url
-            )]:  # fmt: skip
+            if lacking := [c.name for c in billed if not (shared or c.prometheus_url)]:
                 raise ValueError(f"clusters {lacking} set billing: they need a Prometheus")
         return self
+
+    def azure_vendor(self) -> "Vendor | None":
+        return next(
+            (i for i in self.integrations if isinstance(i, Vendor) and i.vendor == "azure"), None
+        )
+
+    def bill_provider(self, cluster: Cluster) -> Literal["aws", "azure"] | None:
+        """Whose bill a billed cluster reads: its `provider`, else the only cloud
+        integration the Contract holds; None when that integration is missing or the
+        choice is open (both, no `provider`) or not a bill we read (gcp)."""
+        held = [
+            p
+            for p, there in (
+                ("aws", any(isinstance(i, Aws) for i in self.integrations)),
+                ("azure", self.azure_vendor() is not None),
+            )
+            if there
+        ]
+        want = cluster.provider or (held[0] if len(held) == 1 else None)
+        return want if want in held and want in ("aws", "azure") else None  # type: ignore[return-value]
 
     def price(self, cluster: str) -> ClusterPrices | None:
         """A cluster's unit prices: its own, else the Contract's; None when unpriced."""

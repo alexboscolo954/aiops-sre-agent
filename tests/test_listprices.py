@@ -9,7 +9,7 @@ from typing import Any
 
 import httpx
 import pytest
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 
 from aiops_agent import cli, contracts, listprices, sizing, usage
 from aiops_agent.config import Settings
@@ -66,7 +66,7 @@ def facts(*nodes: tuple[str, str, str, float, float], problem: str | None = None
 
 
 def price(usd: float | None, ok_at: float = NOW, error: str | None = None) -> dict[str, Any]:
-    return {"usd_hour": usd, "ok_at": ok_at if usd is not None else None, "error": error}
+    return {"hour_price": usd, "ok_at": ok_at if usd is not None else None, "error": error}
 
 
 M5 = ("aws", "us-east-1", "m5.large", 2.0, 8.0)
@@ -454,11 +454,11 @@ async def test_a_failed_lookup_keeps_the_last_good_price_and_its_age(store: Stor
     await store.put_list_price(KEY, 0.096, None, NOW)
     await store.put_list_price(KEY, None, "HTTPStatusError: 503", NOW + H)
     row = (await store.list_prices())[KEY]
-    assert row["usd_hour"] == 0.096 and row["ok_at"] == NOW
+    assert row["hour_price"] == 0.096 and row["ok_at"] == NOW
     assert row["tried_at"] == NOW + H and row["error"] == "HTTPStatusError: 503"
     await store.put_list_price(KEY, 0.1, None, NOW + 2 * H)
     row = (await store.list_prices())[KEY]
-    assert (row["usd_hour"], row["ok_at"], row["error"]) == (0.1, NOW + 2 * H, None)
+    assert (row["hour_price"], row["ok_at"], row["error"]) == (0.1, NOW + 2 * H, None)
 
 
 @pytest.mark.anyio
@@ -499,7 +499,7 @@ async def test_the_lists_are_read_daily_and_only_for_the_types_in_use(store: Sto
     assert await listprices.refresh(store, [c], http, NOW) == 2
     assert len(lists.asked) == 1  # one file per region, whatever the types
     prices = await store.list_prices()
-    assert prices[KEY]["usd_hour"] == 0.096 and prices[("aws", "us-east-1", "c5.xlarge")]
+    assert prices[KEY]["hour_price"] == 0.096 and prices[("aws", "us-east-1", "c5.xlarge")]
     assert ("aws", "us-east-1", "t3.micro") not in prices
     assert await listprices.refresh(store, [c], http, NOW + 23 * H) == 0
     assert len(lists.asked) == 1
@@ -518,7 +518,7 @@ async def test_a_failing_list_is_tried_again_after_an_hour_and_keeps_the_old_pri
     lists.down = True
     assert await listprices.refresh(store, [c], http, NOW + 25 * H) == 1
     row = (await store.list_prices())[KEY]
-    assert row["usd_hour"] == 0.096 and row["ok_at"] == NOW and "503" in row["error"]
+    assert row["hour_price"] == 0.096 and row["ok_at"] == NOW and "503" in row["error"]
     assert await listprices.refresh(store, [c], http, NOW + 25 * H + 3000) == 0
     lists.down = False
     assert await listprices.refresh(store, [c], http, NOW + 26 * H + 1) == 1
@@ -531,7 +531,7 @@ async def test_a_type_missing_from_the_list_is_recorded(store: Store) -> None:
     c = await seeded(store, {"test": facts(M5, odd)})
     await listprices.refresh(store, [c], http_of(Lists()), NOW)
     row = (await store.list_prices())[("aws", "us-east-1", "x9.huge")]
-    assert row["usd_hour"] is None and row["error"] == "not in the price list"
+    assert row["hour_price"] is None and row["error"] == "not in the price list"
 
 
 @pytest.mark.anyio
@@ -550,7 +550,7 @@ async def test_gcp_needs_the_contracts_key_and_is_read_with_it(store: Store) -> 
     key = ("gcp", "us-central1", "n2-standard-4")
     await listprices.refresh(store, [c], http_of(Lists()), NOW)
     row = (await store.list_prices())[key]
-    assert row["usd_hour"] is None and "no GCP pricing key" in row["error"]
+    assert row["hour_price"] is None and "no GCP pricing key" in row["error"]
 
     us = ["us-central1"]
     page = {
@@ -571,7 +571,7 @@ async def test_gcp_needs_the_contracts_key_and_is_read_with_it(store: Store) -> 
     keyed = contracts.build(data, secrets={"gcp": SecretStr("K3Y")})
     await listprices.refresh(store, [keyed], http_of(handler), NOW + 2 * H)
     assert asked == ["K3Y"]
-    assert (await store.list_prices())[key]["usd_hour"] == pytest.approx(
+    assert (await store.list_prices())[key]["hour_price"] == pytest.approx(
         4 * 0.031611 + 16 * 0.004237
     )
 
@@ -735,3 +735,84 @@ def test_the_hub_looks_the_prices_up_with_its_hourly_run(
         lists.down = True
         assert tick(NOW + 25 * H) == ["acme"]  # a list that is down never stops the runs
         assert len(lists.asked) == 2
+
+
+# --- currency (slice 10.5b) ------------------------------------------------------------
+
+AZ = ("azure", "centralus", "Standard_B1s", 1.0, 1.0)
+
+
+def brl(**cluster: Any) -> contracts.Contract:
+    data = listed().model_dump()
+    data["list_prices"]["currency"] = "BRL"
+    data["clusters"][0].update({"provider": "azure", **cluster})
+    return contracts.build(data)
+
+
+def test_azure_asks_for_the_currency_and_usd_is_the_default() -> None:
+    asked = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        asked.append(request.url.params["currencyCode"])
+        return httpx.Response(200, json={"Items": [azure_item("Standard_B1s", 0.0652)]})
+
+    assert listprices.azure(http_of(handler), "centralus", {"Standard_B1s": (1, 1)}, "BRL") == {
+        "Standard_B1s": 0.0652
+    }
+    listprices.azure(http_of(handler), "centralus", {"Standard_B1s": (1, 1)})
+    assert asked == ["BRL", "USD"]
+
+
+@pytest.mark.parametrize("code", ["brl", "BR", "REAL", "R$"])
+def test_a_currency_is_three_capital_letters(code: str) -> None:
+    with pytest.raises(ValidationError, match="currency"):
+        contracts.ListPrices(currency=code)
+
+
+def test_a_currency_other_than_usd_needs_every_cluster_on_azure() -> None:
+    assert brl().list_prices.currency == "BRL"  # type: ignore[union-attr]
+    for provider in (None, "aws", "gcp"):
+        data = brl().model_dump()
+        data["clusters"][0]["provider"] = provider
+        with pytest.raises(ValidationError, match="only Azure's catalog"):
+            contracts.build(data)
+
+
+@pytest.mark.anyio
+async def test_a_brl_contract_is_priced_from_the_brl_lookup(store: Store) -> None:
+    c = brl()
+    await store.save_nodes(c.id, "test", NOW, facts(AZ))
+    asked = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        asked.append(request.url.params["currencyCode"])
+        return httpx.Response(200, json={"Items": [azure_item("Standard_B1s", 0.0652)]})
+
+    assert await listprices.refresh(store, [c], http_of(handler), NOW) == 1
+    assert asked == ["BRL"]
+    eff = await listprices.effective(store, c, NOW)
+    assert eff.prices and eff.prices.currency == "BRL"
+    p = eff.price("test")
+    assert p and p.cpu * 1 + p.memory * 1 == pytest.approx(0.0652)
+
+
+@pytest.mark.anyio
+async def test_a_price_is_kept_per_currency(store: Store) -> None:
+    key = ("azure", "centralus", "Standard_B1s")
+    await store.put_list_price(key, 0.0125, None, NOW)
+    await store.put_list_price(key, 0.0652, None, NOW, "BRL")
+    assert (await store.list_prices())[key]["hour_price"] == 0.0125
+    assert (await store.list_prices("BRL"))[key]["hour_price"] == 0.0652
+    assert await store.list_prices("EUR") == {}
+
+
+@pytest.mark.anyio
+async def test_a_row_without_a_currency_is_usd(store: Store) -> None:
+    """What the migration does to the rows already there."""
+    async with store.pool.connection() as conn:
+        await conn.execute(
+            "insert into list_prices (provider, region, instance_type, hour_price, ok_at, "
+            "tried_at) values ('aws', 'r', 't', 0.5, 1, 1)"
+        )
+    assert (await store.list_prices())[("aws", "r", "t")]["hour_price"] == 0.5
+    assert await store.list_prices("BRL") == {}
