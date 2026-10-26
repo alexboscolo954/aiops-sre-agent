@@ -1,6 +1,6 @@
 [project]
 name = "aiops-sre-agent"
-version = "0.14.0"
+version = "0.15.0"
 description = "Alert triage agent for Kubernetes: LangChain + MCP tools, human approval for every write"
 readme = "README.md"
 license = "MIT"
