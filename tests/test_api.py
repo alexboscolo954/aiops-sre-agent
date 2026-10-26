@@ -47,6 +47,7 @@ def client(
     acme_client: str | None = None,
     acme: dict[str, Any] | None = None,
     price_http: Any = None,
+    bill_http: Any = None,
 ) -> TestClient:
     """Contract "acme" (token hook-token) on fake_cluster, plus `more`: id -> (Contract,
     its own fake cluster). The model is shared, so its steps run in alert order.
@@ -72,7 +73,9 @@ def client(
 
     by_id = {cid: c for cid, (c, _) in clusters.items()}
     http = httpx.AsyncClient(transport=slack or httpx.MockTransport(offline))
-    return TestClient(create_app(settings, scripted(*steps), mcp, by_id, http, changes, price_http))
+    return TestClient(
+        create_app(settings, scripted(*steps), mcp, by_id, http, changes, price_http, bill_http)
+    )
 
 
 def wait_for(c: TestClient, investigation_id: str, status: str) -> dict[str, Any]:

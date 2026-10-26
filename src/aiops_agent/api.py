@@ -39,6 +39,7 @@ from pydantic import BaseModel
 
 from aiops_agent import (
     agent,
+    billing,
     checks,
     console,
     contracts,
@@ -124,6 +125,7 @@ def create_app(
     slack_http: httpx.AsyncClient | None = None,
     changes_server: Any = None,
     price_http: httpx.Client | None = None,
+    bill_http: httpx.Client | None = None,
 ) -> FastAPI:
     """mcp_factory(contract) -> Toolbox, by_id (the loaded Contracts), slack_http
     (an httpx client for Slack's Web API) and changes_server(contract) -> its
@@ -1124,6 +1126,16 @@ def create_app(
                         http.close()
             except Exception:
                 log.exception("list prices failed")
+        if any(cl.billing for c in by_id.values() for cl in c.clusters):
+            try:
+                http = bill_http or billing.client()
+                try:
+                    await billing.refresh(store(), by_id.values(), http, at)
+                finally:
+                    if http is not bill_http:
+                        http.close()
+            except Exception:
+                log.exception("bills failed")
         return done
 
     def digested() -> dict[str, tuple[contracts.Contract, contracts.Digest]]:

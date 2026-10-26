@@ -21,6 +21,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/contracts/{contract_id}/billing": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Bills */
+        get: operations["bills_api_v1_contracts__contract_id__billing_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/contracts/{contract_id}/cost": {
         parameters: {
             query?: never;
@@ -98,6 +115,41 @@ export interface components {
             total: components["schemas"]["Change"];
             /** Warnings */
             warnings: string[];
+        };
+        /**
+         * Bill
+         * @description A billed cluster's AWS bill beside its estimate; `note` says why there is none.
+         */
+        Bill: {
+            /** Billed */
+            billed: number | null;
+            /** Cluster */
+            cluster: string;
+            /** Currency */
+            currency: string | null;
+            /** Days */
+            days: number;
+            /** End */
+            end: string;
+            /** Estimated */
+            estimated: number | null;
+            /** Gap */
+            gap: number | null;
+            /** Note */
+            note: string | null;
+            /** Start */
+            start: string;
+            /** Tag */
+            tag: string;
+            /** Within */
+            within: boolean | null;
+        };
+        /** Bills */
+        Bills: {
+            /** Clusters */
+            clusters: components["schemas"]["Bill"][];
+            /** Tolerance */
+            tolerance: number;
         };
         /** Change */
         Change: {
@@ -391,6 +443,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ContractSummary"][];
+                };
+            };
+        };
+    };
+    bills_api_v1_contracts__contract_id__billing_get: {
+        parameters: {
+            query?: {
+                days?: number;
+            };
+            header?: never;
+            path: {
+                contract_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Bills"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

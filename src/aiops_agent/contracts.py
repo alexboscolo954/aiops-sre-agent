@@ -66,6 +66,13 @@ class Prices(ClusterPrices):
     currency: str = Field("USD", pattern=r"^[A-Z]{3}$")  # never converted
 
 
+class Billing(Strict):
+    """Which AWS bill lines are this cluster's (slice 10.5a): the ones carrying this
+    cost-allocation tag, `key=value`. The tag must be activated in AWS Billing."""
+
+    tag: str = Field(pattern=r"^[A-Za-z0-9_.:/+@ -]{1,128}=[A-Za-z0-9_.:/+@ -]{1,256}$")
+
+
 class Cluster(Strict):
     name: Slug
     namespaces: list[str] = Field(min_length=1)
@@ -88,6 +95,7 @@ class Cluster(Strict):
     prometheus_labels: dict[Annotated[str, Field(pattern=r"^[a-zA-Z_][a-zA-Z0-9_]*$")], str] = {}
     prices: ClusterPrices | None = None  # else the Contract's
     provider: Literal["aws", "azure", "gcp"] | None = None  # else read from kube_node_info
+    billing: Billing | None = None  # else no bill to reconcile with
 
     @model_validator(mode="after")
     def _one_source(self) -> "Cluster":
@@ -659,6 +667,14 @@ class Contract(Strict):
             and not any(c.prometheus_url for c in self.clusters)
         ):
             raise ValueError("list_prices reads node labels: it needs a cluster with a Prometheus")
+        if billed := [c.name for c in self.clusters if c.billing]:
+            if not any(isinstance(i, Aws) for i in self.integrations):
+                raise ValueError(f"clusters {billed} set billing: it reads the aws integration")
+            shared = any(isinstance(i, Prometheus) for i in self.integrations)
+            if lacking := [c.name for c in self.clusters if c.billing and not (
+                shared or c.prometheus_url
+            )]:  # fmt: skip
+                raise ValueError(f"clusters {lacking} set billing: they need a Prometheus")
         return self
 
     def price(self, cluster: str) -> ClusterPrices | None:

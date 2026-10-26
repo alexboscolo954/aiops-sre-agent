@@ -522,6 +522,61 @@ class Store:
             (*key, usd_hour, None if usd_hour is None else at, at, error),
         )
 
+    async def save_bill(
+        self,
+        contract_id: str,
+        cluster: str,
+        days: dict[str, tuple[float, str, bool]],
+        at: float,
+    ) -> None:
+        """A cluster's billed days (slice 10.5a) as (amount, currency, still estimated),
+        replacing what the Hub had for them, and the read's success."""
+        for day, (amount, currency, estimated) in days.items():
+            await self._exec(
+                "insert into billed_costs (contract_id, cluster, day, amount, currency, "
+                "estimated) values (%s, %s, %s, %s, %s, %s) "
+                "on conflict (contract_id, cluster, day) do update set "
+                "amount = excluded.amount, currency = excluded.currency, "
+                "estimated = excluded.estimated",
+                (contract_id, cluster, day, amount, currency, estimated),
+            )
+        await self._exec(
+            "insert into billing_tries (contract_id, cluster, tried_at, ok_at, error) "
+            "values (%s, %s, %s, %s, null) on conflict (contract_id, cluster) do update "
+            "set tried_at = excluded.tried_at, ok_at = excluded.ok_at, error = null",
+            (contract_id, cluster, at, at),
+        )
+
+    async def fail_bill(self, contract_id: str, cluster: str, error: str, at: float) -> None:
+        """A read that failed: why, keeping the last good read's time."""
+        await self._exec(
+            "insert into billing_tries (contract_id, cluster, tried_at, error) "
+            "values (%s, %s, %s, %s) on conflict (contract_id, cluster) do update "
+            "set tried_at = excluded.tried_at, error = excluded.error",
+            (contract_id, cluster, at, error),
+        )
+
+    async def bills(
+        self, contract_id: str
+    ) -> tuple[dict[str, dict[str, dict[str, Any]]], dict[str, dict[str, Any]]]:
+        """Per cluster its billed days (day -> amount, currency, estimated), and per
+        cluster its last read (`tried_at`, `ok_at`, `error`)."""
+        days: dict[str, dict[str, dict[str, Any]]] = {}
+        for r in await self._all(
+            "select cluster, day, amount, currency, estimated from billed_costs "
+            "where contract_id = %s",
+            (contract_id,),
+        ):
+            days.setdefault(r["cluster"], {})[r["day"]] = r
+        tries = {
+            r["cluster"]: r
+            for r in await self._all(
+                "select cluster, tried_at, ok_at, error from billing_tries where contract_id = %s",
+                (contract_id,),
+            )
+        }
+        return days, tries
+
     async def prune_sizings(self, contract_id: str, at: float) -> None:
         """Keep a Contract's runs hourly for HOURLY_FOR, then its last finished run of
         each UTC day for DAILY_FOR; their rows go with them."""

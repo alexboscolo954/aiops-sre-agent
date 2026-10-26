@@ -6,7 +6,7 @@
 // Everything from the API is rendered as text.
 import { useEffect, useMemo, useState } from "react";
 import * as api from "./api";
-import type { Allocation, Container, Point, Workload, Workloads } from "./api";
+import type { Allocation, Bills, Container, Point, Workload, Workloads } from "./api";
 import Chart from "./Chart";
 import { amount, change, cores, cpu, gib, memory, money, rank, when } from "./format";
 
@@ -19,6 +19,31 @@ function PriceNotes({ notes }: { notes?: { cluster: string; source: string; note
           {n.cluster}: {n.note}
         </p>
       ))}
+    </>
+  );
+}
+
+/** A billed cluster's AWS bill beside its estimate at the Hub's prices, or why there is none. */
+function BillLines({ bills }: { bills: Bills | null }) {
+  return (
+    <>
+      {(bills?.clusters ?? []).map((b) => {
+        const span = `${b.start} to ${b.end}`;
+        if (b.gap == null || b.billed == null || b.estimated == null || !b.currency)
+          return (
+            <p key={b.cluster} className="notice">
+              {b.cluster} bill ({span}): {b.note ?? "no estimate to compare with"}
+            </p>
+          );
+        return (
+          <p key={b.cluster} className={b.within ? "hint" : "notice"}>
+            {b.cluster} bill ({span}): billed {amount(b.billed, b.currency)}, estimated{" "}
+            {amount(b.estimated, b.currency)}, {b.gap >= 0 ? "+" : "-"}
+            {(Math.abs(b.gap) * 100).toFixed(1)}%
+            {b.within ? ` (within ${(bills!.tolerance * 100).toFixed(0)}%)` : ` (outside ${(bills!.tolerance * 100).toFixed(0)}%)`}
+          </p>
+        );
+      })}
     </>
   );
 }
@@ -43,6 +68,7 @@ export default function App() {
   const [compare, setCompare] = useParam("compare");
   const [data, setData] = useState<Workloads | null>(null);
   const [allocation, setAllocation] = useState<Allocation | null>(null);
+  const [bills, setBills] = useState<Bills | null>(null);
   const [error, setError] = useState<Error | null>(null);
 
   useEffect(() => {
@@ -54,7 +80,11 @@ export default function App() {
     if (!shown) return;
     setData(null);
     setAllocation(null);
-    if (costView) api.cost(shown, by || "namespace", compare).then(setAllocation, setError);
+    setBills(null);
+    if (costView) {
+      api.cost(shown, by || "namespace", compare).then(setAllocation, setError);
+      api.billing(shown).then(setBills, () => setBills(null)); // a Contract with no bill is no error
+    }
     else api.workloads(shown).then(setData, setError);
   }, [shown, costView, by, compare]);
   const here = shown ? `contract=${encodeURIComponent(shown)}` : "";
@@ -98,7 +128,7 @@ export default function App() {
           </label>
         )}
         {data && !costView && <Page contract={shown} data={data} />}
-        {allocation && costView && <CostPage data={allocation} setBy={setBy} compare={compare} setCompare={setCompare} />}
+        {allocation && costView && <CostPage data={allocation} bills={bills} setBy={setBy} compare={compare} setCompare={setCompare} />}
       </main>
     </>
   );
@@ -218,11 +248,13 @@ const AGO = [1, 7, 30, 90];
 
 function CostPage({
   data,
+  bills,
   setBy,
   compare,
   setCompare,
 }: {
   data: Allocation;
+  bills: Bills | null;
   setBy: (v: string) => void;
   compare: string;
   setCompare: (v: string) => void;
@@ -262,6 +294,7 @@ function CostPage({
         <p key={w} className="notice">{w}</p>
       ))}
       <PriceNotes notes={data.prices} />
+      <BillLines bills={bills} />
       {cmp &&
         Object.entries(cmp.clusters).map(([cluster, c]) => (
           <p key={cluster} className={c.at == null ? "notice" : "hint"}>

@@ -170,6 +170,9 @@ A bounded, expiring change the Actuator makes on its own under Automation: memor
 **List price**:
 What a cloud charges on demand per hour for an instance type in a region, from its public price list (USD, no discounts). A cluster with no typed prices gets its nodes' list prices, split into a CPU and a GiB price by one weight, so they add back up to the nodes' price.
 
+**Bill**:
+What the cloud says a cluster's compute cost each UTC day, read from its billing API (AWS Cost Explorer, usage before credits, lines carrying the cluster's `billing` tag). The Hub sets it beside the estimate (the cluster's node-hours at its unit prices): within 5% it reconciles, else it is flagged. A Bill never changes a shown cost.
+
 **Savings**:
 What Sizings would save (available: the waste's cost) or saved (realized), in the Contract's own unit prices, or in cores and GiB when it has none.
 

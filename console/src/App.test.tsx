@@ -289,3 +289,51 @@ test("a chart plots request, Sizing and basis in millicores or MiB", () => {
   expect(series(points, "cpu")).toEqual([[1, 2], [500, null], [500, null], [250, null]]);
   expect(series(points, "memory")).toEqual([[1, 2], [null, null], [null, 2], [null, 1]]);
 });
+
+const COST = {
+  contract: "demo-shop",
+  by: "namespace",
+  currency: "USD",
+  groups: [],
+  groupings: ["namespace"],
+  warnings: [],
+  total: { requests: { cpu: 0, memory: 0 }, waste: { cpu: 0, memory: 0 }, cost: { requests: 0, waste: 0 } },
+  realized: { currency: null, rate: { cpu: 0, memory: 0 }, accrued: { cpu: 0, memory: 0 }, week: { cpu: 0, memory: 0 }, cost: null, drops: [] },
+};
+const BILL = { cluster: "kind", tag: "aiops-cluster=kind", start: "2026-10-19", end: "2026-10-25", days: 7, currency: "USD", note: null };
+
+test("the Cost page sets a cluster's AWS bill beside its estimate, flagged outside the tolerance", async () => {
+  history.replaceState(null, "", "/app/?view=cost");
+  answer({
+    "/api/v1/contracts": [200, [{ id: "demo-shop", name: "demo-shop" }]],
+    "/api/v1/contracts/demo-shop/cost": [200, COST],
+    "/api/v1/contracts/demo-shop/billing": [
+      200,
+      {
+        tolerance: 0.05,
+        clusters: [
+          { ...BILL, billed: 15.4, estimated: 15.456, gap: 0.0036, within: true },
+          { ...BILL, cluster: "<b>eu</b>", billed: 14, estimated: 15.456, gap: 0.104, within: false },
+          { ...BILL, cluster: "us", billed: null, estimated: null, gap: null, within: null, note: "no bill for 2 of 7 days yet" },
+        ],
+      },
+    ],
+  });
+  render(<App />);
+  expect(await screen.findByText(/kind bill \(2026-10-19 to 2026-10-25\): billed 15.40 USD, estimated 15.46 USD, \+0.4% \(within 5%\)/)).toBeTruthy();
+  const eu = screen.getByText(/<b>eu<\/b> bill .*\+10.4% \(outside 5%\)/); // text, never markup
+  expect(eu.className).toBe("notice");
+  expect(screen.getByText(/us bill .*no bill for 2 of 7 days yet/).className).toBe("notice");
+});
+
+test("a Contract with no billed cluster shows no bill line and no error", async () => {
+  history.replaceState(null, "", "/app/?view=cost");
+  answer({
+    "/api/v1/contracts": [200, [{ id: "demo-shop", name: "demo-shop" }]],
+    "/api/v1/contracts/demo-shop/cost": [200, COST],
+  });
+  render(<App />);
+  await screen.findByText(/Cost by namespace/);
+  expect(screen.queryByText(/ bill \(/)).toBeNull();
+  expect(screen.queryByText(/404/)).toBeNull();
+});

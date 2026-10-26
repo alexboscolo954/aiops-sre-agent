@@ -11,6 +11,7 @@ export type ContractSummary = Schemas["ContractSummary"];
 export type Allocation = Schemas["Allocation"];
 export type Group = Schemas["Group"];
 export type Change = Schemas["Change"];
+export type Bills = Schemas["Bills"];
 
 /** The API answered 401: this browser hasn't pasted the approver token. */
 export class NeedsToken extends Error {
@@ -39,6 +40,9 @@ export function cost(contract: string, by: string, compare: string) {
   if (compare) q.set("compare", compare);
   return get<Allocation>(`/contracts/${encodeURIComponent(contract)}/cost?${q}`);
 }
+
+export const billing = (contract: string) =>
+  get<Bills>(`/contracts/${encodeURIComponent(contract)}/billing`);
 
 export function history(contract: string, c: Container, days: 14 | 400) {
   const q = new URLSearchParams({

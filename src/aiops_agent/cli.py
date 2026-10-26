@@ -11,7 +11,17 @@ from typing import Any
 
 import httpx
 
-from aiops_agent import agent, contracts, embeddings, evals, listprices, masking, sizing, usage
+from aiops_agent import (
+    agent,
+    billing,
+    contracts,
+    embeddings,
+    evals,
+    listprices,
+    masking,
+    sizing,
+    usage,
+)
 from aiops_agent.config import Settings, refuse_moved
 from aiops_agent.models import AlertGroup
 from aiops_agent.servers import vendors
@@ -366,6 +376,44 @@ async def sizing_prices(contract_id: str, refresh: bool) -> int:
     return 0 if all(n["source"] != "none" for n in eff._price_notes) else 1
 
 
+async def sizing_bill(contract_id: str, days: int, refresh: bool, as_json: bool) -> int:
+    """Each billed cluster's AWS bill beside its estimate at the Hub's prices (slice
+    10.5a); with --refresh, read the bill now instead of waiting for the daily read."""
+    import time
+
+    settings = Settings()
+    c = contract(settings, contract_id)
+    if not any(cl.billing for cl in c.clusters):
+        print(f"{c.id}: no cluster sets billing", file=sys.stderr)
+        return 2
+    if not 1 <= days <= billing.KEPT_DAYS:
+        print(f"--days: 1 to {billing.KEPT_DAYS}", file=sys.stderr)
+        return 2
+    async with connect(_store_url(settings)) as pool:
+        store = Store(pool)
+        await store.migrate()
+        if refresh:
+            with billing.client() as http:
+                reads = await billing.refresh(store, [c], http, time.time(), force=True)
+            print(f"read {reads} bills", file=sys.stderr)
+        rows = await billing.report(store, c, time.time(), days)
+    if as_json:
+        print(json.dumps(rows, indent=2))
+    for r in rows:
+        if as_json:
+            continue
+        span = f"{r['start']} to {r['end']}"
+        if r["gap"] is None and r["note"]:
+            print(f"{r['cluster']} ({span}): {r['note']}")
+            continue
+        flag = "within" if r["within"] else "OUTSIDE"
+        print(
+            f"{r['cluster']} ({span}): billed {r['billed']:.2f} {r['currency']}, estimated "
+            f"{r['estimated']:.2f}, gap {r['gap']:+.1%} ({flag} {billing.TOLERANCE:.0%})"
+        )
+    return 0 if all(r["within"] for r in rows) else 1
+
+
 async def sizing_waste(contract_id: str, as_json: bool) -> int:
     """The Contract's Workloads ranked by waste (requests above their Sizings), with
     their risks, from each cluster's latest stored run (slice 9.4)."""
@@ -579,6 +627,11 @@ def main(argv: list[str] | None = None) -> int:
     zp = zsub.add_parser("prices", help="where each cluster's price comes from (list_prices)")
     zp.add_argument("--contract", required=True, help="a Contract id in AIOPS_CONTRACTS_DIR")
     zp.add_argument("--refresh", action="store_true", help="look up the list prices now")
+    zb = zsub.add_parser("bill", help="a cluster's AWS bill beside its estimate (billing)")
+    zb.add_argument("--contract", required=True, help="a Contract id in AIOPS_CONTRACTS_DIR")
+    zb.add_argument("--days", type=int, default=7, help="full UTC days ending 2 days ago")
+    zb.add_argument("--refresh", action="store_true", help="read the bill now")
+    zb.add_argument("--json", action="store_true")
     zd = zsub.add_parser("digest", help="the weekly Sizing digest, now")
     zd.add_argument("--contract", required=True, help="a Contract id in AIOPS_CONTRACTS_DIR")
     zd.add_argument("--post", action="store_true", help="also post it to the operator channel")
@@ -597,6 +650,8 @@ def main(argv: list[str] | None = None) -> int:
             return asyncio.run(sizing_savings(args.contract, args.json))
         if args.sizing_cmd == "prices":
             return asyncio.run(sizing_prices(args.contract, args.refresh))
+        if args.sizing_cmd == "bill":
+            return asyncio.run(sizing_bill(args.contract, args.days, args.refresh, args.json))
         if args.sizing_cmd == "digest":
             return asyncio.run(sizing_digest(args.contract, args.post))
         return sizing_usage(args.contract, args.window, args.json)

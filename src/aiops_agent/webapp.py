@@ -22,7 +22,7 @@ from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel
 
-from aiops_agent import listprices, sizing, usage
+from aiops_agent import billing, listprices, sizing, usage
 from aiops_agent.console import COOKIE, action_key
 from aiops_agent.contracts import Contract
 from aiops_agent.store import Store
@@ -154,6 +154,27 @@ class Realized(BaseModel):
     week: Waste
     cost: SavingsCost | None = None  # None: the Contract has no prices
     drops: list[Drop]  # by what they save
+
+
+class Bill(BaseModel):
+    """A billed cluster's AWS bill beside its estimate; `note` says why there is none."""
+
+    cluster: str
+    tag: str
+    start: str
+    end: str
+    days: int
+    billed: float | None
+    estimated: float | None
+    currency: str | None
+    gap: float | None
+    within: bool | None
+    note: str | None
+
+
+class Bills(BaseModel):
+    tolerance: float
+    clusters: list[Bill]
 
 
 class PriceNote(BaseModel):
@@ -289,6 +310,11 @@ def router(
             raise HTTPException(422, f"by is one of {', '.join(sizing.groupings(c))}")
         back = None if compare is None else compare * DAY
         return Allocation.model_validate(await sizing.cost(store(), c, by, now(), back))
+
+    @api.get("/contracts/{contract_id}/billing")
+    async def bills(contract_id: str, days: int = Query(7, ge=1, le=billing.KEPT_DAYS)) -> Bills:
+        rows = await billing.report(store(), contract(contract_id), now(), days)
+        return Bills.model_validate({"tolerance": billing.TOLERANCE, "clusters": rows})
 
     @api.get("/contracts/{contract_id}/history")
     async def history(

@@ -80,6 +80,133 @@
         "title": "Allocation",
         "type": "object"
       },
+      "Bill": {
+        "description": "A billed cluster's AWS bill beside its estimate; `note` says why there is none.",
+        "properties": {
+          "billed": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Billed"
+          },
+          "cluster": {
+            "title": "Cluster",
+            "type": "string"
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currency"
+          },
+          "days": {
+            "title": "Days",
+            "type": "integer"
+          },
+          "end": {
+            "title": "End",
+            "type": "string"
+          },
+          "estimated": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated"
+          },
+          "gap": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gap"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "start": {
+            "title": "Start",
+            "type": "string"
+          },
+          "tag": {
+            "title": "Tag",
+            "type": "string"
+          },
+          "within": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Within"
+          }
+        },
+        "required": [
+          "cluster",
+          "tag",
+          "start",
+          "end",
+          "days",
+          "billed",
+          "estimated",
+          "currency",
+          "gap",
+          "within",
+          "note"
+        ],
+        "title": "Bill",
+        "type": "object"
+      },
+      "Bills": {
+        "properties": {
+          "clusters": {
+            "items": {
+              "$ref": "#/components/schemas/Bill"
+            },
+            "title": "Clusters",
+            "type": "array"
+          },
+          "tolerance": {
+            "title": "Tolerance",
+            "type": "number"
+          }
+        },
+        "required": [
+          "tolerance",
+          "clusters"
+        ],
+        "title": "Bills",
+        "type": "object"
+      },
       "Change": {
         "properties": {
           "cost": {
@@ -964,6 +1091,57 @@
           }
         },
         "summary": "Contracts"
+      }
+    },
+    "/api/v1/contracts/{contract_id}/billing": {
+      "get": {
+        "operationId": "bills_api_v1_contracts__contract_id__billing_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "contract_id",
+            "required": true,
+            "schema": {
+              "title": "Contract Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "days",
+            "required": false,
+            "schema": {
+              "default": 7,
+              "maximum": 30,
+              "minimum": 1,
+              "title": "Days",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Bills"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Bills"
       }
     },
     "/api/v1/contracts/{contract_id}/cost": {
