@@ -44,6 +44,7 @@ from aiops_agent import (
     contracts,
     deploys,
     embeddings,
+    listprices,
     masking,
     related,
     sizing,
@@ -122,6 +123,7 @@ def create_app(
     by_id: dict[str, contracts.Contract] | None = None,
     slack_http: httpx.AsyncClient | None = None,
     changes_server: Any = None,
+    price_http: httpx.Client | None = None,
 ) -> FastAPI:
     """mcp_factory(contract) -> Toolbox, by_id (the loaded Contracts), slack_http
     (an httpx client for Slack's Web API) and changes_server(contract) -> its
@@ -1112,6 +1114,16 @@ def create_app(
                     done.append(c.id)
             except Exception:
                 log.exception("Sizings %s failed", c.id)
+        if any(c.list_prices for c in by_id.values()):
+            try:
+                http = price_http or listprices.client()
+                try:
+                    await listprices.refresh(store(), by_id.values(), http, at)
+                finally:
+                    if http is not price_http:
+                        http.close()
+            except Exception:
+                log.exception("list prices failed")
         return done
 
     def digested() -> dict[str, tuple[contracts.Contract, contracts.Digest]]:

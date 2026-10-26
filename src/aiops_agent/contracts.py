@@ -87,6 +87,7 @@ class Cluster(Strict):
     prometheus_token_secret: str | None = None
     prometheus_labels: dict[Annotated[str, Field(pattern=r"^[a-zA-Z_][a-zA-Z0-9_]*$")], str] = {}
     prices: ClusterPrices | None = None  # else the Contract's
+    provider: Literal["aws", "azure", "gcp"] | None = None  # else read from kube_node_info
 
     @model_validator(mode="after")
     def _one_source(self) -> "Cluster":
@@ -572,6 +573,16 @@ class Allocation(Strict):
         return next((r.team for r in self.teams if r.matches(cluster, namespace, labels)), NO_TEAM)
 
 
+class ListPrices(Strict):
+    """Cloud list prices (slice 10.4): a cluster with no typed prices gets its nodes'
+    on-demand list price, in USD. `weight`: how many GiB one vCPU is worth when a
+    node's price is split; `discount`: what a deal takes off the list price."""
+
+    weight: float = Field(7.0, gt=0)
+    discount: float = Field(1.0, gt=0, le=1)
+    gcp_key_secret: str | None = None  # GCP's catalog needs an API key; AWS and Azure don't
+
+
 class Contract(Strict):
     id: Slug
     name: str
@@ -590,6 +601,7 @@ class Contract(Strict):
     sizing: SizingConfig = SizingConfig()
     data_policy: DataPolicy = DataPolicy()
     prices: Prices | None = None  # none: Sizings in cores and GiB, no money
+    list_prices: ListPrices | None = None  # else typed prices only
     allocation: Allocation = Allocation()
 
     _dir: Path = PrivateAttr(default=Path())
@@ -597,6 +609,8 @@ class Contract(Strict):
     _runbook_dirs: list[Path] = PrivateAttr(default_factory=list)
     # Its clusters whose Prometheus another loaded Contract reads too: no PromQL there
     _shared_stores: set[str] = PrivateAttr(default_factory=set)
+    # Where each cluster's price comes from (typed, list, or why none), set by listprices
+    _price_notes: list[dict[str, str]] = PrivateAttr(default_factory=list)
 
     @model_validator(mode="after")
     def _consistent(self) -> "Contract":
@@ -629,9 +643,22 @@ class Contract(Strict):
             shared or c.prometheus_url for c in self.clusters
         ):
             raise ValueError("the sizing integration needs a cluster with a Prometheus")
-        if not self.prices and (priced := [c.name for c in self.clusters if c.prices]):
+        if self.list_prices and self.prices:
+            # the Contract's prices already price every cluster: nothing for the list to fill
+            raise ValueError("list_prices and prices: a Contract prices by one of them")
+        if (
+            not self.prices
+            and not self.list_prices
+            and (priced := [c.name for c in self.clusters if c.prices])
+        ):
             # one cluster in money and another by the 4 GiB weighting can't be ranked
             raise ValueError(f"clusters {priced} set prices: set the Contract's prices too")
+        if (
+            self.list_prices
+            and not any(isinstance(i, Prometheus) for i in self.integrations)
+            and not any(c.prometheus_url for c in self.clusters)
+        ):
+            raise ValueError("list_prices reads node labels: it needs a cluster with a Prometheus")
         return self
 
     def price(self, cluster: str) -> ClusterPrices | None:

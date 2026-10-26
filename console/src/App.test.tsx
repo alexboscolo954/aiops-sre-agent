@@ -39,6 +39,7 @@ function workload(name: string, cpu: number, memory: number, risks = container.r
 
 const DATA: Workloads = {
   contract: "demo-shop",
+  prices: [],
   clusters: { kind: { at: 1_700_000_000, error: null, since: null } },
   total: { cpu: 1.5, memory: 5 * GI },
   workloads: [workload("cpu-heavy", 1, 0, []), workload("memory-heavy", 0, 5 * GI)],
@@ -185,6 +186,31 @@ test("the Cost page groups by team on request, with no Workloads links and the H
   expect(calls).toContain("/api/v1/contracts/demo-shop/cost?by=team");
   const options = [...screen.getByLabelText("Group by").querySelectorAll("option")].map((o) => o.textContent);
   expect(options).toEqual(["namespace", "team", "label team"]);
+});
+
+test("the Cost page says where each cluster's price comes from, as text", async () => {
+  history.replaceState(null, "", "/app/?view=cost");
+  const zero = { cpu: 0, memory: 0 };
+  const total = { requests: zero, waste: zero, cost: null };
+  const realized = { currency: null, rate: zero, accrued: zero, week: zero, cost: null, drops: [] };
+  answer({
+    "/api/v1/contracts": [200, [{ id: "demo-shop", name: "demo-shop" }]],
+    "/api/v1/contracts/demo-shop/cost": [
+      200,
+      {
+        contract: "demo-shop", by: "namespace", currency: null, groups: [], groupings: ["namespace"], warnings: [], total, realized,
+        prices: [
+          { cluster: "eu", source: "list", note: "list price of 3 x aws <i>m5.large</i> in us-east-1" },
+          { cluster: "kind", source: "none", note: "no list price: 1 of 1 nodes lack an instance type" },
+        ],
+      },
+    ],
+  });
+  const { container: page } = render(<App />);
+  expect(await screen.findByText(/list price of 3 x aws/)).toBeTruthy();
+  expect(page.querySelector("i")).toBeNull();
+  expect(screen.getByText(/eu: list price/).className).toBe("hint");
+  expect(screen.getByText(/kind: no list price/).className).toBe("notice");
 });
 
 test("another Contract's Cost page starts by namespace", async () => {

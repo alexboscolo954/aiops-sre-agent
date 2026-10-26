@@ -22,7 +22,7 @@ from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel
 
-from aiops_agent import sizing, usage
+from aiops_agent import listprices, sizing, usage
 from aiops_agent.console import COOKIE, action_key
 from aiops_agent.contracts import Contract
 from aiops_agent.store import Store
@@ -156,6 +156,12 @@ class Realized(BaseModel):
     drops: list[Drop]  # by what they save
 
 
+class PriceNote(BaseModel):
+    cluster: str
+    source: str  # typed, list, or none (the note says why)
+    note: str
+
+
 class Allocation(BaseModel):
     contract: str
     by: str  # namespace, team or label:<key>
@@ -166,6 +172,7 @@ class Allocation(BaseModel):
     realized: Realized
     groupings: list[str]  # what this Contract can be grouped by
     warnings: list[str]  # clusters where no pod has a label the grouping reads
+    prices: list[PriceNote] = []  # where each cluster's price comes from (list_prices)
 
 
 class ClusterStatus(BaseModel):
@@ -183,6 +190,7 @@ class Workloads(BaseModel):
     workloads: list[Workload]  # ranked by waste, by its cost when priced
     learning: list[Container]
     excluded: list[Container]
+    prices: list[PriceNote] = []
 
 
 class Point(BaseModel):
@@ -266,7 +274,7 @@ def router(
 
     @api.get("/contracts/{contract_id}/workloads")
     async def workloads(contract_id: str) -> Workloads:
-        c = contract(contract_id)
+        c = await listprices.effective(store(), contract(contract_id), now())
         rows, clusters = await store().latest_sizings(c.id, {t.cluster for t in usage.targets(c)})
         return Workloads.model_validate({"contract": c.id, **sizing.report(rows, clusters, c)})
 

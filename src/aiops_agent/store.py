@@ -480,6 +480,48 @@ class Store:
                 (Jsonb(clusters), run_id, contract_id),
             )
 
+    async def save_nodes(
+        self, contract_id: str, cluster: str, at: float, facts: dict[str, Any]
+    ) -> None:
+        """A cluster's nodes as the latest run read them (slice 10.4), replacing the last."""
+        await self._exec(
+            "insert into cluster_nodes (contract_id, cluster, at, facts) values (%s, %s, %s, %s) "
+            "on conflict (contract_id, cluster) do update set at = excluded.at, "
+            "facts = excluded.facts",
+            (contract_id, cluster, at, Jsonb(facts)),
+        )
+
+    async def latest_nodes(self, contract_id: str) -> dict[str, dict[str, Any]]:
+        """Each cluster's latest node facts: `at`, `nodes`, `problem`."""
+        rows = await self._all(
+            "select cluster, at, facts from cluster_nodes where contract_id = %s", (contract_id,)
+        )
+        return {r["cluster"]: {"at": r["at"], **r["facts"]} for r in rows}
+
+    async def list_prices(self) -> dict[tuple[str, str, str], dict[str, Any]]:
+        """Every looked-up list price, by (provider, region, instance type)."""
+        rows = await self._all("select * from list_prices")
+        return {(r["provider"], r["region"], r["instance_type"]): r for r in rows}
+
+    async def put_list_price(
+        self,
+        key: tuple[str, str, str],
+        usd_hour: float | None,
+        error: str | None,
+        at: float,
+    ) -> None:
+        """A lookup's outcome: a price replaces the last good one; a failure keeps it
+        (and its age) and records why."""
+        await self._exec(
+            "insert into list_prices (provider, region, instance_type, usd_hour, ok_at, "
+            "tried_at, error) values (%s, %s, %s, %s, %s, %s, %s) "
+            "on conflict (provider, region, instance_type) do update set "
+            "usd_hour = coalesce(excluded.usd_hour, list_prices.usd_hour), "
+            "ok_at = case when excluded.usd_hour is null then list_prices.ok_at "
+            "else excluded.ok_at end, tried_at = excluded.tried_at, error = excluded.error",
+            (*key, usd_hour, None if usd_hour is None else at, at, error),
+        )
+
     async def prune_sizings(self, contract_id: str, at: float) -> None:
         """Keep a Contract's runs hourly for HOURLY_FOR, then its last finished run of
         each UTC day for DAILY_FOR; their rows go with them."""

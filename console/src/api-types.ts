@@ -89,6 +89,11 @@ export interface components {
             groupings: string[];
             /** Groups */
             groups: components["schemas"]["Group"][];
+            /**
+             * Prices
+             * @default []
+             */
+            prices: components["schemas"]["PriceNote"][];
             realized: components["schemas"]["Realized"];
             total: components["schemas"]["Change"];
             /** Warnings */
@@ -234,6 +239,15 @@ export interface components {
             /** Pods */
             pods?: number | null;
         };
+        /** PriceNote */
+        PriceNote: {
+            /** Cluster */
+            cluster: string;
+            /** Note */
+            note: string;
+            /** Source */
+            source: string;
+        };
         /** Realized */
         Realized: {
             accrued: components["schemas"]["Waste"];
@@ -343,6 +357,11 @@ export interface components {
             excluded: components["schemas"]["Container"][];
             /** Learning */
             learning: components["schemas"]["Container"][];
+            /**
+             * Prices
+             * @default []
+             */
+            prices: components["schemas"]["PriceNote"][];
             total: components["schemas"]["Waste"];
             /** Workloads */
             workloads: components["schemas"]["Workload"][];

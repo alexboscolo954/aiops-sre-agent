@@ -167,6 +167,9 @@ _Avoid_: Agent, controller (alone)
 **Reflex**:
 A bounded, expiring change the Actuator makes on its own under Automation: memory step-up after an OOM kill, burst CPU headroom, startup CPU boost, rollback of a Sizing that made pods unhealthy.
 
+**List price**:
+What a cloud charges on demand per hour for an instance type in a region, from its public price list (USD, no discounts). A cluster with no typed prices gets its nodes' list prices, split into a CPU and a GiB price by one weight, so they add back up to the nodes' price.
+
 **Savings**:
 What Sizings would save (available: the waste's cost) or saved (realized), in the Contract's own unit prices, or in cores and GiB when it has none.
 

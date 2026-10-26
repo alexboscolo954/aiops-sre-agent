@@ -396,3 +396,42 @@ def test_the_cost_api_carries_only_the_contracts_own_realized_savings(
     )
     assert mine["cost"]["rate"] == pytest.approx(0.885 * 3 * 0.04 * 730)
     assert theirs["drops"] == [] and theirs["cost"] is None
+
+
+def test_a_list_priced_contract_shows_its_prices_and_where_they_come_from(
+    settings: Settings, fake_cluster: Any, database_url: str, app_dir: Path
+) -> None:
+    """One m5.large (2 vCPU, 8 GiB, 0.096 USD/h): a GiB is 0.096 / (7 x 2 + 8), a vCPU 7
+    times that. 1 core wasted of 2 requested, over 1 pod (slice 10.4)."""
+    from tests.test_listprices import M5, facts
+
+    asked = {"requests": {"cpu": 2.0, "memory": 0.0}}
+    seed(database_url, ("acme", NOW, row("api", **asked)), ("bank", NOW, row("api", **asked)))
+
+    async def go() -> None:
+        async with connect(database_url) as pool:
+            store = Store(pool)
+            await store.migrate()
+            await store.save_nodes("acme", "test", NOW, facts(M5))
+            await store.put_list_price(M5[:3], 0.096, None, NOW)
+
+    asyncio.run(go())
+    settings.database_url = SecretStr(database_url)
+    settings.console_operators = {OPERATOR}
+    bank = make_contract(contract_id="bank", integrations=INTEGRATIONS)
+    acme = {"integrations": INTEGRATIONS, "list_prices": {}}
+    with client(settings, fake_cluster, acme=acme, more={"bank": (bank, fake_cluster)}) as c:
+        work = c.get("/api/v1/contracts/acme/workloads", headers=VIEW).json()
+        cost = c.get("/api/v1/contracts/acme/cost", headers=VIEW).json()
+        plain = c.get("/api/v1/contracts/bank/workloads", headers=VIEW).json()
+    vcpu = 7 * 0.096 / 22
+    assert work["currency"] == "USD"
+    assert work["cost"] == pytest.approx({"waste": vcpu * 730, "requests": 2 * vcpu * 730})
+    assert cost["currency"] == "USD" and cost["total"]["cost"]["requests"] == pytest.approx(
+        2 * vcpu * 730
+    )
+    for body in (work, cost):
+        (note,) = body["prices"]
+        assert (note["cluster"], note["source"]) == ("test", "list")
+        assert "1 x aws m5.large in us-east-1" in note["note"]
+    assert plain["currency"] is None and plain["prices"] == []  # acme's list is its own

@@ -413,6 +413,64 @@ def _sum_by_row(
     return out
 
 
+TYPE_LABELS = ("label_node_kubernetes_io_instance_type", "label_beta_kubernetes_io_instance_type")
+REGION_LABELS = (
+    "label_topology_kubernetes_io_region",
+    "label_failure_domain_beta_kubernetes_io_region",
+)
+PROVIDERS = {"aws": "aws", "azure": "azure", "gce": "gcp"}  # kube_node_info provider_id scheme
+
+
+def nodes(prom: Prom, t: Target, end: float, provider: str | None = None) -> dict[str, Any]:
+    """The cluster's nodes for list prices (slice 10.4): per node its provider, region,
+    instance type and capacity, from kube-state-metrics (whose node labels must be
+    allowlisted). `problem` says why a node can't be priced; the nodes are kept anyway.
+    Node series carry no namespace: only the cluster's labels scope them."""
+    scoped = ",".join(f"{k}={_string(v)}" for k, v in sorted(t.labels.items()))
+
+    def read(metric: str, *extra: str) -> list[dict[str, Any]]:
+        return prom.instant(f"{metric}{{{','.join(filter(None, [scoped, *extra]))}}}", end)
+
+    info = {s["metric"].get("node", ""): s["metric"] for s in read("kube_node_info")}
+    labels = {s["metric"].get("node", ""): s["metric"] for s in read("kube_node_labels")}
+    capacity = {
+        res: {
+            s["metric"].get("node", ""): float(s["value"][1])
+            for s in read("kube_node_status_capacity", f"resource={_string(res)}")
+        }
+        for res in ("cpu", "memory")
+    }
+    out, lacking = [], 0
+    for name in sorted(info):
+        have = labels.get(name, {})
+        kind = next((have[k] for k in TYPE_LABELS if have.get(k)), "")
+        region = next((have[k] for k in REGION_LABELS if have.get(k)), "")
+        scheme = info[name].get("provider_id", "").partition(":")[0]
+        who = provider or PROVIDERS.get(scheme)
+        cpu, memory = capacity["cpu"].get(name), capacity["memory"].get(name)
+        if not (kind and region and who and cpu and memory):
+            lacking += 1
+        out.append(
+            {
+                "provider": who or "",
+                "region": region,
+                "type": kind,
+                "vcpu": cpu or 0.0,
+                "gib": (memory or 0.0) / 2**30,
+            }
+        )
+    problem = None
+    if not out:
+        problem = "no nodes read: kube_node_info is missing"
+    elif lacking:
+        problem = (
+            f"{lacking} of {len(out)} nodes lack an instance type, region, provider or "
+            "capacity: allowlist the node labels node.kubernetes.io/instance-type and "
+            "topology.kubernetes.io/region in kube-state-metrics, or set the cluster's provider"
+        )
+    return {"nodes": out, "problem": problem}
+
+
 @dataclass
 class Collected:
     """A Contract's usage per window, (cluster, usage) pairs, and per cluster None when
@@ -421,6 +479,7 @@ class Collected:
     by_window: dict[int, list[tuple[str, ContainerUsage]]]
     clusters: dict[str, str | None]
     notes: list[str] = field(default_factory=list)
+    nodes: dict[str, dict[str, Any]] = field(default_factory=dict)  # per cluster, 10.4
 
 
 def collect(c: Contract, windows: list[int], end: float | None = None) -> Collected:
@@ -454,6 +513,18 @@ def collect(c: Contract, windows: list[int], end: float | None = None) -> Collec
             out.clusters[t.cluster] = str(e)
             continue
         out.clusters[t.cluster] = None
+        if c.list_prices:
+            if t.cluster in c._shared_stores and not t.labels:
+                out.nodes[t.cluster] = {
+                    "nodes": [],
+                    "problem": "the store is shared with another Contract and has no cluster "
+                    "labels: node series would cross Contracts",
+                }
+            else:
+                try:
+                    out.nodes[t.cluster] = nodes(prom, t, end, cluster.provider)
+                except UsageError as e:
+                    out.nodes[t.cluster] = {"nodes": [], "problem": str(e)}
         for w, found in by_window.items():
             rows = sorted(
                 found.rows, key=lambda r: (r.workload.namespace, r.workload.name, r.container)

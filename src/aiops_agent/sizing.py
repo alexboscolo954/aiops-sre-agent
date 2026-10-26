@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
-from aiops_agent import usage
+from aiops_agent import listprices, usage
 from aiops_agent.contracts import BUILTIN, ClusterPrices, Contract, Policy
 from aiops_agent.slack import clean
 from aiops_agent.usage import ContainerUsage, Workload
@@ -370,6 +370,8 @@ def report(
             "waste": sum(w["cost"]["waste"] for w in ranked),
             "requests": sum(asked.values()),
         }
+    if contract is not None and contract.list_prices:
+        out["prices"] = contract._price_notes
     return out
 
 
@@ -566,6 +568,7 @@ async def cost(
 ) -> dict[str, Any]:
     """What `sizing cost` and the Cost page show: allocate() of each cluster's latest
     stored run, compared with `back` seconds before `now` when given."""
+    c = await listprices.effective(store, c, now)
     clusters = {t.cluster for t in usage.targets(c)}
     rows, status = await store.latest_sizings(c.id, clusters)
     out = {
@@ -574,6 +577,8 @@ async def cost(
         **allocate(rows, c, by),
         "realized": await savings(store, c, now, rows),
     }
+    if c.list_prices:
+        out["prices"] = c._price_notes
     if back is None:
         return out
     then, before = await store.latest_sizings(c.id, clusters, before=now - back)
@@ -601,6 +606,8 @@ async def store_run(
     before, status = await store.latest_sizings(c.id, set(found.clusters))
     now = rows(c, found.by_window, at)
     await store.finish_sizing_run(run_id, c.id, found.clusters, now)
+    for cluster, facts in found.nodes.items():
+        await store.save_nodes(c.id, cluster, at, facts)
     await realize(store, c, at, before, status, now, found.clusters)
     await store.prune_sizings(c.id, at)
     return found
@@ -695,6 +702,7 @@ async def savings(
     (that rate x the hours since, so a later partial rise lowers it too), and the rate
     of the drops of the last 7 days. The pods are the latest run's average, as its
     waste's. Only the Contract's current clusters count."""
+    c = await listprices.effective(store, c, now)
     if rows is None:  # else the latest rows, already read
         clusters = {t.cluster for t in usage.targets(c)}
         rows, _ = await store.latest_sizings(c.id, clusters, before=now)
@@ -843,6 +851,7 @@ def digest_text(
 
 async def digest(store: "Store", c: Contract, at: float, console_url: str | None) -> str:
     """The Contract's digest as of `at`, from its stored Sizings (as `sizing waste`)."""
+    c = await listprices.effective(store, c, at)
     clusters = {t.cluster for t in usage.targets(c)}
     now = report(*await store.latest_sizings(c.id, clusters, before=at), c)
     week = report(*await store.latest_sizings(c.id, clusters, before=at - WEEK), c)

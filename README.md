@@ -445,6 +445,19 @@ clusters:
 
 Each Workload gets the monthly cost (730 hours) of its waste and of its requests, and the Contract gets both totals. The console's Workloads page, the weekly digest and `aiops sizing waste` rank by the waste's cost and show it as `41.20 EUR/month`. Requests count every container that has one, learning or excluded too, while waste counts only sized ones. It is the cost of what pods reserve, not of the nodes: idle node capacity isn't in it. Money is worked out when shown from the stored quantities, so a corrected price applies to every past run, and the digest's change since last week is a change of usage at today's prices. Rows stored before 10.1 hold requests only for ready containers. One currency per Contract, never converted. A price can be 0 (hardware already paid for). A cluster's prices need the Contract's, so every cluster of a priced Contract is priced and they rank together. Without `prices:` nothing changes: cores and GiB, and a core ranks like 4 GiB. The agent's `sizing_for_workload` never shows money.
 
+**Cloud list prices.** Instead of typing `prices:`, a Contract can take them from what its clusters' nodes cost on demand:
+
+```yaml
+list_prices: {weight: 7, discount: 0.6, gcp_key_secret: gcp-pricing}   # all optional
+clusters:
+  - name: eks-prod          # provider, region and instance types come from kube-state-metrics
+  - name: on-prem
+    prices: {cpu: 0.02, memory: 0.003}                   # typed prices always win
+    provider: aws           # only for a cluster that can't say (kube_node_info's provider_id)
+```
+
+Each hourly run reads the cluster's nodes (`kube_node_info`, `kube_node_labels`, `kube_node_status_capacity`); kube-state-metrics must allowlist the node labels (`--metric-labels-allowlist=nodes=[node.kubernetes.io/instance-type,topology.kubernetes.io/region]`). Once a day the Hub looks up each (provider, region, instance type) in the cloud's public price list: AWS's offer file (streamed, Linux, shared tenancy), Azure's Retail Prices API (pay-as-you-go Linux, no Spot) and, only with `gcp_key_secret` naming a Billing API key, GCP's catalog (cores and RAM of the machine family, on demand, not custom). A failed lookup is tried again after an hour and keeps the last good price and its age. A cluster's prices are its nodes' total price over their total vCPU and GiB, one vCPU worth `weight` GiB (default 7), so the CPU and GiB prices add back up to the nodes' price exactly; `discount` (0 to 1) multiplies them for a committed-use deal. The currency is USD, on demand only (Spot arrives with Phase 16). A cluster without labels (kind, bare metal) or without a price yet is not priced, says why, and leaves the whole Contract in cores and GiB, since money for one cluster and cores for the other can't be ranked. `aiops sizing prices --contract <id> [--refresh]` shows where each cluster's price comes from, the Cost and Workloads pages and `sizing cost` and `sizing waste` print the same line. `list_prices` and a Contract-level `prices` can't both be set.
+
 **Cost by namespace.** The console's **Cost** page and `aiops sizing cost --contract <id> [--json]` group a Contract's latest stored Sizings by namespace (each cluster's own: `kind/lab`, not `lab`): each namespace's requests (every container, learning and excluded ones too), its waste (sized containers), what both cost a month with the Contract's prices (cores and GiB without them), and how many Workloads it has, ranked by what its requests cost. A namespace links to the Workloads page filtered to it. The namespaces add up to the Contract's totals on the Workloads page. It is the cost of what pods reserve in the Contract's namespaces, not of the nodes.
 
 **Cost by label and team.** List pod labels and team rules in `contract.yaml`, and the Cost page gets a **Group by** picker (`aiops sizing cost --by team` or `--by label:<key>`):

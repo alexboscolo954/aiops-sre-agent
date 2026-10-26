@@ -10,6 +10,19 @@ import type { Allocation, Container, Point, Workload, Workloads } from "./api";
 import Chart from "./Chart";
 import { amount, change, cores, cpu, gib, memory, money, rank, when } from "./format";
 
+/** Where each cluster's price comes from, for a Contract priced from cloud list prices. */
+function PriceNotes({ notes }: { notes?: { cluster: string; source: string; note: string }[] }) {
+  return (
+    <>
+      {(notes ?? []).map((n) => (
+        <p key={n.cluster} className={n.source === "none" ? "notice" : "hint"}>
+          {n.cluster}: {n.note}
+        </p>
+      ))}
+    </>
+  );
+}
+
 function useParam(name: string): [string, (v: string) => void] {
   const [value, set] = useState(() => new URLSearchParams(location.search).get(name) ?? "");
   const update = (v: string) => {
@@ -121,6 +134,7 @@ function Page({ contract, data }: { contract: string; data: Workloads }) {
         })}
       </ul>
       {clusters.length === 0 && <p>No Sizings stored yet: the Hub stores them hourly.</p>}
+      <PriceNotes notes={data.prices} />
       {data.currency && data.cost ? (
         <p className="total">
           Waste: <strong>{money(data.cost.waste, data.currency)}</strong> ({cores(data.total.cpu ?? 0)},{" "}
@@ -247,6 +261,7 @@ function CostPage({
       {data.warnings.map((w) => (
         <p key={w} className="notice">{w}</p>
       ))}
+      <PriceNotes notes={data.prices} />
       {cmp &&
         Object.entries(cmp.clusters).map(([cluster, c]) => (
           <p key={cluster} className={c.at == null ? "notice" : "hint"}>

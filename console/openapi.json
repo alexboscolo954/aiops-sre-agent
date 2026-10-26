@@ -46,6 +46,14 @@
             "title": "Groups",
             "type": "array"
           },
+          "prices": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/PriceNote"
+            },
+            "title": "Prices",
+            "type": "array"
+          },
           "realized": {
             "$ref": "#/components/schemas/Realized"
           },
@@ -549,6 +557,29 @@
         "title": "Point",
         "type": "object"
       },
+      "PriceNote": {
+        "properties": {
+          "cluster": {
+            "title": "Cluster",
+            "type": "string"
+          },
+          "note": {
+            "title": "Note",
+            "type": "string"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "cluster",
+          "source",
+          "note"
+        ],
+        "title": "PriceNote",
+        "type": "object"
+      },
       "Realized": {
         "properties": {
           "accrued": {
@@ -873,6 +904,14 @@
               "$ref": "#/components/schemas/Container"
             },
             "title": "Learning",
+            "type": "array"
+          },
+          "prices": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/PriceNote"
+            },
+            "title": "Prices",
             "type": "array"
           },
           "total": {

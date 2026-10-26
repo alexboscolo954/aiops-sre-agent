@@ -11,7 +11,7 @@ from typing import Any
 
 import httpx
 
-from aiops_agent import agent, contracts, embeddings, evals, masking, sizing, usage
+from aiops_agent import agent, contracts, embeddings, evals, listprices, masking, sizing, usage
 from aiops_agent.config import Settings, refuse_moved
 from aiops_agent.models import AlertGroup
 from aiops_agent.servers import vendors
@@ -267,6 +267,7 @@ async def sizing_cost(contract_id: str, by: str, back: str | None, as_json: bool
     for g in out["groups"]:
         print(f"{g['group']}: {line(g)}, {g['workloads']} Workloads")
     print(f"total: {line({**out['total'], 'change': cmp and cmp['change']})}")
+    _price_notes(out)
     if cmp:
         for cluster, at in cmp["clusters"].items():
             if at["at"] is None:
@@ -331,14 +332,51 @@ async def sizing_savings(contract_id: str, as_json: bool) -> int:
     return 0
 
 
+def _price_notes(out: dict[str, Any]) -> None:
+    """Where each cluster's price comes from, for a Contract with list_prices."""
+    for n in out.get("prices", []):
+        print(f"prices {n['cluster']}: {n['note']}")
+
+
+async def sizing_prices(contract_id: str, refresh: bool) -> int:
+    """Where each cluster's price comes from (slice 10.4); with --refresh, look up the
+    list prices now instead of waiting for the Hub's daily lookup."""
+    import time
+
+    settings = Settings()
+    c = contract(settings, contract_id)
+    if not c.list_prices:
+        print(f"{c.id}: no list_prices; its prices are typed" if c.prices else f"{c.id}: no prices")
+        return 0
+    async with connect(_store_url(settings)) as pool:
+        store = Store(pool)
+        await store.migrate()
+        if refresh:
+            with listprices.client() as http:
+                looked = await listprices.refresh(store, [c], http, time.time())
+            print(f"looked up {looked} list prices")
+        eff = await listprices.effective(store, c, time.time())
+    for n in eff._price_notes:
+        print(f"{n['cluster']}: {n['note']}")
+    if eff.prices:
+        print(
+            f"{c.id}: {eff.prices.cpu:.4f} {eff.prices.currency} per vCPU-hour and "
+            f"{eff.prices.memory:.4f} per GiB-hour (cluster average)"
+        )
+    return 0 if all(n["source"] != "none" for n in eff._price_notes) else 1
+
+
 async def sizing_waste(contract_id: str, as_json: bool) -> int:
     """The Contract's Workloads ranked by waste (requests above their Sizings), with
     their risks, from each cluster's latest stored run (slice 9.4)."""
+    import time
+
     settings = Settings()
     c = contract(settings, contract_id)
     async with connect(_store_url(settings)) as pool:
         store = Store(pool)
         await store.migrate()
+        c = await listprices.effective(store, c, time.time())
         rows, clusters = await store.latest_sizings(c.id, {t.cluster for t in usage.targets(c)})
     out = {"contract": c.id, **sizing.report(rows, clusters, c)}
     ranked, total, currency = out["workloads"], out["total"], out.get("currency")
@@ -355,6 +393,7 @@ async def sizing_waste(contract_id: str, as_json: bool) -> int:
         if st["error"]:
             line += f"; stale since {_utc(st['since'])}: {st['error']}"
         print(line)
+    _price_notes(out)
     if currency:
         cost = out["cost"]
         print(
@@ -537,6 +576,9 @@ def main(argv: list[str] | None = None) -> int:
     zv = zsub.add_parser("savings", help="requests lowered to their Sizings, and their worth")
     zv.add_argument("--contract", required=True, help="a Contract id in AIOPS_CONTRACTS_DIR")
     zv.add_argument("--json", action="store_true")
+    zp = zsub.add_parser("prices", help="where each cluster's price comes from (list_prices)")
+    zp.add_argument("--contract", required=True, help="a Contract id in AIOPS_CONTRACTS_DIR")
+    zp.add_argument("--refresh", action="store_true", help="look up the list prices now")
     zd = zsub.add_parser("digest", help="the weekly Sizing digest, now")
     zd.add_argument("--contract", required=True, help="a Contract id in AIOPS_CONTRACTS_DIR")
     zd.add_argument("--post", action="store_true", help="also post it to the operator channel")
@@ -553,6 +595,8 @@ def main(argv: list[str] | None = None) -> int:
             return asyncio.run(sizing_cost(args.contract, args.by, args.compare, args.json))
         if args.sizing_cmd == "savings":
             return asyncio.run(sizing_savings(args.contract, args.json))
+        if args.sizing_cmd == "prices":
+            return asyncio.run(sizing_prices(args.contract, args.refresh))
         if args.sizing_cmd == "digest":
             return asyncio.run(sizing_digest(args.contract, args.post))
         return sizing_usage(args.contract, args.window, args.json)
