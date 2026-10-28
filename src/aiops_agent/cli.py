@@ -407,9 +407,10 @@ async def sizing_bill(contract_id: str, days: int, refresh: bool, as_json: bool)
             print(f"{r['cluster']} ({span}): {r['note']}")
             continue
         flag = "within" if r["within"] else "OUTSIDE"
+        gap = "no gap (nothing billed)" if r["gap"] is None else f"gap {r['gap']:+.1%}"
         print(
             f"{r['cluster']} ({span}): billed {r['billed']:.2f} {r['currency']}, estimated "
-            f"{r['estimated']:.2f}, gap {r['gap']:+.1%} ({flag} {billing.TOLERANCE:.0%})"
+            f"{r['estimated']:.2f}, {gap} ({flag} {billing.TOLERANCE:.0%})"
         )
     return 0 if all(r["within"] for r in rows) else 1
 

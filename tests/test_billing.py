@@ -612,3 +612,34 @@ def test_billing_needs_one_clear_cloud_integration() -> None:
         == "azure"
     )
     assert azure_billed().bill_provider(azure_billed().clusters[0]) == "azure"
+
+
+def test_the_cli_prints_a_bill_of_nothing_beside_an_estimate(
+    database_url: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import asyncio
+    import time
+
+    from aiops_agent import cli
+
+    c, fake = billed(), FakePrometheus()
+    nodes(fake)
+
+    async def seed_zero() -> None:
+        async with connect(database_url) as pool:
+            store = Store(pool)
+            await store.migrate()
+            await store.save_bill(c.id, "test", {d: (0.0, "USD", False) for d in DAYS}, NOW)
+
+    asyncio.run(seed_zero())
+    report = billing.report
+
+    async def reported(store: Store, c: Any, now: float, days: int) -> Any:
+        return await report(store, c, now, days, prom_of(fake))
+
+    monkeypatch.setattr(billing, "report", reported)
+    monkeypatch.setattr(cli, "contract", lambda settings, cid: c)
+    monkeypatch.setenv("AIOPS_DATABASE_URL", database_url)
+    monkeypatch.setattr(time, "time", lambda: NOW)
+    assert cli.main(["sizing", "bill", "--contract", c.id]) == 1
+    assert "no gap (nothing billed)" in capsys.readouterr().out
