@@ -1,3 +1,4 @@
+import json
 import os
 from datetime import timedelta
 from pathlib import Path
@@ -214,6 +215,42 @@ async def test_pod_logs_retries_restart_race(
         core.read_namespaced_pod_log.return_value = gone
         with pytest.raises(ToolError, match="being replaced"):
             await c.call_tool("pod_logs", {"cluster": "test", "namespace": "shop", "name": "p"})
+
+
+@pytest.mark.anyio
+async def test_previous_logs_the_api_calls_not_found_fall_back_to_the_latest_run(
+    settings: Settings, fake_cluster: Any
+) -> None:
+    """The API server can answer 400 "previous terminated container ... not found" for a
+    crash-looping pod (seen in CI, 2026-11-01): that is the same "gone" as the kubelet's
+    text, not an error to show the agent."""
+    from kubernetes.client.exceptions import ApiException
+
+    def bad_request(message: str) -> ApiException:
+        e = ApiException(status=400, reason="Bad Request")
+        e.body = json.dumps({"kind": "Status", "message": message, "code": 400})
+        return e
+
+    gone = bad_request('previous terminated container "app" in pod "p" not found')
+    core = fake_cluster[0]
+    core.read_namespaced_pod_log.side_effect = [gone, "FATAL: DATABASE_URL is not set"]
+    async with Client(k8s(settings, fake_cluster)) as c:
+        result = await c.call_tool(
+            "pod_logs", {"cluster": "test", "namespace": "shop", "name": "p", "previous": True}
+        )
+        assert "DATABASE_URL is not set" in result.content[0].text
+        assert "previous instance's logs are gone" in result.content[0].text
+        # any other 400 is still an error, and so is this one when the latest run was asked for
+        for previous, error in (
+            (True, bad_request('container "nope" is not valid')),
+            (False, gone),
+        ):
+            core.read_namespaced_pod_log.side_effect = [error]
+            with pytest.raises(ToolError, match="cannot read logs: 400"):
+                await c.call_tool(
+                    "pod_logs",
+                    {"cluster": "test", "namespace": "shop", "name": "p", "previous": previous},
+                )
 
 
 @pytest.mark.anyio

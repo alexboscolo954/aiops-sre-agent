@@ -50,6 +50,9 @@ IN_CLUSTER_SERVER = "https://kubernetes.default.svc"
 MAX_CHANGES = 30
 LOG_MARKER_ROOM = 64
 LOG_RACE = "unable to retrieve container logs"
+# How the API server says a crashed run's logs are gone for good (HTTP 400), when the
+# kubelet has already replaced or garbage-collected that container.
+PREVIOUS_GONE = "previous terminated container"
 LOG_RETRY_SECONDS = 2.0
 READ = ToolAnnotations(read_only_hint=True, open_world_hint=False)
 WRITE = ToolAnnotations(read_only_hint=False, destructive_hint=True, open_world_hint=False)
@@ -525,6 +528,8 @@ def build_server(
                         name, namespace, container=container, tail_lines=tail_lines, previous=prev
                     )
                 except ApiException as e:
+                    if prev and PREVIOUS_GONE in (e.body or ""):
+                        return None  # gone: the caller falls back to the latest run
                     raise ToolError(
                         f"cannot read logs: {e.status} {e.reason}: {(e.body or '')[:300]}"
                     ) from None
