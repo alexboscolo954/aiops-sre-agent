@@ -111,17 +111,19 @@ def azure(
     return {t: best.get(t) for t in wanted}
 
 
-def gcp(http: httpx.Client, region: str, wanted: Wanted, key: str) -> dict[str, float | None]:
+def gcp(
+    http: httpx.Client, region: str, wanted: Wanted, key: str, currency: str = "USD"
+) -> dict[str, float | None]:
     """Compute Engine bills a machine family's cores and RAM separately: a machine
     type's hourly price is its vCPU x the family's core price + its GiB x the RAM
-    price (on demand, not custom, not Spot)."""
+    price (on demand, not custom, not Spot), in `currency`."""
     core: dict[str, float] = {}
     ram: dict[str, float] = {}
     token: str | None = ""
     while token is not None:
         r = http.get(
             GCP,
-            params={"pageSize": "5000", "pageToken": token},
+            params={"pageSize": "5000", "pageToken": token, "currencyCode": currency},
             headers={"X-Goog-Api-Key": key},  # not in the URL: errors and logs show URLs
         )
         r.raise_for_status()
@@ -138,6 +140,8 @@ def gcp(http: httpx.Client, region: str, wanted: Wanted, key: str) -> dict[str, 
             if not rest.startswith(("Core running", "Ram running")):
                 continue
             rate = sku["pricingInfo"][0]["pricingExpression"]["tieredRates"][-1]["unitPrice"]
+            if rate.get("currencyCode", currency) != currency:  # never a price in the wrong money
+                raise ValueError(f"the catalog answered in {rate['currencyCode']}, not {currency}")
             price = float(rate.get("units", 0)) + rate.get("nanos", 0) / 1e9
             (core if rest.startswith("Core") else ram)[family.lower()] = price
         token = body.get("nextPageToken") or None
@@ -168,7 +172,7 @@ def fetch(
     if provider == "gcp":
         if not gcp_key:
             raise ValueError("no GCP pricing key: set list_prices.gcp_key_secret")
-        return gcp(http, region, wanted, gcp_key)
+        return gcp(http, region, wanted, gcp_key, currency)
     raise ValueError(f"no price list for provider {provider!r}")
 
 

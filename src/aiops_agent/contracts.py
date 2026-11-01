@@ -66,11 +66,21 @@ class Prices(ClusterPrices):
     currency: str = Field("USD", pattern=r"^[A-Z]{3}$")  # never converted
 
 
+# A GCP label: lowercase letters, digits, _ and -, starting with a letter; key up to 63.
+GCP_LABEL = re.compile(r"[a-z][a-z0-9_-]{0,62}=[a-z0-9_-]{0,63}")
+
+
 class Billing(Strict):
-    """Which bill lines are this cluster's (slices 10.5a, 10.5b): the ones carrying this
-    tag, `key=value`. In AWS the tag must be activated in Billing; Azure needs nothing."""
+    """Which bill lines are this cluster's (slices 10.5a to 10.5c): the ones carrying this
+    tag, `key=value`. In AWS the tag must be activated in Billing; Azure needs nothing;
+    GCP reads a label from the billing export's BigQuery `table` (project.dataset.table),
+    which GCP clusters must name and the others must not."""
 
     tag: str = Field(pattern=r"^[A-Za-z0-9_.:/+@ -]{1,128}=[A-Za-z0-9_.:/+@ -]{1,256}$")
+    # The table goes into the query's SQL (a table can't be a parameter): a plain name only.
+    table: str | None = Field(
+        None, pattern=r"^[a-z][a-z0-9-]{4,28}[a-z0-9]\.[A-Za-z0-9_]{1,128}\.[A-Za-z0-9_]{1,128}$"
+    )
 
 
 class Cluster(Strict):
@@ -672,18 +682,29 @@ class Contract(Strict):
         if (
             self.list_prices
             and self.list_prices.currency != "USD"
-            and (other := [c.name for c in self.clusters if c.provider != "azure"])
+            and (other := [c.name for c in self.clusters if c.provider not in ("azure", "gcp")])
         ):
             raise ValueError(
-                f"list_prices currency is {self.list_prices.currency}: only Azure's catalog "
-                f"offers it, so clusters {other} need provider: azure"
+                f"list_prices currency is {self.list_prices.currency}: only Azure's and GCP's "
+                f"catalogs offer it, so clusters {other} need provider: azure or gcp"
             )
         if billed := [c for c in self.clusters if c.billing]:
             for c in billed:
                 if self.bill_provider(c) is None:
                     raise ValueError(
-                        f"clusters {[c.name]} set billing: it reads the aws or azure "
-                        "integration (set provider: when the Contract has both)"
+                        f"clusters {[c.name]} set billing: it reads the aws, azure or gcp "
+                        "integration (set provider: when the Contract has several)"
+                    )
+                gcp = self.bill_provider(c) == "gcp"
+                assert c.billing is not None
+                if gcp and not c.billing.table:
+                    raise ValueError(f"cluster {c.name} reads a GCP bill: set billing.table")
+                if not gcp and c.billing.table:
+                    raise ValueError(f"cluster {c.name} sets billing.table: only GCP bills use it")
+                if gcp and not GCP_LABEL.fullmatch(c.billing.tag):
+                    raise ValueError(
+                        f"cluster {c.name}: a GCP label is key=value in lowercase letters, "
+                        "digits, _ and -, the key starting with a letter"
                     )
             shared = any(isinstance(i, Prometheus) for i in self.integrations)
             if lacking := [c.name for c in billed if not (shared or c.prometheus_url)]:
@@ -695,20 +716,24 @@ class Contract(Strict):
             (i for i in self.integrations if isinstance(i, Vendor) and i.vendor == "azure"), None
         )
 
-    def bill_provider(self, cluster: Cluster) -> Literal["aws", "azure"] | None:
+    def gcp_vendor(self) -> "Vendor | None":
+        return next(
+            (i for i in self.integrations if isinstance(i, Vendor) and i.vendor == "gcp"), None
+        )
+
+    def bill_provider(self, cluster: Cluster) -> Literal["aws", "azure", "gcp"] | None:
         """Whose bill a billed cluster reads: its `provider`, else the only cloud
         integration the Contract holds; None when that integration is missing or the
-        choice is open (both, no `provider`) or not a bill we read (gcp)."""
-        held = [
-            p
-            for p, there in (
-                ("aws", any(isinstance(i, Aws) for i in self.integrations)),
-                ("azure", self.azure_vendor() is not None),
-            )
-            if there
-        ]
+        choice is open (several, no `provider`)."""
+        held: list[Literal["aws", "azure", "gcp"]] = []
+        if any(isinstance(i, Aws) for i in self.integrations):
+            held.append("aws")
+        if self.azure_vendor():
+            held.append("azure")
+        if self.gcp_vendor():
+            held.append("gcp")
         want = cluster.provider or (held[0] if len(held) == 1 else None)
-        return want if want in held and want in ("aws", "azure") else None  # type: ignore[return-value]
+        return want if want in held else None
 
     def price(self, cluster: str) -> ClusterPrices | None:
         """A cluster's unit prices: its own, else the Contract's; None when unpriced."""

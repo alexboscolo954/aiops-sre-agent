@@ -83,7 +83,8 @@ src/aiops_agent/
   usage.py         Reads Prometheus: workloads, node-hours, node facts for list prices.
   sizing.py        Sizings, policies, cost, waste, Savings, digests.
   listprices.py    Cloud list prices (AWS, Azure, GCP), per currency.
-  billing.py       Cloud bills (AWS Cost Explorer, Azure Cost Management) vs the estimate.
+  billing.py       Cloud bills (AWS Cost Explorer, Azure Cost Management, GCP's BigQuery
+                   billing export) vs the estimate.
   evals.py         Scenario replay and scoring.
   cli.py           The `aiops` command.
   servers/         One MCP server per integration: kubernetes, prometheus, runbooks, jira,

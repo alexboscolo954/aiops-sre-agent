@@ -157,7 +157,8 @@ class GoogleKey(httpx2.Auth):
     by the Hub: the key never leaves it. One per integration, so a Run reuses its
     token until a minute before it expires. No assertion or token in any error."""
 
-    def __init__(self, key: str) -> None:
+    def __init__(self, key: str, scopes: str = GOOGLE_SCOPES) -> None:
+        self.scopes = scopes  # the MCP servers' read scopes unless the Hub needs another API
         info = json.loads(key)
         self.email, self.key_id = info["client_email"], info["private_key_id"]
         private = serialization.load_pem_private_key(info["private_key"].encode(), None)
@@ -171,7 +172,7 @@ class GoogleKey(httpx2.Auth):
         header = {"alg": "RS256", "typ": "JWT", "kid": self.key_id}
         claims = {
             "iss": self.email,
-            "scope": GOOGLE_SCOPES,
+            "scope": self.scopes,
             "aud": GOOGLE_TOKEN_URL,
             "iat": now,
             "exp": now + 600,

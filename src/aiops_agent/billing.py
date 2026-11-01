@@ -1,10 +1,11 @@
-"""Cloud bills (slices 10.5a, 10.5b): what Cost Explorer (AWS) or Cost Management
-(Azure) says a cluster's tagged compute cost, set beside what its node-hours cost at the
-Hub's prices. Read-only; a shown cost never changes (a billed rate feeding prices is a
-later slice)."""
+"""Cloud bills (slices 10.5a to 10.5c): what Cost Explorer (AWS), Cost Management (Azure)
+or the billing export in BigQuery (GCP) says a cluster's tagged compute cost, set beside
+what its node-hours cost at the Hub's prices. Read-only; a shown cost never changes (a
+billed rate feeding prices is a later slice)."""
 
 import asyncio
 import json
+import time
 from collections.abc import Callable, Iterable
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -14,6 +15,7 @@ import httpx
 from aiops_agent import listprices, usage
 from aiops_agent.contracts import Aws, Cluster, Contract
 from aiops_agent.servers.aws import authorization
+from aiops_agent.servers.vendors import GOOGLE_TOKEN_URL, GoogleKey
 
 if TYPE_CHECKING:
     from aiops_agent.store import Store
@@ -26,6 +28,23 @@ DAY = 86400
 HOUR = 3600
 HOST = "ce.us-east-1.amazonaws.com"  # Cost Explorer has this one endpoint
 AZURE_HOST = "management.azure.com"
+BIGQUERY = "https://bigquery.googleapis.com/bigquery/v2/projects/{project}/queries"
+BIGQUERY_SCOPE = "https://www.googleapis.com/auth/bigquery.readonly"
+# Compute Engine bills a VM's cores and RAM on their own SKUs (disks, network and IPs are
+# other lines of the same service): the estimate is vCPU and GiB hours, so only those
+# count, on demand (Spot arrives with Phase 16), usage before credits.
+GCP_QUERY = """
+SELECT FORMAT_DATE('%Y-%m-%d', DATE(usage_start_time, 'UTC')) AS day, currency,
+       SUM(cost) AS cost
+FROM `{table}`
+WHERE usage_start_time >= @start AND usage_start_time < @end
+  AND service.description = 'Compute Engine' AND cost_type = 'regular'
+  AND (sku.description LIKE '% Instance Core running%'
+       OR sku.description LIKE '% Instance Ram running%')
+  AND sku.description NOT LIKE 'Spot Preemptible%'
+  AND EXISTS (SELECT 1 FROM UNNEST(labels) AS l WHERE l.key = @key AND l.value = @value)
+GROUP BY day, currency
+"""
 LOGIN = "https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
 Bill = dict[str, tuple[float, str, bool]]  # day -> amount, currency, still estimated
 COMPUTE = "Amazon Elastic Compute Cloud - Compute"
@@ -169,6 +188,12 @@ def azure_fetch(
         body = resp.json()
         out |= azure_parse(body)
         url = body["properties"].get("nextLink")
+    return fill_gaps(out, start)
+
+
+def fill_gaps(out: Bill, start: str) -> Bill:
+    """A day before the latest one with a row, and without one, had no usage: 0. After
+    it, the cloud may just not have settled the day: left missing."""
     if out:
         unit = next(iter(out.values()))[1]
         day = date.fromisoformat(start)
@@ -176,6 +201,64 @@ def azure_fetch(
             out.setdefault(day.isoformat(), (0.0, unit, False))
             day += timedelta(days=1)
     return out
+
+
+def gcp_request(table: str, tag: str, start: str, end: str) -> dict[str, Any]:
+    """BigQuery's jobs.query body: the label's Compute Engine core and RAM usage from the
+    billing export, a UTC day at a time; `end` is exclusive. The table is checked by
+    Billing.table; the label goes in as parameters."""
+    key, _, value = tag.partition("=")
+
+    def param(name: str, kind: str, v: str) -> dict[str, Any]:
+        return {"name": name, "parameterType": {"type": kind}, "parameterValue": {"value": v}}
+
+    return {
+        "query": GCP_QUERY.format(table=table),
+        "useLegacySql": False,
+        "parameterMode": "NAMED",
+        "queryParameters": [
+            param("start", "TIMESTAMP", f"{start} 00:00:00+00"),
+            param("end", "TIMESTAMP", f"{end} 00:00:00+00"),
+            param("key", "STRING", key),
+            param("value", "STRING", value),
+        ],
+        "timeoutMs": 60000,
+    }
+
+
+def gcp_parse(body: dict[str, Any]) -> Bill:
+    if not body.get("jobComplete"):
+        raise ValueError("BigQuery had not finished the query in time")
+    if body.get("pageToken"):
+        raise ValueError("BigQuery answered in pages: more days than expected")
+    out: Bill = {}
+    for row in body.get("rows", []):
+        day, unit, cost = (c["v"] for c in row["f"])
+        if day in out:
+            raise ValueError(f"{day} was billed in two currencies")
+        out[day] = (float(cost), unit, False)
+    return out
+
+
+def gcp_fetch(
+    http: httpx.Client, key: str, project: str, table: str, tag: str, start: str, end: str
+) -> Bill:
+    """The label's billed days from `start` up to (not including) `end`. The token is
+    minted for this read with only the BigQuery read scope and dropped."""
+    now = int(time.time())
+    grant = {
+        "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+        "assertion": GoogleKey(key, BIGQUERY_SCOPE).assertion(now),
+    }
+    resp = http.post(GOOGLE_TOKEN_URL, data=grant)
+    resp.raise_for_status()
+    resp = http.post(
+        BIGQUERY.format(project=project),
+        json=gcp_request(table, tag, start, end),
+        headers={"authorization": f"Bearer {resp.json()['access_token']}"},
+    )
+    resp.raise_for_status()
+    return fill_gaps(gcp_parse(resp.json()), start)
 
 
 def client() -> httpx.Client:
@@ -198,6 +281,19 @@ def reader(c: Contract, cl: Cluster) -> Callable[[httpx.Client, str, str, str, f
             http, var("AZURE_TENANT_ID"), var("AZURE_CLIENT_ID"), var("AZURE_CLIENT_SECRET"),
             var("AZURE_SUBSCRIPTION_ID"), tag, start, end,
         )  # fmt: skip
+    if c.bill_provider(cl) == "gcp":
+        gcp = c.gcp_vendor()
+        assert gcp is not None and cl.billing is not None and cl.billing.table is not None
+        table = cl.billing.table
+        return lambda http, tag, start, end, now: gcp_fetch(
+            http,
+            c.secret(gcp.env_secrets["GOOGLE_SERVICE_ACCOUNT_KEY"]).get_secret_value(),
+            gcp.env["GOOGLE_CLOUD_PROJECT"],
+            table,
+            tag,
+            start,
+            end,
+        )
     aws = next(i for i in c.integrations if isinstance(i, Aws))
     return lambda http, tag, start, end, now: aws_fetch(
         http, aws.access_key_id, c.secret(aws.secret_access_key_secret).get_secret_value(),

@@ -353,7 +353,7 @@ def test_the_samples_counted_are_the_hours_the_nodes_were_seen() -> None:
 @pytest.mark.parametrize(
     ("change", "message"),
     [
-        ({"aws": False}, "set billing: it reads the aws or azure"),
+        ({"aws": False}, "set billing: it reads the aws, azure or gcp"),
         ({"prometheus": False}, "set billing: they need a Prometheus"),
     ],
 )
@@ -602,15 +602,15 @@ async def test_a_brl_bill_is_compared_with_brl_prices_and_not_with_usd_ones(stor
 
 
 def test_billing_needs_one_clear_cloud_integration() -> None:
-    with pytest.raises(ValidationError, match="aws or azure"):
+    with pytest.raises(ValidationError, match="aws, azure or gcp"):
         azure_billed(with_aws=True)  # both, no provider
-    with pytest.raises(ValidationError, match="aws or azure"):
+    with pytest.raises(ValidationError, match="aws, azure or gcp"):
         azure_billed(provider="aws")  # provider aws, only azure held
-    with pytest.raises(ValidationError, match="aws or azure"):
+    with pytest.raises(ValidationError, match="aws, azure or gcp"):
         azure_billed(provider="gcp")
     data = azure_billed().model_dump()
     data["integrations"] = [i for i in data["integrations"] if i["name"] != "azure"]
-    with pytest.raises(ValidationError, match="aws or azure"):
+    with pytest.raises(ValidationError, match="aws, azure or gcp"):
         contracts.build(data)
     assert (
         azure_billed(with_aws=True, provider="azure").bill_provider(
@@ -727,3 +727,248 @@ def test_the_cli_does_not_fail_a_row_for_missing_samples_alone(
     assert cli.main(["sizing", "bill", "--contract", c.id]) == 0
     out = capsys.readouterr().out
     assert "no verdict" in out and "100 of 168 sampled hours" in out
+
+
+# --- GCP (slice 10.5c) -----------------------------------------------------------------------
+
+from cryptography.hazmat.primitives import hashes  # noqa: E402
+from cryptography.hazmat.primitives.asymmetric import padding  # noqa: E402
+
+from tests.test_gcp import KEY as GCP_KEY  # noqa: E402
+from tests.test_gcp import PRIVATE, unpad  # noqa: E402
+
+TABLE = "acme-prod.billing.gcp_billing_export_v1_ABC123"
+GCP_TAG = "aiops-cluster=kind"
+GCP = {
+    "name": "gcp",
+    "vendor": "gcp",
+    "env": {"GOOGLE_CLOUD_PROJECT": "acme-prod"},
+    "env_secrets": {"GOOGLE_SERVICE_ACCOUNT_KEY": "gcp-key"},
+    "tools": {"list_log_names": "read"},
+}
+
+
+def gcp_billed(
+    currency: str = "USD", billing: dict[str, Any] | None = None, **cluster: Any
+) -> contracts.Contract:
+    data = make_contract().model_dump()
+    data["integrations"] += [{"name": "prometheus", "url": "http://prometheus"}, GCP]
+    data["prices"] = {"currency": currency, "cpu": 0.03, "memory": 0.004}
+    data["clusters"][0]["billing"] = billing or {"tag": GCP_TAG, "table": TABLE}
+    data["clusters"][0].update(cluster)
+    return contracts.build(data, secrets={"gcp-key": SecretStr(GCP_KEY)})
+
+
+def gcp_body(amounts: dict[str, float], unit: str = "BRL") -> dict[str, Any]:
+    return {
+        "jobComplete": True,
+        "rows": [{"f": [{"v": d}, {"v": unit}, {"v": str(a)}]} for d, a in amounts.items()],
+    }
+
+
+class BigQuery:
+    """Google's token endpoint and BigQuery's query, counting what was asked."""
+
+    def __init__(self, amounts: dict[str, float] | None = None, unit: str = "BRL") -> None:
+        self.asked: list[httpx.Request] = []
+        self.amounts = amounts if amounts is not None else dict.fromkeys(DAYS, 2.2)
+        self.unit = unit
+        self.status = 200
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.asked.append(request)
+        if request.url.host == "oauth2.googleapis.com":
+            return httpx.Response(200, json={"access_token": "tok", "expires_in": 3600})
+        if self.status != 200:
+            return httpx.Response(self.status, json={"error": {"message": GCP_KEY}})
+        return httpx.Response(200, json=gcp_body(self.amounts, self.unit))
+
+    def client(self) -> httpx.Client:
+        return httpx.Client(transport=httpx.MockTransport(self))
+
+
+def test_the_gcp_query_asks_for_the_labels_core_and_ram_usage_on_demand() -> None:
+    sent = billing.gcp_request(TABLE, GCP_TAG, "1972-09-01", "1972-09-26")
+    sql = sent["query"]
+    assert f"FROM `{TABLE}`" in sql and sent["useLegacySql"] is False
+    assert "service.description = 'Compute Engine'" in sql and "cost_type = 'regular'" in sql
+    assert "'% Instance Core running%'" in sql and "'% Instance Ram running%'" in sql
+    assert "NOT LIKE 'Spot Preemptible%'" in sql and "SUM(cost)" in sql
+    assert "tag" not in sql and "aiops-cluster" not in sql and "kind" not in sql  # parameters
+    params = {p["name"]: p["parameterValue"]["value"] for p in sent["queryParameters"]}
+    assert params == {
+        "start": "1972-09-01 00:00:00+00",
+        "end": "1972-09-26 00:00:00+00",
+        "key": "aiops-cluster",
+        "value": "kind",
+    }
+    assert sent["parameterMode"] == "NAMED"
+
+
+def test_gcp_days_are_parsed_with_their_currency() -> None:
+    assert billing.gcp_parse(gcp_body({"1972-09-25": 2.5})) == {"1972-09-25": (2.5, "BRL", False)}
+    assert billing.gcp_parse({"jobComplete": True}) == {}  # a label with no usage
+
+
+def test_a_query_that_did_not_finish_or_came_in_pages_or_two_currencies_is_refused() -> None:
+    with pytest.raises(ValueError, match="had not finished"):
+        billing.gcp_parse({"jobComplete": False})
+    with pytest.raises(ValueError, match="pages"):
+        billing.gcp_parse({**gcp_body({}), "pageToken": "t"})
+    two = gcp_body({"1972-09-25": 1.0})
+    two["rows"] += gcp_body({"1972-09-25": 2.0}, "USD")["rows"]
+    with pytest.raises(ValueError, match="two currencies"):
+        billing.gcp_parse(two)
+
+
+def test_gcp_mints_a_bigquery_only_token_at_googles_endpoint_then_queries() -> None:
+    bq = BigQuery()
+    got = billing.gcp_fetch(
+        bq.client(), GCP_KEY, "acme-prod", TABLE, GCP_TAG, DAYS[0], "1972-09-26"
+    )
+    assert got[DAYS[0]] == (2.2, "BRL", False)
+    token, query = bq.asked
+    assert str(token.url) == "https://oauth2.googleapis.com/token"
+    form = dict(x.split("=", 1) for x in token.content.decode().split("&"))
+    header, claims, signature = form["assertion"].split(".")
+    PRIVATE.public_key().verify(  # signed by the Contract's own key
+        unpad(signature), f"{header}.{claims}".encode(), padding.PKCS1v15(), hashes.SHA256()
+    )
+    body = json.loads(unpad(claims))
+    assert body["scope"] == "https://www.googleapis.com/auth/bigquery.readonly"  # nothing else
+    assert body["aud"] == "https://oauth2.googleapis.com/token"
+    assert query.url.host == "bigquery.googleapis.com"
+    assert query.url.path == "/bigquery/v2/projects/acme-prod/queries"
+    assert query.headers["authorization"] == "Bearer tok"
+    assert GCP_KEY not in str(query.headers) + query.content.decode()
+    assert "private_key" not in token.content.decode()
+
+
+def test_a_gcp_day_without_usage_before_the_latest_reads_as_zero() -> None:
+    bq = BigQuery({DAYS[0]: 2.0, DAYS[3]: 3.0})
+    got = billing.gcp_fetch(bq.client(), GCP_KEY, "acme-prod", TABLE, GCP_TAG, DAYS[0], DAYS[5])
+    assert got == {
+        DAYS[0]: (2.0, "BRL", False),
+        DAYS[1]: (0.0, "BRL", False),
+        DAYS[2]: (0.0, "BRL", False),
+        DAYS[3]: (3.0, "BRL", False),
+    }
+
+
+@pytest.mark.anyio
+async def test_a_gcp_bill_is_read_with_the_integrations_key_and_project(store: Store) -> None:
+    c, bq = gcp_billed(), BigQuery()
+    assert await billing.refresh(store, [c], bq.client(), NOW) == 1
+    _, query = bq.asked
+    assert query.url.path == "/bigquery/v2/projects/acme-prod/queries"
+    sent = json.loads(query.content)
+    assert f"`{TABLE}`" in sent["query"]
+    days, _ = await store.bills(c.id)
+    assert days["test"][DAYS[0]]["currency"] == "BRL"
+
+
+@pytest.mark.anyio
+async def test_a_refused_gcp_read_is_named_by_status_and_host_and_tried_after_an_hour(
+    store: Store,
+) -> None:
+    c, bq = gcp_billed(), BigQuery()
+    bq.status = 403
+    http = bq.client()
+    assert await billing.refresh(store, [c], http, NOW) == 1
+    assert await billing.refresh(store, [c], http, NOW + H / 2) == 0
+    assert await billing.refresh(store, [c], http, NOW + 1.5 * H) == 1
+    _, tries = await store.bills(c.id)
+    assert tries["test"]["error"] == "HTTP 403 from bigquery.googleapis.com"
+    assert "private_key" not in tries["test"]["error"]
+
+
+@pytest.mark.anyio
+async def test_a_cluster_reads_the_bill_of_its_provider_among_three_clouds(store: Store) -> None:
+    data = gcp_billed(provider="gcp").model_dump()
+    data["integrations"] += [AZURE, AWS]
+    c = contracts.build(
+        data,
+        secrets={
+            "gcp-key": SecretStr(GCP_KEY),
+            "az-secret": SecretStr(AZ_SECRET),
+            "aws-key": SecretStr(SECRET),
+        },
+    )
+    bq = BigQuery()
+    await billing.refresh(store, [c], bq.client(), NOW)
+    assert {r.url.host for r in bq.asked} == {"oauth2.googleapis.com", "bigquery.googleapis.com"}
+
+
+def test_billing_across_clouds_needs_a_provider_when_the_contract_has_several() -> None:
+    data = gcp_billed().model_dump()
+    data["integrations"] += [AWS]
+    with pytest.raises(ValidationError, match="set provider"):
+        contracts.build(data)
+    data["clusters"][0]["provider"] = "gcp"
+    assert contracts.build(data).bill_provider(contracts.build(data).clusters[0]) == "gcp"
+    one = gcp_billed()
+    assert one.bill_provider(one.clusters[0]) == "gcp"  # the only cloud integration
+
+
+@pytest.mark.parametrize(
+    ("billing_field", "message"),
+    [
+        ({"tag": GCP_TAG}, "set billing.table"),
+        ({"tag": "Aiops-Cluster=kind", "table": TABLE}, "lowercase"),
+        ({"tag": "aiops cluster=kind", "table": TABLE}, "lowercase"),
+        ({"tag": "1x=kind", "table": TABLE}, "lowercase"),
+        ({"tag": "k=" + "v" * 64, "table": TABLE}, "lowercase"),
+    ],
+)
+def test_a_gcp_cluster_needs_a_table_and_a_valid_label(
+    billing_field: dict[str, str], message: str
+) -> None:
+    with pytest.raises(ValidationError, match=message):
+        gcp_billed(billing=billing_field)
+
+
+@pytest.mark.parametrize(
+    "table",
+    [
+        "x.y.z",
+        "acme-prod.billing",
+        "acme-prod.billing.t; DROP TABLE a",
+        "acme-prod.billing.t`",
+        "acme-prod.bill-ing.t",
+        "ACME.billing.t",
+        "acme-prod.billing.t.u",
+    ],
+)
+def test_a_table_name_that_could_change_the_query_is_refused(table: str) -> None:
+    with pytest.raises(ValidationError, match="billing"):
+        gcp_billed(billing={"tag": GCP_TAG, "table": table})
+
+
+def test_a_table_is_only_for_gcp_bills() -> None:
+    with pytest.raises(ValidationError, match="only GCP bills use it"):
+        azure_billed(billing={"tag": TAG, "table": TABLE})
+    data = billed().model_dump()
+    data["clusters"][0]["billing"]["table"] = TABLE
+    with pytest.raises(ValidationError, match="only GCP bills use it"):
+        contracts.build(data)
+
+
+@pytest.mark.anyio
+async def test_a_gcp_bill_in_brl_is_compared_with_brl_prices_only(store: Store) -> None:
+    fake = FakePrometheus()
+    nodes(fake)
+    for money, note in (("BRL", None), ("USD", "not converted")):
+        c = gcp_billed(money)
+        await store.save_bill(c.id, "test", {d: (2.2, "BRL", False) for d in DAYS}, NOW)
+        got = await row(store, c, fake)
+        assert (got["gap"] is not None) == (note is None)
+        assert note is None or note in got["note"]
+
+
+@pytest.mark.anyio
+async def test_two_gcp_contracts_bills_stay_apart(store: Store) -> None:
+    a, b = gcp_billed(), gcp_billed()
+    b = b.model_copy(update={"id": "other"})
+    await store.save_bill(a.id, "test", {d: (2.2, "BRL", False) for d in DAYS}, NOW)
+    days, tries = await store.bills(b.id)
+    assert days == {} and tries == {}

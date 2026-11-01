@@ -769,13 +769,46 @@ def test_a_currency_is_three_capital_letters(code: str) -> None:
         contracts.ListPrices(currency=code)
 
 
-def test_a_currency_other_than_usd_needs_every_cluster_on_azure() -> None:
+def test_a_currency_other_than_usd_needs_every_cluster_on_azure_or_gcp() -> None:
     assert brl().list_prices.currency == "BRL"  # type: ignore[union-attr]
-    for provider in (None, "aws", "gcp"):
-        data = brl().model_dump()
+    data = brl().model_dump()
+    data["clusters"][0]["provider"] = "gcp"
+    assert contracts.build(data).list_prices.currency == "BRL"  # type: ignore[union-attr]
+    for provider in (None, "aws"):
         data["clusters"][0]["provider"] = provider
-        with pytest.raises(ValidationError, match="only Azure's catalog"):
+        with pytest.raises(ValidationError, match="only Azure's and GCP's"):
             contracts.build(data)
+
+
+def test_gcp_asks_for_the_currency_and_never_prices_in_another() -> None:
+    asked = []
+    sku = {
+        "description": "E2 Instance Core running in Americas",
+        "category": {"usageType": "OnDemand"},
+        "serviceRegions": ["us-central1"],
+    }
+
+    def answer(code: str) -> Any:
+        def handler(request: httpx.Request) -> httpx.Response:
+            asked.append(request.url.params["currencyCode"])
+            rate = {"unitPrice": {"currencyCode": code, "units": "0", "nanos": 100_000_000}}
+            ram = {**sku, "description": "E2 Instance Ram running in Americas"}
+            skus = [sku, ram]
+            for s in skus:
+                s["pricingInfo"] = [{"pricingExpression": {"tieredRates": [rate]}}]
+            return httpx.Response(200, json={"skus": skus})
+
+        return handler
+
+    wanted = {"e2-standard-2": (2.0, 8.0)}
+    got = listprices.gcp(http_of(answer("BRL")), "us-central1", wanted, "KEY", "BRL")
+    assert got == {"e2-standard-2": pytest.approx(1.0)} and asked == ["BRL"]
+    with pytest.raises(ValueError, match="answered in USD, not BRL"):
+        listprices.gcp(http_of(answer("USD")), "us-central1", wanted, "KEY", "BRL")
+    listprices.gcp(http_of(answer("USD")), "us-central1", wanted, "KEY")
+    assert asked[-1] == "USD"
+    listprices.fetch(http_of(answer("BRL")), "gcp", "us-central1", wanted, "KEY", "BRL")
+    assert asked[-1] == "BRL"  # the Contract's currency reaches the catalog
 
 
 @pytest.mark.anyio
