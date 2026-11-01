@@ -81,7 +81,7 @@
         "type": "object"
       },
       "Bill": {
-        "description": "A billed cluster's AWS bill beside its estimate; `note` says why there is none.",
+        "description": "A billed cluster's cloud bill beside its estimate; `note` says why there is none.",
         "properties": {
           "billed": {
             "anyOf": [
@@ -97,6 +97,17 @@
           "cluster": {
             "title": "Cluster",
             "type": "string"
+          },
+          "coverage": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Coverage"
           },
           "currency": {
             "anyOf": [
@@ -139,6 +150,10 @@
             ],
             "title": "Gap"
           },
+          "hours": {
+            "title": "Hours",
+            "type": "integer"
+          },
           "note": {
             "anyOf": [
               {
@@ -149,6 +164,17 @@
               }
             ],
             "title": "Note"
+          },
+          "sampled": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sampled"
           },
           "start": {
             "title": "Start",
@@ -181,6 +207,9 @@
           "currency",
           "gap",
           "within",
+          "hours",
+          "sampled",
+          "coverage",
           "note"
         ],
         "title": "Bill",
@@ -195,6 +224,10 @@
             "title": "Clusters",
             "type": "array"
           },
+          "min_coverage": {
+            "title": "Min Coverage",
+            "type": "number"
+          },
           "tolerance": {
             "title": "Tolerance",
             "type": "number"
@@ -202,6 +235,7 @@
         },
         "required": [
           "tolerance",
+          "min_coverage",
           "clusters"
         ],
         "title": "Bills",

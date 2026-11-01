@@ -118,13 +118,15 @@ export interface components {
         };
         /**
          * Bill
-         * @description A billed cluster's AWS bill beside its estimate; `note` says why there is none.
+         * @description A billed cluster's cloud bill beside its estimate; `note` says why there is none.
          */
         Bill: {
             /** Billed */
             billed: number | null;
             /** Cluster */
             cluster: string;
+            /** Coverage */
+            coverage: number | null;
             /** Currency */
             currency: string | null;
             /** Days */
@@ -135,8 +137,12 @@ export interface components {
             estimated: number | null;
             /** Gap */
             gap: number | null;
+            /** Hours */
+            hours: number;
             /** Note */
             note: string | null;
+            /** Sampled */
+            sampled: number | null;
             /** Start */
             start: string;
             /** Tag */
@@ -148,6 +154,8 @@ export interface components {
         Bills: {
             /** Clusters */
             clusters: components["schemas"]["Bill"][];
+            /** Min Coverage */
+            min_coverage: number;
             /** Tolerance */
             tolerance: number;
         };

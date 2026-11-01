@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from aiops_agent.store import Store
 
 TOLERANCE = 0.05  # the estimate may differ from the bill by this much and still reconcile
+MIN_COVERAGE = 0.9  # below this share of the window's hours sampled, the estimate can't judge
 LAG_DAYS = 2  # Cost Explorer settles a day within about 24 to 48 hours
 KEPT_DAYS = 30  # days read each time, and the most `--days` takes
 DAY = 86400
@@ -278,6 +279,9 @@ async def report(
             "currency": None,
             "gap": None,
             "within": None,
+            "hours": days * 24,  # the node-hours a complete estimate rests on
+            "sampled": None,
+            "coverage": None,
             "note": None,
         }
         out.append(row)
@@ -311,11 +315,16 @@ async def report(
         first = datetime.fromisoformat(wanted[0]).replace(tzinfo=UTC).timestamp()
         last = datetime.fromisoformat(wanted[-1]).replace(tzinfo=UTC).timestamp() + DAY - 1
         try:
-            vcpu, gib = await asyncio.to_thread(usage.node_hours, prom(t), t, first, last)
+            vcpu, gib, sampled = await asyncio.to_thread(usage.node_hours, prom(t), t, first, last)
         except usage.UsageError as e:
             row["note"] = f"the node-hours failed to read: {e}"
             continue
         row["estimated"] = vcpu * price.cpu + gib * price.memory
         row["gap"] = gap(row["estimated"], row["billed"])
         row["within"] = row["gap"] is not None and abs(row["gap"]) <= TOLERANCE
+        row["sampled"], row["coverage"] = sampled, min(sampled / row["hours"], 1.0)
+        if sampled < row["hours"]:
+            row["note"] = f"the estimate rests on {sampled} of {row['hours']} sampled hours"
+        if row["coverage"] < MIN_COVERAGE:
+            row["within"] = None  # missing samples, not prices, make this gap: no verdict
     return out

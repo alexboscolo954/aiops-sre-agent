@@ -403,16 +403,22 @@ async def sizing_bill(contract_id: str, days: int, refresh: bool, as_json: bool)
         if as_json:
             continue
         span = f"{r['start']} to {r['end']}"
-        if r["gap"] is None and r["note"]:
+        if r["estimated"] is None:
             print(f"{r['cluster']} ({span}): {r['note']}")
             continue
-        flag = "within" if r["within"] else "OUTSIDE"
+        flag = {True: "within", False: "OUTSIDE", None: "no verdict"}[r["within"]]
         gap = "no gap (nothing billed)" if r["gap"] is None else f"gap {r['gap']:+.1%}"
+        note = f"; {r['note']}" if r["note"] else ""
         print(
             f"{r['cluster']} ({span}): billed {r['billed']:.2f} {r['currency']}, estimated "
-            f"{r['estimated']:.2f}, {gap} ({flag} {billing.TOLERANCE:.0%})"
+            f"{r['estimated']:.2f}, {gap} ({flag} {billing.TOLERANCE:.0%}){note}"
         )
-    return 0 if all(r["within"] for r in rows) else 1
+    # a gap judged on too few sampled hours is no failure; any other row without "within" is
+    return (
+        0
+        if all(r["within"] or (r["within"] is None and r["coverage"] is not None) for r in rows)
+        else 1
+    )
 
 
 async def sizing_waste(contract_id: str, as_json: bool) -> int:

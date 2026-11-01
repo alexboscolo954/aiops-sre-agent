@@ -23,7 +23,7 @@ function PriceNotes({ notes }: { notes?: { cluster: string; source: string; note
   );
 }
 
-/** A billed cluster's AWS bill beside its estimate at the Hub's prices, or why there is none. */
+/** A billed cluster's cloud bill beside its estimate at the Hub's prices, or why there is none. */
 function BillLines({ bills }: { bills: Bills | null }) {
   return (
     <>
@@ -36,11 +36,12 @@ function BillLines({ bills }: { bills: Bills | null }) {
             </p>
           );
         return (
-          <p key={b.cluster} className={b.within ? "hint" : "notice"}>
+          <p key={b.cluster} className={b.within === true ? "hint" : "notice"}>
             {b.cluster} bill ({span}): billed {amount(b.billed, b.currency)}, estimated{" "}
             {amount(b.estimated, b.currency)}, {b.gap >= 0 ? "+" : "-"}
             {(Math.abs(b.gap) * 100).toFixed(1)}%
-            {b.within ? ` (within ${(bills!.tolerance * 100).toFixed(0)}%)` : ` (outside ${(bills!.tolerance * 100).toFixed(0)}%)`}
+            {b.within == null ? " (no verdict)" : b.within ? ` (within ${(bills!.tolerance * 100).toFixed(0)}%)` : ` (outside ${(bills!.tolerance * 100).toFixed(0)}%)`}
+            {b.note ? `: ${b.note}` : ""}
           </p>
         );
       })}

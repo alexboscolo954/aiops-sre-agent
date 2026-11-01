@@ -157,7 +157,7 @@ class Realized(BaseModel):
 
 
 class Bill(BaseModel):
-    """A billed cluster's AWS bill beside its estimate; `note` says why there is none."""
+    """A billed cluster's cloud bill beside its estimate; `note` says why there is none."""
 
     cluster: str
     tag: str
@@ -168,12 +168,16 @@ class Bill(BaseModel):
     estimated: float | None
     currency: str | None
     gap: float | None
-    within: bool | None
+    within: bool | None  # None with a gap: too few sampled hours to judge
+    hours: int  # node-hours a complete estimate rests on
+    sampled: int | None
+    coverage: float | None
     note: str | None
 
 
 class Bills(BaseModel):
     tolerance: float
+    min_coverage: float
     clusters: list[Bill]
 
 
@@ -314,7 +318,9 @@ def router(
     @api.get("/contracts/{contract_id}/billing")
     async def bills(contract_id: str, days: int = Query(7, ge=1, le=billing.KEPT_DAYS)) -> Bills:
         rows = await billing.report(store(), contract(contract_id), now(), days)
-        return Bills.model_validate({"tolerance": billing.TOLERANCE, "clusters": rows})
+        return Bills.model_validate(
+            {"tolerance": billing.TOLERANCE, "min_coverage": billing.MIN_COVERAGE, "clusters": rows}
+        )
 
     @api.get("/contracts/{contract_id}/history")
     async def history(

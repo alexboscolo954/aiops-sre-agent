@@ -300,7 +300,7 @@ const COST = {
   total: { requests: { cpu: 0, memory: 0 }, waste: { cpu: 0, memory: 0 }, cost: { requests: 0, waste: 0 } },
   realized: { currency: null, rate: { cpu: 0, memory: 0 }, accrued: { cpu: 0, memory: 0 }, week: { cpu: 0, memory: 0 }, cost: null, drops: [] },
 };
-const BILL = { cluster: "kind", tag: "aiops-cluster=kind", start: "2026-10-19", end: "2026-10-25", days: 7, currency: "USD", note: null };
+const BILL = { cluster: "kind", tag: "aiops-cluster=kind", start: "2026-10-19", end: "2026-10-25", days: 7, currency: "USD", hours: 168, sampled: 168, coverage: 1, note: null };
 
 test("the Cost page sets a cluster's AWS bill beside its estimate, flagged outside the tolerance", async () => {
   history.replaceState(null, "", "/app/?view=cost");
@@ -311,10 +311,12 @@ test("the Cost page sets a cluster's AWS bill beside its estimate, flagged outsi
       200,
       {
         tolerance: 0.05,
+        min_coverage: 0.9,
         clusters: [
           { ...BILL, billed: 15.4, estimated: 15.456, gap: 0.0036, within: true },
           { ...BILL, cluster: "<b>eu</b>", billed: 14, estimated: 15.456, gap: 0.104, within: false },
           { ...BILL, cluster: "us", billed: null, estimated: null, gap: null, within: null, note: "no bill for 2 of 7 days yet" },
+          { ...BILL, cluster: "lab", billed: 15.4, estimated: 8.4, gap: -0.45, within: null, sampled: 92, coverage: 0.55, note: "the estimate rests on 92 of 168 sampled hours" },
         ],
       },
     ],
@@ -324,6 +326,8 @@ test("the Cost page sets a cluster's AWS bill beside its estimate, flagged outsi
   const eu = screen.getByText(/<b>eu<\/b> bill .*\+10.4% \(outside 5%\)/); // text, never markup
   expect(eu.className).toBe("notice");
   expect(screen.getByText(/us bill .*no bill for 2 of 7 days yet/).className).toBe("notice");
+  const lab = screen.getByText(/lab bill .*-45.0% \(no verdict\): the estimate rests on 92 of 168 sampled hours/);
+  expect(lab.className).toBe("notice"); // a gap without a verdict is no "within"
 });
 
 test("a Contract with no billed cluster shows no bill line and no error", async () => {

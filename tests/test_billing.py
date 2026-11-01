@@ -339,8 +339,15 @@ def test_the_estimate_counts_the_clusters_node_hours() -> None:
     fake = FakePrometheus()
     nodes(fake, hours=48)
     t = usage.Target("test", "http://prometheus", None, {}, ["shop"])
-    vcpu, gib = usage.node_hours(_prom(fake, t), t, 0, 48 * 3600 - 1)
-    assert (vcpu, gib) == (96.0, 384.0)
+    vcpu, gib, sampled = usage.node_hours(_prom(fake, t), t, 0, 48 * 3600 - 1)
+    assert (vcpu, gib, sampled) == (96.0, 384.0, 48)
+
+
+def test_the_samples_counted_are_the_hours_the_nodes_were_seen() -> None:
+    fake = FakePrometheus()
+    nodes(fake, hours=30)  # 18 of the 48 hours missing
+    t = usage.Target("test", "http://prometheus", None, {}, ["shop"])
+    assert usage.node_hours(_prom(fake, t), t, 0, 48 * 3600 - 1) == (60.0, 240.0, 30)
 
 
 @pytest.mark.parametrize(
@@ -643,3 +650,80 @@ def test_the_cli_prints_a_bill_of_nothing_beside_an_estimate(
     monkeypatch.setattr(time, "time", lambda: NOW)
     assert cli.main(["sizing", "bill", "--contract", c.id]) == 1
     assert "no gap (nothing billed)" in capsys.readouterr().out
+
+
+# --- coverage (slice 10.5d) ----------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_a_complete_estimate_has_full_coverage_and_no_note(store: Store) -> None:
+    c, fake = billed(), FakePrometheus()
+    nodes(fake)
+    await seed(store, c, dict.fromkeys(DAYS, 2.2))
+    got = await row(store, c, fake)
+    assert (got["hours"], got["sampled"], got["coverage"], got["note"]) == (168, 168, 1.0, None)
+    assert got["within"] is True
+
+
+@pytest.mark.anyio
+async def test_a_few_missing_hours_are_noted_and_the_gap_still_judges(store: Store) -> None:
+    c, fake = billed(), FakePrometheus()
+    nodes(fake, hours=160)  # 95%: estimate 14.72 against 14.00 billed, +5.1%
+    await seed(store, c, dict.fromkeys(DAYS, 2.0))
+    got = await row(store, c, fake)
+    assert got["sampled"] == 160 and got["coverage"] == pytest.approx(160 / 168)
+    assert got["note"] == "the estimate rests on 160 of 168 sampled hours"
+    assert got["gap"] == pytest.approx(0.0514, abs=1e-3) and got["within"] is False
+
+
+@pytest.mark.anyio
+async def test_too_few_sampled_hours_give_a_gap_but_no_verdict(store: Store) -> None:
+    c, fake = billed(), FakePrometheus()
+    nodes(fake, hours=100)
+    await seed(store, c, dict.fromkeys(DAYS, 2.2))
+    got = await row(store, c, fake)
+    assert got["coverage"] == pytest.approx(100 / 168)
+    assert got["gap"] is not None and got["gap"] < -0.3  # the numbers stay visible
+    assert got["within"] is None  # not False: missing samples are not a price problem
+    assert "100 of 168" in got["note"]
+
+
+@pytest.mark.anyio
+async def test_ninety_percent_still_gets_a_verdict(store: Store) -> None:
+    c, fake = billed(), FakePrometheus()
+    nodes(fake, hours=108)  # 108 of 120 = 90% over 5 days
+    await seed(store, c, dict.fromkeys(DAYS, 2.2))
+    got = await row(store, c, fake, days=5)
+    assert got["coverage"] == pytest.approx(0.9) and got["within"] is not None
+
+
+def test_the_cli_does_not_fail_a_row_for_missing_samples_alone(
+    database_url: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import asyncio
+    import time
+
+    from aiops_agent import cli
+
+    c, fake = billed(), FakePrometheus()
+    nodes(fake, hours=100)
+
+    async def seed_bills() -> None:
+        async with connect(database_url) as pool:
+            store = Store(pool)
+            await store.migrate()
+            await store.save_bill(c.id, "test", {d: (2.2, "USD", False) for d in DAYS}, NOW)
+
+    asyncio.run(seed_bills())
+    report = billing.report
+
+    async def reported(store: Store, c: Any, now: float, days: int) -> Any:
+        return await report(store, c, now, days, prom_of(fake))
+
+    monkeypatch.setattr(billing, "report", reported)
+    monkeypatch.setattr(cli, "contract", lambda settings, cid: c)
+    monkeypatch.setenv("AIOPS_DATABASE_URL", database_url)
+    monkeypatch.setattr(time, "time", lambda: NOW)
+    assert cli.main(["sizing", "bill", "--contract", c.id]) == 0
+    out = capsys.readouterr().out
+    assert "no verdict" in out and "100 of 168 sampled hours" in out

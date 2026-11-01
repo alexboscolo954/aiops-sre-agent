@@ -472,20 +472,25 @@ def nodes(prom: Prom, t: Target, end: float, provider: str | None = None) -> dic
     return {"nodes": out, "problem": problem}
 
 
-def node_hours(prom: Prom, t: Target, start: float, end: float) -> tuple[float, float]:
+def node_hours(prom: Prom, t: Target, start: float, end: float) -> tuple[float, float, int]:
     """The vCPU-hours and GiB-hours of the cluster's nodes between `start` and `end`
-    (slice 10.5a), from kube-state-metrics' node capacity, one sample an hour. Node
+    (slice 10.5a), from kube-state-metrics' node capacity, one sample an hour, and how
+    many hourly samples there were (a sleeping laptop leaves gaps; slice 10.5d). Node
     series carry no namespace: only the cluster's labels scope them."""
     # ponytail: an hourly sample stands for its hour; a node that lived 20 minutes is
     # counted whole or not at all. Finer steps if the gap to the bill shows it.
     scoped = ",".join(f"{k}={_string(v)}" for k, v in sorted(t.labels.items()))
 
-    def hours(resource: str) -> float:
+    def hours(resource: str) -> tuple[float, int]:
         match = ",".join(filter(None, [scoped, f"resource={_string(resource)}"]))
         series = prom.range(f"sum(kube_node_status_capacity{{{match}}})", start, end, 3600)
-        return sum(float(v) for s in series for _, v in s["values"])
+        return (
+            sum(float(v) for s in series for _, v in s["values"]),
+            sum(len(s["values"]) for s in series),
+        )
 
-    return hours("cpu"), hours("memory") / 2**30
+    (vcpu, sampled), (memory, _) = hours("cpu"), hours("memory")
+    return vcpu, memory / 2**30, sampled
 
 
 @dataclass
