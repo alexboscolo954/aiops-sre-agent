@@ -4,6 +4,7 @@
 import argparse
 import asyncio
 import json
+import logging
 import sys
 import uuid
 from pathlib import Path
@@ -558,6 +559,17 @@ async def embed_past(settings: Settings) -> int:
     return 1 if failed else 0
 
 
+def hub_logging() -> None:
+    """The Hub's own lines on stderr, the audit log among them (slice 11.1a found it
+    silent): uvicorn sets up only its own loggers, and Python drops INFO otherwise."""
+    hub = logging.getLogger("aiops")
+    if not hub.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("%(levelname)s:     %(name)s %(message)s"))
+        hub.addHandler(handler)
+    hub.setLevel(logging.INFO)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="aiops", description=__doc__)
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -682,6 +694,7 @@ def main(argv: list[str] | None = None) -> int:
         import uvicorn
 
         refuse_moved()
+        hub_logging()
         uvicorn.run("aiops_agent.api:create_app", factory=True, host=args.host, port=args.port)
         return 0
     if args.cmd == "eval":

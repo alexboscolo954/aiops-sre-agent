@@ -179,7 +179,7 @@ Your own MCP endpoint on the Hub, for Claude Code (or any MCP client) on your de
 
 **One Contract per call, under its Data policy.** Every tool except `list_contracts` takes `contract`, and answers only within it. What it returns goes to your client's model, so a Contract that masks gets the same placeholders its own agent sends, secrets are redacted, and so is the text of an error (an unexpected error shows no text at all). A placeholder you pass back, the `contract` itself included, turns back into its value only if the Hub handed it out for that same Contract since its last restart; after a restart, list again.
 
-**Audit.** Every call is an `aiops.audit` line with `"channel": "mcp"`, your login, the Contract and the arguments as the client wrote them.
+**Audit.** Every call is an `aiops.audit` line on the Hub's stderr (`docker compose logs hub`) with `"channel": "mcp"`, your login, the Contract and the arguments as the client wrote them.
 
 ## Running as a service in one cluster
 

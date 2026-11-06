@@ -12,7 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
-from aiops_agent import agent, contracts, masking, webapp
+from aiops_agent import agent, cli, contracts, masking, webapp
 from aiops_agent.api import create_app
 from aiops_agent.config import Settings
 from aiops_agent.store import Store, connect
@@ -328,6 +328,26 @@ def test_a_placeholder_never_handed_out_stays_as_written(
 
 
 # --- audit ------------------------------------------------------------------------------
+
+
+def test_serve_writes_the_audit_log_to_stderr(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Live 11.1a found every aiops INFO line dropped: uvicorn configures only its own."""
+    import uvicorn
+
+    hub = logging.getLogger("aiops")
+    before = (hub.handlers[:], hub.level)
+    monkeypatch.setattr(uvicorn, "run", lambda *a, **k: None)
+    monkeypatch.chdir("/")  # no .env with moved settings here
+    try:
+        assert cli.main(["serve"]) == 0
+        logging.getLogger("aiops.audit").info('{"event": "tool_call", "channel": "mcp"}')
+    finally:
+        hub.handlers[:], hub.level = before
+    assert (
+        'INFO:     aiops.audit {"event": "tool_call", "channel": "mcp"}' in capsys.readouterr().err
+    )
 
 
 def test_every_call_is_an_audit_line_with_its_channel_login_and_contract(
