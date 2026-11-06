@@ -161,6 +161,26 @@ Anything else gets a 403, including a tagged device, which has no user.
 
 **Questions in the console.** **Ask a Question** on the main page: pick the Contract and type it. Like a Slack Question it only reads; its page reloads every 5 seconds until the Answer is in, then offers **Follow up**, which continues the same Question. A console Question has no Slack thread. A follow-up on a Question that started in Slack also answers in its thread. With no operators set, `/console` doesn't exist. **Set it only where nothing but `tailscale serve` reaches the Hub's port**: on the VM that holds, but local processes and other containers on the compose network could still send the header themselves. Never set it on the in-cluster deploy, where any pod can reach the Service. Through Caddy, `/console` is a 404.
 
+### Hub MCP server
+
+Your own MCP endpoint on the Hub, for Claude Code (or any MCP client) on your devices: ask it for a Contract's top Sizings while you work. It reads only what the Hub has stored and changes nothing yet (writes, a Question, cost and bills come in the next Phase 11 slices). The Investigation agent never gets these tools.
+
+1. Set `AIOPS_MCP_TOKEN` in `hub.env` (`openssl rand -hex 32`) beside `AIOPS_CONSOLE_OPERATORS`, and restart the Hub.
+2. On a device on your tailnet, add the server to Claude Code with the `tailscale serve` URL and the token:
+   ```bash
+   claude mcp add --transport http aiops-hub https://<vm>.<tailnet>.ts.net/mcp/ \
+     --header "Authorization: Bearer <AIOPS_MCP_TOKEN>"
+   ```
+   The URL ends in `/mcp/`. `127.0.0.1` won't do: the Hub needs the identity `tailscale serve` adds.
+
+**Two doors.** A call needs the token *and* a listed Operator's `Tailscale-User-Login`: the token alone could come from anything that read the Hub's settings, the identity header alone from anything else that reaches the port. Startup refuses a token shorter than 32 characters, one equal to the approver token or a Contract's webhook token, and a token without `AIOPS_CONSOLE_OPERATORS`. Caddy's public port answers 404 for `/mcp/`. Stateless HTTP: a Hub restart leaves no session to lose.
+
+**Tools.** `list_contracts` (ids, names, clusters); `sizings(contract, top=10, cluster, namespace, risky)`, the Workloads ranked by what their waste costs, as the console's Workloads page ranks them; `sizing(contract, cluster, namespace, name, kind)`, one Workload's Sizing, as the agent's own tool gives it. Each is marked read-only.
+
+**One Contract per call, under its Data policy.** Every tool except `list_contracts` takes `contract`, and answers only within it. What it returns goes to your client's model, so a Contract that masks gets the same placeholders its own agent sends, secrets are redacted, and so is the text of an error (an unexpected error shows no text at all). A placeholder you pass back, the `contract` itself included, turns back into its value only if the Hub handed it out for that same Contract since its last restart; after a restart, list again.
+
+**Audit.** Every call is an `aiops.audit` line with `"channel": "mcp"`, your login, the Contract and the arguments as the client wrote them.
+
 ## Running as a service in one cluster
 
 ```bash
@@ -597,6 +617,7 @@ Hub settings are `AIOPS_*` environment variables (or `.env`). See [`config.py`](
 | `AIOPS_SLACK_APP_TOKEN` / `_OPERATOR_ID` | | Approve and reject buttons: an app-level token (`xapp-...`, `connections:write`) and the Operator's Slack member ID (`U...`). The app token needs both others |
 | `AIOPS_CONSOLE_OPERATORS` | | Web console: JSON list of the Tailscale logins that may sign in. Empty means off. Only behind `tailscale serve` |
 | `AIOPS_CONSOLE_URL` | | The console's address (the `tailscale serve` URL). The weekly Sizing digest links its Workloads page; unset, no link |
+| `AIOPS_MCP_TOKEN` | | The Hub MCP server at `/mcp/`: its bearer token, 32 characters or more, its own (refused if it is the approver or a webhook token). Needs `AIOPS_CONSOLE_OPERATORS`. Unset means off |
 | `AIOPS_MODEL_PRICES` | | JSON: USD per million tokens per model string, e.g. `{"openai:anthropic/claude-haiku-5.5": {"input": 0.10, "output": 0.50, "long": {"over": 100000, "input": 0.50, "output": 2.50}}}`. Priced per model call, as providers bill: a call whose prompt is over `long.over` pays the `long` prices. Cache discounts are ignored, so costs read a little high |
 | `AIOPS_MAX_TOOL_CALLS` / `AIOPS_MAX_MODEL_CALLS` | 25 / 30 | Per run; each `read_more` counts as a tool call |
 | `AIOPS_RELATED_WINDOW_MINUTES` | 30 | How long after a Triage starts a new Alert group can still join it (a Contract's `related.window_minutes` overrides it) |

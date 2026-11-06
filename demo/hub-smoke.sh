@@ -57,10 +57,22 @@ AIOPS_HTTPS_PORT=18443
 EOF
 printf 'AIOPS_APPROVER_TOKEN=smoke-approver\nAIOPS_MODEL_API_KEY=not-a-real-key\n' >"$work/hub.env"
 echo 'AIOPS_CONSOLE_OPERATORS=["smoke@example.com"]' >>"$work/hub.env"
+mcp_token=smoke-mcp-token-0123456789abcdef
+echo "AIOPS_MCP_TOKEN=$mcp_token" >>"$work/hub.env"
 
 dc up -d --wait --quiet-pull || fail "stack did not come up healthy"
 [[ $(dc port hub 8080) == 127.0.0.1:18000 ]] || fail "hub published on $(dc port hub 8080)"
 echo "ok   stack healthy; hub only on 127.0.0.1"
+
+# The Hub MCP server answers on the Hub's own port (what tailscale serve proxies)
+mcp=(-H 'Accept: application/json, text/event-stream' -H 'Content-Type: application/json'
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}')
+[[ $(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:18000/mcp/ "${mcp[@]}") == 401 ]] \
+  || fail "the Hub MCP server answered without its token"
+curl -sf -X POST http://127.0.0.1:18000/mcp/ "${mcp[@]}" -H "Authorization: Bearer $mcp_token" \
+  -H 'Tailscale-User-Login: smoke@example.com' | grep -q '"list_contracts"' \
+  || fail "the Hub MCP server did not list its tools"
+echo "ok   Hub MCP server: refused without its token, lists its tools with it"
 
 public=https://localhost:18443
 code() { curl -sk -o /dev/null -w '%{http_code}' "$@"; }
@@ -84,6 +96,10 @@ for path in /investigations "/investigations/$id" /metrics /healthz /docs /opena
 done
 [[ $(code -X POST "$public/investigations/$id/decision" -H 'Authorization: Bearer smoke-approver' \
   -H 'Content-Type: application/json' -d '{"approve": true}') == 404 ]] || fail "decisions are public"
+for path in /mcp /mcp/; do  # the Hub MCP server: tailscale serve only
+  [[ $(code -X POST "$public$path" -H 'Authorization: Bearer smoke-approver' "${json[@]}") == 404 ]] \
+    || fail "POST $path is public"
+done
 [[ $(code -X GET "$alert" -H "Authorization: Bearer $token") == 404 ]] || fail "GET on the alert route"
 for path in /contracts/demo-shop/alertmanager/../../investigations \
   /contracts/demo-shop%2F..%2F..%2Finvestigations/alertmanager \

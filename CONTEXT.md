@@ -25,6 +25,10 @@ _Avoid_: Toolset, plugin
 The one always-on service that runs every Investigation for every Contract. It receives alerts and serves the Operator in Slack and the web console.
 _Avoid_: Server, backend
 
+**Hub MCP server**:
+The Operator's own MCP endpoint on the Hub, for an MCP client such as Claude Code on the Operator's devices. Each call is about one Contract and follows that Contract's Data policy. The Investigation agent never gets its tools.
+_Avoid_: Operator API, admin MCP
+
 **Direct**:
 A way to reach a Contract where the Hub holds the Contract's credentials and calls its APIs itself.
 

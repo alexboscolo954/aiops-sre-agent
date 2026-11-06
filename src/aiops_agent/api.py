@@ -24,7 +24,7 @@ import re
 import secrets
 import time
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -45,6 +45,7 @@ from aiops_agent import (
     contracts,
     deploys,
     embeddings,
+    hubmcp,
     listprices,
     masking,
     related,
@@ -141,6 +142,19 @@ def create_app(
     for c in by_id.values():
         if contracts.token_matches(c, approver_token):
             raise RuntimeError(f"Contract {c.id!r}'s webhook token is the approver token")
+    mcp_token = settings.mcp_token.get_secret_value() if settings.mcp_token else ""
+    if mcp_token:
+        if not settings.console_operators:
+            raise RuntimeError(
+                "AIOPS_MCP_TOKEN needs AIOPS_CONSOLE_OPERATORS: the logins that may use it"
+            )
+        if len(mcp_token) < 32:
+            raise RuntimeError("AIOPS_MCP_TOKEN is too short: use 32 characters or more")
+        if secrets.compare_digest(mcp_token.encode(), approver_token.encode()):
+            raise RuntimeError("AIOPS_MCP_TOKEN is the approver token: give it its own")
+        for c in by_id.values():
+            if contracts.token_matches(c, mcp_token):
+                raise RuntimeError(f"Contract {c.id!r}'s webhook token is the MCP token")
     if not settings.database_url:
         raise RuntimeError("set AIOPS_DATABASE_URL")
     database_url = settings.database_url.get_secret_value()
@@ -202,6 +216,12 @@ def create_app(
         st: Store = db["store"]
         return st
 
+    hub_mcp = (
+        hubmcp.build(by_id, store, now).http_app(path="/", stateless_http=True, json_response=True)
+        if mcp_token
+        else None
+    )
+
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> Any:
         async with connect(database_url) as pool, slack_http or httpx.AsyncClient() as http:
@@ -222,7 +242,10 @@ def create_app(
             if settings.slack_app_token:
                 spawn(db["slack"].listen(settings.slack_app_token, on_socket))
             try:
-                yield
+                async with AsyncExitStack() as stack:
+                    if hub_mcp:  # a mounted app's lifespan only runs if its parent's does
+                        await stack.enter_async_context(hub_mcp.lifespan(hub_mcp))
+                    yield
             finally:
                 for task in [*tasks, *sizing_task]:
                     task.cancel()
@@ -1414,6 +1437,9 @@ def create_app(
         app.include_router(
             webapp.router(settings.console_operators, by_id, store, approver_token, now)
         )
+
+    if hub_mcp:  # the Hub MCP server: at /mcp/, only through tailscale serve
+        app.mount("/mcp", hubmcp.guard(hub_mcp, mcp_token, settings.console_operators))
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:

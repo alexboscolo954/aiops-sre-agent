@@ -142,39 +142,54 @@ def build_server(contract: Contract, store: Store | None) -> FastMCP:
         headroom), its risks and waste, and a suggested memory request and limit
         after an OOM kill. name: the Workload or one of its pods (from the alert).
         kind (Deployment, StatefulSet, ...) only when two Workloads share a name."""
-        if cluster not in names:
-            raise ToolError(f"cluster {cluster!r} has no Sizings: one of {names}")
-        if namespace not in spaces[cluster]:
-            raise ToolError(
-                f"namespace {namespace!r} is not allowed in cluster {cluster!r}; "
-                f"allowed: {spaces[cluster]}"
-            )
-        if store is None:
-            raise ToolError("Sizings need the Hub's database")
-        rows, status = await store.latest_sizings(contract.id, {cluster})
-        st = status.get(cluster, {"at": None, "error": None, "since": None})
-        found = matching([r for r in rows if r["namespace"] == namespace], name, kind)
-        if not found:
-            return {
-                "workloads": [],
-                "note": f"No stored Sizing for {name!r} in {cluster}/{namespace}"
-                + ("" if st["at"] else ": none stored for this cluster yet"),
-            }
-        workloads: dict[tuple[str, str], dict[str, Any]] = {}
-        for r in found:
-            w = workloads.setdefault(
-                (r["kind"], r["name"]),
-                {
-                    "workload": r["workload"].rsplit("/", 1)[0],
-                    "kind": r["kind"],
-                    "name": r["name"],
-                    "as_of": _date(st["at"]),
-                    "containers": [],
-                },
-            )
-            if st["error"]:
-                w["stale"] = f"reads failing since {_date(st['since'])}: {st['error']}"
-            w["containers"].append(container(r, contract))
-        return {"workloads": list(workloads.values())}
+        return await workload(store, contract, cluster, namespace, name, kind)
 
     return mcp
+
+
+async def workload(
+    store: Store | None,
+    contract: Contract,
+    cluster: str,
+    namespace: str,
+    name: str,
+    kind: str | None,
+) -> dict[str, Any]:
+    """One Workload's Sizing, within the Contract's clusters and namespaces: the agent's
+    tool and the Hub MCP server's (slice 11.1a)."""
+    spaces = {c.name: sorted(c.namespaces) for c in contract.clusters}
+    names = [t.cluster for t in usage.targets(contract)]
+    if cluster not in names:
+        raise ToolError(f"cluster {cluster!r} has no Sizings: one of {names}")
+    if namespace not in spaces[cluster]:
+        raise ToolError(
+            f"namespace {namespace!r} is not allowed in cluster {cluster!r}; "
+            f"allowed: {spaces[cluster]}"
+        )
+    if store is None:
+        raise ToolError("Sizings need the Hub's database")
+    rows, status = await store.latest_sizings(contract.id, {cluster})
+    st = status.get(cluster, {"at": None, "error": None, "since": None})
+    found = matching([r for r in rows if r["namespace"] == namespace], name, kind)
+    if not found:
+        return {
+            "workloads": [],
+            "note": f"No stored Sizing for {name!r} in {cluster}/{namespace}"
+            + ("" if st["at"] else ": none stored for this cluster yet"),
+        }
+    workloads: dict[tuple[str, str], dict[str, Any]] = {}
+    for r in found:
+        w = workloads.setdefault(
+            (r["kind"], r["name"]),
+            {
+                "workload": r["workload"].rsplit("/", 1)[0],
+                "kind": r["kind"],
+                "name": r["name"],
+                "as_of": _date(st["at"]),
+                "containers": [],
+            },
+        )
+        if st["error"]:
+            w["stale"] = f"reads failing since {_date(st['since'])}: {st['error']}"
+        w["containers"].append(container(r, contract))
+    return {"workloads": list(workloads.values())}

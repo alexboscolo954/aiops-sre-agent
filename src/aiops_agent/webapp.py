@@ -242,6 +242,14 @@ def daily(points: list[Point]) -> list[Point]:
     return list(last.values())
 
 
+async def workloads_of(st: Store, c: Contract, now: float) -> Workloads:
+    """The Contract's latest Sizings, ranked: the Workloads page's and the Hub MCP
+    server's (slice 11.1a)."""
+    c = await listprices.effective(st, c, now)
+    rows, clusters = await st.latest_sizings(c.id, {t.cluster for t in usage.targets(c)})
+    return Workloads.model_validate({"contract": c.id, **sizing.report(rows, clusters, c)})
+
+
 def router(
     operators: set[str],
     by_id: dict[str, Contract],
@@ -299,9 +307,7 @@ def router(
 
     @api.get("/contracts/{contract_id}/workloads")
     async def workloads(contract_id: str) -> Workloads:
-        c = await listprices.effective(store(), contract(contract_id), now())
-        rows, clusters = await store().latest_sizings(c.id, {t.cluster for t in usage.targets(c)})
-        return Workloads.model_validate({"contract": c.id, **sizing.report(rows, clusters, c)})
+        return await workloads_of(store(), contract(contract_id), now())
 
     @api.get("/contracts/{contract_id}/cost")
     async def cost(

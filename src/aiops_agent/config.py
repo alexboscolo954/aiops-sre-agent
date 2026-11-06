@@ -78,6 +78,9 @@ class Settings(BaseSettings):
     # The console's address (the `tailscale serve` URL): the weekly digest links its
     # Workloads page. Unset: no link.
     console_url: str | None = None
+    # The Hub MCP server at /mcp/ (slice 11.1a): this bearer token and a listed console
+    # Operator's Tailscale identity, so it needs AIOPS_CONSOLE_OPERATORS. Unset = off.
+    mcp_token: SecretStr | None = None
 
     @model_validator(mode="after")
     def _embeddings_need_a_gateway(self) -> "Settings":
