@@ -217,7 +217,9 @@ def create_app(
         return st
 
     hub_mcp = (
-        hubmcp.build(by_id, store, now).http_app(path="/", stateless_http=True, json_response=True)
+        hubmcp.build(by_id, store, now, lambda cid, text: console_ask(cid, text, None)).http_app(
+            path="/", stateless_http=True, json_response=True
+        )
         if mcp_token
         else None
     )

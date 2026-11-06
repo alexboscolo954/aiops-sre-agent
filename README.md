@@ -163,7 +163,7 @@ Anything else gets a 403, including a tagged device, which has no user.
 
 ### Hub MCP server
 
-Your own MCP endpoint on the Hub, for Claude Code (or any MCP client) on your devices: ask it for a Contract's top Sizings while you work. It reads only what the Hub has stored and changes nothing yet (writes, a Question, cost and bills come in the next Phase 11 slices). The Investigation agent never gets these tools.
+Your own MCP endpoint on the Hub, for Claude Code (or any MCP client) on your devices: ask it for a Contract's top Sizings, cost, Savings, bill, Investigations and Checks while you work, or ask the Hub's agent a Question. It changes nothing in a cluster (Approval decisions come in 11.2). The Investigation agent never gets these tools.
 
 1. Set `AIOPS_MCP_TOKEN` in `hub.env` (`openssl rand -hex 32`) beside `AIOPS_CONSOLE_OPERATORS`, and restart the Hub.
 2. On a device on your tailnet, add the server to Claude Code with the `tailscale serve` URL and the token:
@@ -175,7 +175,7 @@ Your own MCP endpoint on the Hub, for Claude Code (or any MCP client) on your de
 
 **Two doors.** A call needs the token *and* a listed Operator's `Tailscale-User-Login`: the token alone could come from anything that read the Hub's settings, the identity header alone from anything else that reaches the port. Startup refuses a token shorter than 32 characters, one equal to the approver token or a Contract's webhook token, and a token without `AIOPS_CONSOLE_OPERATORS`. Caddy's public port answers 404 for `/mcp/`. Stateless HTTP: a Hub restart leaves no session to lose.
 
-**Tools.** `list_contracts` (ids, names, clusters); `sizings(contract, top=10, cluster, namespace, risky)`, the Workloads ranked by what their waste costs, as the console's Workloads page ranks them; `sizing(contract, cluster, namespace, name, kind)`, one Workload's Sizing, as the agent's own tool gives it. Each is marked read-only.
+**Tools.** `list_contracts` (ids, names, clusters); `sizings(contract, top=10, cluster, namespace, risky)`, the Workloads ranked by what their waste costs, as the console's Workloads page ranks them; `sizing(contract, cluster, namespace, name, kind)`, one Workload's Sizing, as the agent's own tool gives it; `cost(contract, by, compare_days)` and `savings(contract, compare_days)`, as the Cost page shows them; `bill(contract, days)`, as `sizing bill` does; `investigations(contract, open, limit)`, newest first with each one's Category, severity and summary, Answer or verdict; `investigation(contract, id)`, one in full with its Evidence, pending Proposed actions and Approval decisions (another Contract's id answers "no such Investigation"); `checks(contract)`, each Check's schedule and last Run. All of those are marked read-only. `ask(contract, question)` is not: it starts a Question like the console's (same 4000-character limit and budget, never posted to Slack) and returns its id at once, so your client asks before it runs; read the Answer with `investigation`.
 
 **One Contract per call, under its Data policy.** Every tool except `list_contracts` takes `contract`, and answers only within it. What it returns goes to your client's model, so a Contract that masks gets the same placeholders its own agent sends, secrets are redacted, and so is the text of an error (an unexpected error shows no text at all). A placeholder you pass back, the `contract` itself included, turns back into its value only if the Hub handed it out for that same Contract since its last restart; after a restart, list again.
 

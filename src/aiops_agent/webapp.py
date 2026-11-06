@@ -250,6 +250,17 @@ async def workloads_of(st: Store, c: Contract, now: float) -> Workloads:
     return Workloads.model_validate({"contract": c.id, **sizing.report(rows, clusters, c)})
 
 
+async def allocation_of(
+    st: Store, c: Contract, by: str, now: float, compare: int | None
+) -> Allocation:
+    """Cost by namespace, team or label, compared with `compare` days ago: the Cost
+    page's and the Hub MCP server's (slice 11.1b). ValueError: a grouping it can't do."""
+    if by not in sizing.groupings(c):
+        raise ValueError(f"by is one of {', '.join(sizing.groupings(c))}")
+    back = None if compare is None else compare * DAY
+    return Allocation.model_validate(await sizing.cost(st, c, by, now, back))
+
+
 def router(
     operators: set[str],
     by_id: dict[str, Contract],
@@ -315,11 +326,10 @@ def router(
         by: str = "namespace",
         compare: int | None = Query(None, ge=1, le=400, description="days ago"),
     ) -> Allocation:
-        c = contract(contract_id)
-        if by not in sizing.groupings(c):
-            raise HTTPException(422, f"by is one of {', '.join(sizing.groupings(c))}")
-        back = None if compare is None else compare * DAY
-        return Allocation.model_validate(await sizing.cost(store(), c, by, now(), back))
+        try:
+            return await allocation_of(store(), contract(contract_id), by, now(), compare)
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from None
 
     @api.get("/contracts/{contract_id}/billing")
     async def bills(contract_id: str, days: int = Query(7, ge=1, le=billing.KEPT_DAYS)) -> Bills:
