@@ -128,10 +128,39 @@ export default function App() {
             </select>
           </label>
         )}
+        {shown && <KillSwitchBar contract={shown} />}
         {data && !costView && <Page contract={shown} data={data} />}
         {allocation && costView && <CostPage data={allocation} bills={bills} setBy={setBy} compare={compare} setCompare={setCompare} />}
       </main>
     </>
+  );
+}
+
+/** The Contract's Kill switch: on stops every change to its systems; only here does it go
+ * off again (the Hub MCP server can only turn it on). */
+function KillSwitchBar({ contract }: { contract: string }) {
+  const [state, setState] = useState<api.KillSwitch | null>(null);
+  const [failed, setFailed] = useState("");
+  useEffect(() => {
+    setState(null);
+    setFailed("");
+    api.killSwitch(contract).then(setState, () => setState(null));
+  }, [contract]);
+  if (!state) return null;
+  const act = (change: (c: string) => Promise<api.KillSwitch>) =>
+    change(contract).then(setState, (e: Error) => setFailed(e.message));
+  return state.on ? (
+    <p className="notice">
+      Kill switch on since {when(state.since)} ({state.by}): approving is refused and no change
+      to this Contract's systems runs.{" "}
+      <button onClick={() => act(api.turnOffKillSwitch)}>Turn it off</button>
+      {failed && ` Couldn't: ${failed}`}
+    </p>
+  ) : (
+    <p>
+      <button onClick={() => act(api.turnOnKillSwitch)}>Turn on the Kill switch</button>
+      {failed && ` Couldn't: ${failed}`}
+    </p>
   );
 }
 

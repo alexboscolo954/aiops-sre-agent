@@ -72,6 +72,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/contracts/{contract_id}/kill-switch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Kill Switch */
+        get: operations["kill_switch_api_v1_contracts__contract_id__kill_switch_get"];
+        put?: never;
+        /** Turn On */
+        post: operations["turn_on_api_v1_contracts__contract_id__kill_switch_post"];
+        /**
+         * Turn Off
+         * @description The only way a Kill switch goes off: the Operator, in the console.
+         */
+        delete: operations["turn_off_api_v1_contracts__contract_id__kill_switch_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/contracts/{contract_id}/workloads": {
         parameters: {
             query?: never;
@@ -289,6 +311,18 @@ export interface components {
         History: {
             /** Points */
             points: components["schemas"]["Point"][];
+        };
+        /**
+         * KillSwitch
+         * @description A Contract's Kill switch (slice 11.2a): who turned it on, and when.
+         */
+        KillSwitch: {
+            /** By */
+            by?: string | null;
+            /** On */
+            on: boolean;
+            /** Since */
+            since?: number | null;
         };
         /** Point */
         Point: {
@@ -549,6 +583,99 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["History"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    kill_switch_api_v1_contracts__contract_id__kill_switch_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                contract_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KillSwitch"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    turn_on_api_v1_contracts__contract_id__kill_switch_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                contract_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KillSwitch"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    turn_off_api_v1_contracts__contract_id__kill_switch_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                contract_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KillSwitch"];
                 };
             };
             /** @description Validation Error */

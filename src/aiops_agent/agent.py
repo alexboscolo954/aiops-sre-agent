@@ -278,6 +278,29 @@ def record_executed_actions(gated_names: set[str]) -> Any:
     return record
 
 
+KILLED = (
+    "Refused: this Contract's Kill switch is on, so nothing that changes its systems runs. "
+    "Say in the Report what you would have done."
+)
+
+
+def refuse_when_killed(gated_names: set[str], killed: Callable[[], Awaitable[bool]]) -> Any:
+    """The Kill switch where a change would run (slice 11.2a): read on every gated
+    call, never cached, so turning it on after an approval still stops the change.
+    The same decision as the approval gate covers vendors' tools too."""
+
+    @wrap_tool_call(state_schema=TriageState)
+    async def refuse(
+        request: ToolCallRequest, handler: Callable[[ToolCallRequest], Awaitable[Any]]
+    ) -> Any:
+        call = request.tool_call
+        if call["name"] in gated_names and await killed():
+            return ToolMessage(KILLED, tool_call_id=call["id"], name=call["name"], status="error")
+        return await handler(request)
+
+    return refuse
+
+
 def mount(
     root: FastMCP, access: dict[str, Access], namespace: str, server: Any, own: dict[str, Access]
 ) -> None:
@@ -662,11 +685,13 @@ async def open_agent(
     taught: str = "",
     masker: masking.Masker | None = None,
     masked: masking.MaskSink | None = None,
+    killed: Callable[[], Awaitable[bool]] | None = None,
 ) -> AsyncIterator[Any]:
     """The only way to build the agent, so every caller gets the Hub's list.
     record(tool, args, raw result, is_error) gets every tool result, uncapped.
     masker: the Contract's (masking.for_contract); secrets are redacted on the wire
     either way. masked gets the placeholders each model call sent.
+    killed: whether the Contract's Kill switch is on now (the Hub's; none in the CLI).
     A Question gets no tool that would need approval: it only reads."""
     async with MCPAdapter(toolbox.mcp) as adapter:
         tools = await load_tools(adapter, toolbox.access)
@@ -690,6 +715,8 @@ async def open_agent(
                 # see a recorder's Command instead of the ToolMessage and skip it.
                 record_links(toolbox.link_tools),
                 record_executed_actions(needs_approval),
+                # inside the recorder: a refused change is recorded as FAILED
+                *([refuse_when_killed(needs_approval, killed)] if killed else []),
                 spill_tool_output(settings.tool_output_limit),
                 *([record_tool_results(record)] if record else []),
                 *([record_usage(usage)] if usage else []),

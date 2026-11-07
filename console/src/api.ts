@@ -12,6 +12,7 @@ export type Allocation = Schemas["Allocation"];
 export type Group = Schemas["Group"];
 export type Change = Schemas["Change"];
 export type Bills = Schemas["Bills"];
+export type KillSwitch = Schemas["KillSwitch"];
 
 /** The API answered 401: this browser hasn't pasted the approver token. */
 export class NeedsToken extends Error {
@@ -20,8 +21,8 @@ export class NeedsToken extends Error {
   }
 }
 
-async function get<T>(path: string): Promise<T> {
-  const r = await fetch(`/api/v1${path}`, { credentials: "same-origin" });
+async function get<T>(path: string, method: "GET" | "POST" | "DELETE" = "GET"): Promise<T> {
+  const r = await fetch(`/api/v1${path}`, { method, credentials: "same-origin" });
   if (r.status === 401) {
     const body = await r.json().catch(() => ({}));
     throw new NeedsToken(body?.detail?.token_url ?? "/console/token");
@@ -55,3 +56,10 @@ export function history(contract: string, c: Container, days: 14 | 400) {
   });
   return get<Schemas["History"]>(`/contracts/${encodeURIComponent(contract)}/history?${q}`);
 }
+
+const switchPath = (contract: string) => `/contracts/${encodeURIComponent(contract)}/kill-switch`;
+export const killSwitch = (contract: string) => get<KillSwitch>(switchPath(contract));
+export const turnOnKillSwitch = (contract: string) => get<KillSwitch>(switchPath(contract), "POST");
+/** The only way a Kill switch goes off. */
+export const turnOffKillSwitch = (contract: string) =>
+  get<KillSwitch>(switchPath(contract), "DELETE");

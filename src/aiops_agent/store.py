@@ -330,6 +330,29 @@ class Store:
         )
         return row["pending"] if row else None
 
+    async def kill_switch(self, contract_id: str) -> dict[str, Any] | None:
+        """The Contract's Kill switch while it is on (who, when), else None."""
+        return await self._one(
+            "select set_by, set_at from kill_switches where contract_id = %s", (contract_id,)
+        )
+
+    async def turn_on_kill_switch(self, contract_id: str, by: str, at: float) -> bool:
+        """False when it was already on (the first who and when stay)."""
+        row = await self._one(
+            "insert into kill_switches (contract_id, set_by, set_at) values (%s, %s, %s) "
+            "on conflict (contract_id) do nothing returning contract_id",
+            (contract_id, by, at),
+        )
+        return row is not None
+
+    async def turn_off_kill_switch(self, contract_id: str) -> bool:
+        """False when it wasn't on."""
+        row = await self._one(
+            "delete from kill_switches where contract_id = %s returning contract_id",
+            (contract_id,),
+        )
+        return row is not None
+
     async def record_decision(
         self,
         investigation_id: str,

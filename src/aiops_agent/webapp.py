@@ -12,6 +12,7 @@ from client clusters: everything is rendered as text.
 
 import hmac
 import json
+import logging
 import os
 import re
 from collections.abc import Callable
@@ -23,9 +24,11 @@ from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel
 
 from aiops_agent import billing, listprices, sizing, usage
-from aiops_agent.console import COOKIE, action_key
+from aiops_agent.console import COOKIE, action_key, same_origin
 from aiops_agent.contracts import Contract
 from aiops_agent.store import Store
+
+log = logging.getLogger("aiops.webapp")
 
 APP_DIR = Path(os.environ.get("AIOPS_APP_DIR", "/opt/aiops/app"))
 HEADERS = {
@@ -234,6 +237,14 @@ class ContractSummary(BaseModel):
     name: str
 
 
+class KillSwitch(BaseModel):
+    """A Contract's Kill switch (slice 11.2a): who turned it on, and when."""
+
+    on: bool
+    by: str | None = None
+    since: float | None = None
+
+
 def daily(points: list[Point]) -> list[Point]:
     """The last point of each UTC day."""
     last: dict[int, Point] = {}
@@ -283,6 +294,13 @@ def router(
             raise HTTPException(
                 401, {"error": "paste the approver token first", "token_url": TOKEN_PAGE}
             )
+        return login
+
+    def changing(request: Request, login: str = Depends(viewer)) -> str:
+        """A change, not a read: also from the console's own pages, so another site
+        can't make the browser send it (the Jinja console's rule)."""
+        if not same_origin(request):
+            raise HTTPException(403, "cross-site request refused")
         return login
 
     def contract(contract_id: str) -> Contract:
@@ -355,6 +373,33 @@ def router(
         rows = await store().sizing_history(c.id, workload, now() - days * DAY)
         points = [Point.model_validate({"at": at, **row}) for at, row in rows]
         return History(points=daily(points) if days > 14 else points)
+
+    async def switch(c: Contract) -> KillSwitch:
+        on = await store().kill_switch(c.id)
+        return (
+            KillSwitch(on=False)
+            if on is None
+            else KillSwitch(on=True, by=on["set_by"], since=on["set_at"])
+        )
+
+    @api.get("/contracts/{contract_id}/kill-switch")
+    async def kill_switch(contract_id: str) -> KillSwitch:
+        return await switch(contract(contract_id))
+
+    @api.post("/contracts/{contract_id}/kill-switch")
+    async def turn_on(contract_id: str, login: str = Depends(changing)) -> KillSwitch:
+        c = contract(contract_id)
+        if await store().turn_on_kill_switch(c.id, f"console:{login}", now()):
+            log.info("kill switch %s on by console:%s", c.id, login)
+        return await switch(c)
+
+    @api.delete("/contracts/{contract_id}/kill-switch")
+    async def turn_off(contract_id: str, login: str = Depends(changing)) -> KillSwitch:
+        """The only way a Kill switch goes off: the Operator, in the console."""
+        c = contract(contract_id)
+        if await store().turn_off_kill_switch(c.id):
+            log.info("kill switch %s off by console:%s", c.id, login)
+        return await switch(c)
 
     r.include_router(api)
     return r

@@ -113,6 +113,13 @@ def shown_settings(settings: Settings) -> dict[str, Any]:
     return shown
 
 
+KILLED = "The Contract's Kill switch is on: approving is refused. Reject, or turn it off first."
+
+
+class KillSwitchOn(Exception):
+    """An approval refused because the Contract's Kill switch is on (slice 11.2a)."""
+
+
 class Decision(BaseModel):
     approve: bool
     message: str = ""
@@ -217,9 +224,14 @@ def create_app(
         return st
 
     hub_mcp = (
-        hubmcp.build(by_id, store, now, lambda cid, text: console_ask(cid, text, None)).http_app(
-            path="/", stateless_http=True, json_response=True
-        )
+        hubmcp.build(
+            by_id,
+            store,
+            now,
+            lambda cid, text: console_ask(cid, text, None),
+            lambda *decision: mcp_decide(*decision),
+            lambda cid, by: turn_on_kill_switch(cid, by),
+        ).http_app(path="/", stateless_http=True, json_response=True)
         if mcp_token
         else None
     )
@@ -593,6 +605,7 @@ def create_app(
                     taught=await taught(t),
                     masker=maskers[t.contract_id],
                     masked=masked_sink(t),
+                    killed=lambda: kill_switch_on(t.contract_id),
                 ) as a:
                     apply(t, await step(a))
             except Exception as e:  # report every failure, never lose an alert silently
@@ -632,6 +645,9 @@ def create_app(
             investigation_id, deadline, f"No decision within {settings.decision_timeout_seconds}s"
         )
 
+    async def kill_switch_on(contract_id: str) -> bool:
+        return await store().kill_switch(contract_id) is not None
+
     async def settle(
         t: Investigation,
         deadline: float | None,
@@ -644,7 +660,11 @@ def create_app(
         """The one decision path (API, Slack buttons, Stale): claim the pause named
         by its deadline, record who decided, resume. False when that pause is
         already decided, Stale, or not the current one. reason: what the Operator
-        typed when rejecting, which has a Teaching drafted after the Run."""
+        typed when rejecting, which has a Teaching drafted after the Run.
+        KillSwitchOn: an approval while the Contract's Kill switch is on; nothing is
+        claimed, so the pause can still be rejected, or approved once it is off."""
+        if approve and await kill_switch_on(t.contract_id):
+            raise KillSwitchOn
         pending = await store().claim(t.id, deadline)
         if pending is None:
             return False
@@ -902,7 +922,13 @@ def create_app(
         deadline = pause["deadline"]
         by, who = f"slack:{user}", f"<@{user}>"
         if action["action_id"] == "approve":
-            done = await settle(t, deadline, True, "", by, f":white_check_mark: Approved by {who}.")
+            try:
+                done = await settle(
+                    t, deadline, True, "", by, f":white_check_mark: Approved by {who}."
+                )
+            except KillSwitchOn:
+                await slack.ephemeral(channel, user, KILLED)
+                return
         elif action["action_id"] == "reject":
             # Claim only on submit: a cancelled modal leaves the pause undecided.
             done = t.status == "awaiting_approval" and t.deadline == deadline
@@ -1331,9 +1357,12 @@ def create_app(
             message = decision.message or "Rejected by the Operator. Do not retry."
             shown = f": {clean(decision.message, 2000)}" if decision.message else ""
             note = f":no_entry: Rejected through the API{shown}"
-        decided = t.status == "awaiting_approval" and await settle(
-            t, t.deadline, decision.approve, message, "operator", note, decision.message
-        )
+        try:
+            decided = t.status == "awaiting_approval" and await settle(
+                t, t.deadline, decision.approve, message, "operator", note, decision.message
+            )
+        except KillSwitchOn:
+            raise HTTPException(409, KILLED) from None
         if not decided:  # already decided, stale, or never paused
             current = await store().get(t.id)
             status = current.status if current else t.status
@@ -1348,14 +1377,42 @@ def create_app(
         if t is None or t.status != "awaiting_approval":
             return False
         who = f"{clean(login, 200)} in the console"
+        try:
+            return await decide_as(t, deadline, approve, reason, f"console:{login}", who)
+        except KillSwitchOn:
+            raise HTTPException(409, KILLED) from None
+
+    async def decide_as(
+        t: Investigation, deadline: float, approve: bool, reason: str, by: str, who: str
+    ) -> bool:
+        """The Operator's decision from the console or the Hub MCP server; `who` is
+        how the thread names them."""
         if approve:
             message, note = "", f":white_check_mark: Approved by {who}."
         else:
             message = reason.strip() or "Rejected by the Operator. Do not retry."
             shown = f": {clean(reason.strip(), 2000)}" if reason.strip() else ""
             note = f":no_entry: Rejected by {who}{shown}"
-        typed = reason.strip() or None
-        return await settle(t, deadline, approve, message, f"console:{login}", note, typed)
+        return await settle(t, deadline, approve, message, by, note, reason.strip() or None)
+
+    async def mcp_decide(
+        t: Investigation, deadline: float, approve: bool, reason: str, login: str
+    ) -> str | None:
+        """A decision through the Hub MCP server on one pause: None when made, else
+        why not (slice 11.2a)."""
+        try:
+            done = await decide_as(
+                t, deadline, approve, reason, f"mcp:{login}", f"{clean(login, 200)} via MCP"
+            )
+        except KillSwitchOn:
+            return KILLED
+        return None if done else "Already decided or Stale: nothing to decide."
+
+    async def turn_on_kill_switch(contract_id: str, by: str) -> bool:
+        """False when it was already on."""
+        on = await store().turn_on_kill_switch(contract_id, by, now())
+        log.info("kill switch %s %s by %s", contract_id, "on" if on else "already on", by)
+        return on
 
     async def console_feedback(
         t: Investigation, correct: bool, correction: str | None, login: str

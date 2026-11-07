@@ -341,3 +341,32 @@ test("a Contract with no billed cluster shows no bill line and no error", async 
   expect(screen.queryByText(/ bill \(/)).toBeNull();
   expect(screen.queryByText(/404/)).toBeNull();
 });
+
+test("the Kill switch shows who turned it on, and only here does it go off", async () => {
+  const sent: string[] = [];
+  const on = { on: true, by: "mcp:alex@example.com", since: 1_700_000_000 };
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url: string, init?: RequestInit) => {
+      const path = url.split("?")[0];
+      const method = init?.method ?? "GET";
+      if (path.endsWith("/kill-switch")) {
+        sent.push(method);
+        const body = method === "DELETE" ? { on: false } : on;
+        return new Response(JSON.stringify(body), { status: 200 });
+      }
+      const routes: Record<string, unknown> = {
+        "/api/v1/contracts": [{ id: "demo-shop", name: "demo-shop" }],
+        "/api/v1/contracts/demo-shop/workloads": DATA,
+      };
+      return new Response(JSON.stringify(routes[path] ?? {}), { status: path in routes ? 200 : 404 });
+    }),
+  );
+  render(<App />);
+  expect(await screen.findByText(/Kill switch on since 2023-11-14 22:13 UTC \(mcp:alex@example.com\)/)).toBeTruthy();
+  fireEvent.click(screen.getByText("Turn it off"));
+  expect(await screen.findByText("Turn on the Kill switch")).toBeTruthy();
+  fireEvent.click(screen.getByText("Turn on the Kill switch"));
+  expect(await screen.findByText("Turn it off")).toBeTruthy();
+  expect(sent).toEqual(["GET", "DELETE", "POST"]);
+});

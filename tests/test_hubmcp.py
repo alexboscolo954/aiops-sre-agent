@@ -23,7 +23,7 @@ from tests.conftest import call as call_step
 from tests.test_api import client, scripted, wait_for
 from tests.test_console import OPERATOR
 from tests.test_sizing_store import NOW, row, stored
-from tests.test_webapp import INTEGRATIONS, seed
+from tests.test_webapp import INTEGRATIONS, PROM, seed
 
 TOKEN = "t" * 40
 MCP = {"Authorization": f"Bearer {TOKEN}", "Tailscale-User-Login": OPERATOR}
@@ -45,6 +45,8 @@ TOOLS = {
     "investigation",
     "checks",
     "ask",
+    "decide",
+    "turn_on_kill_switch",
 }
 
 
@@ -198,8 +200,8 @@ def test_contracts_are_listed_masked_by_their_own_policy(
     with hub(settings, fake_cluster, database_url) as c:
         listed = call(c, "list_contracts")
     assert listed == [
-        {"id": mask("acme"), "name": mask("acme"), "clusters": ["test"]},
-        {"id": "bank", "name": "bank", "clusters": ["test"]},
+        {"id": mask("acme"), "name": mask("acme"), "clusters": ["test"], "kill_switch": False},
+        {"id": "bank", "name": "bank", "clusters": ["test"], "kill_switch": False},
     ]
 
 
@@ -560,7 +562,8 @@ def test_ask_is_the_one_tool_not_marked_read_only(
         tools = {
             t["name"]: t["annotations"] for t in rpc(c, "tools/list", {}).json()["result"]["tools"]
         }
-    assert {n for n, a in tools.items() if not a["readOnlyHint"]} == {"ask"}
+    writes = {n for n, a in tools.items() if not a["readOnlyHint"]}
+    assert writes == {"ask", "decide", "turn_on_kill_switch"}
 
 
 def test_a_grouping_named_after_the_client_comes_back_from_its_placeholder(
@@ -581,9 +584,11 @@ async def test_a_question_that_could_not_start_says_so() -> None:
     async def refused(cid: str, text: str) -> str | None:
         return None
 
-    server = hubmcp.build(
-        {"bank": make_contract(contract_id="bank")}, lambda: None, lambda: NOW, refused
-    )  # type: ignore[arg-type,return-value]
+    async def never(*_: Any) -> Any:
+        raise AssertionError("not called")
+
+    contracts = {"bank": make_contract(contract_id="bank")}
+    server = hubmcp.build(contracts, lambda: None, lambda: NOW, refused, never, never)  # type: ignore[arg-type,return-value]
     async with Client(server) as mcp:
         result = await mcp.call_tool(
             "ask", {"contract": "bank", "question": "ok?"}, raise_on_error=False
@@ -603,3 +608,127 @@ def test_a_long_answer_is_masked_before_it_is_cut(
         (listed,) = call(c, "investigations", contract="acme")
     assert listed["answer"].startswith("x" * 496 + " <") and len(listed["answer"]) == 500
     assert "acm" not in listed["answer"]
+
+
+# --- 11.2a: decide, and the Kill switch ---------------------------------------------------
+
+ACTING = {"integrations": [{"name": "kubernetes", "enable_actions": True}, PROM]}
+
+
+def paused(c: TestClient) -> str:
+    from tests.test_api import ALERT, HOOK, URL
+
+    tid: str = c.post(URL, json=ALERT, headers=HOOK).json()["investigation"]
+    wait_for(c, tid, "awaiting_approval")
+    return tid
+
+
+def decisions(database_url: str) -> list[tuple[bool, str, str]]:
+    import psycopg
+
+    with psycopg.connect(database_url) as conn:
+        rows = conn.execute("select approve, decided_by, message from decisions order by id")
+        return [(r[0], r[1], r[2]) for r in rows.fetchall()]
+
+
+def test_decide_approves_the_pause_it_names_and_only_this_contracts(
+    settings: Settings, fake_cluster: Any, database_url: str
+) -> None:
+    from tests.test_api import EVICT_THEN_REPORT
+
+    with hub(settings, fake_cluster, database_url, steps=EVICT_THEN_REPORT, acme_extra=ACTING) as c:
+        tid = paused(c)
+        shown = call(c, "investigation", contract="acme", id=tid)
+        pause = shown["pause"]
+        stale = call(c, "decide", contract="acme", id=tid, pause=pause + "1", approve=True)
+        theirs = call(c, "decide", contract="bank", id=tid, pause=pause, approve=True)
+        approved = call(c, "decide", contract="acme", id=tid, pause=pause, approve=True)
+        done = wait_for(c, tid, "done")
+        again = call(c, "decide", contract="acme", id=tid, pause=pause, approve=True)
+        after = call(c, "investigation", contract="acme", id=tid)
+    assert isinstance(pause, str) and float(pause) > done["started"]
+    assert [p["name"] for p in shown["pending"]] == ["kubernetes_evict_pod"]
+    assert stale == again == {"error": "that pause is not open: read the Investigation again"}
+    assert theirs == {"error": "no such Investigation in this Contract"}
+    assert approved == {"id": tid, "decided": "approved"}
+    assert fake_cluster[0].create_namespaced_pod_eviction.call_count == 1
+    assert decisions(database_url) == [(True, f"mcp:{OPERATOR}", "")]
+    # acme masks emails: the login it shows back is a placeholder
+    login = masking.Masker(b"k-acme", ["acme", "shop"]).placeholder("email", OPERATOR)
+    assert after["pause"] is None and after["decisions"][0]["decided_by"] == f"mcp:{login}"
+
+
+def test_a_rejections_reason_reaches_the_agent_with_the_placeholders_put_back(
+    settings: Settings, fake_cluster: Any, database_url: str
+) -> None:
+    from tests.test_api import EVICT_THEN_REPORT
+
+    with hub(settings, fake_cluster, database_url, steps=EVICT_THEN_REPORT, acme_extra=ACTING) as c:
+        tid = paused(c)
+        pause = call(c, "investigation", contract="acme", id=tid)["pause"]  # hands out shop
+        why = f"not in {mask('shop')} during the sale"
+        rejected = call(
+            c, "decide", contract="acme", id=tid, pause=pause, approve=False, reason=why
+        )
+        wait_for(c, tid, "done")
+    assert rejected == {"id": tid, "decided": "rejected"}
+    assert decisions(database_url) == [(False, f"mcp:{OPERATOR}", "not in shop during the sale")]
+    assert fake_cluster[0].create_namespaced_pod_eviction.call_count == 0
+
+
+def test_the_kill_switch_goes_on_from_mcp_and_refuses_approving_not_rejecting(
+    settings: Settings, fake_cluster: Any, database_url: str
+) -> None:
+    from aiops_agent.api import KILLED
+    from tests.test_api import EVICT_THEN_REPORT
+
+    with hub(settings, fake_cluster, database_url, steps=EVICT_THEN_REPORT, acme_extra=ACTING) as c:
+        tid = paused(c)
+        pause = call(c, "investigation", contract="acme", id=tid)["pause"]
+        on = call(c, "turn_on_kill_switch", contract="acme")
+        again = call(c, "turn_on_kill_switch", contract="acme")
+        listed = {x["name"]: x["kill_switch"] for x in call(c, "list_contracts")}
+        refused = call(c, "decide", contract="acme", id=tid, pause=pause, approve=True)
+        kept = call(c, "investigation", contract="acme", id=tid)["pause"]
+        rejected = call(c, "decide", contract="acme", id=tid, pause=pause, approve=False)
+        wait_for(c, tid, "done")
+    assert on["kill_switch"] == "on" and again["kill_switch"] == "already on"
+    assert listed == {mask("acme"): True, "bank": False}
+    assert refused == {"error": KILLED} and kept == pause
+    assert rejected["decided"] == "rejected"
+    assert fake_cluster[0].create_namespaced_pod_eviction.call_count == 0
+    import psycopg
+
+    with psycopg.connect(database_url) as conn:
+        row = conn.execute("select contract_id, set_by from kill_switches").fetchall()
+    assert row == [("acme", f"mcp:{OPERATOR}")]
+
+
+def test_nothing_on_the_hub_mcp_server_turns_a_kill_switch_off(
+    settings: Settings, fake_cluster: Any, database_url: str
+) -> None:
+    with hub(settings, fake_cluster, database_url) as c:
+        tools = {t["name"]: t for t in rpc(c, "tools/list", {}).json()["result"]["tools"]}
+    switch = tools["turn_on_kill_switch"]
+    assert set(switch["inputSchema"]["properties"]) == {"contract"}  # no on/off to pass
+    assert tools["decide"]["annotations"]["destructiveHint"] is True
+    assert not [n for n in tools if "off" in n or "clear" in n]
+
+
+@pytest.mark.anyio
+async def test_a_change_without_an_operators_login_is_refused() -> None:
+    """In-process, with no HTTP request: guard() never ran, so nobody is named."""
+    called: list[Any] = []
+
+    async def record(*args: Any) -> Any:
+        called.append(args)
+        return None
+
+    contracts = {"bank": make_contract(contract_id="bank")}
+    server = hubmcp.build(contracts, lambda: None, lambda: NOW, record, record, record)  # type: ignore[arg-type,return-value]
+    async with Client(server) as mcp:
+        result = await mcp.call_tool(
+            "turn_on_kill_switch", {"contract": "bank"}, raise_on_error=False
+        )
+    assert result.is_error and "only the Operator" in result.content[0].text  # type: ignore[union-attr]
+    assert called == []

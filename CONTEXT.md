@@ -129,6 +129,10 @@ The Operator's approve or reject, covering every Proposed action in one pause to
 A Proposed action that the Operator approved and that the system then ran. The system records it from the tool calls that actually ran, marked as failed when the call errored. The agent never reports it.
 _Avoid_: Action taken
 
+**Kill switch**:
+A Contract's stop for every change to its systems. While it is on, approving a Proposed action is refused (rejecting still works), and a change already approved is refused where it would run. The Operator turns it on from the Hub MCP server or the console, and only the console turns it off. Under Automation it also stops the Actuator ([ADR 0004](docs/adr/0004-standing-approval-for-sizing.md)).
+_Avoid_: Pause, freeze
+
 ### Knowledge
 
 **Similar incident**:

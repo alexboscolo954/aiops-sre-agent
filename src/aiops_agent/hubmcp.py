@@ -44,6 +44,9 @@ from aiops_agent.store import Store
 READ = ToolAnnotations(read_only_hint=True, open_world_hint=False)
 # a Question changes nothing in a cluster, but it starts a run that costs model money
 ASK = ToolAnnotations(read_only_hint=False, destructive_hint=False, open_world_hint=True)
+# approving runs the agent's Proposed actions on the client's systems
+DECIDE = ToolAnnotations(read_only_hint=False, destructive_hint=True, open_world_hint=True)
+STOP = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=True)
 CONTRACT = Field(description="The Contract's id, as list_contracts gives it")
 LOGIN = "tailscale-user-login"
 
@@ -72,9 +75,8 @@ class Audit(AuditMiddleware):
     about which Contract (as the client wrote it: masked arguments stay masked)."""
 
     def who(self, context: MiddlewareContext[Any]) -> dict[str, Any]:
-        login = get_http_headers().get(LOGIN, "").strip() or None
         contract = (context.message.arguments or {}).get("contract")
-        return {"channel": "mcp", "login": login, "contract": contract}
+        return {"channel": "mcp", "login": _login(), "contract": contract}
 
 
 def _date(epoch: float | None) -> str | None:
@@ -114,8 +116,13 @@ def build(
     store: Callable[[], Store],
     now: Callable[[], float],
     asked: Callable[[str, str], Awaitable[str | None]],
+    decided: Callable[[Investigation, float, bool, str, str], Awaitable[str | None]],
+    stopped: Callable[[str, str], Awaitable[bool]],
 ) -> FastMCP:
-    """asked(contract id, text): a new Question's id, as the console asks it."""
+    """asked(contract id, text): a new Question's id, as the console asks it.
+    decided(Investigation, its pause's deadline, approve, reason, login): None when
+    decided, else why not. stopped(contract id, by): turns its Kill switch on, False
+    when it already was. Nothing here turns a Kill switch off: only the console does."""
     maskers = {cid: masking.for_contract(c) for cid, c in by_id.items()}
     # ponytail: in memory, so a restart forgets what was handed out (the client lists
     # again); grows with the distinct identifiers shown, which a Contract bounds
@@ -149,11 +156,15 @@ def build(
     @mcp.tool(annotations=READ)
     async def list_contracts() -> list[dict[str, Any]]:
         """Every Contract the Hub serves: its id (pass it as `contract` to the other
-        tools), name and clusters."""
-        return [
-            out(c, {"id": c.id, "name": c.name, "clusters": [t.cluster for t in usage.targets(c)]})
-            for c in sorted(by_id.values(), key=lambda c: c.id)
-        ]
+        tools), name, clusters, and whether its Kill switch is on."""
+        listed = []
+        for c in sorted(by_id.values(), key=lambda c: c.id):
+            on = await store().kill_switch(c.id) is not None
+            clusters = [t.cluster for t in usage.targets(c)]
+            listed.append(
+                out(c, {"id": c.id, "name": c.name, "clusters": clusters, "kill_switch": on})
+            )
+        return listed
 
     @mcp.tool(annotations=READ)
     async def sizings(
@@ -337,6 +348,9 @@ def build(
                 )
             )
             full["deadline"] = _date(t.deadline)
+            # the pause's exact deadline, as text: `decide` names the pause with it
+            open_pause = t.status == "awaiting_approval" and t.deadline is not None
+            full["pause"] = repr(t.deadline) if open_pause else None
             full["decisions"] = [{**d, "at": _date(d["at"])} for d in await store().decisions(t.id)]
             return full
 
@@ -388,7 +402,66 @@ def build(
         result: dict[str, Any] = await answer(c, work())
         return result
 
+    @mcp.tool(annotations=DECIDE)
+    async def decide(
+        contract: Annotated[str, CONTRACT],
+        id: str,
+        pause: str,
+        approve: bool,
+        reason: str = "",
+    ) -> dict[str, Any]:
+        """Approve or reject every Proposed action of one pause of this Contract's
+        Investigation, as Slack's buttons do: approving runs them on the Contract's
+        systems. pause: the token `investigation` showed with the actions you read; an
+        older token never decides a newer pause. reason (a rejection's): goes back to
+        the agent, and a Teaching may be drafted from it. Approving is refused while the
+        Contract's Kill switch is on; rejecting still works."""
+        c = resolve(contract)
+
+        async def work() -> dict[str, Any]:
+            t = await store().get(id)
+            if t is None or t.contract_id != c.id:  # another Contract's is never decided
+                raise ToolError("no such Investigation in this Contract")
+            if t.status != "awaiting_approval" or t.deadline is None or pause != repr(t.deadline):
+                raise ToolError("that pause is not open: read the Investigation again")
+            why = await decided(t, t.deadline, approve, arg(c, reason), _operator())
+            if why:
+                raise ToolError(why)
+            return {"id": t.id, "decided": "approved" if approve else "rejected"}
+
+        result: dict[str, Any] = await answer(c, work())
+        return result
+
+    @mcp.tool(annotations=STOP)
+    async def turn_on_kill_switch(contract: Annotated[str, CONTRACT]) -> dict[str, Any]:
+        """Stop every change to this Contract's systems now: approving a Proposed
+        action is refused, and a change already approved is refused where it would
+        run. Only the Operator, in the console, turns it off."""
+        c = resolve(contract)
+
+        async def work() -> dict[str, Any]:
+            newly = await stopped(c.id, f"mcp:{_operator()}")
+            on = await store().kill_switch(c.id)
+            assert on is not None
+            return {"kill_switch": "on" if newly else "already on", "since": _date(on["set_at"])}
+
+        result: dict[str, Any] = await answer(c, work())
+        return result
+
     return mcp
+
+
+def _login() -> str | None:
+    return get_http_headers().get(LOGIN, "").strip() or None
+
+
+def _operator() -> str:
+    """Who is changing something: guard() let only a listed Operator in, so a call
+    without one came some other way and changes nothing."""
+    login = _login()
+    if login is None:
+        raise ToolError("only the Operator, through tailscale serve, may change anything")
+    return login
 
 
 def _compared(compare: webapp.Comparison | None) -> dict[str, Any] | None:
