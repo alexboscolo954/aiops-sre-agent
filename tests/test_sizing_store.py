@@ -466,3 +466,39 @@ async def test_each_run_prunes_its_contracts_old_runs(
         assert await sizing.store_run(store, c, at) is not None
     left = await store.sizing_history("acme", ("test", "shop", "Deployment", "api", "app"), 0)
     assert [at for at, _ in left] == [NOW + 401 * DAY]
+
+
+@pytest.mark.anyio
+async def test_an_approved_sizing_is_current_until_a_later_run_reads_its_cluster(
+    store: Store,
+) -> None:
+    """Slice 11.2b. A run still going, one failing on that cluster, one that read
+    only another cluster, and another Contract's run never supersede it."""
+    lowered = row(cpu={"action": "lower", "target": 0.1}, memory={"action": "keep", "target": 1})
+    run = await stored(store, "acme", NOW, {"test": None, "edge": None}, lowered)
+    assert await store.approve_sizing("acme", run, lowered, "mcp:op", NOW) == "approved"
+    assert await store.approve_sizing("acme", run, lowered, "mcp:op", NOW) == "already"
+
+    async def current() -> list[tuple[Any, ...]]:
+        found = await store.approved_sizings("acme")
+        return [(a["run_id"], a["name"], a["cpu"], a["memory"]) for a in found]
+
+    assert await current() == [(run, "api", 0.1, None)]
+    await stored(store, "acme", NOW + H, {"test": "boom", "edge": None})
+    await stored(store, "bank", NOW + H, {"test": None})
+    await store.claim_sizing_run("acme", NOW + 2 * H, 0)  # still running
+    assert await current() == [(run, "api", 0.1, None)]
+    assert await store.approved_sizings("bank") == []
+    await stored(store, "acme", NOW + 3 * H, {"test": None})
+    assert await current() == []
+
+
+@pytest.mark.anyio
+async def test_no_sizing_is_approved_while_the_kill_switch_is_on(store: Store) -> None:
+    lowered = row(cpu={"action": "lower", "target": 0.1})
+    run = await stored(store, "acme", NOW, {"test": None}, lowered)
+    await store.turn_on_kill_switch("acme", "console:op", NOW)
+    await store.turn_on_kill_switch("bank", "console:op", NOW)
+    assert await store.approve_sizing("acme", run, lowered, "mcp:op", NOW) == "killed"
+    await store.turn_off_kill_switch("acme")
+    assert await store.approve_sizing("acme", run, lowered, "mcp:op", NOW) == "approved"

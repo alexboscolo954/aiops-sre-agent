@@ -147,6 +147,19 @@ def build_server(contract: Contract, store: Store | None) -> FastMCP:
     return mcp
 
 
+def allowed(contract: Contract, cluster: str, namespace: str) -> None:
+    """Refuse a cluster without Sizings or a namespace the Contract doesn't allow there."""
+    spaces = {c.name: sorted(c.namespaces) for c in contract.clusters}
+    names = [t.cluster for t in usage.targets(contract)]
+    if cluster not in names:
+        raise ToolError(f"cluster {cluster!r} has no Sizings: one of {names}")
+    if namespace not in spaces[cluster]:
+        raise ToolError(
+            f"namespace {namespace!r} is not allowed in cluster {cluster!r}; "
+            f"allowed: {spaces[cluster]}"
+        )
+
+
 async def workload(
     store: Store | None,
     contract: Contract,
@@ -157,15 +170,7 @@ async def workload(
 ) -> dict[str, Any]:
     """One Workload's Sizing, within the Contract's clusters and namespaces: the agent's
     tool and the Hub MCP server's (slice 11.1a)."""
-    spaces = {c.name: sorted(c.namespaces) for c in contract.clusters}
-    names = [t.cluster for t in usage.targets(contract)]
-    if cluster not in names:
-        raise ToolError(f"cluster {cluster!r} has no Sizings: one of {names}")
-    if namespace not in spaces[cluster]:
-        raise ToolError(
-            f"namespace {namespace!r} is not allowed in cluster {cluster!r}; "
-            f"allowed: {spaces[cluster]}"
-        )
+    allowed(contract, cluster, namespace)
     if store is None:
         raise ToolError("Sizings need the Hub's database")
     rows, status = await store.latest_sizings(contract.id, {cluster})

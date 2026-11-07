@@ -37,18 +37,22 @@ from aiops_agent.console import QUESTION_LIMIT
 from aiops_agent.contracts import Contract
 from aiops_agent.models import Investigation
 from aiops_agent.observability import AuditMiddleware
-from aiops_agent.servers.sizing import workload
+from aiops_agent.servers.sizing import allowed, workload
 from aiops_agent.sizing import show
 from aiops_agent.store import Store
 
 READ = ToolAnnotations(read_only_hint=True, open_world_hint=False)
 # a Question changes nothing in a cluster, but it starts a run that costs model money
 ASK = ToolAnnotations(read_only_hint=False, destructive_hint=False, open_world_hint=True)
-# approving runs the agent's Proposed actions on the client's systems
+# approving runs the agent's Proposed actions on the client's systems, or (a Sizing)
+# lets the Actuator change them
 DECIDE = ToolAnnotations(read_only_hint=False, destructive_hint=True, open_world_hint=True)
 STOP = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=True)
 CONTRACT = Field(description="The Contract's id, as list_contracts gives it")
 LOGIN = "tailscale-user-login"
+KILLED = "The Contract's Kill switch is on: approving is refused. Turn it off in the console first."
+KEYS = ("cluster", "namespace", "kind", "name", "container")
+RES = ("cpu", "memory")
 
 
 def guard(app: ASGIApp, token: str, operators: set[str]) -> ASGIApp:
@@ -92,8 +96,9 @@ def _resource(res: str, r: webapp.Resource | None) -> dict[str, Any] | None:
     return {"request": now, "sizing": show(res, r.target), "action": r.action}
 
 
-def _workload(w: webapp.Workload) -> dict[str, Any]:
-    """A ranked Workload as the client's model reads it: quantities as 115m and 96Mi."""
+def _workload(w: webapp.Workload, approved: dict[str, Any]) -> dict[str, Any]:
+    """A ranked Workload as the client's model reads it: quantities as 115m and 96Mi,
+    and who approved a container's Sizing, when one is."""
     return {
         "workload": w.workload,
         "pods": w.pods,
@@ -106,6 +111,7 @@ def _workload(w: webapp.Workload) -> dict[str, Any]:
                 "cpu": _resource("cpu", c.cpu),
                 "memory": _resource("memory", c.memory),
             }
+            | ({"approved": approved[c.workload]} if c.workload in approved else {})
             for c in w.containers
         ],
     }
@@ -147,6 +153,13 @@ def build(
                 return c
         raise ToolError("unknown Contract: list_contracts names them")
 
+    async def approvals(c: Contract) -> dict[str, Any]:
+        """The Contract's current Approved Sizings, by the container's full name."""
+        return {
+            "/".join(a[k] for k in KEYS): {"by": a["approved_by"], "at": _date(a["approved_at"])}
+            for a in await store().approved_sizings(c.id)
+        }
+
     async def answer(c: Contract, work: Awaitable[Any]) -> Any:
         try:
             return out(c, await work)
@@ -187,6 +200,7 @@ def build(
                 raise ToolError(f"cluster {wanted!r} has no Sizings: one of {names}")
             space = None if namespace is None else arg(c, namespace)
             w = await webapp.workloads_of(store(), c, now())
+            approved = await approvals(c)
             found = [
                 x
                 for x in w.workloads
@@ -208,7 +222,7 @@ def build(
                     for k, s in w.clusters.items()
                 ],
                 "matching": len(found),
-                "workloads": [_workload(x) for x in found[:top]],
+                "workloads": [_workload(x, approved) for x in found[:top]],
                 "learning": len(w.learning),
                 "excluded": len(w.excluded),
             }
@@ -226,11 +240,76 @@ def build(
     ) -> dict[str, Any]:
         """One Workload's Sizing, per container: requests and limits now, what they
         should be (CPU from its weighted p95, memory from its peak, with headroom), its
-        risks and waste. name: the Workload or one of its pods. kind (Deployment,
-        StatefulSet, ...) only when two Workloads share a name."""
+        risks and waste, and who approved it when it is. name: the Workload or one of
+        its pods. kind (Deployment, StatefulSet, ...) only when two Workloads share a
+        name."""
         c = resolve(contract)
-        where = arg(c, cluster), arg(c, namespace), arg(c, name)
-        result: dict[str, Any] = await answer(c, workload(store(), c, *where, kind))
+
+        async def work() -> dict[str, Any]:
+            where = arg(c, cluster), arg(c, namespace), arg(c, name)
+            found = await workload(store(), c, *where, kind)
+            approved = await approvals(c)
+            for w in found["workloads"]:
+                for k in w["containers"]:
+                    if (key := f"{w['workload']}/{k['container']}") in approved:
+                        k["approved"] = approved[key]
+            return found
+
+        result: dict[str, Any] = await answer(c, work())
+        return result
+
+    @mcp.tool(annotations=DECIDE)
+    async def approve_sizing(
+        contract: Annotated[str, CONTRACT],
+        cluster: str,
+        namespace: str,
+        name: str,
+        container: str,
+        cpu: str | None,
+        memory: str | None,
+        kind: str | None = None,
+    ) -> dict[str, Any]:
+        """Approve one container's latest Sizing, for the Actuator to apply (Phase 12):
+        nothing changes in a cluster before then. name: the Workload, as `sizings`
+        shows it. cpu and memory: its Sizing exactly as `sizing` or `sizings` showed it
+        (115m, 96Mi; null where none was shown), so a newer Sizing is never approved
+        unseen. Refused while it is learning, when it changes nothing, and while the
+        Contract's Kill switch is on. A later Sizing of the container supersedes it."""
+        c = resolve(contract)
+
+        async def work() -> dict[str, Any]:
+            by = f"mcp:{_operator()}"
+            given = zip(KEYS, (cluster, namespace, kind, name, container), strict=True)
+            want = {k: arg(c, v) for k, v in given if v is not None}
+            allowed(c, want["cluster"], want["namespace"])
+            rows, status = await store().latest_sizings(c.id, {want["cluster"]})
+            found = [r for r in rows if all(r[k] == v for k, v in want.items())]
+            if not found:
+                raise ToolError("no stored Sizing of that container: `sizing` lists them")
+            if len(found) > 1:
+                raise ToolError("two Workloads share that name: pass kind")
+            (r,) = found
+            if r["state"] != "ready":
+                raise ToolError(f"it is {r['state']}: it has no Sizing to approve")
+            shown = {res: show(res, r[res]["target"]) if r.get(res) else None for res in RES}
+            if shown != {"cpu": cpu, "memory": memory}:
+                raise ToolError(
+                    f"its latest Sizing is cpu {shown['cpu']}, memory {shown['memory']}: "
+                    "read it again"
+                )
+            if all(r[res]["action"] == "keep" for res in RES if r.get(res)):
+                raise ToolError("its Sizing keeps the requests as they are: nothing to approve")
+            run = status[want["cluster"]]["run"]
+            done = await store().approve_sizing(c.id, run, r, by, now())
+            if done == "killed":
+                raise ToolError(KILLED)
+            return {
+                "workload": r["workload"],
+                "approved": "approved" if done == "approved" else "already approved",
+                **shown,
+            }
+
+        result: dict[str, Any] = await answer(c, work())
         return result
 
     async def allocation(c: Contract, by: str, compare: int | None) -> webapp.Allocation:

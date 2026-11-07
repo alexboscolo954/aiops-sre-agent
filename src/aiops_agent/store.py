@@ -12,7 +12,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from psycopg import AsyncConnection, Rollback
 from psycopg.errors import UniqueViolation
@@ -649,6 +649,37 @@ class Store:
                 (contract_id, run_id, cluster),
             )
         return [r["row"] for r in rows], status
+
+    async def approve_sizing(
+        self, contract_id: str, run_id: int, row: dict[str, Any], by: str, at: float
+    ) -> Literal["approved", "already", "killed"]:
+        """Store an Approved Sizing of `row`'s container from run `run_id`, with its
+        requests where it changes them, unless the Contract's Kill switch is on."""
+        keys = tuple(row[k] for k in ("cluster", "namespace", "kind", "name", "container"))
+        wanted = [
+            row[r]["target"] if row.get(r) and row[r]["action"] != "keep" else None
+            for r in ("cpu", "memory")
+        ]
+        stored = await self._one(
+            "insert into approved_sizings select %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s "
+            "where not exists (select 1 from kill_switches where contract_id = %s) "
+            "on conflict do nothing returning run_id",
+            (contract_id, run_id, *keys, *wanted, by, at, contract_id),
+        )
+        if stored:
+            return "approved"
+        return "killed" if await self.kill_switch(contract_id) else "already"
+
+    async def approved_sizings(self, contract_id: str) -> list[dict[str, Any]]:
+        """The Contract's current Approved Sizings: those no later run read the
+        cluster of (a run still going, or failing there, supersedes nothing)."""
+        return await self._all(
+            "select * from approved_sizings a where contract_id = %s and not exists ("
+            "select 1 from sizing_runs r where r.contract_id = a.contract_id "
+            "and r.id > a.run_id and r.clusters -> a.cluster = 'null'::jsonb) "
+            "order by approved_at",
+            (contract_id,),
+        )
 
     async def first_sizings(self, contract_id: str, clusters: set[str]) -> dict[str, float]:
         """Each of `clusters`' oldest stored run that read it: how far back it compares."""

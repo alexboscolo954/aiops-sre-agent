@@ -154,8 +154,12 @@ Knowledge the Operator writes that holds no client data, such as general SRE les
 What a Sizing is for: a Deployment, StatefulSet, DaemonSet, CronJob, Job or Rollout (or a pod with no owner), found by following each pod's owners. Its pods' usage is pooled per container, never summed, so a Sizing is per replica whatever the replica count.
 
 **Sizing**:
-The CPU and memory requests the Hub computes for one container of a Workload from its usage under a Sizing policy, with the risks it can't fix (a limit too low, throttling or OOM kills hiding real demand). Limits are kept. A container with less usage than its policy's history (a day under production) is still *learning* and has none. Read-only unless the Workload is under Automation.
+The CPU and memory requests the Hub computes for one container of a Workload from its usage under a Sizing policy, with the risks it can't fix (a limit too low, throttling or OOM kills hiding real demand). Limits are kept. A container with less usage than its policy's history (a day under production) is still *learning* and has none. Read-only unless the Operator approves it or the Workload is under Automation.
 _Avoid_: Recommendation (that is advice for a human), rightsizing recommendation
+
+**Approved Sizing**:
+One container's Sizing that the Operator approved from the Hub MCP server, kept with the exact requests approved, for the Actuator to apply. It is current until a later Sizing of that container is stored, which supersedes it whatever its values. Refused for a container that is learning or has no change, and while the Contract's Kill switch is on. Approving changes nothing in a cluster until the Actuator applies it.
+_Avoid_: Applied Sizing, Executed action (nothing ran)
 
 **Sizing policy**:
 How Sizings are computed: the percentile, the look-back window, headroom, minimums and maximums, and the limit strategy. Built-ins (production, high-availability, batch) mean the same in every Contract; a Contract's own policies, each a built-in with some settings changed, and the rules that pick one per container are in its `contract.yaml`. The policy `off` gives a container no Sizing.

@@ -47,6 +47,7 @@ TOOLS = {
     "ask",
     "decide",
     "turn_on_kill_switch",
+    "approve_sizing",
 }
 
 
@@ -563,7 +564,7 @@ def test_ask_is_the_one_tool_not_marked_read_only(
             t["name"]: t["annotations"] for t in rpc(c, "tools/list", {}).json()["result"]["tools"]
         }
     writes = {n for n, a in tools.items() if not a["readOnlyHint"]}
-    assert writes == {"ask", "decide", "turn_on_kill_switch"}
+    assert writes == {"ask", "decide", "turn_on_kill_switch", "approve_sizing"}
 
 
 def test_a_grouping_named_after_the_client_comes_back_from_its_placeholder(
@@ -726,9 +727,138 @@ async def test_a_change_without_an_operators_login_is_refused() -> None:
 
     contracts = {"bank": make_contract(contract_id="bank")}
     server = hubmcp.build(contracts, lambda: None, lambda: NOW, record, record, record)  # type: ignore[arg-type,return-value]
+    sizing = {"cluster": "test", "namespace": "shop", "name": "api", "container": "app"}
     async with Client(server) as mcp:
-        result = await mcp.call_tool(
-            "turn_on_kill_switch", {"contract": "bank"}, raise_on_error=False
-        )
-    assert result.is_error and "only the Operator" in result.content[0].text  # type: ignore[union-attr]
+        results = [
+            await mcp.call_tool("turn_on_kill_switch", {"contract": "bank"}, raise_on_error=False),
+            await mcp.call_tool(
+                "approve_sizing",
+                {"contract": "bank", "cpu": "115m", "memory": "512Mi", **sizing},
+                raise_on_error=False,
+            ),
+        ]
+    for result in results:
+        assert result.is_error and "only the Operator" in result.content[0].text  # type: ignore[union-attr]
     assert called == []
+
+
+# --- Approved Sizings (slice 11.2b) ------------------------------------------------------
+
+MI = 2**20
+
+
+def sized(name: str = "api", cpu: str = "lower", memory: str = "keep", **extra: Any) -> Any:
+    """A ready row: cpu 1 core lowered to 115m, memory 512Mi kept (unless told)."""
+    return row(
+        name,
+        cpu={
+            "action": cpu,
+            "current": 1.0,
+            "target": 1.0 if cpu == "keep" else 0.115,
+            "basis": 0.1,
+            "limit": None,
+        },
+        memory={
+            "action": memory,
+            "current": 512 * MI,
+            "target": 512 * MI if memory == "keep" else 96 * MI,
+            "basis": 80 * MI,
+            "limit": None,
+        },
+        **extra,
+    )
+
+
+def approved_rows(database_url: str) -> list[tuple[Any, ...]]:
+    import psycopg
+
+    with psycopg.connect(database_url) as conn:
+        found = conn.execute(
+            "select contract_id, name, cpu, memory, approved_by from approved_sizings"
+        )
+        return found.fetchall()
+
+
+def test_a_sizing_is_approved_with_the_values_seen_and_only_in_its_contract(
+    settings: Settings, fake_cluster: Any, database_url: str
+) -> None:
+    seed(database_url, ("acme", NOW, sized()), ("bank", NOW, sized()))
+    shop = mask("shop")
+    at = {"cluster": "test", "name": "api", "container": "app"}
+    with hub(settings, fake_cluster, database_url) as c:
+        call(c, "sizings", contract="acme")  # hands out shop's placeholder
+        ok = call(
+            c, "approve_sizing", contract="acme", namespace=shop, cpu="115m", memory="512Mi", **at
+        )
+        again = call(
+            c, "approve_sizing", contract="acme", namespace=shop, cpu="115m", memory="512Mi", **at
+        )
+        one = call(c, "sizing", contract="acme", cluster="test", namespace=shop, name="api")
+        ranked = call(c, "sizings", contract="acme")
+        theirs = call(c, "sizing", contract="bank", cluster="test", namespace="shop", name="api")
+        theirs_ranked = call(c, "sizings", contract="bank")
+    assert ok == {
+        "workload": f"test/{shop}/Deployment/api/app",
+        "approved": "approved",
+        "cpu": "115m",
+        "memory": "512Mi",
+    }
+    assert again["approved"] == "already approved"
+    # memory is kept, so only cpu is approved for the Actuator to change
+    assert approved_rows(database_url) == [("acme", "api", 0.115, None, f"mcp:{OPERATOR}")]
+    login = masking.Masker(b"k-acme", ["acme", "shop"]).placeholder("email", OPERATOR)
+    shown = {"by": f"mcp:{login}", "at": "1972-09-27 00:00 UTC"}
+    assert one["workloads"][0]["containers"][0]["approved"] == shown
+    assert ranked["workloads"][0]["containers"][0]["approved"] == shown
+    # bank has the same cluster, namespace and Workload: nothing of acme's shows there
+    assert "approved" not in theirs["workloads"][0]["containers"][0]
+    assert "approved" not in theirs_ranked["workloads"][0]["containers"][0]
+
+
+def test_approving_is_refused_unless_it_is_the_latest_sizing_and_changes_something(
+    settings: Settings, fake_cluster: Any, database_url: str
+) -> None:
+    seed_run(
+        database_url,
+        "bank",
+        sized(),
+        sized("same", cpu="keep"),
+        row("new", state="learning"),
+        sized("twin"),
+        sized("twin", kind="StatefulSet", workload="test/shop/StatefulSet/twin/app"),
+    )
+
+    def approve(name: str, cpu: str | None = "115m", **more: Any) -> Any:
+        where = {"cluster": "test", "namespace": "shop", "container": "app", **more}
+        return call(
+            c, "approve_sizing", contract="bank", name=name, cpu=cpu, memory="512Mi", **where
+        )
+
+    with hub(settings, fake_cluster, database_url) as c:
+        old = approve("api", cpu="120m")
+        same = approve("same", cpu="1000m")
+        new = approve("new", cpu=None)
+        pod = approve("api-7d9f")
+        twins = approve("twin")
+        twin = approve("twin", kind="StatefulSet")
+        elsewhere = approve("api", namespace="kube")
+    assert old == {"error": "its latest Sizing is cpu 115m, memory 512Mi: read it again"}
+    assert same == {"error": "its Sizing keeps the requests as they are: nothing to approve"}
+    assert new == {"error": "it is learning: it has no Sizing to approve"}
+    assert pod == {"error": "no stored Sizing of that container: `sizing` lists them"}
+    assert twins == {"error": "two Workloads share that name: pass kind"}
+    assert twin["approved"] == "approved"
+    assert elsewhere["error"].startswith("namespace 'kube' is not allowed")
+    assert [r[1] for r in approved_rows(database_url)] == ["twin"]
+
+
+def test_approving_a_sizing_is_refused_while_the_kill_switch_is_on(
+    settings: Settings, fake_cluster: Any, database_url: str
+) -> None:
+    seed(database_url, ("bank", NOW, sized()))
+    where = {"cluster": "test", "namespace": "shop", "name": "api", "container": "app"}
+    with hub(settings, fake_cluster, database_url) as c:
+        call(c, "turn_on_kill_switch", contract="bank")
+        refused = call(c, "approve_sizing", contract="bank", cpu="115m", memory="512Mi", **where)
+    assert refused == {"error": hubmcp.KILLED}
+    assert approved_rows(database_url) == []
