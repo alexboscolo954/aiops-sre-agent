@@ -8,6 +8,7 @@ import json
 import logging
 from typing import Any
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from fastmcp import Client
@@ -48,6 +49,7 @@ TOOLS = {
     "decide",
     "turn_on_kill_switch",
     "approve_sizing",
+    "propose_change",
 }
 
 
@@ -66,6 +68,7 @@ def hub(
     acme_extra: dict[str, Any] | None = None,
     slack: Any = None,
     channel: str | None = None,
+    github: Any = None,
 ) -> TestClient:
     settings.database_url = SecretStr(database_url)
     settings.console_operators = {OPERATOR}
@@ -76,7 +79,14 @@ def hub(
     acme = {**acme, **(acme_extra or {})}
     more = {"bank": (bank, fake_cluster)}
     return client(
-        settings, fake_cluster, *steps, acme=acme, more=more, slack=slack, acme_channel=channel
+        settings,
+        fake_cluster,
+        *steps,
+        acme=acme,
+        more=more,
+        slack=slack,
+        acme_channel=channel,
+        github_http=github,
     )
 
 
@@ -564,7 +574,7 @@ def test_ask_is_the_one_tool_not_marked_read_only(
             t["name"]: t["annotations"] for t in rpc(c, "tools/list", {}).json()["result"]["tools"]
         }
     writes = {n for n, a in tools.items() if not a["readOnlyHint"]}
-    assert writes == {"ask", "decide", "turn_on_kill_switch", "approve_sizing"}
+    assert writes == {"ask", "decide", "turn_on_kill_switch", "approve_sizing", "propose_change"}
 
 
 def test_a_grouping_named_after_the_client_comes_back_from_its_placeholder(
@@ -589,7 +599,7 @@ async def test_a_question_that_could_not_start_says_so() -> None:
         raise AssertionError("not called")
 
     contracts = {"bank": make_contract(contract_id="bank")}
-    server = hubmcp.build(contracts, lambda: None, lambda: NOW, refused, never, never)  # type: ignore[arg-type,return-value]
+    server = hubmcp.build(contracts, lambda: None, lambda: NOW, refused, never, never, never)  # type: ignore[arg-type,return-value]
     async with Client(server) as mcp:
         result = await mcp.call_tool(
             "ask", {"contract": "bank", "question": "ok?"}, raise_on_error=False
@@ -726,7 +736,7 @@ async def test_a_change_without_an_operators_login_is_refused() -> None:
         return None
 
     contracts = {"bank": make_contract(contract_id="bank")}
-    server = hubmcp.build(contracts, lambda: None, lambda: NOW, record, record, record)  # type: ignore[arg-type,return-value]
+    server = hubmcp.build(contracts, lambda: None, lambda: NOW, record, record, record, record)  # type: ignore[arg-type,return-value]
     sizing = {"cluster": "test", "namespace": "shop", "name": "api", "container": "app"}
     async with Client(server) as mcp:
         results = [
@@ -734,6 +744,15 @@ async def test_a_change_without_an_operators_login_is_refused() -> None:
             await mcp.call_tool(
                 "approve_sizing",
                 {"contract": "bank", "cpu": "115m", "memory": "512Mi", **sizing},
+                raise_on_error=False,
+            ),
+            await mcp.call_tool(
+                "propose_change",
+                {
+                    "contract": "bank",
+                    "title": "t",
+                    "edits": [{"edit": "set_default", "policy": "batch"}],
+                },
                 raise_on_error=False,
             ),
         ]
@@ -862,3 +881,91 @@ def test_approving_a_sizing_is_refused_while_the_kill_switch_is_on(
         refused = call(c, "approve_sizing", contract="bank", cpu="115m", memory="512Mi", **where)
     assert refused == {"error": hubmcp.KILLED}
     assert approved_rows(database_url) == []
+
+
+# --- Proposed changes (slice 11.3) -------------------------------------------------------
+
+
+def clone(tmp_path: Any, settings: Settings) -> None:
+    """The contracts repo cloned at AIOPS_CONTRACTS_DIR, acme's file at MAIN."""
+    from tests.test_proposals import MAIN, TEXT
+
+    (tmp_path / ".git" / "refs" / "heads").mkdir(parents=True)
+    (tmp_path / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+    (tmp_path / ".git" / "refs" / "heads" / "main").write_text(MAIN + "\n")
+    (tmp_path / "acme").mkdir()
+    (tmp_path / "acme" / "contract.yaml").write_text(TEXT)
+    settings.contracts_dir = tmp_path
+    settings.contracts_repo = "me/contracts"
+    settings.contracts_token = SecretStr("github_pat_" + "s" * 40)
+
+
+def test_a_change_is_proposed_as_a_pull_request_with_the_placeholders_put_back(
+    settings: Settings, fake_cluster: Any, database_url: str, tmp_path: Any
+) -> None:
+    """The Kill switch doesn't stop it: a pull request changes nothing until merged."""
+    import base64
+
+    from tests.test_proposals import TEXT, GitHub, sizing
+
+    clone(tmp_path, settings)
+    gh = GitHub({"acme/contract.yaml": TEXT})
+    seed_run(database_url, "acme", row("db"))
+    shop = mask("shop")
+    rule = {"edit": "set_rule", "namespace": shop, "name": "db", "policy": "lean"}
+    with hub(
+        settings, fake_cluster, database_url, github=httpx.Client(transport=httpx.MockTransport(gh))
+    ) as c:
+        call(c, "sizings", contract="acme")  # hands out shop's placeholder
+        call(c, "turn_on_kill_switch", contract="acme")
+        opened = call(
+            c,
+            "propose_change",
+            contract="acme",
+            edits=[rule],
+            title="db leaner",
+            why=f"{shop} db idles",
+        )
+        theirs = call(c, "propose_change", contract="bank", edits=[rule], title="t")
+        plain = {**rule, "namespace": "shop"}
+        unloaded = call(c, "propose_change", contract="bank", edits=[plain], title="t")
+    assert opened == {"pull_request": "https://github.com/me/contracts/pull/7"}
+    (ref, put, pull) = gh.writes()
+    assert ref[2]["ref"] == "refs/heads/aiops/acme-19720927-000000"
+    rules = sizing(base64.b64decode(put[2]["content"]).decode())["rules"]
+    assert rules[0] == {"namespace": "shop", "name": "db", "policy": "lean"}
+    assert pull[2]["body"].startswith("shop db idles\n")
+    assert pull[2]["body"].endswith(f"Hub MCP server by {OPERATOR}.")
+    # acme's placeholder means nothing to bank; bank has no file in the clone; and
+    # neither call reached GitHub
+    assert "was not handed out by this Hub" in theirs["error"]
+    assert unloaded == {"error": "the Hub did not load bank/contract.yaml from its clone"}
+    assert len(gh.requests) == 5
+
+
+def test_a_placeholder_never_handed_out_proposes_nothing(
+    settings: Settings, fake_cluster: Any, database_url: str, tmp_path: Any
+) -> None:
+    from tests.test_proposals import TEXT, GitHub
+
+    clone(tmp_path, settings)
+    gh = GitHub({"acme/contract.yaml": TEXT})
+    rule = {"edit": "set_rule", "namespace": mask("shop"), "policy": "off"}
+    with hub(
+        settings, fake_cluster, database_url, github=httpx.Client(transport=httpx.MockTransport(gh))
+    ) as c:
+        refused = call(c, "propose_change", contract="acme", edits=[rule], title="t")
+    assert "was not handed out by this Hub" in refused["error"]
+    assert gh.requests == []
+
+
+def test_without_the_repo_and_its_token_nothing_is_proposed(
+    settings: Settings, fake_cluster: Any, database_url: str
+) -> None:
+    edit = {"edit": "set_default", "policy": "batch"}
+    settings.contracts_repo = "me/contracts"  # and no token
+    with hub(settings, fake_cluster, database_url) as c:
+        refused = call(c, "propose_change", contract="bank", edits=[edit], title="t")
+    assert refused == {
+        "error": "set AIOPS_CONTRACTS_REPO and AIOPS_CONTRACTS_TOKEN to propose changes"
+    }

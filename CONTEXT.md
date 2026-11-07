@@ -29,6 +29,10 @@ _Avoid_: Server, backend
 The Operator's own MCP endpoint on the Hub, for an MCP client such as Claude Code on the Operator's devices. Each call is about one Contract and follows that Contract's Data policy. The Investigation agent never gets its tools.
 _Avoid_: Operator API, admin MCP
 
+**Proposed change**:
+A pull request the Hub opens on the contracts repo, from the Hub MCP server, editing one Contract's Sizing policy (a rule, a policy, the default) and nothing else. It is checked against the Contract the Hub loaded and validated before it opens, never touches `main`, and changes nothing until the Operator merges it and the Hub loads it again.
+_Avoid_: Proposed action (that is a paused tool call), patch
+
 **Direct**:
 A way to reach a Contract where the Hub holds the Contract's credentials and calls its APIs itself.
 

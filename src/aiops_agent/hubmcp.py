@@ -32,7 +32,7 @@ from starlette.datastructures import Headers
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from aiops_agent import billing, masking, usage, webapp
+from aiops_agent import billing, masking, proposals, usage, webapp
 from aiops_agent.console import QUESTION_LIMIT
 from aiops_agent.contracts import Contract
 from aiops_agent.models import Investigation
@@ -47,6 +47,8 @@ ASK = ToolAnnotations(read_only_hint=False, destructive_hint=False, open_world_h
 # approving runs the agent's Proposed actions on the client's systems, or (a Sizing)
 # lets the Actuator change them
 DECIDE = ToolAnnotations(read_only_hint=False, destructive_hint=True, open_world_hint=True)
+# a pull request changes nothing until the Operator merges it
+CHANGE = ToolAnnotations(read_only_hint=False, destructive_hint=False, open_world_hint=True)
 STOP = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=True)
 CONTRACT = Field(description="The Contract's id, as list_contracts gives it")
 LOGIN = "tailscale-user-login"
@@ -124,11 +126,14 @@ def build(
     asked: Callable[[str, str], Awaitable[str | None]],
     decided: Callable[[Investigation, float, bool, str, str], Awaitable[str | None]],
     stopped: Callable[[str, str], Awaitable[bool]],
+    proposed: Callable[[Contract, list[proposals.Edit], str, str, str], Awaitable[str]],
 ) -> FastMCP:
     """asked(contract id, text): a new Question's id, as the console asks it.
     decided(Investigation, its pause's deadline, approve, reason, login): None when
     decided, else why not. stopped(contract id, by): turns its Kill switch on, False
-    when it already was. Nothing here turns a Kill switch off: only the console does."""
+    when it already was. Nothing here turns a Kill switch off: only the console does.
+    proposed(Contract, edits, title, why, login): a pull request's URL, or
+    proposals.Refused."""
     maskers = {cid: masking.for_contract(c) for cid, c in by_id.items()}
     # ponytail: in memory, so a restart forgets what was handed out (the client lists
     # again); grows with the distinct identifiers shown, which a Contract bounds
@@ -523,6 +528,40 @@ def build(
             on = await store().kill_switch(c.id)
             assert on is not None
             return {"kill_switch": "on" if newly else "already on", "since": _date(on["set_at"])}
+
+        result: dict[str, Any] = await answer(c, work())
+        return result
+
+    @mcp.tool(annotations=CHANGE)
+    async def propose_change(
+        contract: Annotated[str, CONTRACT],
+        edits: Annotated[list[proposals.Edit], Field(min_length=1, max_length=20)],
+        title: Annotated[str, Field(min_length=1, max_length=120)],
+        why: Annotated[str, Field(max_length=2000)] = "",
+    ) -> dict[str, Any]:
+        """Open a pull request on the contracts repo editing this Contract's Sizing
+        policy, for the Operator to review and merge: nothing changes until it is
+        merged and the Hub restarts on it. edits, in order: set_rule (cluster,
+        namespace, kind, name, container, any of them, and a policy: the rule with
+        exactly that match gets it, else a new rule goes first, as the first match
+        wins), remove_rule (the rule with exactly that match), set_default (a policy),
+        set_policy (one of the Contract's own: name, base and the settings to change,
+        as contract.yaml writes them: window 7d, cpu {headroom: 0.15}, memory {max:
+        256Mi}). Refused when GitHub's main is not what the Hub loaded, or when the
+        Contract would not load after it. why: the pull request's description."""
+        c = resolve(contract)
+
+        async def work() -> dict[str, Any]:
+            by = _operator()
+            plain = [
+                type(e).model_validate(masking._walk(e.model_dump(), lambda s: arg(c, s)))
+                for e in edits
+            ]
+            try:
+                url = await proposed(c, plain, arg(c, title), arg(c, why), by)
+            except proposals.Refused as e:
+                raise ToolError(str(e)) from None
+            return {"pull_request": url}
 
         result: dict[str, Any] = await answer(c, work())
         return result

@@ -48,6 +48,7 @@ from aiops_agent import (
     hubmcp,
     listprices,
     masking,
+    proposals,
     related,
     sizing,
     teachings,
@@ -134,6 +135,7 @@ def create_app(
     changes_server: Any = None,
     price_http: httpx.Client | None = None,
     bill_http: httpx.Client | None = None,
+    github_http: httpx.Client | None = None,
 ) -> FastAPI:
     """mcp_factory(contract) -> Toolbox, by_id (the loaded Contracts), slack_http
     (an httpx client for Slack's Web API) and changes_server(contract) -> its
@@ -149,6 +151,10 @@ def create_app(
     for c in by_id.values():
         if contracts.token_matches(c, approver_token):
             raise RuntimeError(f"Contract {c.id!r}'s webhook token is the approver token")
+    # what a Proposed change is checked against: the Contracts as loaded now (slice 11.3)
+    loaded = (
+        proposals.snapshot(settings.contracts_dir, by_id) if settings.contracts_dir else (None, {})
+    )
     mcp_token = settings.mcp_token.get_secret_value() if settings.mcp_token else ""
     if mcp_token:
         if not settings.console_operators:
@@ -231,6 +237,7 @@ def create_app(
             lambda cid, text: console_ask(cid, text, None),
             lambda *decision: mcp_decide(*decision),
             lambda cid, by: turn_on_kill_switch(cid, by),
+            lambda *change: propose_change(*change),
         ).http_app(path="/", stateless_http=True, json_response=True)
         if mcp_token
         else None
@@ -1413,6 +1420,28 @@ def create_app(
         on = await store().turn_on_kill_switch(contract_id, by, now())
         log.info("kill switch %s %s by %s", contract_id, "on" if on else "already on", by)
         return on
+
+    async def propose_change(
+        c: contracts.Contract, edits: list[proposals.Edit], title: str, why: str, login: str
+    ) -> str:
+        """The pull request's URL; proposals.Refused says why not."""
+        if not (settings.contracts_repo and settings.contracts_token):
+            raise proposals.Refused(
+                "set AIOPS_CONTRACTS_REPO and AIOPS_CONTRACTS_TOKEN to propose changes"
+            )
+        stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime(now()))
+        branch = f"{proposals.BRANCHES}{c.id}-{stamp}"
+        token = settings.contracts_token.get_secret_value()
+        http = github_http or httpx.Client(timeout=30)
+        try:
+            url = await proposals.propose(
+                http, settings.contracts_repo, token, loaded, c, edits, title, why, login, branch
+            )
+        finally:
+            if http is not github_http:
+                http.close()
+        log.info("proposed change %s for %s by %s", url, c.id, login)
+        return url
 
     async def console_feedback(
         t: Investigation, correct: bool, correction: str | None, login: str

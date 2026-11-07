@@ -81,6 +81,11 @@ class Settings(BaseSettings):
     # The Hub MCP server at /mcp/ (slice 11.1a): this bearer token and a listed console
     # Operator's Tailscale identity, so it needs AIOPS_CONSOLE_OPERATORS. Unset = off.
     mcp_token: SecretStr | None = None
+    # Proposed changes (slice 11.3): the private contracts repo on GitHub (owner/name,
+    # cloned at AIOPS_CONTRACTS_DIR) and a fine-grained token for it alone (contents
+    # and pull requests, read and write). Unset = the Hub proposes nothing.
+    contracts_repo: str | None = None
+    contracts_token: SecretStr | None = None
 
     @model_validator(mode="after")
     def _embeddings_need_a_gateway(self) -> "Settings":

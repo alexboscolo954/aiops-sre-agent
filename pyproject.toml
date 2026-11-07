@@ -27,6 +27,7 @@ dependencies = [
     "cronsim==2.7",
     "markdown-it-py==4.2.0",
     "ijson==3.4.0",
+    "ruamel-yaml==0.18.16",
 ]
 
 [project.scripts]
