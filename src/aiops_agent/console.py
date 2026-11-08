@@ -85,6 +85,41 @@ def action_key(approver_token: str) -> str:
     return hmac.new(approver_token.encode(), b"aiops-console", hashlib.sha256).hexdigest()
 
 
+def set_cookie(response: Response, key: str) -> None:
+    """The approver cookie: proof of the token for the whole Hub (both consoles)."""
+    response.set_cookie(
+        COOKIE,
+        key,
+        max_age=COOKIE_DAYS * 86400,
+        path="/",  # the console app's API (/api/v1) needs it too
+        secure=True,
+        httponly=True,
+        samesite="strict",
+    )
+
+
+async def scenario_file(t: Investigation, by_id: dict[str, Contract], st: Store) -> Response:
+    """A finished Investigation as a Scenario draft to download: the Hub never writes
+    to the contracts repo."""
+    if t.status != "done":
+        raise HTTPException(409, f"investigation is {t.status}: only a finished one saves")
+    if t.input is None or t.contract_id not in by_id:
+        raise HTTPException(409, "started before Scenarios were recorded, or its Contract is gone")
+    body = evals.scenario_yaml(
+        t,
+        by_id[t.contract_id],
+        await st.tool_calls(t.id),
+        await st.decisions(t.id),
+        await st.teachings(t.contract_id, "approved"),
+    )
+    name = f"{t.contract_id}-{t.id[:8]}.yaml"
+    return Response(
+        body,
+        media_type="application/yaml",
+        headers={**HEADERS, "Content-Disposition": f'attachment; filename="{name}"'},
+    )
+
+
 def same_origin(request: Request) -> bool:
     site = request.headers.get("Sec-Fetch-Site")
     if site is not None:
@@ -200,29 +235,10 @@ def router(
 
     @console.get("/investigations/{investigation_id}/scenario.yaml")
     async def scenario(investigation_id: str, login: str = Depends(viewer)) -> Response:
-        """A download only: the Hub never writes to the contracts repo."""
         t = await store().get(investigation_id)
         if t is None:
             raise HTTPException(404, "unknown investigation")
-        if t.status != "done":
-            raise HTTPException(409, f"investigation is {t.status}: only a finished one saves")
-        if t.input is None or t.contract_id not in by_id:
-            raise HTTPException(
-                409, "started before Scenarios were recorded, or its Contract is gone"
-            )
-        body = evals.scenario_yaml(
-            t,
-            by_id[t.contract_id],
-            await store().tool_calls(t.id),
-            await store().decisions(t.id),
-            await store().teachings(t.contract_id, "approved"),
-        )
-        name = f"{t.contract_id}-{t.id[:8]}.yaml"
-        return Response(
-            body,
-            media_type="application/yaml",
-            headers={**HEADERS, "Content-Disposition": f'attachment; filename="{name}"'},
-        )
+        return await scenario_file(t, by_id, store())
 
     @console.post("/investigations/{investigation_id}/decision")
     async def decision(
@@ -382,15 +398,7 @@ def router(
         if not hmac.compare_digest(given.encode(), approver_token.encode()):
             raise HTTPException(403, "that is not the approver token")
         done = RedirectResponse("/console", 303)
-        done.set_cookie(
-            COOKIE,
-            key,
-            max_age=COOKIE_DAYS * 86400,
-            path="/",  # the console app's API (/api/v1) needs it too
-            secure=True,
-            httponly=True,
-            samesite="strict",
-        )
+        set_cookie(done, key)
         return done
 
     return console

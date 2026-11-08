@@ -111,7 +111,7 @@ def test_the_api_also_needs_the_approver_cookie(
         ok = c.get("/api/v1/contracts", headers=VIEW)
     for r in (no_cookie, bad_cookie):
         assert r.status_code == 401
-        assert r.json()["detail"]["token_url"] == "/console/token"
+        assert r.json()["detail"]["token_url"] == "/app/?view=token"
     assert stranger.status_code == 403
     assert ok.status_code == 200 and ok.headers["content-security-policy"] == CSP
     assert ok.json() == [{"id": "acme", "name": "acme"}, {"id": "bank", "name": "bank"}]

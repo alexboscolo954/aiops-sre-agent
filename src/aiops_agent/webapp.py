@@ -5,9 +5,10 @@ The same doors as the Jinja console (console.py): the page and its files need a
 listed Operator's Tailscale identity; every API call also needs the approver cookie,
 and answers 401 with the token page's address without it. The app is built in the
 image's Docker build (console/, Vite) into AIOPS_APP_DIR; nothing loads from a CDN,
-and its CSP allows nothing but the Hub's own origin. Model-written text never reaches
-this API yet; Sizings and risks are the Hub's own words, but pod label values come
-from client clusters: everything is rendered as text.
+and its CSP allows nothing but the Hub's own origin. Since 11.5a it carries
+model-written text (Reports, Answers, tool output) and alert titles from client
+Alertmanagers, as fields: the app renders everything as text, never as markup, and
+an Evidence link as text too, never a link.
 """
 
 import hmac
@@ -17,15 +18,16 @@ import os
 import re
 from collections.abc import Callable
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel
 
 from aiops_agent import agenda, billing, listprices, sizing, usage
-from aiops_agent.console import COOKIE, action_key, same_origin
+from aiops_agent.console import COOKIE, action_key, same_origin, scenario_file, set_cookie
 from aiops_agent.contracts import Contract
+from aiops_agent.models import Answer, CheckResult, Investigation, TriageReport
 from aiops_agent.store import Store
 
 log = logging.getLogger("aiops.webapp")
@@ -40,7 +42,8 @@ HEADERS = {
 }
 ASSET = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9._-]*")  # Vite's hashed names; no path
 TYPES = {".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml"}
-TOKEN_PAGE = "/console/token"  # noqa: S105 (a page, not a secret)
+TOKEN_PAGE = "/app/?view=token"  # noqa: S105 (a page, not a secret)
+SHOWN = 4000  # characters of a tool call's result, as the Jinja page shows
 DAY = 86400.0
 
 
@@ -237,6 +240,98 @@ class ContractSummary(BaseModel):
     name: str
 
 
+class Brief(BaseModel):
+    """An Investigation in a list (slice 11.5a)."""
+
+    id: str
+    contract: str
+    kind: str
+    title: str
+    status: str
+    failed: bool  # a Check whose verdict is no, whatever its Run's status
+    started: float
+
+
+class Usage(BaseModel):
+    input_tokens: int
+    output_tokens: int
+    cost_usd: float | None
+
+
+class Decision(BaseModel):
+    approve: bool
+    actions: list[str]  # the Proposed actions' tool names
+    message: str
+    decided_by: str
+    at: float
+
+
+class Related(BaseModel):
+    title: str
+    matched: dict[str, str]
+    louder: bool
+    at: float
+    separate_id: str | None
+
+
+class ToolCall(BaseModel):
+    tool: str
+    args: dict[str, Any]
+    result: str  # its first SHOWN characters
+    is_error: bool
+
+
+class Verdict(BaseModel):
+    correct: bool
+    correction: str | None
+    by: str
+    at: float
+
+
+class Taught(BaseModel):
+    id: int
+    status: str
+    text: str
+
+
+class InvestigationPage(Brief):
+    """One Investigation in full: its Report, Answer or Check verdict as fields (the
+    app shows each as text), what waits for a decision, and what it did."""
+
+    error: str | None
+    deadline: float | None
+    report: TriageReport | None
+    answer: Answer | None
+    check_result: CheckResult | None
+    pending: list[str]  # each Proposed action's description
+    executed_actions: list[str]
+    usage: Usage
+    masked: dict[str, int]
+    decisions: list[Decision]
+    related: list[Related]
+    tool_calls: list[ToolCall]
+    feedback: list[Verdict]
+    taught: list[Taught]
+    scenario: bool  # finished, with its input recorded: it downloads as a Scenario
+
+
+def brief(t: Investigation) -> dict[str, Any]:
+    failed = bool(t.check_result and not t.check_result.passed)
+    return {
+        "id": t.id,
+        "contract": t.contract_id,
+        "kind": t.kind,
+        "title": t.title,
+        "status": t.status,
+        "failed": failed,
+        "started": t.started,
+    }
+
+
+class Token(BaseModel):
+    token: str
+
+
 class KillSwitch(BaseModel):
     """A Contract's Kill switch (slice 11.2a): who turned it on, and when."""
 
@@ -309,6 +404,19 @@ def router(
             raise HTTPException(404, "unknown Contract")
         return c
 
+    @r.post("/api/v1/token", status_code=204)
+    async def token(given: Token, request: Request) -> Response:
+        """The token page's: the identity and the console's own page only, since it is
+        what earns the cookie every other call needs."""
+        operator(request)
+        if not same_origin(request):
+            raise HTTPException(403, "cross-site request refused")
+        if not hmac.compare_digest(given.token.encode(), approver_token.encode()):
+            raise HTTPException(403, "that is not the approver token")
+        done = Response(status_code=204, headers=HEADERS)
+        set_cookie(done, key)
+        return done
+
     @r.get("/app/", include_in_schema=False)
     async def page(login: str = Depends(operator)) -> HTMLResponse:
         index = APP_DIR / "index.html"
@@ -378,6 +486,54 @@ def router(
     async def now_(contract_id: str) -> agenda.Agenda:
         """What to look at now in this Contract, most urgent first (slice 11.4)."""
         return await agenda.of(store(), contract(contract_id), now())
+
+    @api.get("/contracts/{contract_id}/investigations")
+    async def investigations(
+        contract_id: str, limit: int = Query(100, ge=1, le=500)
+    ) -> list[Brief]:
+        """Newest first; passing Checks left out, as the Checks list has their last Run."""
+        c = contract(contract_id)
+        return [Brief.model_validate(brief(t)) for t in await store().recent(limit, c.id)]
+
+    async def investigation_of(investigation_id: str) -> Investigation:
+        t = await store().get(investigation_id)
+        if t is None or t.contract_id not in by_id:
+            raise HTTPException(404, "unknown investigation")
+        return t
+
+    @api.get("/investigations/{investigation_id}")
+    async def investigation(investigation_id: str) -> InvestigationPage:
+        t = await investigation_of(investigation_id)
+        st = store()
+        return InvestigationPage.model_validate(
+            {
+                **brief(t),
+                "error": t.error,
+                "deadline": t.deadline,
+                "report": t.report,
+                "answer": t.answer,
+                "check_result": t.check_result,
+                "pending": [str(p.get("description", p.get("name", ""))) for p in t.pending],
+                "executed_actions": t.executed_actions,
+                "usage": await st.investigation_usage(t.id),
+                "masked": await st.masked_counts(t.id),
+                "decisions": [
+                    {**d, "actions": [a.get("name", "") for a in d["actions"]]}
+                    for d in await st.decisions(t.id)
+                ],
+                "related": await st.related(t.id),
+                "tool_calls": [
+                    {**c, "result": (c["result"] or "")[:SHOWN]} for c in await st.tool_calls(t.id)
+                ],
+                "feedback": await st.feedback(t.id),
+                "taught": [x for x in await st.teachings(t.contract_id) if x["source_id"] == t.id],
+                "scenario": t.status == "done" and t.input is not None,
+            }
+        )
+
+    @api.get("/investigations/{investigation_id}/scenario.yaml", response_class=Response)
+    async def scenario(investigation_id: str) -> Response:
+        return await scenario_file(await investigation_of(investigation_id), by_id, store())
 
     async def switch(c: Contract) -> KillSwitch:
         on = await store().kill_switch(c.id)

@@ -15,6 +15,10 @@ export type Bills = Schemas["Bills"];
 export type KillSwitch = Schemas["KillSwitch"];
 export type Agenda = Schemas["Agenda"];
 export type AgendaItem = Schemas["Item"];
+export type Brief = Schemas["Brief"];
+export type InvestigationPage = Schemas["InvestigationPage"];
+export type TriageReport = Schemas["TriageReport"];
+export type Evidence = Schemas["Evidence"];
 
 /** The API answered 401: this browser hasn't pasted the approver token. */
 export class NeedsToken extends Error {
@@ -49,6 +53,24 @@ export const billing = (contract: string) =>
 
 export const agenda = (contract: string) =>
   get<Agenda>(`/contracts/${encodeURIComponent(contract)}/agenda`);
+
+export const investigations = (contract: string) =>
+  get<Brief[]>(`/contracts/${encodeURIComponent(contract)}/investigations`);
+
+export const investigation = (id: string) =>
+  get<InvestigationPage>(`/investigations/${encodeURIComponent(id)}`);
+
+/** Earns this browser the cookie: the token page's only call without it. */
+export async function saveToken(token: string): Promise<void> {
+  const r = await fetch("/api/v1/token", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token }),
+  });
+  if (r.status === 403) throw new Error("that is not the approver token");
+  if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+}
 
 export function history(contract: string, c: Container, days: 14 | 400) {
   const q = new URLSearchParams({

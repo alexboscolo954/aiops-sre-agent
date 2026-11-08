@@ -4,11 +4,13 @@
 // the waste's cost is the available Savings, compared with N days ago on request (10.3a),
 // and the realized Savings, requests lowered to their Sizings (10.3b).
 // The Agenda (slice 11.4): what to look at now, most urgent first, above the Workloads.
+// Investigations and the approver token page (slice 11.5a): Investigations.tsx.
 // Everything from the API is rendered as text.
 import { useEffect, useMemo, useState } from "react";
 import * as api from "./api";
 import type { Allocation, Bills, Container, Point, Workload, Workloads } from "./api";
 import Chart from "./Chart";
+import { InvestigationList, InvestigationPage, TokenPage, page } from "./Investigations";
 import { amount, change, cores, cpu, gib, memory, money, rank, when } from "./format";
 
 /** Where each cluster's price comes from, for a Contract priced from cloud list prices. */
@@ -76,8 +78,10 @@ export default function App() {
   useEffect(() => {
     api.contracts().then(setContracts, setError);
   }, []);
+  const [id] = useParam("id");
   const shown = contract || contracts[0]?.id || "";
   const costView = view === "cost";
+  const workloadsView = !view;
   useEffect(() => {
     if (!shown) return;
     setData(null);
@@ -87,23 +91,23 @@ export default function App() {
       api.cost(shown, by || "namespace", compare).then(setAllocation, setError);
       api.billing(shown).then(setBills, () => setBills(null)); // a Contract with no bill is no error
     }
-    else api.workloads(shown).then(setData, setError);
-  }, [shown, costView, by, compare]);
+    else if (workloadsView) api.workloads(shown).then(setData, setError);
+  }, [shown, costView, workloadsView, by, compare]);
   const here = shown ? `contract=${encodeURIComponent(shown)}` : "";
+  const current = (v: string) => (view === v ? "page" : undefined);
+  if (view === "token")
+    return (
+      <>
+        <Header here={here} current={current} />
+        <main>
+          <TokenPage />
+        </main>
+      </>
+    );
 
   return (
     <>
-      <header>
-        <a className="brand" href="/console">aiops</a>
-        <nav>
-          <a href="/console">Investigations</a>
-          <a href="/console/teachings">Teachings</a>
-          <a href="/console/health">Health</a>
-          <a href={`/app/?${here}`} aria-current={costView ? undefined : "page"}>Workloads</a>
-          <a href={`/app/?${here}&view=cost`} aria-current={costView ? "page" : undefined}>Cost</a>
-          <a href="/console/token">Approver token</a>
-        </nav>
-      </header>
+      <Header here={here} current={current} />
       <main>
         {error instanceof api.NeedsToken ? (
           <p className="notice">
@@ -113,7 +117,8 @@ export default function App() {
         ) : error ? (
           <p className="notice">The Hub didn't answer: {error.message}</p>
         ) : null}
-        {contracts.length > 1 && (
+        {view === "investigation" && id && <InvestigationPage id={id} />}
+        {view !== "investigation" && contracts.length > 1 && (
           <label>
             Contract{" "}
             <select
@@ -129,12 +134,31 @@ export default function App() {
             </select>
           </label>
         )}
-        {shown && <KillSwitchBar contract={shown} />}
-        {shown && !costView && <AgendaPanel contract={shown} />}
-        {data && !costView && <Page contract={shown} data={data} />}
+        {shown && view !== "investigation" && <KillSwitchBar contract={shown} />}
+        {shown && workloadsView && <AgendaPanel contract={shown} />}
+        {data && workloadsView && <Page contract={shown} data={data} />}
+        {shown && view === "investigations" && <InvestigationList contract={shown} />}
         {allocation && costView && <CostPage data={allocation} bills={bills} setBy={setBy} compare={compare} setCompare={setCompare} />}
       </main>
     </>
+  );
+}
+
+function Header({ here, current }: { here: string; current: (v: string) => "page" | undefined }) {
+  return (
+    <header>
+      <a className="brand" href="/app/">aiops</a>
+      <nav>
+        <a href={`/app/?${here}&view=investigations`} aria-current={current("investigations") ?? current("investigation")}>
+          Investigations
+        </a>
+        <a href="/console/teachings">Teachings</a>
+        <a href="/console/health">Health</a>
+        <a href={`/app/?${here}`} aria-current={current("")}>Workloads</a>
+        <a href={`/app/?${here}&view=cost`} aria-current={current("cost")}>Cost</a>
+        <a href="/app/?view=token" aria-current={current("token")}>Approver token</a>
+      </nav>
+    </header>
   );
 }
 
@@ -169,7 +193,7 @@ function KillSwitchBar({ contract }: { contract: string }) {
 /** Where to act on an Agenda item: its Investigation, its Workload, or the Cost page. */
 function link(contract: string, i: api.AgendaItem): string | null {
   const here = `contract=${encodeURIComponent(contract)}`;
-  if (i.id) return `/console/investigations/${encodeURIComponent(i.id)}`;
+  if (i.id) return page(i.id);
   if (i.workload) return `/app/?${here}&workload=${encodeURIComponent(i.workload)}`;
   if (i.kind === "bill") return `/app/?${here}&view=cost`;
   return null;

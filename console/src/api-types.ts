@@ -92,6 +92,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/contracts/{contract_id}/investigations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Investigations
+         * @description Newest first; passing Checks left out, as the Checks list has their last Run.
+         */
+        get: operations["investigations_api_v1_contracts__contract_id__investigations_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/contracts/{contract_id}/kill-switch": {
         parameters: {
             query?: never;
@@ -131,6 +151,61 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/investigations/{investigation_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Investigation */
+        get: operations["investigation_api_v1_investigations__investigation_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/investigations/{investigation_id}/scenario.yaml": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Scenario */
+        get: operations["scenario_api_v1_investigations__investigation_id__scenario_yaml_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/token": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Token
+         * @description The token page's: the identity and the console's own page only, since it is
+         *     what earns the cookie every other call needs.
+         */
+        post: operations["token_api_v1_token_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -164,6 +239,19 @@ export interface components {
             total: components["schemas"]["Change"];
             /** Warnings */
             warnings: string[];
+        };
+        /**
+         * Answer
+         * @description Result of a Question: a direct reply. Every claim must be backed by evidence.
+         */
+        Answer: {
+            /**
+             * Answer
+             * @description The direct reply to the Operator's question, in markdown
+             */
+            answer: string;
+            /** Evidence */
+            evidence: components["schemas"]["Evidence"][];
         };
         /**
          * Bill
@@ -208,11 +296,52 @@ export interface components {
             /** Tolerance */
             tolerance: number;
         };
+        /**
+         * Brief
+         * @description An Investigation in a list (slice 11.5a).
+         */
+        Brief: {
+            /** Contract */
+            contract: string;
+            /** Failed */
+            failed: boolean;
+            /** Id */
+            id: string;
+            /** Kind */
+            kind: string;
+            /** Started */
+            started: number;
+            /** Status */
+            status: string;
+            /** Title */
+            title: string;
+        };
         /** Change */
         Change: {
             cost?: components["schemas"]["Cost"] | null;
             requests: components["schemas"]["Waste"];
             waste: components["schemas"]["Waste"];
+        };
+        /**
+         * CheckResult
+         * @description Result of a scheduled Check: does what the Operator wrote hold right now?
+         *     Every claim must be backed by evidence.
+         */
+        CheckResult: {
+            /** Evidence */
+            evidence: components["schemas"]["Evidence"][];
+            /**
+             * Passed
+             * @description true only when the evidence shows the Check holds; false when it doesn't, or when you couldn't tell (a tool failed, a target is missing)
+             */
+            passed: boolean;
+            /** @description Required when passed is false, empty when true: the failure investigated like an alert */
+            report?: components["schemas"]["TriageReport"] | null;
+            /**
+             * Summary
+             * @description One or two sentences: what holds, or what doesn't
+             */
+            summary: string;
         };
         /** ClusterStatus */
         ClusterStatus: {
@@ -295,6 +424,19 @@ export interface components {
             /** Waste */
             waste: number;
         };
+        /** Decision */
+        Decision: {
+            /** Actions */
+            actions: string[];
+            /** Approve */
+            approve: boolean;
+            /** At */
+            at: number;
+            /** Decided By */
+            decided_by: string;
+            /** Message */
+            message: string;
+        };
         /** Drop */
         Drop: {
             /** After */
@@ -318,6 +460,24 @@ export interface components {
             /** Workload */
             workload: string;
         };
+        /** Evidence */
+        Evidence: {
+            /**
+             * Finding
+             * @description What it showed, quoted or summarized, one line
+             */
+            finding: string;
+            /**
+             * Link
+             * @description A link a tool returned that opens this evidence (e.g. from a generate_deeplink tool), copied exactly. Never build or edit one.
+             */
+            link?: string | null;
+            /**
+             * Source
+             * @description The one tool that produced it, exactly as named in your tools, e.g. kubernetes_pod_logs. No arguments and no second tool: say which pod or query in the finding, and give each tool its own Evidence.
+             */
+            source: string;
+        };
         /** Group */
         Group: {
             change?: components["schemas"]["Change"] | null;
@@ -338,6 +498,55 @@ export interface components {
         History: {
             /** Points */
             points: components["schemas"]["Point"][];
+        };
+        /**
+         * InvestigationPage
+         * @description One Investigation in full: its Report, Answer or Check verdict as fields (the
+         *     app shows each as text), what waits for a decision, and what it did.
+         */
+        InvestigationPage: {
+            answer: components["schemas"]["Answer"] | null;
+            check_result: components["schemas"]["CheckResult"] | null;
+            /** Contract */
+            contract: string;
+            /** Deadline */
+            deadline: number | null;
+            /** Decisions */
+            decisions: components["schemas"]["Decision"][];
+            /** Error */
+            error: string | null;
+            /** Executed Actions */
+            executed_actions: string[];
+            /** Failed */
+            failed: boolean;
+            /** Feedback */
+            feedback: components["schemas"]["Verdict"][];
+            /** Id */
+            id: string;
+            /** Kind */
+            kind: string;
+            /** Masked */
+            masked: {
+                [key: string]: number;
+            };
+            /** Pending */
+            pending: string[];
+            /** Related */
+            related: components["schemas"]["Related"][];
+            report: components["schemas"]["TriageReport"] | null;
+            /** Scenario */
+            scenario: boolean;
+            /** Started */
+            started: number;
+            /** Status */
+            status: string;
+            /** Taught */
+            taught: components["schemas"]["Taught"][];
+            /** Title */
+            title: string;
+            /** Tool Calls */
+            tool_calls: components["schemas"]["ToolCall"][];
+            usage: components["schemas"]["Usage"];
         };
         /** Item */
         Item: {
@@ -398,6 +607,21 @@ export interface components {
             rate: components["schemas"]["Waste"];
             week: components["schemas"]["Waste"];
         };
+        /** Related */
+        Related: {
+            /** At */
+            at: number;
+            /** Louder */
+            louder: boolean;
+            /** Matched */
+            matched: {
+                [key: string]: string;
+            };
+            /** Separate Id */
+            separate_id: string | null;
+            /** Title */
+            title: string;
+        };
         /** Resource */
         Resource: {
             /** Action */
@@ -434,6 +658,92 @@ export interface components {
             /** Rate */
             rate: number;
         };
+        /** Taught */
+        Taught: {
+            /** Id */
+            id: number;
+            /** Status */
+            status: string;
+            /** Text */
+            text: string;
+        };
+        /** Token */
+        Token: {
+            /** Token */
+            token: string;
+        };
+        /** ToolCall */
+        ToolCall: {
+            /** Args */
+            args: {
+                [key: string]: unknown;
+            };
+            /** Is Error */
+            is_error: boolean;
+            /** Result */
+            result: string;
+            /** Tool */
+            tool: string;
+        };
+        /**
+         * TriageReport
+         * @description Result of investigating one alert group. Every claim must be backed by evidence.
+         */
+        TriageReport: {
+            /**
+             * Affected
+             * @description Workloads affected, as namespace/kind/name
+             */
+            affected: string[];
+            /**
+             * Category
+             * @description Why it broke, not how it fails. bad_rollout: a new revision broke a workload whose earlier revision worked, including a rollout of another workload the alerting one depends on (wins over the other classes). dependency_failure: something it depends on is failing, with no rollout to blame. bad_config: wrong or missing config, command or probe. app_error: bug in the code, including memory leaks. resource_limits: limits too low for a healthy workload. image_unavailable: tag or registry problem. capacity: the cluster can't fit the workload.
+             * @enum {string}
+             */
+            category: "bad_rollout" | "bad_config" | "app_error" | "resource_limits" | "image_unavailable" | "capacity" | "node_problem" | "dependency_failure" | "unknown";
+            /**
+             * Confidence
+             * @description high: direct evidence (e.g. the error in logs); low: inferred
+             * @enum {string}
+             */
+            confidence: "high" | "medium" | "low";
+            /** Evidence */
+            evidence: components["schemas"]["Evidence"][];
+            /**
+             * Probable Root Cause
+             * @description Why it broke, with the deciding facts from the evidence: the value, limit, version, revision or time that proves it (e.g. memory limit 64Mi against a heap that needs about 200Mi), not only a summary of the change
+             */
+            probable_root_cause: string;
+            /**
+             * Recommended Actions
+             * @description Ordered, concrete next steps
+             */
+            recommended_actions: string[];
+            /**
+             * Runbook
+             * @description Runbook name used, if one matched
+             */
+            runbook?: string | null;
+            /**
+             * Severity
+             * @enum {string}
+             */
+            severity: "critical" | "high" | "medium" | "low";
+            /**
+             * Summary
+             * @description One or two sentences an on-call engineer reads first
+             */
+            summary: string;
+        };
+        /** Usage */
+        Usage: {
+            /** Cost Usd */
+            cost_usd: number | null;
+            /** Input Tokens */
+            input_tokens: number;
+            /** Output Tokens */
+            output_tokens: number;
+        };
         /** ValidationError */
         ValidationError: {
             /** Context */
@@ -446,6 +756,17 @@ export interface components {
             msg: string;
             /** Error Type */
             type: string;
+        };
+        /** Verdict */
+        Verdict: {
+            /** At */
+            at: number;
+            /** By */
+            by: string;
+            /** Correct */
+            correct: boolean;
+            /** Correction */
+            correction: string | null;
         };
         /** Waste */
         Waste: {
@@ -672,6 +993,39 @@ export interface operations {
             };
         };
     };
+    investigations_api_v1_contracts__contract_id__investigations_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                contract_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Brief"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     kill_switch_api_v1_contracts__contract_id__kill_switch_get: {
         parameters: {
             query?: never;
@@ -784,6 +1138,97 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["Workloads"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    investigation_api_v1_investigations__investigation_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                investigation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvestigationPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    scenario_api_v1_investigations__investigation_id__scenario_yaml_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                investigation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    token_api_v1_token_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Token"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {

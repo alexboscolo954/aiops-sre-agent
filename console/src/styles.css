@@ -61,3 +61,12 @@ button.link { background: none; border: 0; padding: 0; color: var(--accent); fon
 .range button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
 .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1rem; }
 .chart { min-width: 0; }
+.text { white-space: pre-wrap; }
+.panel {
+  margin: 1rem 0; padding: 0.75rem 1rem; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 6px;
+}
+.panel.waiting { background: var(--wait-bg); }
+.meta { color: var(--muted); }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.investigations tbody tr { cursor: default; }

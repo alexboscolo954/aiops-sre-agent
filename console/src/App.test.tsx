@@ -399,7 +399,7 @@ test("the Agenda lists what to look at now, in the Hub's order, each linking whe
   ]);
   const hrefs = [...page.querySelectorAll(".agenda li")].map((li) => li.querySelector("a")?.getAttribute("href") ?? null);
   expect(hrefs).toEqual([
-    "/console/investigations/t1",
+    "/app/?view=investigation&id=t1",
     null,
     "/app/?contract=demo-shop&view=cost",
     "/app/?contract=demo-shop&workload=kind%2Flab%2FDeployment%2Fapi",
@@ -415,4 +415,119 @@ test("a quiet Contract's Agenda says so", async () => {
   });
   render(<App />);
   expect(await screen.findByText("Nothing needs you now.")).toBeTruthy();
+});
+
+const REPORT = {
+  summary: "checkout is OOM-killed",
+  category: "resource_limits",
+  probable_root_cause: "memory limit 64Mi\nagainst a 200Mi heap",
+  confidence: "high",
+  severity: "high",
+  affected: ["shop/Deployment/checkout"],
+  evidence: [{ source: "kubernetes_pod_logs", finding: "<img src=x onerror=alert(1)>", link: "https://evil.example/x" }],
+  recommended_actions: ["Raise the limit to 256Mi"],
+  runbook: null,
+};
+
+const PAGE = {
+  id: "t1",
+  contract: "demo-shop",
+  kind: "triage",
+  title: "<b>OOM</b> in checkout",
+  status: "awaiting_approval",
+  failed: false,
+  started: 1_700_000_000,
+  error: null,
+  deadline: 1_700_000_600,
+  report: REPORT,
+  answer: null,
+  check_result: null,
+  pending: ["evict shop/checkout-1"],
+  executed_actions: [],
+  usage: { input_tokens: 10, output_tokens: 5, cost_usd: 0.0012 },
+  masked: { name: 2 },
+  decisions: [{ approve: false, actions: ["kubernetes_evict_pod"], message: "not now", decided_by: "slack:U1", at: 1_700_000_100 }],
+  related: [],
+  tool_calls: [{ tool: "kubernetes_list_pods", args: { namespace: "shop" }, result: "<script>x</script>", is_error: false }],
+  feedback: [],
+  taught: [],
+  scenario: false,
+};
+
+test("a Contract's Investigations list links each one, a failed Check as failed", async () => {
+  history.replaceState(null, "", "/app/?view=investigations");
+  answer({
+    "/api/v1/contracts": [200, [{ id: "demo-shop", name: "demo-shop" }]],
+    "/api/v1/contracts/demo-shop/investigations": [
+      200,
+      [
+        { id: "c1", contract: "demo-shop", kind: "check", title: "api answers", status: "done", failed: true, started: 1_700_000_000 },
+        { id: "t1", contract: "demo-shop", kind: "triage", title: "OOM", status: "awaiting_approval", failed: false, started: 1_700_000_000 },
+      ],
+    ],
+  });
+  const { container: page } = render(<App />);
+  await screen.findByText("demo-shop: Investigations");
+  const rows = [...page.querySelectorAll(".investigations tbody tr")].map((tr) => tr.textContent);
+  expect(rows).toEqual([
+    "2023-11-14 22:13 UTCcheckfailedapi answers",
+    "2023-11-14 22:13 UTCtriageawaiting approvalOOM",
+  ]);
+  expect(screen.getByText("OOM").getAttribute("href")).toBe("/app/?view=investigation&id=t1");
+});
+
+test("an Investigation shows its Report as text, an Evidence link never as a link", async () => {
+  history.replaceState(null, "", "/app/?view=investigation&id=t1");
+  answer({
+    "/api/v1/contracts": [200, [{ id: "demo-shop", name: "demo-shop" }]],
+    "/api/v1/investigations/t1": [200, PAGE],
+  });
+  const { container: page } = render(<App />);
+  expect(await screen.findByText("<b>OOM</b> in checkout")).toBeTruthy();
+  const cause = [...page.querySelectorAll("p.text")].find((p) => p.textContent?.includes("64Mi"));
+  expect(cause?.textContent).toContain("memory limit 64Mi\nagainst a 200Mi heap"); // its line break kept
+  expect(screen.getByText(/onerror=alert\(1\)> \(https:\/\/evil.example\/x\)/)).toBeTruthy();
+  expect(page.querySelector("img")).toBeNull();
+  expect(page.querySelector("b")).toBeNull();
+  expect(page.querySelector('a[href^="https://evil"]')).toBeNull();
+  expect(screen.getByText("evict shop/checkout-1")).toBeTruthy();
+  expect(screen.getByText(/Goes Stale at 2023-11-14 22:23 UTC/)).toBeTruthy();
+  expect(screen.getByText(/masked for the LLM: 2 names/)).toBeTruthy();
+  expect(screen.getByText("not now")).toBeTruthy();
+  expect(screen.getByText("<script>x</script>")).toBeTruthy();
+  expect(screen.queryByText("Save as Scenario")).toBeNull();
+});
+
+test("a finished Investigation offers its Scenario download", async () => {
+  history.replaceState(null, "", "/app/?view=investigation&id=t1");
+  answer({
+    "/api/v1/contracts": [200, [{ id: "demo-shop", name: "demo-shop" }]],
+    "/api/v1/investigations/t1": [200, { ...PAGE, status: "done", pending: [], deadline: null, scenario: true }],
+  });
+  render(<App />);
+  const link = await screen.findByText("Save as Scenario");
+  expect(link.getAttribute("href")).toBe("/api/v1/investigations/t1/scenario.yaml");
+  expect(screen.queryByText("Waiting for a decision")).toBeNull();
+});
+
+test("the token page posts the token and says when it is wrong", async () => {
+  history.replaceState(null, "", "/app/?view=token");
+  const sent: unknown[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === "/api/v1/token") {
+        sent.push(JSON.parse(String(init?.body)));
+        return new Response(null, { status: 403 });
+      }
+      return new Response("{}", { status: 401 });
+    }),
+  );
+  const { container: page } = render(<App />);
+  const input = page.querySelector('input[type="password"]') as HTMLInputElement;
+  fireEvent.change(input, { target: { value: "guess" } });
+  fireEvent.click(screen.getByText("Save"));
+  expect(await screen.findByText("Couldn't: that is not the approver token")).toBeTruthy();
+  expect(sent).toEqual([{ token: "guess" }]);
+  expect(screen.queryByText(/paste it/)).toBeNull(); // the token page needs no cookie
 });

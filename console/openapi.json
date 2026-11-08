@@ -101,6 +101,30 @@
         "title": "Allocation",
         "type": "object"
       },
+      "Answer": {
+        "description": "Result of a Question: a direct reply. Every claim must be backed by evidence.",
+        "properties": {
+          "answer": {
+            "description": "The direct reply to the Operator's question, in markdown",
+            "title": "Answer",
+            "type": "string"
+          },
+          "evidence": {
+            "items": {
+              "$ref": "#/components/schemas/Evidence"
+            },
+            "minItems": 1,
+            "title": "Evidence",
+            "type": "array"
+          }
+        },
+        "required": [
+          "answer",
+          "evidence"
+        ],
+        "title": "Answer",
+        "type": "object"
+      },
       "Bill": {
         "description": "A billed cluster's cloud bill beside its estimate; `note` says why there is none.",
         "properties": {
@@ -262,6 +286,50 @@
         "title": "Bills",
         "type": "object"
       },
+      "Brief": {
+        "description": "An Investigation in a list (slice 11.5a).",
+        "properties": {
+          "contract": {
+            "title": "Contract",
+            "type": "string"
+          },
+          "failed": {
+            "title": "Failed",
+            "type": "boolean"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "started": {
+            "title": "Started",
+            "type": "number"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "contract",
+          "kind",
+          "title",
+          "status",
+          "failed",
+          "started"
+        ],
+        "title": "Brief",
+        "type": "object"
+      },
       "Change": {
         "properties": {
           "cost": {
@@ -286,6 +354,47 @@
           "waste"
         ],
         "title": "Change",
+        "type": "object"
+      },
+      "CheckResult": {
+        "description": "Result of a scheduled Check: does what the Operator wrote hold right now?\nEvery claim must be backed by evidence.",
+        "properties": {
+          "evidence": {
+            "items": {
+              "$ref": "#/components/schemas/Evidence"
+            },
+            "minItems": 1,
+            "title": "Evidence",
+            "type": "array"
+          },
+          "passed": {
+            "description": "true only when the evidence shows the Check holds; false when it doesn't, or when you couldn't tell (a tool failed, a target is missing)",
+            "title": "Passed",
+            "type": "boolean"
+          },
+          "report": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TriageReport"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Required when passed is false, empty when true: the failure investigated like an alert"
+          },
+          "summary": {
+            "description": "One or two sentences: what holds, or what doesn't",
+            "title": "Summary",
+            "type": "string"
+          }
+        },
+        "required": [
+          "passed",
+          "summary",
+          "evidence"
+        ],
+        "title": "CheckResult",
         "type": "object"
       },
       "ClusterStatus": {
@@ -558,6 +667,42 @@
         "title": "Cost",
         "type": "object"
       },
+      "Decision": {
+        "properties": {
+          "actions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Actions",
+            "type": "array"
+          },
+          "approve": {
+            "title": "Approve",
+            "type": "boolean"
+          },
+          "at": {
+            "title": "At",
+            "type": "number"
+          },
+          "decided_by": {
+            "title": "Decided By",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "approve",
+          "actions",
+          "message",
+          "decided_by",
+          "at"
+        ],
+        "title": "Decision",
+        "type": "object"
+      },
       "Drop": {
         "properties": {
           "after": {
@@ -618,6 +763,38 @@
           "saved"
         ],
         "title": "Drop",
+        "type": "object"
+      },
+      "Evidence": {
+        "properties": {
+          "finding": {
+            "description": "What it showed, quoted or summarized, one line",
+            "title": "Finding",
+            "type": "string"
+          },
+          "link": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A link a tool returned that opens this evidence (e.g. from a generate_deeplink tool), copied exactly. Never build or edit one.",
+            "title": "Link"
+          },
+          "source": {
+            "description": "The one tool that produced it, exactly as named in your tools, e.g. kubernetes_pod_logs. No arguments and no second tool: say which pod or query in the finding, and give each tool its own Evidence.",
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source",
+          "finding"
+        ],
+        "title": "Evidence",
         "type": "object"
       },
       "Group": {
@@ -693,6 +870,180 @@
           "points"
         ],
         "title": "History",
+        "type": "object"
+      },
+      "InvestigationPage": {
+        "description": "One Investigation in full: its Report, Answer or Check verdict as fields (the\napp shows each as text), what waits for a decision, and what it did.",
+        "properties": {
+          "answer": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Answer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "check_result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CheckResult"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "contract": {
+            "title": "Contract",
+            "type": "string"
+          },
+          "deadline": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deadline"
+          },
+          "decisions": {
+            "items": {
+              "$ref": "#/components/schemas/Decision"
+            },
+            "title": "Decisions",
+            "type": "array"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "executed_actions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Executed Actions",
+            "type": "array"
+          },
+          "failed": {
+            "title": "Failed",
+            "type": "boolean"
+          },
+          "feedback": {
+            "items": {
+              "$ref": "#/components/schemas/Verdict"
+            },
+            "title": "Feedback",
+            "type": "array"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "masked": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Masked",
+            "type": "object"
+          },
+          "pending": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Pending",
+            "type": "array"
+          },
+          "related": {
+            "items": {
+              "$ref": "#/components/schemas/Related"
+            },
+            "title": "Related",
+            "type": "array"
+          },
+          "report": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TriageReport"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "scenario": {
+            "title": "Scenario",
+            "type": "boolean"
+          },
+          "started": {
+            "title": "Started",
+            "type": "number"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "taught": {
+            "items": {
+              "$ref": "#/components/schemas/Taught"
+            },
+            "title": "Taught",
+            "type": "array"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "tool_calls": {
+            "items": {
+              "$ref": "#/components/schemas/ToolCall"
+            },
+            "title": "Tool Calls",
+            "type": "array"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/Usage"
+          }
+        },
+        "required": [
+          "id",
+          "contract",
+          "kind",
+          "title",
+          "status",
+          "failed",
+          "started",
+          "error",
+          "deadline",
+          "report",
+          "answer",
+          "check_result",
+          "pending",
+          "executed_actions",
+          "usage",
+          "masked",
+          "decisions",
+          "related",
+          "tool_calls",
+          "feedback",
+          "taught",
+          "scenario"
+        ],
+        "title": "InvestigationPage",
         "type": "object"
       },
       "Item": {
@@ -918,6 +1269,49 @@
         "title": "Realized",
         "type": "object"
       },
+      "Related": {
+        "properties": {
+          "at": {
+            "title": "At",
+            "type": "number"
+          },
+          "louder": {
+            "title": "Louder",
+            "type": "boolean"
+          },
+          "matched": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Matched",
+            "type": "object"
+          },
+          "separate_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Separate Id"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "matched",
+          "louder",
+          "at",
+          "separate_id"
+        ],
+        "title": "Related",
+        "type": "object"
+      },
       "Resource": {
         "properties": {
           "action": {
@@ -1023,6 +1417,200 @@
         "title": "SpentCost",
         "type": "object"
       },
+      "Taught": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "text"
+        ],
+        "title": "Taught",
+        "type": "object"
+      },
+      "Token": {
+        "properties": {
+          "token": {
+            "title": "Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "token"
+        ],
+        "title": "Token",
+        "type": "object"
+      },
+      "ToolCall": {
+        "properties": {
+          "args": {
+            "additionalProperties": true,
+            "title": "Args",
+            "type": "object"
+          },
+          "is_error": {
+            "title": "Is Error",
+            "type": "boolean"
+          },
+          "result": {
+            "title": "Result",
+            "type": "string"
+          },
+          "tool": {
+            "title": "Tool",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tool",
+          "args",
+          "result",
+          "is_error"
+        ],
+        "title": "ToolCall",
+        "type": "object"
+      },
+      "TriageReport": {
+        "description": "Result of investigating one alert group. Every claim must be backed by evidence.",
+        "properties": {
+          "affected": {
+            "description": "Workloads affected, as namespace/kind/name",
+            "items": {
+              "type": "string"
+            },
+            "title": "Affected",
+            "type": "array"
+          },
+          "category": {
+            "description": "Why it broke, not how it fails. bad_rollout: a new revision broke a workload whose earlier revision worked, including a rollout of another workload the alerting one depends on (wins over the other classes). dependency_failure: something it depends on is failing, with no rollout to blame. bad_config: wrong or missing config, command or probe. app_error: bug in the code, including memory leaks. resource_limits: limits too low for a healthy workload. image_unavailable: tag or registry problem. capacity: the cluster can't fit the workload.",
+            "enum": [
+              "bad_rollout",
+              "bad_config",
+              "app_error",
+              "resource_limits",
+              "image_unavailable",
+              "capacity",
+              "node_problem",
+              "dependency_failure",
+              "unknown"
+            ],
+            "title": "Category",
+            "type": "string"
+          },
+          "confidence": {
+            "description": "high: direct evidence (e.g. the error in logs); low: inferred",
+            "enum": [
+              "high",
+              "medium",
+              "low"
+            ],
+            "title": "Confidence",
+            "type": "string"
+          },
+          "evidence": {
+            "items": {
+              "$ref": "#/components/schemas/Evidence"
+            },
+            "minItems": 1,
+            "title": "Evidence",
+            "type": "array"
+          },
+          "probable_root_cause": {
+            "description": "Why it broke, with the deciding facts from the evidence: the value, limit, version, revision or time that proves it (e.g. memory limit 64Mi against a heap that needs about 200Mi), not only a summary of the change",
+            "title": "Probable Root Cause",
+            "type": "string"
+          },
+          "recommended_actions": {
+            "description": "Ordered, concrete next steps",
+            "items": {
+              "type": "string"
+            },
+            "title": "Recommended Actions",
+            "type": "array"
+          },
+          "runbook": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Runbook name used, if one matched",
+            "title": "Runbook"
+          },
+          "severity": {
+            "enum": [
+              "critical",
+              "high",
+              "medium",
+              "low"
+            ],
+            "title": "Severity",
+            "type": "string"
+          },
+          "summary": {
+            "description": "One or two sentences an on-call engineer reads first",
+            "title": "Summary",
+            "type": "string"
+          }
+        },
+        "required": [
+          "summary",
+          "category",
+          "probable_root_cause",
+          "confidence",
+          "severity",
+          "affected",
+          "evidence",
+          "recommended_actions"
+        ],
+        "title": "TriageReport",
+        "type": "object"
+      },
+      "Usage": {
+        "properties": {
+          "cost_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Usd"
+          },
+          "input_tokens": {
+            "title": "Input Tokens",
+            "type": "integer"
+          },
+          "output_tokens": {
+            "title": "Output Tokens",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "input_tokens",
+          "output_tokens",
+          "cost_usd"
+        ],
+        "title": "Usage",
+        "type": "object"
+      },
       "ValidationError": {
         "properties": {
           "ctx": {
@@ -1061,6 +1649,41 @@
           "type"
         ],
         "title": "ValidationError",
+        "type": "object"
+      },
+      "Verdict": {
+        "properties": {
+          "at": {
+            "title": "At",
+            "type": "number"
+          },
+          "by": {
+            "title": "By",
+            "type": "string"
+          },
+          "correct": {
+            "title": "Correct",
+            "type": "boolean"
+          },
+          "correction": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Correction"
+          }
+        },
+        "required": [
+          "correct",
+          "correction",
+          "by",
+          "at"
+        ],
+        "title": "Verdict",
         "type": "object"
       },
       "Waste": {
@@ -1511,6 +2134,62 @@
         "summary": "History"
       }
     },
+    "/api/v1/contracts/{contract_id}/investigations": {
+      "get": {
+        "description": "Newest first; passing Checks left out, as the Checks list has their last Run.",
+        "operationId": "investigations_api_v1_contracts__contract_id__investigations_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "contract_id",
+            "required": true,
+            "schema": {
+              "title": "Contract Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/Brief"
+                  },
+                  "title": "Response Investigations Api V1 Contracts  Contract Id  Investigations Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Investigations"
+      }
+    },
     "/api/v1/contracts/{contract_id}/kill-switch": {
       "delete": {
         "description": "The only way a Kill switch goes off: the Operator, in the console.",
@@ -1662,6 +2341,109 @@
           }
         },
         "summary": "Workloads"
+      }
+    },
+    "/api/v1/investigations/{investigation_id}": {
+      "get": {
+        "operationId": "investigation_api_v1_investigations__investigation_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "investigation_id",
+            "required": true,
+            "schema": {
+              "title": "Investigation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvestigationPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Investigation"
+      }
+    },
+    "/api/v1/investigations/{investigation_id}/scenario.yaml": {
+      "get": {
+        "operationId": "scenario_api_v1_investigations__investigation_id__scenario_yaml_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "investigation_id",
+            "required": true,
+            "schema": {
+              "title": "Investigation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Scenario"
+      }
+    },
+    "/api/v1/token": {
+      "post": {
+        "description": "The token page's: the identity and the console's own page only, since it is\nwhat earns the cookie every other call needs.",
+        "operationId": "token_api_v1_token_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Token"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Token"
       }
     }
   }
