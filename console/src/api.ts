@@ -84,6 +84,17 @@ export const judge = (id: string, correct: boolean, correction: string) =>
   send<InvestigationPage>(`${at(id)}/feedback`, { correct, correction });
 export const fileJira = (id: string) => send<InvestigationPage>(`${at(id)}/jira`);
 
+export type Teachings = Schemas["Teachings"];
+export type Teaching = Schemas["Teaching"];
+const taught = (contract: string) => `/contracts/${encodeURIComponent(contract)}/teachings`;
+export const teachings = (contract: string) => get<Teachings>(taught(contract));
+export const writeTeaching = (contract: string, text: string, alerts: string[]) =>
+  send<Teachings>(taught(contract), { text, alerts });
+export const decideTeaching = (contract: string, id: number, approve: boolean, text: string) =>
+  send<Teachings>(`${taught(contract)}/${id}/decision`, { approve, text });
+export const retireTeaching = (contract: string, id: number) =>
+  send<Teachings>(`${taught(contract)}/${id}/retire`);
+
 /** Earns this browser the cookie: the token page's only call without it. */
 export async function saveToken(token: string): Promise<void> {
   const r = await fetch("/api/v1/token", {

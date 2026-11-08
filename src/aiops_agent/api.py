@@ -1533,6 +1533,7 @@ def create_app(
                 console_file_jira,
                 jira_of,
                 console_feedback,
+                console_decide_teaching,
             )
         )
 

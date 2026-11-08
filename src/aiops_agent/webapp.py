@@ -29,6 +29,7 @@ from aiops_agent.console import (
     COOKIE,
     CORRECTION_LIMIT,
     Decide,
+    DecideTeaching,
     Feedback,
     FileJira,
     action_key,
@@ -39,6 +40,8 @@ from aiops_agent.console import (
 from aiops_agent.contracts import Contract, Jira
 from aiops_agent.models import Answer, CheckResult, Investigation, TriageReport
 from aiops_agent.store import Store
+from aiops_agent.teachings import LIMIT as TEACHING_LIMIT
+from aiops_agent.teachings import section
 
 log = logging.getLogger("aiops.webapp")
 
@@ -366,6 +369,38 @@ class FeedbackIn(BaseModel):
     correction: str = ""
 
 
+class Teaching(BaseModel):
+    id: int
+    status: str  # proposed, approved, rejected or retired
+    text: str
+    alerts: list[str]  # empty: every alert
+    source_id: str | None  # the Investigation it was drafted from
+    correction: str | None  # the Operator's words it was drafted from
+    contradicts: int | None  # approving it retires that approved one
+    decided_by: str | None
+    decided_at: float | None
+
+
+class Teachings(BaseModel):
+    """A Contract's Teachings (slice 11.6a), newest first in each list."""
+
+    limit: int  # characters of one Teaching
+    left_out: int  # approved ones that don't fit in a prompt
+    proposed: list[Teaching]
+    approved: list[Teaching]
+    past: list[Teaching]  # rejected and retired
+
+
+class TeachingDecisionIn(BaseModel):
+    approve: bool
+    text: str = ""  # an approval's text, as the Operator edited it
+
+
+class TeachingIn(BaseModel):
+    text: str
+    alerts: list[str] = []  # empty: every alert
+
+
 class KillSwitch(BaseModel):
     """A Contract's Kill switch (slice 11.2a): who turned it on, and when."""
 
@@ -411,9 +446,10 @@ def router(
     file_jira: FileJira,
     jira_of: Callable[[Investigation], Jira | None],
     feedback: Feedback,
+    decide_teaching: DecideTeaching,
 ) -> APIRouter:
-    """decide, file_jira, jira_of and feedback: the Jinja console's, so both consoles
-    record the same thing (`console:<login>`)."""
+    """decide, file_jira, jira_of, feedback and decide_teaching: the Jinja console's, so
+    both consoles record the same thing (`console:<login>`)."""
     key = action_key(approver_token)
     r = APIRouter()
 
@@ -625,6 +661,71 @@ def router(
     async def scenario(investigation_id: str) -> Response:
         return await scenario_file(await investigation_of(investigation_id), by_id, store())
 
+    @api.get("/contracts/{contract_id}/teachings")
+    async def teachings(contract_id: str) -> Teachings:
+        """Lessons for this Contract's future Investigations: only approved ones are
+        used, and never by another Contract."""
+        rows = await store().teachings(contract(contract_id).id)
+        approved = [x for x in rows if x["status"] == "approved"]
+        return Teachings.model_validate(
+            {
+                "limit": TEACHING_LIMIT,
+                "left_out": section(approved, None)[1],
+                "proposed": [x for x in rows if x["status"] == "proposed"],
+                "approved": approved,
+                "past": [x for x in rows if x["status"] in ("rejected", "retired")],
+            }
+        )
+
+    def teaching_text(text: str) -> str:
+        text = text.strip()
+        if not 0 < len(text) <= TEACHING_LIMIT:
+            raise HTTPException(422, f"a Teaching is 1 to {TEACHING_LIMIT} characters")
+        return text
+
+    async def teaching_of(c: Contract, teaching_id: int) -> dict[str, Any]:
+        row = await store().teaching(teaching_id)
+        if row is None or row["contract_id"] != c.id:
+            raise HTTPException(404, "unknown Teaching")
+        return row
+
+    @api.post("/contracts/{contract_id}/teachings")
+    async def write_teaching(
+        contract_id: str, given: TeachingIn, login: str = Depends(changing)
+    ) -> Teachings:
+        """Written by the Operator: approved at once."""
+        c = contract(contract_id)
+        alerts = [a.strip() for a in given.alerts if a.strip()]
+        await store().add_teaching(
+            c.id, teaching_text(given.text), alerts, approved_by=f"console:{login}"
+        )
+        return await teachings(c.id)
+
+    @api.post("/contracts/{contract_id}/teachings/{teaching_id}/decision")
+    async def teaching_decision(
+        contract_id: str,
+        teaching_id: int,
+        given: TeachingDecisionIn,
+        login: str = Depends(changing),
+    ) -> Teachings:
+        """Approve a proposed Teaching with the text as edited, or reject it, once."""
+        c = contract(contract_id)
+        row = await teaching_of(c, teaching_id)
+        text = teaching_text(given.text) if given.approve else None
+        if not await decide_teaching(row, given.approve, text, login):
+            raise HTTPException(409, "already decided")
+        return await teachings(c.id)
+
+    @api.post("/contracts/{contract_id}/teachings/{teaching_id}/retire")
+    async def retire_teaching(
+        contract_id: str, teaching_id: int, login: str = Depends(changing)
+    ) -> Teachings:
+        c = contract(contract_id)
+        row = await teaching_of(c, teaching_id)
+        if not await store().retire_teaching(row["id"], c.id, f"console:{login}"):
+            raise HTTPException(409, "not an approved Teaching")
+        return await teachings(c.id)
+
     async def switch(c: Contract) -> KillSwitch:
         on = await store().kill_switch(c.id)
         return (
@@ -661,5 +762,5 @@ def openapi() -> str:
     it: `make console-types`)."""
     app = FastAPI(title="aiops console", version="1")
     never: Any = None  # the schema needs no behaviour
-    app.include_router(router(set(), {}, never, "x", never, never, never, never, never))
+    app.include_router(router(set(), {}, never, "x", never, never, never, never, never, never))
     return json.dumps(app.openapi(), indent=2, sort_keys=True) + "\n"

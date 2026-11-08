@@ -134,6 +134,68 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/contracts/{contract_id}/teachings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Teachings
+         * @description Lessons for this Contract's future Investigations: only approved ones are
+         *     used, and never by another Contract.
+         */
+        get: operations["teachings_api_v1_contracts__contract_id__teachings_get"];
+        put?: never;
+        /**
+         * Write Teaching
+         * @description Written by the Operator: approved at once.
+         */
+        post: operations["write_teaching_api_v1_contracts__contract_id__teachings_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/contracts/{contract_id}/teachings/{teaching_id}/decision": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Teaching Decision
+         * @description Approve a proposed Teaching with the text as edited, or reject it, once.
+         */
+        post: operations["teaching_decision_api_v1_contracts__contract_id__teachings__teaching_id__decision_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/contracts/{contract_id}/teachings/{teaching_id}/retire": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Retire Teaching */
+        post: operations["retire_teaching_api_v1_contracts__contract_id__teachings__teaching_id__retire_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/contracts/{contract_id}/workloads": {
         parameters: {
             query?: never;
@@ -770,6 +832,63 @@ export interface components {
             /** Text */
             text: string;
         };
+        /** Teaching */
+        Teaching: {
+            /** Alerts */
+            alerts: string[];
+            /** Contradicts */
+            contradicts: number | null;
+            /** Correction */
+            correction: string | null;
+            /** Decided At */
+            decided_at: number | null;
+            /** Decided By */
+            decided_by: string | null;
+            /** Id */
+            id: number;
+            /** Source Id */
+            source_id: string | null;
+            /** Status */
+            status: string;
+            /** Text */
+            text: string;
+        };
+        /** TeachingDecisionIn */
+        TeachingDecisionIn: {
+            /** Approve */
+            approve: boolean;
+            /**
+             * Text
+             * @default
+             */
+            text: string;
+        };
+        /** TeachingIn */
+        TeachingIn: {
+            /**
+             * Alerts
+             * @default []
+             */
+            alerts: string[];
+            /** Text */
+            text: string;
+        };
+        /**
+         * Teachings
+         * @description A Contract's Teachings (slice 11.6a), newest first in each list.
+         */
+        Teachings: {
+            /** Approved */
+            approved: components["schemas"]["Teaching"][];
+            /** Left Out */
+            left_out: number;
+            /** Limit */
+            limit: number;
+            /** Past */
+            past: components["schemas"]["Teaching"][];
+            /** Proposed */
+            proposed: components["schemas"]["Teaching"][];
+        };
         /** Token */
         Token: {
             /** Token */
@@ -1209,6 +1328,140 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["KillSwitch"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    teachings_api_v1_contracts__contract_id__teachings_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                contract_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Teachings"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    write_teaching_api_v1_contracts__contract_id__teachings_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                contract_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TeachingIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Teachings"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    teaching_decision_api_v1_contracts__contract_id__teachings__teaching_id__decision_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                contract_id: string;
+                teaching_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TeachingDecisionIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Teachings"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retire_teaching_api_v1_contracts__contract_id__teachings__teaching_id__retire_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                contract_id: string;
+                teaching_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Teachings"];
                 };
             };
             /** @description Validation Error */

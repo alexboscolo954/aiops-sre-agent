@@ -1559,6 +1559,179 @@
         "title": "Taught",
         "type": "object"
       },
+      "Teaching": {
+        "properties": {
+          "alerts": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Alerts",
+            "type": "array"
+          },
+          "contradicts": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Contradicts"
+          },
+          "correction": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Correction"
+          },
+          "decided_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided At"
+          },
+          "decided_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided By"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "source_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Id"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "text",
+          "alerts",
+          "source_id",
+          "correction",
+          "contradicts",
+          "decided_by",
+          "decided_at"
+        ],
+        "title": "Teaching",
+        "type": "object"
+      },
+      "TeachingDecisionIn": {
+        "properties": {
+          "approve": {
+            "title": "Approve",
+            "type": "boolean"
+          },
+          "text": {
+            "default": "",
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "approve"
+        ],
+        "title": "TeachingDecisionIn",
+        "type": "object"
+      },
+      "TeachingIn": {
+        "properties": {
+          "alerts": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Alerts",
+            "type": "array"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "TeachingIn",
+        "type": "object"
+      },
+      "Teachings": {
+        "description": "A Contract's Teachings (slice 11.6a), newest first in each list.",
+        "properties": {
+          "approved": {
+            "items": {
+              "$ref": "#/components/schemas/Teaching"
+            },
+            "title": "Approved",
+            "type": "array"
+          },
+          "left_out": {
+            "title": "Left Out",
+            "type": "integer"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "past": {
+            "items": {
+              "$ref": "#/components/schemas/Teaching"
+            },
+            "title": "Past",
+            "type": "array"
+          },
+          "proposed": {
+            "items": {
+              "$ref": "#/components/schemas/Teaching"
+            },
+            "title": "Proposed",
+            "type": "array"
+          }
+        },
+        "required": [
+          "limit",
+          "left_out",
+          "proposed",
+          "approved",
+          "past"
+        ],
+        "title": "Teachings",
+        "type": "object"
+      },
       "Token": {
         "properties": {
           "token": {
@@ -2421,6 +2594,201 @@
           }
         },
         "summary": "Turn On"
+      }
+    },
+    "/api/v1/contracts/{contract_id}/teachings": {
+      "get": {
+        "description": "Lessons for this Contract's future Investigations: only approved ones are\nused, and never by another Contract.",
+        "operationId": "teachings_api_v1_contracts__contract_id__teachings_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "contract_id",
+            "required": true,
+            "schema": {
+              "title": "Contract Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Teachings"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Teachings"
+      },
+      "post": {
+        "description": "Written by the Operator: approved at once.",
+        "operationId": "write_teaching_api_v1_contracts__contract_id__teachings_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "contract_id",
+            "required": true,
+            "schema": {
+              "title": "Contract Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TeachingIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Teachings"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Write Teaching"
+      }
+    },
+    "/api/v1/contracts/{contract_id}/teachings/{teaching_id}/decision": {
+      "post": {
+        "description": "Approve a proposed Teaching with the text as edited, or reject it, once.",
+        "operationId": "teaching_decision_api_v1_contracts__contract_id__teachings__teaching_id__decision_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "contract_id",
+            "required": true,
+            "schema": {
+              "title": "Contract Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "teaching_id",
+            "required": true,
+            "schema": {
+              "title": "Teaching Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TeachingDecisionIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Teachings"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Teaching Decision"
+      }
+    },
+    "/api/v1/contracts/{contract_id}/teachings/{teaching_id}/retire": {
+      "post": {
+        "operationId": "retire_teaching_api_v1_contracts__contract_id__teachings__teaching_id__retire_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "contract_id",
+            "required": true,
+            "schema": {
+              "title": "Contract Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "teaching_id",
+            "required": true,
+            "schema": {
+              "title": "Teaching Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Teachings"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retire Teaching"
       }
     },
     "/api/v1/contracts/{contract_id}/workloads": {

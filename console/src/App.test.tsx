@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { Point, Workloads } from "./api";
 import App from "./App";
@@ -606,4 +606,90 @@ test("a finished Report takes feedback and files into Jira, then links the issue
     ["/api/v1/investigations/t1/feedback", { correct: true, correction: "" }],
     ["/api/v1/investigations/t1/jira", null],
   ]);
+});
+
+const TEACHING = { alerts: [], source_id: null, correction: null, contradicts: null, decided_by: null, decided_at: null };
+const TEACHINGS = {
+  limit: 500,
+  left_out: 2,
+  proposed: [{ ...TEACHING, id: 3, status: "proposed", text: "<b>check the node</b>", source_id: "t1", correction: "it was the node", contradicts: 1 }],
+  approved: [{ ...TEACHING, id: 1, status: "approved", text: "restart the cache", alerts: ["KubePodCrashLooping"], decided_by: "slack:U1", decided_at: 1_700_000_000 }],
+  past: [{ ...TEACHING, id: 2, status: "rejected", text: "ignore it", decided_by: "slack:U1", decided_at: 1_700_000_000 }],
+};
+
+function teaching(answers: Record<string, [number, unknown]>, sent: [string, unknown][]) {
+  history.replaceState(null, "", "/app/?view=teachings");
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url: string, init?: RequestInit) => {
+      const path = url.split("?")[0];
+      if (init?.method === "POST") {
+        sent.push([path, init.body ? JSON.parse(String(init.body)) : null]);
+        const [status, body] = answers[path] ?? [404, {}];
+        return new Response(JSON.stringify(body), { status });
+      }
+      const routes: Record<string, unknown> = {
+        "/api/v1/contracts": [{ id: "demo-shop", name: "demo-shop" }],
+        "/api/v1/contracts/demo-shop/teachings": TEACHINGS,
+      };
+      return new Response(JSON.stringify(routes[path] ?? {}), { status: path in routes ? 200 : 404 });
+    }),
+  );
+}
+
+test("Teachings show the queue as text, and approving sends the text as edited", async () => {
+  const sent: [string, unknown][] = [];
+  const after = { ...TEACHINGS, left_out: 0, proposed: [], approved: [{ ...TEACHINGS.approved[0], id: 3, text: "check the node first" }] };
+  teaching({ "/api/v1/contracts/demo-shop/teachings/3/decision": [200, after] }, sent);
+  const { container: page } = render(<App />);
+  const box = (await screen.findByLabelText("Teaching #3")) as HTMLTextAreaElement;
+  expect(box.value).toBe("<b>check the node</b>"); // drafted model text, edited as text
+  expect(page.querySelector("b")?.textContent).not.toBe("check the node");
+  expect(screen.getByText("its Investigation").getAttribute("href")).toBe("/app/?view=investigation&id=t1");
+  expect(screen.getByText(/contradicts #1/)).toBeTruthy();
+  expect(screen.getByText("Your words: it was the node")).toBeTruthy();
+  expect(screen.getByText(/2 approved Teachings don't fit in a prompt/)).toBeTruthy();
+  expect(screen.getByText(/#2 rejected by slack:U1: ignore it/)).toBeTruthy();
+  fireEvent.change(box, { target: { value: "check the node first" } });
+  fireEvent.click(screen.getByText("Approve this text"));
+  expect(await screen.findByText("check the node first")).toBeTruthy();
+  expect(screen.queryByText(/don't fit/)).toBeNull();
+  expect(sent).toEqual([["/api/v1/contracts/demo-shop/teachings/3/decision", { approve: true, text: "check the node first" }]]);
+});
+
+test("rejecting and retiring post for that Teaching, and a refusal shows the Hub's words", async () => {
+  const sent: [string, unknown][] = [];
+  teaching(
+    {
+      "/api/v1/contracts/demo-shop/teachings/3/decision": [409, { detail: "already decided" }],
+      "/api/v1/contracts/demo-shop/teachings/1/retire": [200, { ...TEACHINGS, approved: [] }],
+    },
+    sent,
+  );
+  render(<App />);
+  fireEvent.click(await screen.findByText("Reject"));
+  expect(await screen.findByText("Couldn't: already decided")).toBeTruthy();
+  fireEvent.click(screen.getByText("Retire"));
+  await waitFor(() => expect(screen.queryByText("restart the cache")).toBeNull());
+  expect(screen.queryByText("Couldn't: already decided")).toBeNull();
+  expect(sent).toEqual([
+    ["/api/v1/contracts/demo-shop/teachings/3/decision", { approve: false, text: "" }],
+    ["/api/v1/contracts/demo-shop/teachings/1/retire", null],
+  ]);
+});
+
+test("the Operator writes a Teaching for some alerts, and the form clears once it is added", async () => {
+  const sent: [string, unknown][] = [];
+  const after = { ...TEACHINGS, approved: [{ ...TEACHINGS.approved[0], id: 4, text: "check the node first" }, ...TEACHINGS.approved] };
+  teaching({ "/api/v1/contracts/demo-shop/teachings": [200, after] }, sent);
+  render(<App />);
+  const box = (await screen.findByLabelText("New Teaching")) as HTMLTextAreaElement;
+  const alerts = screen.getByLabelText(/For alerts/) as HTMLInputElement;
+  fireEvent.change(box, { target: { value: "check the node first" } });
+  fireEvent.change(alerts, { target: { value: "KubeNodeNotReady, KubeletDown" } });
+  fireEvent.click(screen.getByText("Add, approved"));
+  expect(await screen.findByText("check the node first")).toBeTruthy();
+  expect(box.value).toBe("");
+  expect(alerts.value).toBe("");
+  expect(sent).toEqual([["/api/v1/contracts/demo-shop/teachings", { text: "check the node first", alerts: ["KubeNodeNotReady", " KubeletDown"] }]]);
 });
