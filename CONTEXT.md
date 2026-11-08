@@ -71,7 +71,7 @@ The Investigation of one Alert group, from receipt to final Report, including an
 _Avoid_: Using "triage" for a single agent invocation
 
 **Question**:
-An Investigation the Operator asks for in their own words, in Slack or the web console. A Question only reads: it never proposes an action. A follow-up in the same thread continues the same Question.
+An Investigation the Operator asks for in their own words, in Slack or the web console. A Question only reads: it never proposes an action. A follow-up in the same thread, or on its console page, continues the same Question; each follow-up is kept with the Answer it replaced, so the Question's whole exchange can be shown.
 
 **Check**:
 An Investigation that runs on a schedule or after a deploy, without an alert. The Operator writes what healthy means in the Check's prompt, and the agent's verdict is pass or fail. A passing Check is recorded quietly. A failing Check produces a Report and notifies the Operator like a Triage does, including Proposed actions. A Check whose Run fails without a verdict counts as failing.

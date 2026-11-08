@@ -65,9 +65,14 @@ def test_a_question_from_the_app_answers_and_follows_up_without_slack(
         "is checkout healthy?",
     )
     assert done["answer"]["answer"] == ANSWER_1["answer"] and done["can_follow_up"] is True
+    assert (done["asked"], done["exchange"]) == ("is checkout healthy?", [])
     assert (cross, blank) == (403, 422)
     assert followed["id"] == qid
     assert after["answer"]["answer"] == ANSWER_2["answer"]
+    assert after["asked"] == "and now?"  # the Answer shown answers the follow-up
+    (earlier,) = after["exchange"]  # one turn, though a blank follow-up was refused
+    assert (earlier["question"], earlier["at"]) == ("is checkout healthy?", done["started"])
+    assert earlier["answer"]["answer"] == ANSWER_1["answer"]
     assert unknown.status_code == 404
     assert slack.calls == []  # a console Question has no Slack thread
 
@@ -97,7 +102,7 @@ def test_only_a_question_no_longer_answering_takes_a_follow_up(
         early = c.post(
             "/api/v1/investigations/q1/questions", json={"question": "and?"}, headers=SAME
         )
-    assert page["can_follow_up"] is False
+    assert page["can_follow_up"] is False and page["asked"] is None and page["exchange"] == []
     assert r.status_code == 409 and r.json()["detail"] == "still answering, or not a Question"
     assert running["status"] == "running" and running["can_follow_up"] is False
     assert early.status_code == 409

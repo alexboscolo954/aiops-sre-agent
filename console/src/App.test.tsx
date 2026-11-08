@@ -454,6 +454,9 @@ const PAGE = {
   scenario: false,
   jira: null,
   can_judge: false,
+  can_follow_up: false,
+  asked: null,
+  exchange: [],
 };
 
 test("a Contract's Investigations list links each one, a failed Check as failed", async () => {
@@ -799,6 +802,31 @@ test("a Question no longer answering takes a follow-up, and the page shows it an
   expect(await screen.findByText(/Working on it/)).toBeTruthy();
   expect(screen.queryByLabelText("Follow-up")).toBeNull();
   expect(sent).toEqual([["/api/v1/investigations/t1/questions", { question: "and now?" }]]);
+});
+
+test("a followed-up Question shows its earlier turns, then the follow-up its Answer answers", async () => {
+  history.replaceState(null, "", "/app/?view=investigation&id=t1");
+  const question = {
+    ...PAGE, kind: "question", status: "done", title: "which namespaces?", report: null, pending: [], deadline: null,
+    answer: { answer: "one cluster, kind", evidence: [] }, can_follow_up: true, asked: "and which clusters?",
+    exchange: [
+      { question: "which namespaces?", at: 1_700_000_000, answer: { answer: "demo, lab and orders", evidence: [{ source: "kubernetes_list_pods", finding: "3 namespaces", link: null }] } },
+      { question: "<b>and pods?</b>", at: 1_700_000_100, answer: null },
+    ],
+  };
+  answer({
+    "/api/v1/contracts": [200, [{ id: "demo-shop", name: "demo-shop" }]],
+    "/api/v1/investigations/t1": [200, question],
+  });
+  const { container: page } = render(<App />);
+  await screen.findByText("demo, lab and orders");
+  const texts = [...page.querySelectorAll("main p.text, main p.hint")].map((p) => p.textContent);
+  expect(texts).toContain("Asked 2023-11-14 22:13 UTC: which namespaces?");
+  expect(texts).toContain("Asked 2023-11-14 22:15 UTC: <b>and pods?</b>"); // as text
+  expect(texts).toContain("No Answer: that Run failed.");
+  expect(texts).toContain("Follow-up: and which clusters?");
+  expect(screen.getByText("one cluster, kind")).toBeTruthy();
+  expect(page.querySelector("main b")).toBeNull();
 });
 
 test("the Contracts page lists every Contract with its spend against its budget", async () => {

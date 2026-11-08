@@ -1276,6 +1276,17 @@
               }
             ]
           },
+          "asked": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Asked"
+          },
           "can_follow_up": {
             "title": "Can Follow Up",
             "type": "boolean"
@@ -1326,6 +1337,13 @@
               }
             ],
             "title": "Error"
+          },
+          "exchange": {
+            "items": {
+              "$ref": "#/components/schemas/Turn"
+            },
+            "title": "Exchange",
+            "type": "array"
           },
           "executed_actions": {
             "items": {
@@ -1453,7 +1471,9 @@
           "scenario",
           "jira",
           "can_judge",
-          "can_follow_up"
+          "can_follow_up",
+          "asked",
+          "exchange"
         ],
         "title": "InvestigationPage",
         "type": "object"
@@ -2267,6 +2287,36 @@
           "recommended_actions"
         ],
         "title": "TriageReport",
+        "type": "object"
+      },
+      "Turn": {
+        "description": "An earlier turn of a Question: what was asked, when, and the Answer it got.",
+        "properties": {
+          "answer": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Answer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "at": {
+            "title": "At",
+            "type": "number"
+          },
+          "question": {
+            "title": "Question",
+            "type": "string"
+          }
+        },
+        "required": [
+          "question",
+          "at",
+          "answer"
+        ],
+        "title": "Turn",
         "type": "object"
       },
       "Usage": {

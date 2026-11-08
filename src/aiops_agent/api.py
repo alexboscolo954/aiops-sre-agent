@@ -1025,7 +1025,7 @@ def create_app(
     async def follow_up(t: Investigation, text: str, asked_ts: str) -> bool:
         """One more message on a finished Question; False while it's still running,
         or when asked_ts isn't newer than the last ask (a redelivery)."""
-        if not await store().claim_follow_up(t.id, asked_ts):
+        if not await store().claim_follow_up(t.id, asked_ts, text):
             return False
         t.status, t.error, t.last_mention_ts = "running", None, asked_ts
         if reason := await over_budget(t.contract_id):

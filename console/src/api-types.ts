@@ -846,6 +846,8 @@ export interface components {
          */
         InvestigationPage: {
             answer: components["schemas"]["Answer"] | null;
+            /** Asked */
+            asked: string | null;
             /** Can Follow Up */
             can_follow_up: boolean;
             /** Can Judge */
@@ -859,6 +861,8 @@ export interface components {
             decisions: components["schemas"]["Decision"][];
             /** Error */
             error: string | null;
+            /** Exchange */
+            exchange: components["schemas"]["Turn"][];
             /** Executed Actions */
             executed_actions: string[];
             /** Failed */
@@ -1169,6 +1173,17 @@ export interface components {
              * @description One or two sentences an on-call engineer reads first
              */
             summary: string;
+        };
+        /**
+         * Turn
+         * @description An earlier turn of a Question: what was asked, when, and the Answer it got.
+         */
+        Turn: {
+            answer: components["schemas"]["Answer"] | null;
+            /** At */
+            at: number;
+            /** Question */
+            question: string;
         };
         /** Usage */
         Usage: {

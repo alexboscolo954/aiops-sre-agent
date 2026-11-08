@@ -213,6 +213,27 @@ export function InvestigationPage({ id }: { id: string }) {
         </section>
       )}
       {t.report && <Report r={t.report} executed={t.executed_actions} />}
+      {t.exchange.map((x, n) => (
+        <section key={n} className="panel">
+          <p className="hint text">
+            Asked {when(x.at)}: {x.question}
+          </p>
+          {x.answer ? (
+            <>
+              <p className="text">{x.answer.answer}</p>
+              <h3>Evidence</h3>
+              <EvidenceList items={x.answer.evidence} />
+            </>
+          ) : (
+            <p className="hint">No Answer: that Run failed.</p>
+          )}
+        </section>
+      ))}
+      {t.exchange.length > 0 && t.asked && (
+        <p className="text">
+          <strong>Follow-up:</strong> {t.asked}
+        </p>
+      )}
       {t.answer && (
         <section className="panel">
           <h2>Answer</h2>

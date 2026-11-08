@@ -323,6 +323,14 @@ class Taught(BaseModel):
     text: str
 
 
+class Turn(BaseModel):
+    """An earlier turn of a Question: what was asked, when, and the Answer it got."""
+
+    question: str
+    at: float
+    answer: Answer | None  # None: that Run failed
+
+
 class JiraState(BaseModel):
     """The Contract's Jira project for this Report (slice 11.5b): its issue once filed,
     who is filing it while there is none yet, or nothing: it can be filed."""
@@ -356,6 +364,8 @@ class InvestigationPage(Brief):
     jira: JiraState | None  # a finished Report of a Contract with Jira
     can_judge: bool  # a finished Triage's or Check's Report: right or wrong
     can_follow_up: bool  # a Question no longer answering (slice 11.7a)
+    asked: str | None  # a Question's latest question, which the Answer answers
+    exchange: list[Turn]  # its earlier turns, oldest first
 
 
 def brief(t: Investigation) -> dict[str, Any]:
@@ -687,6 +697,14 @@ def router(
     async def investigation(investigation_id: str) -> InvestigationPage:
         t = await investigation_of(investigation_id)
         st = store()
+        # Each follow-up replaced the Answer before it: the first question (the title)
+        # got the first turn's Answer, each follow-up the next one's.
+        turns = await st.question_turns(t.id)
+        questions = [(t.title, t.started)] + [(x["question"], x["at"]) for x in turns]
+        exchange = [
+            {"question": q, "at": at, "answer": x["answer"]}
+            for (q, at), x in zip(questions, turns, strict=False)
+        ]
         return InvestigationPage.model_validate(
             {
                 **brief(t),
@@ -713,6 +731,8 @@ def router(
                 "jira": jira_state(t),
                 "can_judge": judged(t),
                 "can_follow_up": t.kind == "question" and t.status in ("done", "failed"),
+                "asked": questions[-1][0] if t.kind == "question" else None,
+                "exchange": exchange,
             }
         )
 

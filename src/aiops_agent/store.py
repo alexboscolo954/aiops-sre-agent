@@ -219,16 +219,29 @@ class Store:
         )
         return _investigation(row) if row else None
 
-    async def claim_follow_up(self, investigation_id: str, mention_ts: str) -> bool:
+    async def claim_follow_up(self, investigation_id: str, mention_ts: str, question: str) -> bool:
         """One Run at a time per Question, and each mention at most once: only a
-        finished Question, and only with a mention newer than the last one."""
+        finished Question, and only with a mention newer than the last one. The claim
+        records the turn with the Answer it replaces, in the same statement."""
         row = await self._one(
-            "update investigations set status = 'running', error = null, last_mention_ts = %s "
-            "where id = %s and kind = 'question' and status in ('done', 'failed') "
-            "and (last_mention_ts is null or last_mention_ts < %s) returning id",
-            (mention_ts, investigation_id, mention_ts),
+            "with claimed as (update investigations set status = 'running', error = null, "
+            "last_mention_ts = %s where id = %s and kind = 'question' "
+            "and status in ('done', 'failed') "
+            "and (last_mention_ts is null or last_mention_ts < %s) "
+            "returning id, contract_id, answer) "
+            "insert into question_turns (investigation_id, contract_id, question, answer, at) "
+            "select id, contract_id, %s, answer, %s from claimed returning investigation_id",
+            (mention_ts, investigation_id, mention_ts, question, now()),
         )
         return row is not None
+
+    async def question_turns(self, investigation_id: str) -> list[dict[str, Any]]:
+        """A Question's follow-ups, oldest first, each with the Answer it replaced."""
+        return await self._all(
+            "select question, answer, at from question_turns "
+            "where investigation_id = %s order by id",
+            (investigation_id,),
+        )
 
     async def save(self, t: Investigation) -> None:
         """Everything a Run changes. Never group_resolved (only the resolve path sets

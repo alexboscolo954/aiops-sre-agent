@@ -813,15 +813,20 @@ async def test_one_run_per_question_and_each_mention_once(database_url: str) -> 
         assert not await st.insert_question(q.model_copy(update={"id": "q2"}))  # same thread
         assert (await st.by_thread(ACME, ROOT)).id == "q"
         assert await st.by_thread(BANK, ROOT) is None
-        assert not await st.claim_follow_up("q", "1800000000.000002")  # still running
+        assert not await st.claim_follow_up("q", "1800000000.000002", "more?")  # still running
         q.status = "done"
         await st.save(q)
-        assert not await st.claim_follow_up("q", "1800000000.000001")  # not newer
-        assert await st.claim_follow_up("q", "1800000000.000002")
-        assert not await st.claim_follow_up("q", "1800000000.000003")  # that one runs
+        assert not await st.claim_follow_up("q", "1800000000.000001", "more?")  # not newer
+        assert await st.claim_follow_up("q", "1800000000.000002", "more?")
+        assert not await st.claim_follow_up("q", "1800000000.000003", "more?")  # that one runs
         triage = Investigation(id="t", contract_id="acme", title="t", started=0, status="done")
         await st.insert(triage)
-        assert not await st.claim_follow_up("t", "1800000000.000004")
+        assert not await st.claim_follow_up("t", "1800000000.000004", "more?")
+        await st.save(q.model_copy(update={"status": "done"}))
+        assert await st.claim_follow_up("q", "1800000000.000005", "again?")
+        turns = await st.question_turns("q")  # only a claim that won records its turn
+        assert [(r["question"], r["answer"]) for r in turns] == [("more?", None), ("again?", None)]
+        assert await st.question_turns("t") == []
 
 
 def test_no_post_unfurls_a_link_or_an_image(settings: Settings, fake_cluster: Any) -> None:
