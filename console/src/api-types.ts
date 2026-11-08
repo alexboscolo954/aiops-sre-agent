@@ -21,6 +21,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/contracts/{contract_id}/agenda": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Now
+         * @description What to look at now in this Contract, most urgent first (slice 11.4).
+         */
+        get: operations["now__api_v1_contracts__contract_id__agenda_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/contracts/{contract_id}/billing": {
         parameters: {
             query?: never;
@@ -115,6 +135,13 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** Agenda */
+        Agenda: {
+            /** Contract */
+            contract: string;
+            /** Items */
+            items: components["schemas"]["Item"][];
+        };
         /** Allocation */
         Allocation: {
             /** By */
@@ -312,6 +339,24 @@ export interface components {
             /** Points */
             points: components["schemas"]["Point"][];
         };
+        /** Item */
+        Item: {
+            /** At */
+            at?: number | null;
+            /** Cluster */
+            cluster?: string | null;
+            /** Id */
+            id?: string | null;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "kill_switch" | "approval" | "check" | "stale" | "bill" | "investigation" | "waste";
+            /** Title */
+            title: string;
+            /** Workload */
+            workload?: string | null;
+        };
         /**
          * KillSwitch
          * @description A Contract's Kill switch (slice 11.2a): who turned it on, and when.
@@ -485,6 +530,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ContractSummary"][];
+                };
+            };
+        };
+    };
+    now__api_v1_contracts__contract_id__agenda_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                contract_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Agenda"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

@@ -32,7 +32,7 @@ from starlette.datastructures import Headers
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from aiops_agent import billing, masking, proposals, usage, webapp
+from aiops_agent import agenda, billing, masking, proposals, usage, webapp
 from aiops_agent.console import QUESTION_LIMIT
 from aiops_agent.contracts import Contract
 from aiops_agent.models import Investigation
@@ -390,6 +390,29 @@ def build(
 
         result: dict[str, Any] = await answer(c, work())
         return result
+
+    @mcp.tool(name="now", annotations=READ)  # not `def now`: that is the clock here
+    async def agenda_now(
+        contract: Annotated[str | None, CONTRACT] = None,
+    ) -> dict[str, Any] | list[dict[str, Any]]:
+        """What to look at now, most urgent first, ranked without a model: the Kill
+        switch while it is on, pauses waiting for a decision (soonest deadline first),
+        failing Checks, data the Hub can't read, Bills outside their tolerance, running
+        Investigations, the three Workloads whose waste costs most. Without `contract`:
+        only how many of each per Contract."""
+        if contract is not None:
+            c = resolve(contract)
+
+            async def work() -> dict[str, Any]:
+                return (await agenda.of(store(), c, now())).model_dump(mode="json")
+
+            result: dict[str, Any] = await answer(c, work())
+            return result
+        listed = []
+        for c in sorted(by_id.values(), key=lambda c: c.id):
+            a = await agenda.of(store(), c, now())
+            listed.append(out(c, {"contract": c.id, "name": c.name, **agenda.counts(a)}))
+        return listed
 
     @mcp.tool(annotations=READ)
     async def investigations(

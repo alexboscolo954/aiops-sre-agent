@@ -13,6 +13,8 @@ export type Group = Schemas["Group"];
 export type Change = Schemas["Change"];
 export type Bills = Schemas["Bills"];
 export type KillSwitch = Schemas["KillSwitch"];
+export type Agenda = Schemas["Agenda"];
+export type AgendaItem = Schemas["Item"];
 
 /** The API answered 401: this browser hasn't pasted the approver token. */
 export class NeedsToken extends Error {
@@ -44,6 +46,9 @@ export function cost(contract: string, by: string, compare: string) {
 
 export const billing = (contract: string) =>
   get<Bills>(`/contracts/${encodeURIComponent(contract)}/billing`);
+
+export const agenda = (contract: string) =>
+  get<Agenda>(`/contracts/${encodeURIComponent(contract)}/agenda`);
 
 export function history(contract: string, c: Container, days: 14 | 400) {
   const q = new URLSearchParams({

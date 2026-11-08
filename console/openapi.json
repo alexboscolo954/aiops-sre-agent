@@ -1,6 +1,27 @@
 {
   "components": {
     "schemas": {
+      "Agenda": {
+        "properties": {
+          "contract": {
+            "title": "Contract",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/Item"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "contract",
+          "items"
+        ],
+        "title": "Agenda",
+        "type": "object"
+      },
       "Allocation": {
         "properties": {
           "by": {
@@ -674,6 +695,77 @@
         "title": "History",
         "type": "object"
       },
+      "Item": {
+        "properties": {
+          "at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "At"
+          },
+          "cluster": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cluster"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "kind": {
+            "enum": [
+              "kill_switch",
+              "approval",
+              "check",
+              "stale",
+              "bill",
+              "investigation",
+              "waste"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "workload": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workload"
+          }
+        },
+        "required": [
+          "kind",
+          "title"
+        ],
+        "title": "Item",
+        "type": "object"
+      },
       "KillSwitch": {
         "description": "A Contract's Kill switch (slice 11.2a): who turned it on, and when.",
         "properties": {
@@ -1161,6 +1253,46 @@
           }
         },
         "summary": "Contracts"
+      }
+    },
+    "/api/v1/contracts/{contract_id}/agenda": {
+      "get": {
+        "description": "What to look at now in this Contract, most urgent first (slice 11.4).",
+        "operationId": "now__api_v1_contracts__contract_id__agenda_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "contract_id",
+            "required": true,
+            "schema": {
+              "title": "Contract Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Agenda"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Now "
       }
     },
     "/api/v1/contracts/{contract_id}/billing": {

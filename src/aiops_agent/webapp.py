@@ -23,7 +23,7 @@ from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel
 
-from aiops_agent import billing, listprices, sizing, usage
+from aiops_agent import agenda, billing, listprices, sizing, usage
 from aiops_agent.console import COOKIE, action_key, same_origin
 from aiops_agent.contracts import Contract
 from aiops_agent.store import Store
@@ -373,6 +373,11 @@ def router(
         rows = await store().sizing_history(c.id, workload, now() - days * DAY)
         points = [Point.model_validate({"at": at, **row}) for at, row in rows]
         return History(points=daily(points) if days > 14 else points)
+
+    @api.get("/contracts/{contract_id}/agenda")
+    async def now_(contract_id: str) -> agenda.Agenda:
+        """What to look at now in this Contract, most urgent first (slice 11.4)."""
+        return await agenda.of(store(), contract(contract_id), now())
 
     async def switch(c: Contract) -> KillSwitch:
         on = await store().kill_switch(c.id)

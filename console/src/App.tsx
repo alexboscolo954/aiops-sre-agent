@@ -3,6 +3,7 @@
 // Cost (slice 10.2): what each namespace's, team's or label value's requests and waste cost;
 // the waste's cost is the available Savings, compared with N days ago on request (10.3a),
 // and the realized Savings, requests lowered to their Sizings (10.3b).
+// The Agenda (slice 11.4): what to look at now, most urgent first, above the Workloads.
 // Everything from the API is rendered as text.
 import { useEffect, useMemo, useState } from "react";
 import * as api from "./api";
@@ -129,6 +130,7 @@ export default function App() {
           </label>
         )}
         {shown && <KillSwitchBar contract={shown} />}
+        {shown && !costView && <AgendaPanel contract={shown} />}
         {data && !costView && <Page contract={shown} data={data} />}
         {allocation && costView && <CostPage data={allocation} bills={bills} setBy={setBy} compare={compare} setCompare={setCompare} />}
       </main>
@@ -161,6 +163,44 @@ function KillSwitchBar({ contract }: { contract: string }) {
       <button onClick={() => act(api.turnOnKillSwitch)}>Turn on the Kill switch</button>
       {failed && ` Couldn't: ${failed}`}
     </p>
+  );
+}
+
+/** Where to act on an Agenda item: its Investigation, its Workload, or the Cost page. */
+function link(contract: string, i: api.AgendaItem): string | null {
+  const here = `contract=${encodeURIComponent(contract)}`;
+  if (i.id) return `/console/investigations/${encodeURIComponent(i.id)}`;
+  if (i.workload) return `/app/?${here}&workload=${encodeURIComponent(i.workload)}`;
+  if (i.kind === "bill") return `/app/?${here}&view=cost`;
+  return null;
+}
+
+/** What to look at now in this Contract, most urgent first (the Hub ranks it). */
+function AgendaPanel({ contract }: { contract: string }) {
+  const [agenda, setAgenda] = useState<api.Agenda | null>(null);
+  useEffect(() => {
+    setAgenda(null);
+    api.agenda(contract).then(setAgenda, () => setAgenda(null));
+  }, [contract]);
+  if (!agenda) return null;
+  if (agenda.items.length === 0) return <p className="hint">Nothing needs you now.</p>;
+  return (
+    <section className="agenda">
+      <h2>Now</h2>
+      <ol>
+        {agenda.items.map((i, n) => {
+          const href = link(contract, i);
+          const where = i.cluster && !i.workload ? `${i.cluster}: ` : i.workload ? `${i.workload}: ` : "";
+          const time = i.kind === "approval" ? ` (goes Stale ${when(i.at)})` : i.at ? ` (${when(i.at)})` : "";
+          return (
+            <li key={n} className={i.kind}>
+              {href ? <a href={href}>{where}{i.title}</a> : `${where}${i.title}`}
+              {time}
+            </li>
+          );
+        })}
+      </ol>
+    </section>
   );
 }
 

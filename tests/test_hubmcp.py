@@ -50,6 +50,7 @@ TOOLS = {
     "turn_on_kill_switch",
     "approve_sizing",
     "propose_change",
+    "now",
 }
 
 
@@ -969,3 +970,38 @@ def test_without_the_repo_and_its_token_nothing_is_proposed(
     assert refused == {
         "error": "set AIOPS_CONTRACTS_REPO and AIOPS_CONTRACTS_TOKEN to propose changes"
     }
+
+
+# --- the Agenda (slice 11.4) -------------------------------------------------------------
+
+
+def test_now_ranks_one_contracts_agenda_and_counts_every_contracts(
+    settings: Settings, fake_cluster: Any, database_url: str
+) -> None:
+    seed_run(database_url, "acme", row("api", waste={"cpu": 2.0, "memory": 0.0}))
+    seed_run(database_url, "bank", row("web"), row("db"))
+    with hub(settings, fake_cluster, database_url) as c:
+        call(c, "turn_on_kill_switch", contract="bank")
+        one = call(c, "now", contract="acme")
+        every = call(c, "now")
+        tools = {t["name"]: t for t in rpc(c, "tools/list", {}).json()["result"]["tools"]}
+    shop = mask("shop")
+    assert one == {
+        "contract": mask("acme"),
+        "items": [
+            {
+                "kind": "waste",
+                "title": "Waste: 2000m and 0Mi above its Sizings",
+                "at": None,
+                "id": None,
+                "cluster": "test",
+                "workload": f"test/{shop}/Deployment/api",
+            }
+        ],
+    }
+    assert every == [
+        {"contract": mask("acme"), "name": mask("acme"), "waste": 1},
+        {"contract": "bank", "name": "bank", "kill_switch": 1, "waste": 2},
+    ]
+    assert tools["now"]["annotations"]["readOnlyHint"] is True
+    assert "contract" not in tools["now"]["inputSchema"].get("required", [])

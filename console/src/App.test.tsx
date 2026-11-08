@@ -370,3 +370,49 @@ test("the Kill switch shows who turned it on, and only here does it go off", asy
   expect(await screen.findByText("Turn it off")).toBeTruthy();
   expect(sent).toEqual(["GET", "DELETE", "POST"]);
 });
+
+test("the Agenda lists what to look at now, in the Hub's order, each linking where to act", async () => {
+  answer({
+    "/api/v1/contracts": [200, [{ id: "demo-shop", name: "demo-shop" }]],
+    "/api/v1/contracts/demo-shop/workloads": [200, DATA],
+    "/api/v1/contracts/demo-shop/agenda": [
+      200,
+      {
+        contract: "demo-shop",
+        items: [
+          { kind: "approval", title: "1 Proposed action wait for a decision: <b>pods</b>", at: 1_700_000_000, id: "t1", cluster: null, workload: null },
+          { kind: "stale", title: "Sizing reads failing: down", at: 1_700_000_000, id: null, cluster: "kind", workload: null },
+          { kind: "bill", title: "Bill +8.0% from the estimate", at: null, id: null, cluster: "aws", workload: null },
+          { kind: "waste", title: "Waste: 2000m and 0Mi above its Sizings", at: null, id: null, cluster: "kind", workload: "kind/lab/Deployment/api" },
+        ],
+      },
+    ],
+  });
+  const { container: page } = render(<App />);
+  await screen.findByText("Now");
+  const items = [...page.querySelectorAll(".agenda li")].map((li) => li.textContent);
+  expect(items).toEqual([
+    "1 Proposed action wait for a decision: <b>pods</b> (goes Stale 2023-11-14 22:13 UTC)",
+    "kind: Sizing reads failing: down (2023-11-14 22:13 UTC)",
+    "aws: Bill +8.0% from the estimate",
+    "kind/lab/Deployment/api: Waste: 2000m and 0Mi above its Sizings",
+  ]);
+  const hrefs = [...page.querySelectorAll(".agenda li")].map((li) => li.querySelector("a")?.getAttribute("href") ?? null);
+  expect(hrefs).toEqual([
+    "/console/investigations/t1",
+    null,
+    "/app/?contract=demo-shop&view=cost",
+    "/app/?contract=demo-shop&workload=kind%2Flab%2FDeployment%2Fapi",
+  ]);
+  expect(page.querySelector(".agenda b")).toBeNull(); // Hub text is text
+});
+
+test("a quiet Contract's Agenda says so", async () => {
+  answer({
+    "/api/v1/contracts": [200, [{ id: "demo-shop", name: "demo-shop" }]],
+    "/api/v1/contracts/demo-shop/workloads": [200, DATA],
+    "/api/v1/contracts/demo-shop/agenda": [200, { contract: "demo-shop", items: [] }],
+  });
+  render(<App />);
+  expect(await screen.findByText("Nothing needs you now.")).toBeTruthy();
+});

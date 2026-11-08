@@ -435,3 +435,17 @@ def test_a_list_priced_contract_shows_its_prices_and_where_they_come_from(
         assert (note["cluster"], note["source"]) == ("test", "list")
         assert "1 x aws m5.large in us-east-1" in note["note"]
     assert plain["currency"] is None and plain["prices"] == []  # acme's list is its own
+
+
+def test_the_agenda_is_one_contracts_and_needs_the_cookie(
+    settings: Settings, fake_cluster: Any, database_url: str
+) -> None:
+    """Slice 11.4: the panel on the Workloads page."""
+    seed(database_url, ("acme", NOW, row("api")), ("bank", NOW, row("web")))
+    with hub(settings, fake_cluster, database_url) as c:
+        acme = c.get("/api/v1/contracts/acme/agenda", headers=VIEW).json()
+        no_cookie = c.get("/api/v1/contracts/acme/agenda", headers=AS_OPERATOR).status_code
+        unknown = c.get("/api/v1/contracts/nope/agenda", headers=VIEW).status_code
+    assert acme["contract"] == "acme"
+    assert [i["workload"] for i in acme["items"]] == ["test/shop/Deployment/api"]
+    assert no_cookie == 401 and unknown == 404
