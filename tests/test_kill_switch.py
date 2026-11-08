@@ -94,7 +94,7 @@ def test_approving_is_refused_and_the_pause_kept_rejecting_still_works(
     assert done["executed_actions"] == [] and evictions(fake_cluster) == 0
 
 
-def test_the_console_refuses_an_approval_with_the_reason(
+def test_the_app_refuses_an_approval_with_the_reason(
     settings: Settings, fake_cluster: Any, database_url: str
 ) -> None:
     settings.database_url = SecretStr(database_url)
@@ -104,13 +104,12 @@ def test_the_console_refuses_an_approval_with_the_reason(
         deadline = wait_for(c, tid, "awaiting_approval")["deadline"]
         turn_on(database_url)
         r = c.post(
-            f"/console/investigations/{tid}/decision",
-            data={"deadline": repr(deadline), "approve": "1"},
+            f"/api/v1/investigations/{tid}/decision",
+            json={"deadline": deadline, "approve": True},
             headers=SAME,
-            follow_redirects=False,
         )
         assert wait_for(c, tid, "awaiting_approval")["pending"]
-    assert r.status_code == 409 and KILLED in r.text
+    assert r.status_code == 409 and r.json()["detail"] == KILLED
     assert evictions(fake_cluster) == 0
 
 

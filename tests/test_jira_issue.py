@@ -117,7 +117,7 @@ def test_the_operator_files_the_report_once_from_slack(
         # The parent, updated (the double click's reply may come before or after it)
         updates = [p for m, p, _ in slack.calls if m == "chat.update"]
         assert ":ticket: OPS-1" in updates[-1]["text"]
-        page = c.get(f"/console/investigations/{tid}", headers=VIEW).text
+        page = c.get(f"/api/v1/investigations/{tid}", headers=VIEW).json()
     (create,) = fake.creates
     assert create.headers["authorization"] == BASIC and TOKEN not in str(create.headers)
     f = fields(create)
@@ -128,7 +128,8 @@ def test_the_operator_files_the_report_once_from_slack(
     assert "kubernetes_pod_logs: java.lang.OutOfMemoryError: Java heap space" in body
     assert f"Filed by aiops from Investigation {tid}." in body
     assert ephemerals(slack)[0][1] == "Already filed (or being filed), or nothing to file."
-    assert "https://acme.atlassian.net/browse/OPS-1" in page and "slack:U0OPERATOR1" in page
+    assert page["jira"]["url"] == "https://acme.atlassian.net/browse/OPS-1"
+    assert page["jira"]["issue"] == "OPS-1" and page["jira"]["by"] == "slack:U0OPERATOR1"
 
 
 def test_a_refusal_can_be_retried_and_no_answer_cannot(
@@ -150,7 +151,7 @@ def test_a_refusal_can_be_retried_and_no_answer_cannot(
         until(lambda: len(ephemerals(slack)) == 2)
         sock.send(click("create_jira", value))  # outcome unknown: no new create
         until(lambda: len(ephemerals(slack)) == 3)
-        page = c.get(f"/console/investigations/{tid}", headers=VIEW).text
+        page = c.get(f"/api/v1/investigations/{tid}", headers=VIEW).json()
     assert [e[1] for e in ephemerals(slack)] == [
         "Jira refused the issue (400 issuetype: Specify a valid issue type): nothing was created.",
         "Jira didn't answer (ReadTimeout): it may have created the issue. "
@@ -158,7 +159,7 @@ def test_a_refusal_can_be_retried_and_no_answer_cannot(
         "Already filed (or being filed), or nothing to file.",
     ]
     assert len(fake.creates) == 2
-    assert "check project OPS before filing it by hand" in page
+    assert page["jira"]["issue"] is None and page["jira"]["since"] is not None  # being filed
 
 
 def test_the_console_files_it_and_the_slack_thread_shows_it(
@@ -169,11 +170,12 @@ def test_the_console_files_it_and_the_slack_thread_shows_it(
         tid = c.post(URL, json=ALERT, headers=HOOK).json()["investigation"]
         wait_for(c, tid, "done")
         until(lambda: "create_jira" in buttons(slack))
-        path = f"/console/investigations/{tid}/jira"
+        path = f"/api/v1/investigations/{tid}/jira"
         assert c.post(path, headers=VIEW).status_code == 403  # no same-origin header
-        assert "Create Jira issue" in c.get(f"/console/investigations/{tid}", headers=VIEW).text
-        r = c.post(path, headers=SAME, follow_redirects=False)
-        assert r.status_code == 303
+        offered = c.get(f"/api/v1/investigations/{tid}", headers=VIEW).json()
+        assert offered["jira"]["issue"] is None  # the page offers Create Jira issue
+        r = c.post(path, headers=SAME)
+        assert r.status_code == 200 and r.json()["jira"]["issue"] == "OPS-1"
         assert c.post(path, headers=SAME).status_code == 409  # filed already
         until(lambda: any("Filed as OPS-1 by alex@example.com" in x for x in replies(slack)))
         assert "create_jira" not in buttons(slack)
@@ -314,13 +316,13 @@ def test_a_retry_is_allowed_only_when_nothing_can_have_been_created(
     with done(settings, fake_cluster, slack, fake) as c:
         tid = c.post(URL, json=ALERT, headers=HOOK).json()["investigation"]
         wait_for(c, tid, "done")
-        path = f"/console/investigations/{tid}/jira"
+        path = f"/api/v1/investigations/{tid}/jira"
         first = c.post(path, headers=SAME)
-        second = c.post(path, headers=SAME, follow_redirects=False)
+        second = c.post(path, headers=SAME)
         t = c.get(f"/investigations/{tid}", headers={"Authorization": "Bearer approver-token"})
     assert first.status_code == 409
     assert len(fake.creates) == (2 if retried else 1)
-    assert second.status_code == (303 if retried else 409)
+    assert second.status_code == (200 if retried else 409)
     assert t.json()["jira_issue"] == ("OPS-2" if retried else None)
     assert not any("<!channel>" in r or "BANK-9" in r for r in replies(slack))
 

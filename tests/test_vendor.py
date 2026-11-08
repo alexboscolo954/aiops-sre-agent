@@ -297,17 +297,17 @@ def test_health_checks_a_vendor_starts_and_offers_its_listed_tools(
         return agent.build_mcp(c, settings)
 
     with TestClient(create_app(settings, scripted(), mcp, by_id)) as c:
-        page = c.get("/console/health", headers=VIEW).text
+        health = {
+            cid: c.get(f"/api/v1/contracts/{cid}/health", headers=VIEW).json() for cid in by_id
+        }
 
-    def row(cid: str) -> str:
-        start = page.index(f"<h2><code>{cid}</code>")
-        return page[start : page.find("<h2>", start + 1)]
+    def probe(cid: str) -> dict[str, Any]:
+        (p,) = health[cid]["integrations"]
+        return dict(p)
 
-    assert '<td>x</td><td><span class="badge ok">ok</span></td>' in row("listed")
-    assert '<td>x</td><td><span class="badge failing">FAILING</span></td>' in row(
-        "renamed"
-    ) and "not offered: x_ghost" in row("renamed")
-    assert '<td>x</td><td><span class="badge ok">ok</span></td>' in row("probed")
+    assert probe("listed")["name"] == "x" and probe("listed")["ok"] is True
+    assert probe("renamed")["ok"] is False and "not offered: x_ghost" in probe("renamed")["detail"]
+    assert probe("probed")["ok"] is True
 
 
 def test_a_scenario_vendor_needs_its_vendor_and_a_snapshot(snapshots: Path) -> None:

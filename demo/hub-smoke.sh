@@ -133,27 +133,25 @@ assert t["error"].startswith("ConfigException"), t["error"]
 EOF
 echo "ok   investigation stored, failed as expected without a cluster"
 
-# The console, as `tailscale serve` reaches it: the image has its templates, and
-# only the Operator's identity header gets in.
+# The console app, as `tailscale serve` reaches it: its page and built files are in the
+# image, behind the identity; its API also wants the token.
 # The cookie the token page sets: an HMAC of the approver token (console.py).
 key=$(python3 -c 'import hashlib,hmac; print(hmac.new(b"smoke-approver", b"aiops-console", hashlib.sha256).hexdigest())')
 with_token=("${as_operator[@]}" -H "Cookie: aiops_actions=$key")
-curl -sf "${with_token[@]}" "$local_api/console" | grep -q 'demo-shop' || fail "console"
-curl -sf "${with_token[@]}" "$local_api/console/investigations/$id" | grep -q 'ConfigException' ||
-  fail "console investigation page"
-curl -sf --max-time 60 "${with_token[@]}" "$local_api/console/health" | grep -q 'FAILING' ||
-  fail "console health"   # no cluster in the container: the kubernetes checks fail, and say so
-[[ $(code "$local_api/console") == 403 ]] || fail "console without an identity"
-[[ $(code "${as_operator[@]}" "$local_api/console") == 303 ]] || fail "console without the token"
-# The console app (9.5a): its page and built files are in the image, behind the
-# identity; its API also wants the token.
 page=$(curl -sf "${as_operator[@]}" "$local_api/app/") || fail "console app page"
 js=$(grep -o '/app/assets/[A-Za-z0-9._-]*\.js' <<<"$page" | head -1)
 [[ -n $js && $(code "${as_operator[@]}" "$local_api$js") == 200 ]] || fail "console app files"
 curl -sf "${with_token[@]}" "$local_api/api/v1/contracts" | grep -q '"demo-shop"' || fail "console API"
+curl -sf "${with_token[@]}" "$local_api/api/v1/investigations/$id" | grep -q 'ConfigException' ||
+  fail "console investigation"
+curl -sf --max-time 60 "${with_token[@]}" "$local_api/api/v1/contracts/demo-shop/health" |
+  grep -q '"ok":false' || fail "console health"   # no cluster in the container: its checks fail
 [[ $(code "${as_operator[@]}" "$local_api/api/v1/contracts") == 401 ]] || fail "console API without the token"
 [[ $(code "$local_api/app/") == 403 ]] || fail "console app without an identity"
-echo "ok   console renders on 127.0.0.1 for the Operator with the token only, and is 404 through Caddy"
+# The Jinja console's old addresses (11.7b) land in the app.
+moved=$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' "$local_api/console/investigations/$id")
+[[ $moved == "303 $local_api/app/?view=investigation&id=$id" ]] || fail "old console address: $moved"
+echo "ok   console app on 127.0.0.1 for the Operator with the token only, old addresses redirect, 404 through Caddy"
 
 dc exec -T backup /backup.sh once >/dev/null || fail "backup"
 dc exec -T backup sh -c '

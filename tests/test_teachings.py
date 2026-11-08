@@ -509,14 +509,12 @@ def test_a_reason_typed_on_the_console_drafts_too(
     slack = FakeSlack(buttons.url)
     with paused(settings, fake_cluster, slack, REPORT_STEP, draft()) as (c, tid):
         deadline = c.get(f"/investigations/{tid}", headers=AUTH).json()["deadline"]
-        form = {"deadline": str(deadline), "approve": "0", "reason": "Page the team instead."}
         r = c.post(
-            f"/console/investigations/{tid}/decision",
-            data=form,
+            f"/api/v1/investigations/{tid}/decision",
+            json={"deadline": deadline, "approve": False, "reason": "Page the team instead."},
             headers=SAME,
-            follow_redirects=False,
         )
-        assert r.status_code == 303
+        assert r.status_code == 200
         wait_for(c, tid, "done")
         until(lambda: "teaching_approve" in posted(slack))
     assert rows(database_url, "select correction from teachings") == [
@@ -603,73 +601,37 @@ def test_the_console_takes_feedback_and_reviews_teachings(
 ) -> None:
     slack = FakeSlack(buttons.url)
     with done(settings, fake_cluster, slack, draft()) as (c, tid):
-        page = f"/console/investigations/{tid}"
-        assert "Was this Report right?" in c.get(page, headers=VIEW).text
-        bad = c.post(
-            f"{page}/feedback",
-            data={"correct": "0", "correction": " "},
-            headers=SAME,
-            follow_redirects=False,
-        )
-        assert bad.status_code == 400
-        c.post(f"{page}/feedback", data={"correct": "1"}, headers=SAME, follow_redirects=False)
-        wrong = {"correct": "0", "correction": CORRECTION}
-        r = c.post(f"{page}/feedback", data=wrong, headers=SAME, follow_redirects=False)
-        assert r.status_code == 303
+        page = f"/api/v1/investigations/{tid}"
+        assert c.get(page, headers=VIEW).json()["can_judge"] is True
+        bad = c.post(f"{page}/feedback", json={"correct": False, "correction": " "}, headers=SAME)
+        assert bad.status_code == 422
+        c.post(f"{page}/feedback", json={"correct": True}, headers=SAME)
+        wrong = {"correct": False, "correction": CORRECTION}
+        r = c.post(f"{page}/feedback", json=wrong, headers=SAME)
+        assert r.status_code == 200
         until(lambda: rows(database_url, "select status from teachings") == [("proposed",)])
         ((tid_,),) = rows(database_url, "select id from teachings")
-        listing = c.get("/console/teachings?contract=acme", headers=VIEW).text
-        assert LESSON.replace("'", "&#39;") in listing and CORRECTION in listing
+        listing = c.get("/api/v1/contracts/acme/teachings", headers=VIEW).json()["proposed"]
+        assert [(x["text"], x["correction"]) for x in listing] == [(LESSON, CORRECTION)]
         edited = "Ticket the platform team; never raise checkout's limit."
-        r = c.post(
-            f"/console/teachings/{tid_}/decision",
-            data={"approve": "1", "text": edited},
-            headers=SAME,
-            follow_redirects=False,
-        )
-        assert r.status_code == 303
-        again = c.post(
-            f"/console/teachings/{tid_}/decision",
-            data={"approve": "0"},
-            headers=SAME,
-            follow_redirects=False,
-        )
+        decide = f"/api/v1/contracts/acme/teachings/{tid_}/decision"
+        r = c.post(decide, json={"approve": True, "text": edited}, headers=SAME)
+        assert r.status_code == 200
+        again = c.post(decide, json={"approve": False}, headers=SAME)
         assert again.status_code == 409
         # Its Slack post shows the verdict and loses its buttons.
         ts = posted(slack)["teaching_approve"][0]
         until(lambda: any(m == "chat.update" and p["ts"] == ts for m, p, _ in slack.calls))
-        assert (
-            c.post(
-                f"/console/teachings/{tid_}/retire", headers=SAME, follow_redirects=False
-            ).status_code
-            == 303
-        )
-        assert (
-            c.post(
-                f"/console/teachings/{tid_}/retire", headers=SAME, follow_redirects=False
-            ).status_code
-            == 409
-        )
-        written = {"contract": "acme", "text": "Check the CDN first.", "alerts": "A, B ,"}
-        assert (
-            c.post(
-                "/console/teachings", data=written, headers=SAME, follow_redirects=False
-            ).status_code
-            == 303
-        )
-        too_long = {"contract": "acme", "text": "x" * 501}
-        assert (
-            c.post(
-                "/console/teachings", data=too_long, headers=SAME, follow_redirects=False
-            ).status_code
-            == 400
-        )
-        assert (
-            c.post(
-                "/console/teachings", data={"contract": "nope", "text": "x"}, headers=SAME
-            ).status_code
-            == 400
-        )
+        retire = f"/api/v1/contracts/acme/teachings/{tid_}/retire"
+        assert c.post(retire, headers=SAME).status_code == 200
+        assert c.post(retire, headers=SAME).status_code == 409
+        written = {"text": "Check the CDN first.", "alerts": ["A", "B"]}
+        teachings = "/api/v1/contracts/acme/teachings"
+        assert c.post(teachings, json=written, headers=SAME).status_code == 200
+        too_long = {"text": "x" * 501}
+        assert c.post(teachings, json=too_long, headers=SAME).status_code == 422
+        nope = c.post("/api/v1/contracts/nope/teachings", json={"text": "x"}, headers=SAME)
+        assert nope.status_code == 404
     assert rows(
         database_url, "select text, status, alerts, decided_by from teachings order by id"
     ) == [
@@ -688,7 +650,7 @@ def test_console_feedback_is_for_a_finished_triage_only(
     ) as c:
         tid = c.post(URL, json=ALERT, headers=HOOK).json()["investigation"]
         wait_for(c, tid, "awaiting_approval")
-        r = c.post(f"/console/investigations/{tid}/feedback", data={"correct": "1"}, headers=SAME)
+        r = c.post(f"/api/v1/investigations/{tid}/feedback", json={"correct": True}, headers=SAME)
         assert r.status_code == 409
 
 
@@ -814,7 +776,7 @@ def test_a_question_gets_every_approved_teaching(
     seed(database_url)
     answer = call("Answer", "a1", answer="It's fine.", evidence=[REPORT["evidence"][0]])
     with client(settings, fake_cluster, answer, more=bank()) as c:
-        r = c.post("/console/questions", data={"contract": "acme", "question": "OK?"}, headers=SAME)
+        r = c.post("/api/v1/contracts/acme/questions", json={"question": "OK?"}, headers=SAME)
         assert r.status_code == 200
         until(lambda: len(Recording.sent) == 1)
     (prompt,) = system_prompts()
@@ -856,5 +818,5 @@ def test_the_console_warns_when_teachings_dont_fit(
                 (f"lesson {i}",),
             )
     with client(settings, fake_cluster) as c:
-        page = c.get("/console/teachings", headers=VIEW).text
-    assert "<code>acme</code>: 1 approved Teaching(s) don't fit in a prompt" in page
+        page = c.get("/api/v1/contracts/acme/teachings", headers=VIEW).json()
+    assert page["left_out"] == 1  # one approved Teaching doesn't fit in a prompt

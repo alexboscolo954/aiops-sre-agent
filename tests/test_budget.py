@@ -103,17 +103,18 @@ def test_questions_and_follow_ups_are_refused_over_budget(
     budget = {"monthly_budget_usd": 1.1 * TEN_K}
     with client(priced, fake_cluster, *steps, acme=budget) as c:
 
-        def ask(url: str, data: dict[str, str]) -> str:
-            r = c.post(url, data=data, headers=SAME, follow_redirects=False)
-            return str(r.headers["location"]).rsplit("/", 1)[1]
+        def ask(url: str, body: dict[str, str]) -> str:
+            r = c.post(url, json=body, headers=SAME)
+            assert r.status_code == 200, r.text
+            return str(r.json()["id"])
 
-        qid = ask("/console/questions", {"contract": "acme", "question": "healthy?"})
+        qid = ask("/api/v1/contracts/acme/questions", {"question": "healthy?"})
         wait_for(c, qid, "done")
-        ask(f"/console/investigations/{qid}/questions", {"question": "and now?"})
+        ask(f"/api/v1/investigations/{qid}/questions", {"question": "and now?"})
         wait_for(c, qid, "done")  # under budget when it started
-        ask(f"/console/investigations/{qid}/questions", {"question": "and now?"})
+        ask(f"/api/v1/investigations/{qid}/questions", {"question": "and now?"})
         follow_up = wait_for(c, qid, "failed")
-        new = ask("/console/questions", {"contract": "acme", "question": "again?"})
+        new = ask("/api/v1/contracts/acme/questions", {"question": "again?"})
         refused = wait_for(c, new, "failed")
     assert REFUSED in follow_up["error"] and REFUSED in refused["error"]
 

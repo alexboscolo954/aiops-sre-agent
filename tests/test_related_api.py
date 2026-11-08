@@ -80,9 +80,10 @@ def test_a_related_group_joins_the_open_triage_and_says_so_in_its_thread(
         # A re-send with nothing new is a duplicate of the Triage it joined.
         again = c.post(URL, json=louder, headers=HOOK).json()
         assert again == {"status": "duplicate", "investigation": tid}
-        page = c.get(f"/console/investigations/{tid}", headers=VIEW).text
-        assert "Related alert groups" in page and "PaymentsLatency shop" in page
-        assert "<code>service=payments</code>" in page and "higher severity" in page
+        page = c.get(f"/api/v1/investigations/{tid}", headers=VIEW).json()
+        (related,) = page["related"]
+        assert related["title"] == "PaymentsLatency shop" and related["louder"] is True
+        assert related["matched"] == {"service": "payments"}
 
 
 def test_outside_the_window_or_once_resolved_or_failed_a_group_starts_its_own(
@@ -264,8 +265,8 @@ def test_the_operator_has_a_related_group_triaged_separately_once(
         # From now on its re-sends are duplicates of its own Triage.
         again = c.post(URL, json=LATENCY, headers=HOOK).json()
         assert again == {"status": "duplicate", "investigation": b}
-        page = c.get(f"/console/investigations/{a}", headers=VIEW).text
-        assert f'<a href="/console/investigations/{b}">triaged separately</a>' in page
+        page = c.get(f"/api/v1/investigations/{a}", headers=VIEW).json()
+        assert [r["separate_id"] for r in page["related"]] == [b]  # triaged separately
     assert triage_rows(database_url) == 2
 
 

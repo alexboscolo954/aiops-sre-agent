@@ -1,4 +1,4 @@
-/* The same look as the Jinja console (console.css): its colours, light and dark. */
+/* The console's look: its colours, light and dark. */
 :root {
   --bg: #f6f7f9; --panel: #fff; --text: #1c2128; --muted: #5d6673; --line: #dfe3e8;
   --accent: #2f6fde; --bad: #b42323; --bad-bg: #fbe6e6; --wait: #8a5a00; --wait-bg: #fdf1d8;

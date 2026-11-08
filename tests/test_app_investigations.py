@@ -5,6 +5,7 @@ same doors as the rest of /api/v1."""
 import asyncio
 from typing import Any
 
+import yaml
 from pydantic import SecretStr
 
 from aiops_agent.config import Settings
@@ -128,7 +129,7 @@ def test_one_investigation_in_full_with_its_report_as_fields(
     assert [(f["correct"], f["correction"]) for f in t["feedback"]] == [(False, "wrong pod")]
 
 
-def test_a_finished_triage_downloads_the_same_scenario_as_the_older_page(
+def test_a_finished_triage_downloads_its_scenario(
     settings: Settings, fake_cluster: Any, database_url: str
 ) -> None:
     report = call("TriageReport", "r", **REPORT)
@@ -137,11 +138,11 @@ def test_a_finished_triage_downloads_the_same_scenario_as_the_older_page(
         wait_for(c, tid, "done")
         shown = c.get(f"/api/v1/investigations/{tid}", headers=VIEW).json()
         new = c.get(f"/api/v1/investigations/{tid}/scenario.yaml", headers=VIEW)
-        old = c.get(f"/console/investigations/{tid}/scenario.yaml", headers=VIEW)
         no_cookie = c.get(f"/api/v1/investigations/{tid}/scenario.yaml", headers=AS_OPERATOR)
     assert shown["scenario"] is True
-    assert new.status_code == 200 and new.text == old.text
-    assert new.headers["content-disposition"] == old.headers["content-disposition"]
+    assert new.status_code == 200 and new.headers["content-type"].startswith("application/yaml")
+    assert new.headers["content-disposition"] == f'attachment; filename="acme-{tid[:8]}.yaml"'
+    assert isinstance(yaml.safe_load(new.text), dict)  # a Scenario draft, not an error page
     assert no_cookie.status_code == 401
 
 

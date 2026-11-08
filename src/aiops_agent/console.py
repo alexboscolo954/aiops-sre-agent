@@ -1,67 +1,38 @@
-"""The web console: the Operator's view of every Contract.
+"""The console's doors, shared by the console app (webapp.py) and the Hub MCP server.
 
 Who: Tailscale's identity header. `tailscale serve` sets Tailscale-User-Login on
 every request it proxies and strips any copy a client sends, so the header is only
 as trustworthy as the port: the Hub listens on 127.0.0.1 behind `serve` (slice
 0.5), but local processes and the other containers on the compose network could
 still send it themselves. So the header alone opens only the token page: every
-other page, and every action, also needs the approver token, pasted once per browser
-and kept as an HMAC of it in a Secure, HttpOnly, SameSite=Strict cookie. Every POST
-must come from the console's own pages (Sec-Fetch-Site or Origin): the identity
-header is ambient, so a page elsewhere could otherwise make the browser post.
-Off unless AIOPS_CONSOLE_OPERATORS lists who may sign in.
+other page and call also needs the approver token, pasted once per browser and kept
+as an HMAC of it in a Secure, HttpOnly, SameSite=Strict cookie. Every change must
+come from the console's own pages (Sec-Fetch-Site or Origin): the identity header is
+ambient, so a page elsewhere could otherwise make the browser send it.
+
+The Jinja pages that were here are gone since slice 11.7b: their old addresses
+redirect into the app.
 """
 
-import asyncio
 import hashlib
 import hmac
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import quote, urlsplit
 
-import yaml
-from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
-from jinja2 import Environment, FileSystemLoader
-from markdown_it import MarkdownIt
-from markupsafe import Markup
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import RedirectResponse, Response
 
 from aiops_agent import evals
-from aiops_agent.contracts import Contract, Jira
+from aiops_agent.contracts import Contract
 from aiops_agent.models import Investigation
-from aiops_agent.safety import redact
-from aiops_agent.store import Store, now
-from aiops_agent.teachings import LIMIT as TEACHING_LIMIT
-from aiops_agent.teachings import section
+from aiops_agent.store import Store
 
-# Autoescape always: alert titles come from client Alertmanagers, Reports and
-# Answers from a model that reads tool output. Never mark anything |safe; the one
-# filter that returns markup, md, renders Markdown with raw HTML escaped and no
-# link or image at all: a prompt injection could have the model write one carrying
-# client data to its own host, for the Operator to click (or a browser to load).
-# Evidence links are plain text already, after the Hub dropped any a link tool
-# didn't return.
-TEMPLATES = Environment(
-    loader=FileSystemLoader(Path(__file__).parent / "templates"), autoescape=True
-)
-# breaks: a Report's lines (root cause, severity) stay lines, as Slack shows them.
-MARKDOWN = (
-    MarkdownIt("commonmark", {"html": False, "breaks": True})
-    .enable("table")
-    .disable(["link", "image", "autolink", "reference"])
-)
-TEMPLATES.filters["md"] = lambda text: Markup(MARKDOWN.render(text or ""))  # noqa: S704
-CSS = (Path(__file__).parent / "static" / "console.css").read_text()
-TEMPLATES.filters["when"] = lambda t: (
-    datetime.fromtimestamp(t, UTC).strftime("%Y-%m-%d %H:%M:%S UTC") if t else "-"
-)
 HEADERS = {
     "Content-Security-Policy": "default-src 'self'; frame-ancestors 'none'",
     "X-Frame-Options": "DENY",
 }
-COOKIE = "aiops_actions"
+COOKIE = "aiops_actions"  # renaming it would make every browser paste the token again
 COOKIE_DAYS = 30
 # decide(investigation id, the pause's deadline, approve, reason, login) -> decided
 Decide = Callable[[str, float, bool, str, str], Awaitable[bool]]
@@ -86,12 +57,12 @@ def action_key(approver_token: str) -> str:
 
 
 def set_cookie(response: Response, key: str) -> None:
-    """The approver cookie: proof of the token for the whole Hub (both consoles)."""
+    """The approver cookie: proof of the token for the whole Hub."""
     response.set_cookie(
         COOKIE,
         key,
         max_age=COOKIE_DAYS * 86400,
-        path="/",  # the console app's API (/api/v1) needs it too
+        path="/",
         secure=True,
         httponly=True,
         samesite="strict",
@@ -128,277 +99,18 @@ def same_origin(request: Request) -> bool:
     return origin is not None and urlsplit(origin).netloc == request.headers.get("Host")
 
 
-async def form(request: Request) -> dict[str, str]:
-    body = (await request.body()).decode()
-    return {k: v[0] for k, v in parse_qs(body, keep_blank_values=True).items()}
+def redirects() -> APIRouter:
+    """The Jinja console's old addresses, for bookmarks (slice 11.7b): an
+    Investigation's page and its files go to its app page, anything else to the app.
+    GET only: a form posted to an old address changes nothing (405)."""
+    r = APIRouter()
 
+    @r.get("/console", include_in_schema=False)
+    @r.get("/console/{rest:path}", include_in_schema=False)
+    async def moved(rest: str = "") -> RedirectResponse:
+        parts = rest.split("/")
+        if len(parts) >= 2 and parts[0] == "investigations" and parts[1]:
+            return RedirectResponse(f"/app/?view=investigation&id={quote(parts[1], safe='')}", 303)
+        return RedirectResponse("/app/", 303)
 
-def router(
-    operators: set[str],
-    by_id: dict[str, Contract],
-    store: Callable[[], Store],
-    decide: Decide,
-    ask: Ask,
-    health: Health,
-    hub_config: dict[str, Any],
-    approver_token: str,
-    file_jira: FileJira,
-    jira_of: Callable[[Investigation], Jira | None],
-    feedback: Feedback,
-    decide_teaching: DecideTeaching,
-) -> APIRouter:
-    key = action_key(approver_token)
-
-    def operator(request: Request) -> str:
-        login = request.headers.get("Tailscale-User-Login", "").strip()
-        if not login or login not in operators:
-            raise HTTPException(403, "not an Operator (sign in through tailscale serve)")
-        return login
-
-    def can_act(request: Request) -> bool:
-        return hmac.compare_digest(request.cookies.get(COOKIE, ""), key)
-
-    def viewer(request: Request, login: str = Depends(operator)) -> str:
-        if not can_act(request):
-            raise HTTPException(303, headers={"Location": "/console/token"})
-        return login
-
-    def posting(request: Request, login: str = Depends(operator)) -> str:
-        if not same_origin(request):
-            raise HTTPException(403, "cross-site request refused")
-        return login
-
-    def acting(request: Request, login: str = Depends(posting)) -> str:
-        return viewer(request, login)
-
-    def question_text(f: dict[str, str]) -> str:
-        text = f.get("question", "").strip()
-        if not text or len(text) > QUESTION_LIMIT:
-            raise HTTPException(400, f"ask a question of 1 to {QUESTION_LIMIT} characters")
-        return text
-
-    console = APIRouter(prefix="/console")
-
-    @console.get("/console.css")
-    async def stylesheet(login: str = Depends(operator)) -> Response:
-        """Behind the identity like every page; the token page needs it too."""
-        return Response(CSS, media_type="text/css", headers={"Cache-Control": "max-age=3600"})
-
-    def page(request: Request, template: str, status: int = 200, **context: Any) -> HTMLResponse:
-        name = request.headers.get("Tailscale-User-Name") or context["login"]
-        html = TEMPLATES.get_template(template).render(name=name, **context)
-        return HTMLResponse(html, status_code=status, headers=HEADERS)
-
-    @console.get("", response_class=HTMLResponse)
-    async def index(
-        request: Request,
-        contract: str | None = None,
-        login: str = Depends(viewer),
-    ) -> HTMLResponse:
-        shown = contract if contract in by_id else None
-        at = now()
-        return page(
-            request,
-            "index.html",
-            login=login,
-            contracts=sorted(by_id.values(), key=lambda c: c.id),
-            spend={cid: await store().month_spend(cid, at) for cid in by_id},
-            shown=shown,
-            investigations=await store().recent(100, shown),
-            checks=await store().check_schedules(shown),
-            deploys=await store().deploy_checks(shown),
-        )
-
-    @console.get("/investigations/{investigation_id}", response_class=HTMLResponse)
-    async def investigation(
-        request: Request,
-        investigation_id: str,
-        login: str = Depends(viewer),
-    ) -> HTMLResponse:
-        t = await store().get(investigation_id)
-        if t is None:
-            raise HTTPException(404, "unknown investigation")
-        return page(
-            request,
-            "investigation.html",
-            login=login,
-            t=t,
-            jira=jira_of(t),
-            usage=await store().investigation_usage(t.id),
-            masked=await store().masked_counts(t.id),
-            tool_calls=await store().tool_calls(t.id),
-            decisions=await store().decisions(t.id),
-            related=await store().related(t.id),
-            feedback=await store().feedback(t.id),
-            taught=[x for x in await store().teachings(t.contract_id) if x["source_id"] == t.id],
-        )
-
-    @console.get("/investigations/{investigation_id}/scenario.yaml")
-    async def scenario(investigation_id: str, login: str = Depends(viewer)) -> Response:
-        t = await store().get(investigation_id)
-        if t is None:
-            raise HTTPException(404, "unknown investigation")
-        return await scenario_file(t, by_id, store())
-
-    @console.post("/investigations/{investigation_id}/decision")
-    async def decision(
-        request: Request,
-        investigation_id: str,
-        login: str = Depends(acting),
-    ) -> RedirectResponse:
-        f = await form(request)
-        try:
-            deadline = float(f["deadline"])
-        except (KeyError, ValueError):
-            raise HTTPException(400, "which pause?") from None
-        approve = f.get("approve") == "1"
-        if not await decide(investigation_id, deadline, approve, f.get("reason", ""), login):
-            raise HTTPException(409, "already decided or Stale: nothing to decide")
-        return RedirectResponse(f"/console/investigations/{investigation_id}", 303)
-
-    @console.post("/investigations/{investigation_id}/jira")
-    async def jira_issue(investigation_id: str, login: str = Depends(acting)) -> RedirectResponse:
-        t = await store().get(investigation_id)
-        if t is None:
-            raise HTTPException(404, "unknown investigation")
-        key, message = await file_jira(t, login)
-        if key is None:
-            raise HTTPException(409, message)
-        return RedirectResponse(f"/console/investigations/{investigation_id}", 303)
-
-    @console.post("/questions")
-    async def question(request: Request, login: str = Depends(acting)) -> RedirectResponse:
-        f = await form(request)
-        if f.get("contract") not in by_id:
-            raise HTTPException(400, "which Contract?")
-        asked = await ask(f["contract"], question_text(f), None)
-        if asked is None:
-            raise HTTPException(409, "could not start the Question")
-        return RedirectResponse(f"/console/investigations/{asked}", 303)
-
-    @console.post("/investigations/{investigation_id}/questions")
-    async def follow_up(
-        request: Request, investigation_id: str, login: str = Depends(acting)
-    ) -> RedirectResponse:
-        t = await store().get(investigation_id)
-        if t is None:
-            raise HTTPException(404, "unknown investigation")
-        if await ask(t.contract_id, question_text(await form(request)), t.id) is None:
-            raise HTTPException(409, "still answering, or not a Question")
-        return RedirectResponse(f"/console/investigations/{t.id}", 303)
-
-    @console.post("/investigations/{investigation_id}/feedback")
-    async def give_feedback(
-        request: Request, investigation_id: str, login: str = Depends(acting)
-    ) -> RedirectResponse:
-        t = await store().get(investigation_id)
-        if t is None:
-            raise HTTPException(404, "unknown investigation")
-        if not (t.kind in ("triage", "check") and t.status == "done" and t.report):
-            raise HTTPException(409, "feedback is for a finished Report")
-        f = await form(request)
-        correct = f.get("correct") == "1"
-        correction = f.get("correction", "").strip()
-        if not correct and not 0 < len(correction) <= CORRECTION_LIMIT:
-            raise HTTPException(400, f"say what was wrong, in 1 to {CORRECTION_LIMIT} characters")
-        await feedback(t, correct, None if correct else correction, login)
-        return RedirectResponse(f"/console/investigations/{t.id}", 303)
-
-    @console.get("/teachings", response_class=HTMLResponse)
-    async def teachings_page(
-        request: Request, contract: str | None = None, login: str = Depends(viewer)
-    ) -> HTMLResponse:
-        shown = contract if contract in by_id else None
-        rows = await store().teachings(shown)
-        approved = [r for r in rows if r["status"] == "approved"]
-        left = {
-            cid: section([r for r in approved if r["contract_id"] == cid], None)[1] for cid in by_id
-        }
-        crowded = {cid: n for cid, n in sorted(left.items()) if n}
-        return page(
-            request,
-            "teachings.html",
-            login=login,
-            contracts=sorted(by_id),
-            shown=shown,
-            proposed=[r for r in rows if r["status"] == "proposed"],
-            approved=[r for r in rows if r["status"] == "approved"],
-            past=[r for r in rows if r["status"] in ("rejected", "retired")],
-            limit=TEACHING_LIMIT,
-            crowded=crowded,
-        )
-
-    async def teaching_row(teaching_id: int) -> dict[str, Any]:
-        row = await store().teaching(teaching_id)
-        if row is None or row["contract_id"] not in by_id:
-            raise HTTPException(404, "unknown Teaching")
-        return row
-
-    @console.post("/teachings/{teaching_id}/decision")
-    async def teaching_decision(
-        request: Request, teaching_id: int, login: str = Depends(acting)
-    ) -> RedirectResponse:
-        row = await teaching_row(teaching_id)
-        f = await form(request)
-        approve = f.get("approve") == "1"
-        text = f.get("text", "").strip() if approve else None
-        if approve and not 0 < len(text or "") <= TEACHING_LIMIT:
-            raise HTTPException(400, f"a Teaching is 1 to {TEACHING_LIMIT} characters")
-        if not await decide_teaching(row, approve, text, login):
-            raise HTTPException(409, "already decided")
-        return RedirectResponse(f"/console/teachings?contract={row['contract_id']}", 303)
-
-    @console.post("/teachings/{teaching_id}/retire")
-    async def retire(teaching_id: int, login: str = Depends(acting)) -> RedirectResponse:
-        row = await teaching_row(teaching_id)
-        if not await store().retire_teaching(row["id"], row["contract_id"], f"console:{login}"):
-            raise HTTPException(409, "not an approved Teaching")
-        return RedirectResponse(f"/console/teachings?contract={row['contract_id']}", 303)
-
-    @console.post("/teachings")
-    async def write_teaching(request: Request, login: str = Depends(acting)) -> RedirectResponse:
-        """Written by the Operator: approved at once."""
-        f = await form(request)
-        if f.get("contract") not in by_id:
-            raise HTTPException(400, "which Contract?")
-        text = f.get("text", "").strip()
-        if not 0 < len(text) <= TEACHING_LIMIT:
-            raise HTTPException(400, f"a Teaching is 1 to {TEACHING_LIMIT} characters")
-        alerts = [a.strip() for a in f.get("alerts", "").split(",") if a.strip()]
-        await store().add_teaching(f["contract"], text, alerts, approved_by=f"console:{login}")
-        return RedirectResponse(f"/console/teachings?contract={f['contract']}", 303)
-
-    @console.get("/health", response_class=HTMLResponse)
-    async def health_page(request: Request, login: str = Depends(viewer)) -> HTMLResponse:
-        shown = sorted(by_id.values(), key=lambda c: c.id)
-        checks = await asyncio.gather(*(health(c) for c in shown))
-        last = await store().last_done()
-        rows = [
-            {
-                "contract": c,
-                "checks": check,
-                "last": last.get(c.id),
-                # The Contract as loaded, defaults included. Secret values never live
-                # in the model: only their names, and whether each one decrypted.
-                "config": yaml.safe_dump(c.model_dump(mode="json"), sort_keys=False),
-                "secrets": {name: c.has_secret(name) for name in sorted(c.secret_refs())},
-            }
-            for c, check in zip(shown, checks, strict=True)
-        ]
-        hub = redact(yaml.safe_dump(hub_config, sort_keys=False))  # and redacted, to be sure
-        return page(request, "health.html", login=login, rows=rows, hub=hub)
-
-    @console.get("/token", response_class=HTMLResponse)
-    async def token_form(request: Request, login: str = Depends(operator)) -> HTMLResponse:
-        return page(request, "token.html", login=login, can_act=can_act(request))
-
-    @console.post("/token")
-    async def token(request: Request, login: str = Depends(posting)) -> RedirectResponse:
-        given = (await form(request)).get("token", "")
-        if not hmac.compare_digest(given.encode(), approver_token.encode()):
-            raise HTTPException(403, "that is not the approver token")
-        done = RedirectResponse("/console", 303)
-        set_cookie(done, key)
-        return done
-
-    return console
+    return r

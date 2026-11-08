@@ -16,13 +16,6 @@ from tests.test_console import AS_OPERATOR, OPERATOR, VIEW
 from tests.test_restart import wait_for
 
 
-def section(html: str, contract_id: str) -> str:
-    """One Contract's part of the health page."""
-    start = html.index(f"<h2><code>{contract_id}</code>")
-    end = html.find("<h2>", start + 1)
-    return html[start:end]
-
-
 def test_each_contract_shows_its_own_checks_and_last_success(
     settings: Settings, fake_cluster: Any, database_url: str
 ) -> None:
@@ -40,19 +33,19 @@ def test_each_contract_shows_its_own_checks_and_last_success(
         wait_for(c, tid, "done")
         later = {**ALERT, "groupKey": "later"}  # no model steps left: it fails
         wait_for(c, c.post(URL, json=later, headers=HOOK).json()["investigation"], "failed")
-        page = c.get("/console/health", headers=VIEW)
-        no_token = c.get("/console/health", headers=AS_OPERATOR, follow_redirects=False)
-    assert page.status_code == 200 and no_token.status_code == 303
-    acme, other = section(page.text, "acme"), section(page.text, "bank")
-    assert (
-        '<td>kubernetes test</td><td><span class="badge ok">ok</span></td>' in acme
-        and "FAILING" not in acme
-    )
-    assert f'href="/console/investigations/{tid}"' in acme
-    assert '<td>kubernetes test</td><td><span class="badge failing">FAILING</span></td>' in other
-    assert "Kubernetes API 403" in other and "none yet" in other
-    assert "abcdefghijklmnop1234" not in page.text  # a check's error is redacted
-    assert "approver-token" not in page.text and "**********" in page.text  # Hub settings
+        acme_r = c.get("/api/v1/contracts/acme/health", headers=VIEW)
+        bank_r = c.get("/api/v1/contracts/bank/health", headers=VIEW)
+        no_token = c.get("/api/v1/contracts/acme/health", headers=AS_OPERATOR)
+    assert acme_r.status_code == 200 and no_token.status_code == 401
+    acme, other = acme_r.json(), bank_r.json()
+    (acme_probe,) = acme["integrations"]
+    (bank_probe,) = other["integrations"]
+    assert acme_probe == {**acme_probe, "name": "kubernetes test", "ok": True}
+    assert acme["last"]["id"] == tid  # its last finished Investigation
+    assert bank_probe["name"] == "kubernetes test" and bank_probe["ok"] is False
+    assert "Kubernetes API 403" in bank_probe["detail"] and other["last"] is None
+    assert "abcdefghijklmnop1234" not in acme_r.text + bank_r.text  # a check's error is redacted
+    assert "approver-token" not in acme_r.text and "**********" in acme["hub"]  # Hub settings
 
 
 def test_secret_values_never_show_and_unbuildable_tools_fail_the_check(
@@ -70,15 +63,13 @@ def test_secret_values_never_show_and_unbuildable_tools_fail_the_check(
         return agent.build_mcp(c, settings, {cl.name: fake_cluster for cl in c.clusters})
 
     with TestClient(create_app(settings, scripted(), mcp, two_contracts)) as c:
-        page = c.get("/console/health", headers=VIEW).text
-    assert secret not in page
-    assert "<code>prometheus-token</code> loaded" in section(page, "demo-shop")
-    bank = section(page, "demo-bank")
-    assert (
-        '<td>tools</td><td><span class="badge failing">FAILING</span></td>' in bank
-        and "RuntimeError: kubeconfig not found" in bank
-    )
-    assert "abcdefghijklmnop1234" not in bank  # errors are redacted too
+        shop_r = c.get("/api/v1/contracts/demo-shop/health", headers=VIEW)
+        bank_r = c.get("/api/v1/contracts/demo-bank/health", headers=VIEW)
+    assert secret not in shop_r.text
+    assert shop_r.json()["secrets"]["prometheus-token"] is True  # named, and it decrypted
+    tools = [p for p in bank_r.json()["integrations"] if p["name"] == "tools"]
+    assert tools[0]["ok"] is False and "RuntimeError: kubeconfig not found" in tools[0]["detail"]
+    assert "abcdefghijklmnop1234" not in bank_r.text  # errors are redacted too
 
 
 def test_hub_settings_never_show_credentials_in_plain_strings() -> None:

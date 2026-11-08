@@ -18,6 +18,6 @@ export default defineConfig({
   base: "/app/",
   plugins: [react()],
   build: { outDir: "dist", assetsDir: "assets", sourcemap: false },
-  server: { host: "127.0.0.1", port: 5173, proxy: { "/api": proxy, "/console": proxy } },
+  server: { host: "127.0.0.1", port: 5173, proxy: { "/api": proxy } },
   test: { environment: "jsdom" },
 });

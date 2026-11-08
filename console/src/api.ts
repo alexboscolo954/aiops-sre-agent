@@ -31,7 +31,7 @@ async function get<T>(path: string, method: "GET" | "POST" | "DELETE" = "GET"): 
   const r = await fetch(`/api/v1${path}`, { method, credentials: "same-origin" });
   if (r.status === 401) {
     const body = await r.json().catch(() => ({}));
-    throw new NeedsToken(body?.detail?.token_url ?? "/console/token");
+    throw new NeedsToken(body?.detail?.token_url ?? "/app/?view=token");
   }
   if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
   return (await r.json()) as T;

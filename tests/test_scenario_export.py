@@ -47,7 +47,7 @@ def steps(*calls: tuple[str, dict[str, Any]], last: Any) -> list[Any]:
 
 
 def download(c: Any, tid: str) -> tuple[Any, dict[str, Any], str]:
-    r = c.get(f"/console/investigations/{tid}/scenario.yaml", headers=VIEW)
+    r = c.get(f"/api/v1/investigations/{tid}/scenario.yaml", headers=VIEW)
     return r, yaml.safe_load(r.text), r.text
 
 
@@ -83,8 +83,8 @@ async def test_a_saved_triage_replays_to_the_same_calls_and_results(
         tid = c.post(URL, json=hostile, headers=HOOK).json()["investigation"]
         wait_for(c, tid, "done")
         r, scenario, text = download(c, tid)
-        page = c.get(f"/console/investigations/{tid}", headers=VIEW).text
-    assert r.status_code == 200 and "Save as Scenario" in page
+        page = c.get(f"/api/v1/investigations/{tid}", headers=VIEW)
+    assert r.status_code == 200 and page.json()["scenario"] is True
     assert r.headers["content-disposition"] == f'attachment; filename="acme-{tid[:8]}.yaml"'
     assert text.startswith(f"# Draft Scenario from triage {tid} (acme)")
     assert SECRET not in text and "[REDACTED]" in text  # the alert went through redact
@@ -124,12 +124,11 @@ async def test_a_saved_question_replays_and_scores(
     script = steps(LIST, last=call("Answer", "a", **ANSWER))
     with client(settings, fake_cluster, *script, acme=full) as c:
         asked = c.post(
-            "/console/questions",
-            data={"contract": "acme", "question": f"is checkout ok? {SECRET}"},
+            "/api/v1/contracts/acme/questions",
+            json={"question": f"is checkout ok? {SECRET}"},
             headers=SAME,
-            follow_redirects=False,
         )
-        qid = asked.headers["location"].rsplit("/", 1)[1]
+        qid = asked.json()["id"]
         wait_for(c, qid, "done")
         _, scenario, text = download(c, qid)
     assert scenario["question"] == "is checkout ok? token=[REDACTED]" and SECRET not in text
@@ -157,7 +156,7 @@ def test_only_a_finished_investigation_with_its_input_saves(
     with client(settings, fake_cluster, evict, actions=True, acme=acting) as c:
         tid = c.post(URL, json=ALERT, headers=HOOK).json()["investigation"]
         wait_for(c, tid, "awaiting_approval")
-        paused = c.get(f"/console/investigations/{tid}/scenario.yaml", headers=VIEW)
+        paused = c.get(f"/api/v1/investigations/{tid}/scenario.yaml", headers=VIEW)
 
         async def old() -> None:  # recorded before migration 0008: no input
             async with connect(database_url) as pool:
@@ -165,15 +164,11 @@ def test_only_a_finished_investigation_with_its_input_saves(
                 await Store(pool).insert(t)
 
         asyncio.run(old())
-        before = c.get("/console/investigations/old/scenario.yaml", headers=VIEW)
-        no_token = c.get(
-            f"/console/investigations/{tid}/scenario.yaml",
-            headers=AS_OPERATOR,
-            follow_redirects=False,
-        )
-        unknown = c.get("/console/investigations/nope/scenario.yaml", headers=VIEW)
+        before = c.get("/api/v1/investigations/old/scenario.yaml", headers=VIEW)
+        no_token = c.get(f"/api/v1/investigations/{tid}/scenario.yaml", headers=AS_OPERATOR)
+        unknown = c.get("/api/v1/investigations/nope/scenario.yaml", headers=VIEW)
     assert paused.status_code == 409 and before.status_code == 409
-    assert no_token.status_code == 303 and unknown.status_code == 404
+    assert no_token.status_code == 401 and unknown.status_code == 404
 
 
 def test_one_contracts_scenario_holds_none_of_anothers_calls(
@@ -239,7 +234,7 @@ def test_tool_arguments_are_redacted_too(
         tid = c.post(URL, json=ALERT, headers=HOOK).json()["investigation"]
         wait_for(c, tid, "done")
         _, scenario, text = download(c, tid)
-        page = c.get(f"/console/investigations/{tid}", headers=VIEW).text
+        page = c.get(f"/api/v1/investigations/{tid}", headers=VIEW).text
     assert SECRET not in page  # stored redacted: the console's tool calls don't show it
     assert SECRET not in text
     assert (

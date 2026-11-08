@@ -367,7 +367,7 @@ def test_the_console_counts_what_an_investigation_masked(
     with client(settings, fake_cluster, call("TriageReport", "c1", **REPORT), acme=acme) as c:
         tid = c.post(URL, json=HUB_ALERT, headers=HOOK).json()["investigation"]
         wait_for(c, tid, "done")
-        page = c.get(f"/console/investigations/{tid}", headers=VIEW).text
-        plain = c.get("/console", headers=VIEW).text
-    assert "Masked for the LLM: 1 name<" in page
-    assert "Masked for the LLM" not in plain
+        page = c.get(f"/api/v1/investigations/{tid}", headers=VIEW).json()
+        plain = c.get("/api/v1/contracts/acme/investigations", headers=VIEW).json()
+    assert page["masked"] == {"name": 1}
+    assert all("masked" not in t for t in plain)  # a list says nothing of what was masked

@@ -67,10 +67,13 @@ def test_each_model_call_is_recorded_and_a_resume_counts_only_its_own(
         wait_for(c, tid, "awaiting_approval")
         c.post(f"/investigations/{tid}/decision", json={"approve": True}, headers=AUTH)
         wait_for(c, tid, "done")
-        page = c.get(f"/console/investigations/{tid}", headers=VIEW).text
-        index = c.get("/console", headers=VIEW).text
-    assert "Tokens: 4000 in, 250 out" in page and "cost: $0.0005" in page
-    assert "$0.0005 of $0.00 (26%)" in index  # $0.000525 of a $0.002 budget
+        shown = c.get(f"/api/v1/investigations/{tid}", headers=VIEW).json()
+        overview = c.get("/api/v1/overview", headers=VIEW).json()
+    usage = shown["usage"]
+    assert (usage["input_tokens"], usage["output_tokens"]) == (4000, 250)
+    assert usage["cost_usd"] == pytest.approx(0.000525)
+    (acme,) = [x for x in overview if x["id"] == "acme"]
+    assert acme["spent_usd"] == pytest.approx(0.000525) and acme["budget_usd"] == 0.002
     rows = usage_rows(database_url)
     assert [r[:3] for r in rows] == [(priced.model, 1000, 50), (priced.model, 3000, 200)]
     assert [r[3] for r in rows] == pytest.approx([HAIKU.cost(1000, 50), HAIKU.cost(3000, 200)])

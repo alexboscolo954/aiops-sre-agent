@@ -365,9 +365,13 @@ def test_an_over_budget_verification_is_skipped_and_shown(
         deployed(fake_cluster, rollout("cart", 1, 30), rollout("cart", 2))
         poll(c, at + 120)
         assert fire(c, at + HOUR) == []
-        page = c.get("/console", headers=VIEW).text
+        checks = c.get("/api/v1/contracts/acme/checks", headers=VIEW).json()
     assert [r[2] for r in pending(database_url)] == ["skipped"]
-    assert "skipped</span> Contract" in page and "deployment cart 2" in page
+    (verdict,) = checks["deploys"]
+    assert verdict["state"] == "skipped" and verdict["skipped_reason"]
+    assert {(x["object"], str(x["revision"])) for x in verdict["changes"]} >= {
+        ("deployment cart", "2")
+    }
 
 
 def test_a_pending_verification_fires_after_a_restart(

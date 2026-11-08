@@ -70,7 +70,8 @@ src/aiops_agent/
   config.py        Hub settings: AIOPS_* environment variables.
   api.py           FastAPI app: webhooks, approval, the hourly tick (lifespan), metrics.
   webapp.py        JSON API /api/v1/ and the React app at /app/ (OpenAPI is generated from it).
-  console.py       The older Jinja console, until Phase 11 moves the rest into the app.
+  console.py       The console's doors (identity, approver cookie, same-origin), shared helpers,
+                   and redirects from the old Jinja console's addresses into the app.
   agent.py         The LangChain agent, tool loading, approval middleware, prompts.
   models.py        Alert input, the Report schema, the Investigation record.
   store.py         All Postgres access. Async. Migrations in migrations/NNNN_name.sql.

@@ -1,7 +1,7 @@
 """The console app (slice 9.5a): a React single-page app at /app/ and its JSON API at
-/api/v1/, beside the Jinja console until Phase 11 rebuilds the rest in it.
+/api/v1/; since slice 11.7b the whole console (the Jinja pages are gone).
 
-The same doors as the Jinja console (console.py): the page and its files need a
+The console's doors (console.py): the page and its files need a
 listed Operator's Tailscale identity; every API call also needs the approver cookie,
 and answers 401 with the token page's address without it. The app is built in the
 image's Docker build (console/, Vite) into AIOPS_APP_DIR; nothing loads from a CDN,

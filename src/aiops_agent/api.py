@@ -1506,22 +1506,7 @@ def create_app(
         return await file_jira(t, f"console:{login}", login)
 
     if settings.console_operators:  # off by default: 404, not a login page
-        app.include_router(
-            console.router(
-                settings.console_operators,
-                by_id,
-                store,
-                console_decide,
-                console_ask,
-                health,
-                shown_settings(settings),
-                approver_token,
-                console_file_jira,
-                jira_of,
-                console_feedback,
-                console_decide_teaching,
-            )
-        )
+        app.include_router(console.redirects())  # the Jinja console's old addresses
         app.include_router(
             webapp.router(
                 settings.console_operators,

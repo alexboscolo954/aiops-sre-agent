@@ -1,4 +1,4 @@
-"""The console app (slice 9.5a): the Jinja console's guards hold for /app/ and
+"""The console app (slice 9.5a): the console's guards hold for /app/ and
 /api/v1/ too (identity, approver cookie, CSP, text only), and a Contract's Sizings
 never reach another's API."""
 
@@ -137,13 +137,6 @@ def test_an_image_without_the_app_says_so(
     with hub(settings, fake_cluster, database_url) as c:
         r = c.get("/app/", headers=AS_OPERATOR)
     assert r.status_code == 404 and "isn't built" in r.text
-
-
-def test_the_jinja_console_links_the_app(
-    settings: Settings, fake_cluster: Any, database_url: str, app_dir: Path
-) -> None:
-    with hub(settings, fake_cluster, database_url) as c:
-        assert '<a href="/app/">Workloads</a>' in c.get("/console", headers=VIEW).text
 
 
 # --- the data -------------------------------------------------------------------------

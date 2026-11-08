@@ -467,14 +467,17 @@ def test_the_console_shows_checks_and_takes_feedback_on_a_failing_one(
     with hub(settings, fake_cluster, failed()) as c:
         (tid,) = tick(c, now() + DAY)
         wait_for(c, tid, "done")
-        index = c.get("/console", headers=VIEW).text
-        page = c.get(f"/console/investigations/{tid}", headers=VIEW).text
-        saved = c.get(f"/console/investigations/{tid}/scenario.yaml", headers=VIEW)
-        r = c.post(f"/console/investigations/{tid}/feedback", data={"correct": "1"}, headers=SAME)
-    assert "shop-healthy" in index and "*/15 * * * *" in index and "failed" in index
-    assert "<h2>Check</h2>" in page and "Failed:" in page and "Was this Report right?" in page
+        checks = c.get("/api/v1/contracts/acme/checks", headers=VIEW).json()["checks"]
+        page = c.get(f"/api/v1/investigations/{tid}", headers=VIEW).json()
+        saved = c.get(f"/api/v1/investigations/{tid}/scenario.yaml", headers=VIEW)
+        r = c.post(f"/api/v1/investigations/{tid}/feedback", json={"correct": True}, headers=SAME)
+    (shop,) = checks
+    assert shop["name"] == "shop-healthy" and shop["schedule"].startswith("*/15 * * * *")
+    assert shop["last_passed"] is False and shop["last_id"] == tid  # failed
+    assert page["kind"] == "check" and page["failed"] is True and page["can_judge"] is True
+    assert page["check_result"]["passed"] is False
     assert saved.status_code == 200 and "check:" in saved.text  # a draft Scenario (part b)
-    assert r.status_code in (200, 303)
+    assert r.status_code == 200
     assert rows(database_url, "select correct from feedback") == [(True,)]
 
 
