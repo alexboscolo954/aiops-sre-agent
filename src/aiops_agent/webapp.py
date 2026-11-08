@@ -25,8 +25,18 @@ from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel
 
 from aiops_agent import agenda, billing, listprices, sizing, usage
-from aiops_agent.console import COOKIE, action_key, same_origin, scenario_file, set_cookie
-from aiops_agent.contracts import Contract
+from aiops_agent.console import (
+    COOKIE,
+    CORRECTION_LIMIT,
+    Decide,
+    Feedback,
+    FileJira,
+    action_key,
+    same_origin,
+    scenario_file,
+    set_cookie,
+)
+from aiops_agent.contracts import Contract, Jira
 from aiops_agent.models import Answer, CheckResult, Investigation, TriageReport
 from aiops_agent.store import Store
 
@@ -294,6 +304,17 @@ class Taught(BaseModel):
     text: str
 
 
+class JiraState(BaseModel):
+    """The Contract's Jira project for this Report (slice 11.5b): its issue once filed,
+    who is filing it while there is none yet, or nothing: it can be filed."""
+
+    project: str
+    issue: str | None
+    url: str | None  # the issue's page
+    by: str | None
+    since: float | None  # being filed (or Jira never answered) since then
+
+
 class InvestigationPage(Brief):
     """One Investigation in full: its Report, Answer or Check verdict as fields (the
     app shows each as text), what waits for a decision, and what it did."""
@@ -313,6 +334,8 @@ class InvestigationPage(Brief):
     feedback: list[Verdict]
     taught: list[Taught]
     scenario: bool  # finished, with its input recorded: it downloads as a Scenario
+    jira: JiraState | None  # a finished Report of a Contract with Jira
+    can_judge: bool  # a finished Triage's or Check's Report: right or wrong
 
 
 def brief(t: Investigation) -> dict[str, Any]:
@@ -330,6 +353,17 @@ def brief(t: Investigation) -> dict[str, Any]:
 
 class Token(BaseModel):
     token: str
+
+
+class DecisionIn(BaseModel):
+    deadline: float  # the pause's, as the page showed it: an older one decides nothing
+    approve: bool
+    reason: str = ""
+
+
+class FeedbackIn(BaseModel):
+    correct: bool
+    correction: str = ""
 
 
 class KillSwitch(BaseModel):
@@ -373,7 +407,13 @@ def router(
     store: Callable[[], Store],
     approver_token: str,
     now: Callable[[], float],
+    decide: Decide,
+    file_jira: FileJira,
+    jira_of: Callable[[Investigation], Jira | None],
+    feedback: Feedback,
 ) -> APIRouter:
+    """decide, file_jira, jira_of and feedback: the Jinja console's, so both consoles
+    record the same thing (`console:<login>`)."""
     key = action_key(approver_token)
     r = APIRouter()
 
@@ -501,6 +541,18 @@ def router(
             raise HTTPException(404, "unknown investigation")
         return t
 
+    def judged(t: Investigation) -> bool:
+        return t.kind in ("triage", "check") and t.status == "done" and t.report is not None
+
+    def jira_state(t: Investigation) -> JiraState | None:
+        j = jira_of(t)
+        if j is None or t.report is None or t.status != "done":
+            return None
+        url = f"{j.url.rstrip('/')}/browse/{t.jira_issue}" if t.jira_issue else None
+        return JiraState(
+            project=j.project, issue=t.jira_issue, url=url, by=t.jira_by, since=t.jira_at
+        )
+
     @api.get("/investigations/{investigation_id}")
     async def investigation(investigation_id: str) -> InvestigationPage:
         t = await investigation_of(investigation_id)
@@ -528,8 +580,46 @@ def router(
                 "feedback": await st.feedback(t.id),
                 "taught": [x for x in await st.teachings(t.contract_id) if x["source_id"] == t.id],
                 "scenario": t.status == "done" and t.input is not None,
+                "jira": jira_state(t),
+                "can_judge": judged(t),
             }
         )
+
+    @api.post("/investigations/{investigation_id}/decision")
+    async def decision(
+        investigation_id: str, given: DecisionIn, login: str = Depends(changing)
+    ) -> InvestigationPage:
+        """Approve or reject every Proposed action of the pause the page showed, as
+        Slack's buttons do (409 while the Kill switch is on, for an approval)."""
+        t = await investigation_of(investigation_id)
+        if not await decide(t.id, given.deadline, given.approve, given.reason, login):
+            raise HTTPException(409, "already decided or Stale: nothing to decide")
+        return await investigation(t.id)
+
+    @api.post("/investigations/{investigation_id}/feedback")
+    async def judge(
+        investigation_id: str, given: FeedbackIn, login: str = Depends(changing)
+    ) -> InvestigationPage:
+        """Right, or wrong with what was wrong: the agent drafts a Teaching from it."""
+        t = await investigation_of(investigation_id)
+        if not judged(t):
+            raise HTTPException(409, "feedback is for a finished Report")
+        correction = given.correction.strip()
+        if not given.correct and not 0 < len(correction) <= CORRECTION_LIMIT:
+            raise HTTPException(422, f"say what was wrong, in 1 to {CORRECTION_LIMIT} characters")
+        await feedback(t, given.correct, None if given.correct else correction, login)
+        return await investigation(t.id)
+
+    @api.post("/investigations/{investigation_id}/jira")
+    async def jira_issue(
+        investigation_id: str, login: str = Depends(changing)
+    ) -> InvestigationPage:
+        """The Report into the Contract's Jira project, once."""
+        t = await investigation_of(investigation_id)
+        key, message = await file_jira(t, login)
+        if key is None:
+            raise HTTPException(409, message)
+        return await investigation(t.id)
 
     @api.get("/investigations/{investigation_id}/scenario.yaml", response_class=Response)
     async def scenario(investigation_id: str) -> Response:
@@ -570,5 +660,6 @@ def openapi() -> str:
     """The API's schema, as console/openapi.json holds it (the app's types come from
     it: `make console-types`)."""
     app = FastAPI(title="aiops console", version="1")
-    app.include_router(router(set(), {}, lambda: None, "x", lambda: 0.0))  # type: ignore[arg-type,return-value]
+    never: Any = None  # the schema needs no behaviour
+    app.include_router(router(set(), {}, never, "x", never, never, never, never, never))
     return json.dumps(app.openapi(), indent=2, sort_keys=True) + "\n"

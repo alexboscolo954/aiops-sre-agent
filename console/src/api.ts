@@ -60,6 +60,30 @@ export const investigations = (contract: string) =>
 export const investigation = (id: string) =>
   get<InvestigationPage>(`/investigations/${encodeURIComponent(id)}`);
 
+/** A change (slice 11.5b): JSON in, the Investigation as it is now out; a refusal
+ * carries the Hub's own words (Stale, the Kill switch, filed already). */
+async function send<T>(path: string, body?: unknown): Promise<T> {
+  const r = await fetch(`/api/v1${path}`, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: body === undefined ? {} : { "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (r.status === 401) throw new NeedsToken("/app/?view=token");
+  if (!r.ok) {
+    const detail = (await r.json().catch(() => ({})))?.detail;
+    throw new Error(typeof detail === "string" ? detail : `${r.status} ${r.statusText}`);
+  }
+  return (await r.json()) as T;
+}
+
+const at = (id: string) => `/investigations/${encodeURIComponent(id)}`;
+export const decide = (id: string, deadline: number, approve: boolean, reason: string) =>
+  send<InvestigationPage>(`${at(id)}/decision`, { deadline, approve, reason });
+export const judge = (id: string, correct: boolean, correction: string) =>
+  send<InvestigationPage>(`${at(id)}/feedback`, { correct, correction });
+export const fileJira = (id: string) => send<InvestigationPage>(`${at(id)}/jira`);
+
 /** Earns this browser the cookie: the token page's only call without it. */
 export async function saveToken(token: string): Promise<void> {
   const r = await fetch("/api/v1/token", {

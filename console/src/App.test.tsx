@@ -452,6 +452,8 @@ const PAGE = {
   feedback: [],
   taught: [],
   scenario: false,
+  jira: null,
+  can_judge: false,
 };
 
 test("a Contract's Investigations list links each one, a failed Check as failed", async () => {
@@ -530,4 +532,78 @@ test("the token page posts the token and says when it is wrong", async () => {
   expect(await screen.findByText("Couldn't: that is not the approver token")).toBeTruthy();
   expect(sent).toEqual([{ token: "guess" }]);
   expect(screen.queryByText(/paste it/)).toBeNull(); // the token page needs no cookie
+});
+
+function acting(answers: Record<string, [number, unknown]>, sent: [string, unknown][]) {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url: string, init?: RequestInit) => {
+      const path = url.split("?")[0];
+      if (init?.method === "POST") {
+        sent.push([path, init.body ? JSON.parse(String(init.body)) : null]);
+        const [status, body] = answers[path] ?? [404, {}];
+        return new Response(JSON.stringify(body), { status });
+      }
+      const routes: Record<string, unknown> = {
+        "/api/v1/contracts": [{ id: "demo-shop", name: "demo-shop" }],
+        "/api/v1/investigations/t1": PAGE,
+      };
+      return new Response(JSON.stringify(routes[path] ?? {}), { status: path in routes ? 200 : 404 });
+    }),
+  );
+}
+
+test("approving posts the pause it showed, and the page shows what came back", async () => {
+  history.replaceState(null, "", "/app/?view=investigation&id=t1");
+  const sent: [string, unknown][] = [];
+  const after = { ...PAGE, status: "running", pending: [], deadline: null };
+  acting({ "/api/v1/investigations/t1/decision": [200, after] }, sent);
+  render(<App />);
+  fireEvent.click(await screen.findByText("Approve"));
+  expect(await screen.findByText(/Working on it/)).toBeTruthy();
+  expect(screen.queryByText("Waiting for your decision")).toBeNull();
+  expect(sent).toEqual([["/api/v1/investigations/t1/decision", { deadline: 1_700_000_600, approve: true, reason: "" }]]);
+});
+
+test("a rejection sends its reason, and a refusal shows the Hub's words", async () => {
+  history.replaceState(null, "", "/app/?view=investigation&id=t1");
+  const sent: [string, unknown][] = [];
+  acting({ "/api/v1/investigations/t1/decision": [409, { detail: "already decided or Stale: nothing to decide" }] }, sent);
+  const { container: page } = render(<App />);
+  await screen.findByText("Reject");
+  const input = page.querySelector(".waiting input") as HTMLInputElement;
+  fireEvent.change(input, { target: { value: "not during the sale" } });
+  fireEvent.click(screen.getByText("Reject"));
+  expect(await screen.findByText("Couldn't: already decided or Stale: nothing to decide")).toBeTruthy();
+  expect(sent).toEqual([["/api/v1/investigations/t1/decision", { deadline: 1_700_000_600, approve: false, reason: "not during the sale" }]]);
+});
+
+test("a finished Report takes feedback and files into Jira, then links the issue", async () => {
+  history.replaceState(null, "", "/app/?view=investigation&id=t1");
+  const done = { ...PAGE, status: "done", pending: [], deadline: null, can_judge: true, jira: { project: "OPS", issue: null, url: null, by: null, since: null } };
+  const filed = { ...done, jira: { project: "OPS", issue: "OPS-1", url: "https://acme.atlassian.net/browse/OPS-1", by: "console:alex@example.com", since: 1 } };
+  const judged = { ...done, feedback: [{ correct: true, correction: null, by: "console:alex@example.com", at: 1_700_000_000 }] };
+  const sent: [string, unknown][] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url: string, init?: RequestInit) => {
+      const path = url.split("?")[0];
+      if (init?.method === "POST") {
+        sent.push([path, init.body ? JSON.parse(String(init.body)) : null]);
+        return new Response(JSON.stringify(path.endsWith("/jira") ? filed : judged), { status: 200 });
+      }
+      const body = path === "/api/v1/contracts" ? [{ id: "demo-shop", name: "demo-shop" }] : done;
+      return new Response(JSON.stringify(body), { status: 200 });
+    }),
+  );
+  render(<App />);
+  fireEvent.click(await screen.findByText("Right"));
+  expect(await screen.findByText(/console:alex@example.com: right/)).toBeTruthy();
+  fireEvent.click(screen.getByText("Create Jira issue"));
+  const issue = await screen.findByText("OPS-1");
+  expect(issue.getAttribute("href")).toBe("https://acme.atlassian.net/browse/OPS-1");
+  expect(sent).toEqual([
+    ["/api/v1/investigations/t1/feedback", { correct: true, correction: "" }],
+    ["/api/v1/investigations/t1/jira", null],
+  ]);
 });

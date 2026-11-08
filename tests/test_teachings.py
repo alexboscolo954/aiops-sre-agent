@@ -577,6 +577,27 @@ def test_a_stale_rejection_drafts_nothing(
 # The console
 
 
+def test_a_wrong_report_from_the_console_app_drafts_a_teaching(
+    settings: Settings, fake_cluster: Any, buttons: FakeSocket, database_url: str
+) -> None:
+    """Slice 11.5b: the app's Wrong, the same path as the older page's."""
+    slack = FakeSlack(buttons.url)
+    same = {**VIEW, "Sec-Fetch-Site": "same-origin"}
+    with done(settings, fake_cluster, slack, draft()) as (c, tid):
+        r = c.post(
+            f"/api/v1/investigations/{tid}/feedback",
+            json={"correct": False, "correction": CORRECTION},
+            headers=same,
+        )
+        assert r.status_code == 200
+        assert [(f["correct"], f["correction"]) for f in r.json()["feedback"]] == [
+            (False, CORRECTION)
+        ]
+        until(lambda: rows(database_url, "select status from teachings") == [("proposed",)])
+        shown = c.get(f"/api/v1/investigations/{tid}", headers=VIEW).json()
+    assert [x["text"] for x in shown["taught"]] == [LESSON]
+
+
 def test_the_console_takes_feedback_and_reviews_teachings(
     settings: Settings, fake_cluster: Any, buttons: FakeSocket, database_url: str
 ) -> None:

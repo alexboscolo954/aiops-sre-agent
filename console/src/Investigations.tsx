@@ -1,7 +1,8 @@
 // Investigations (slice 11.5a): a Contract's list, one Investigation in full, and the
 // approver token page. Reports, Answers and tool output are model and client text: each
 // field is rendered as text, line breaks kept, never as markup, and an Evidence link
-// stays text too. Deciding, Report feedback and Jira arrive in 11.5b.
+// stays text too. Deciding, Report feedback and Jira filing (slice 11.5b) post to the
+// API and show the Investigation as it is after.
 import { useEffect, useState } from "react";
 import * as api from "./api";
 import { when } from "./format";
@@ -110,28 +111,25 @@ function Report({ r, executed }: { r: api.TriageReport; executed: string[] }) {
 export function InvestigationPage({ id }: { id: string }) {
   const [t, setT] = useState<api.InvestigationPage | null>(null);
   const [error, setError] = useState("");
+  const [failed, setFailed] = useState("");
+  const [reason, setReason] = useState("");
+  const [correction, setCorrection] = useState("");
   useEffect(() => {
-    let stopped = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const load = () =>
-      api.investigation(id).then(
-        (x) => {
-          if (stopped) return;
-          setT(x);
-          if (x.status === "running") timer = setTimeout(load, 5000); // as the Jinja page reloads
-        },
-        (e: Error) => !stopped && setError(e.message),
-      );
     setT(null);
     setError("");
-    load();
-    return () => {
-      stopped = true;
-      clearTimeout(timer);
-    };
+    api.investigation(id).then(setT, (e: Error) => setError(e.message));
   }, [id]);
+  useEffect(() => {
+    if (t?.status !== "running") return;
+    const timer = setTimeout(() => api.investigation(id).then(setT, () => {}), 5000); // as the Jinja page reloads
+    return () => clearTimeout(timer);
+  }, [id, t]);
   if (error) return <p className="notice">The Hub didn't answer: {error}</p>;
   if (!t) return null;
+  const act = (change: Promise<api.InvestigationPage>) => {
+    setFailed("");
+    change.then(setT, (e: Error) => setFailed(e.message));
+  };
   const masked = Object.entries(t.masked);
   return (
     <>
@@ -146,13 +144,24 @@ export function InvestigationPage({ id }: { id: string }) {
       </p>
       {t.error && <p className="notice">Failed: {t.error}</p>}
       {t.status === "running" && <p className="hint">Working on it: this page updates every 5 seconds.</p>}
-      {t.pending.length > 0 && (
+      {failed && <p className="notice">Couldn't: {failed}</p>}
+      {t.pending.length > 0 && t.deadline != null && (
         <section className="panel waiting">
-          <h2>Waiting for a decision</h2>
-          <p>Goes Stale at {when(t.deadline)}. Decide in Slack, or on the <a href={`/console/investigations/${encodeURIComponent(t.id)}`}>older page</a> until this one can.</p>
+          <h2>Waiting for your decision</h2>
+          <p>Goes Stale at {when(t.deadline)}. Approving runs every one of these on the Contract's systems.</p>
           {t.pending.map((p, n) => (
             <pre key={n}>{p}</pre>
           ))}
+          <p>
+            <button onClick={() => act(api.decide(t.id, t.deadline!, true, ""))}>Approve</button>
+          </p>
+          <p>
+            <label>
+              Reason (the agent reads it){" "}
+              <input value={reason} onChange={(e) => setReason(e.target.value)} size={50} />
+            </label>{" "}
+            <button onClick={() => act(api.decide(t.id, t.deadline!, false, reason))}>Reject</button>
+          </p>
         </section>
       )}
       {t.check_result && (
@@ -174,6 +183,23 @@ export function InvestigationPage({ id }: { id: string }) {
           <EvidenceList items={t.answer.evidence} />
         </section>
       )}
+      {t.jira && (
+        <p>
+          Jira:{" "}
+          {t.jira.issue && t.jira.url ? (
+            <>
+              <a href={t.jira.url}>{t.jira.issue}</a>, filed by {t.jira.by}.
+            </>
+          ) : t.jira.since ? (
+            `being filed by ${t.jira.by} since ${when(t.jira.since)}, or Jira didn't answer: check project ${t.jira.project} before filing it by hand.`
+          ) : (
+            <>
+              <button onClick={() => act(api.fileJira(t.id))}>Create Jira issue</button>{" "}
+              <span className="hint">The full Report, with Evidence, goes to Jira project {t.jira.project}.</span>
+            </>
+          )}
+        </p>
+      )}
       {t.scenario && (
         <p>
           <a href={`/api/v1/investigations/${encodeURIComponent(t.id)}/scenario.yaml`} download>
@@ -182,9 +208,28 @@ export function InvestigationPage({ id }: { id: string }) {
           <span className="hint">a draft to edit and commit to the contracts repo.</span>
         </p>
       )}
-      {(t.feedback.length > 0 || t.taught.length > 0) && (
+      {(t.can_judge || t.feedback.length > 0 || t.taught.length > 0) && (
         <section className="panel">
-          <h2>Feedback</h2>
+          <h2>Was this Report right?</h2>
+          {t.can_judge && (
+            <>
+              <p>
+                <button onClick={() => act(api.judge(t.id, true, ""))}>Right</button>
+              </p>
+              <p>
+                <textarea
+                  rows={3}
+                  maxLength={2000}
+                  placeholder="What was wrong?"
+                  value={correction}
+                  onChange={(e) => setCorrection(e.target.value)}
+                />
+                <br />
+                <button onClick={() => act(api.judge(t.id, false, correction))}>Wrong</button>{" "}
+                <span className="hint">The agent drafts a Teaching from it for your review.</span>
+              </p>
+            </>
+          )}
           {t.feedback.map((f, n) => (
             <p key={n}>
               {when(f.at)} · {f.by}: {f.correct ? "right" : "wrong"}

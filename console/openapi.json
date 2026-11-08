@@ -703,6 +703,29 @@
         "title": "Decision",
         "type": "object"
       },
+      "DecisionIn": {
+        "properties": {
+          "approve": {
+            "title": "Approve",
+            "type": "boolean"
+          },
+          "deadline": {
+            "title": "Deadline",
+            "type": "number"
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "deadline",
+          "approve"
+        ],
+        "title": "DecisionIn",
+        "type": "object"
+      },
       "Drop": {
         "properties": {
           "after": {
@@ -797,6 +820,24 @@
         "title": "Evidence",
         "type": "object"
       },
+      "FeedbackIn": {
+        "properties": {
+          "correct": {
+            "title": "Correct",
+            "type": "boolean"
+          },
+          "correction": {
+            "default": "",
+            "title": "Correction",
+            "type": "string"
+          }
+        },
+        "required": [
+          "correct"
+        ],
+        "title": "FeedbackIn",
+        "type": "object"
+      },
       "Group": {
         "properties": {
           "change": {
@@ -885,6 +926,10 @@
               }
             ]
           },
+          "can_judge": {
+            "title": "Can Judge",
+            "type": "boolean"
+          },
           "check_result": {
             "anyOf": [
               {
@@ -949,6 +994,16 @@
           "id": {
             "title": "Id",
             "type": "string"
+          },
+          "jira": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/JiraState"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "kind": {
             "title": "Kind",
@@ -1041,7 +1096,9 @@
           "tool_calls",
           "feedback",
           "taught",
-          "scenario"
+          "scenario",
+          "jira",
+          "can_judge"
         ],
         "title": "InvestigationPage",
         "type": "object"
@@ -1115,6 +1172,68 @@
           "title"
         ],
         "title": "Item",
+        "type": "object"
+      },
+      "JiraState": {
+        "description": "The Contract's Jira project for this Report (slice 11.5b): its issue once filed,\nwho is filing it while there is none yet, or nothing: it can be filed.",
+        "properties": {
+          "by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "By"
+          },
+          "issue": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Issue"
+          },
+          "project": {
+            "title": "Project",
+            "type": "string"
+          },
+          "since": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Since"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          }
+        },
+        "required": [
+          "project",
+          "issue",
+          "url",
+          "by",
+          "since"
+        ],
+        "title": "JiraState",
         "type": "object"
       },
       "KillSwitch": {
@@ -2380,6 +2499,146 @@
           }
         },
         "summary": "Investigation"
+      }
+    },
+    "/api/v1/investigations/{investigation_id}/decision": {
+      "post": {
+        "description": "Approve or reject every Proposed action of the pause the page showed, as\nSlack's buttons do (409 while the Kill switch is on, for an approval).",
+        "operationId": "decision_api_v1_investigations__investigation_id__decision_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "investigation_id",
+            "required": true,
+            "schema": {
+              "title": "Investigation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecisionIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvestigationPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Decision"
+      }
+    },
+    "/api/v1/investigations/{investigation_id}/feedback": {
+      "post": {
+        "description": "Right, or wrong with what was wrong: the agent drafts a Teaching from it.",
+        "operationId": "judge_api_v1_investigations__investigation_id__feedback_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "investigation_id",
+            "required": true,
+            "schema": {
+              "title": "Investigation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FeedbackIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvestigationPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Judge"
+      }
+    },
+    "/api/v1/investigations/{investigation_id}/jira": {
+      "post": {
+        "description": "The Report into the Contract's Jira project, once.",
+        "operationId": "jira_issue_api_v1_investigations__investigation_id__jira_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "investigation_id",
+            "required": true,
+            "schema": {
+              "title": "Investigation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvestigationPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Jira Issue"
       }
     },
     "/api/v1/investigations/{investigation_id}/scenario.yaml": {

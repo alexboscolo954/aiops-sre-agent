@@ -1523,7 +1523,17 @@ def create_app(
             )
         )
         app.include_router(
-            webapp.router(settings.console_operators, by_id, store, approver_token, now)
+            webapp.router(
+                settings.console_operators,
+                by_id,
+                store,
+                approver_token,
+                now,
+                console_decide,
+                console_file_jira,
+                jira_of,
+                console_feedback,
+            )
         )
 
     if hub_mcp:  # the Hub MCP server: at /mcp/, only through tailscale serve

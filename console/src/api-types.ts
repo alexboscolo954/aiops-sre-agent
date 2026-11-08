@@ -168,6 +168,67 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/investigations/{investigation_id}/decision": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Decision
+         * @description Approve or reject every Proposed action of the pause the page showed, as
+         *     Slack's buttons do (409 while the Kill switch is on, for an approval).
+         */
+        post: operations["decision_api_v1_investigations__investigation_id__decision_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/investigations/{investigation_id}/feedback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Judge
+         * @description Right, or wrong with what was wrong: the agent drafts a Teaching from it.
+         */
+        post: operations["judge_api_v1_investigations__investigation_id__feedback_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/investigations/{investigation_id}/jira": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Jira Issue
+         * @description The Report into the Contract's Jira project, once.
+         */
+        post: operations["jira_issue_api_v1_investigations__investigation_id__jira_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/investigations/{investigation_id}/scenario.yaml": {
         parameters: {
             query?: never;
@@ -437,6 +498,18 @@ export interface components {
             /** Message */
             message: string;
         };
+        /** DecisionIn */
+        DecisionIn: {
+            /** Approve */
+            approve: boolean;
+            /** Deadline */
+            deadline: number;
+            /**
+             * Reason
+             * @default
+             */
+            reason: string;
+        };
         /** Drop */
         Drop: {
             /** After */
@@ -478,6 +551,16 @@ export interface components {
              */
             source: string;
         };
+        /** FeedbackIn */
+        FeedbackIn: {
+            /** Correct */
+            correct: boolean;
+            /**
+             * Correction
+             * @default
+             */
+            correction: string;
+        };
         /** Group */
         Group: {
             change?: components["schemas"]["Change"] | null;
@@ -506,6 +589,8 @@ export interface components {
          */
         InvestigationPage: {
             answer: components["schemas"]["Answer"] | null;
+            /** Can Judge */
+            can_judge: boolean;
             check_result: components["schemas"]["CheckResult"] | null;
             /** Contract */
             contract: string;
@@ -523,6 +608,7 @@ export interface components {
             feedback: components["schemas"]["Verdict"][];
             /** Id */
             id: string;
+            jira: components["schemas"]["JiraState"] | null;
             /** Kind */
             kind: string;
             /** Masked */
@@ -565,6 +651,23 @@ export interface components {
             title: string;
             /** Workload */
             workload?: string | null;
+        };
+        /**
+         * JiraState
+         * @description The Contract's Jira project for this Report (slice 11.5b): its issue once filed,
+         *     who is filing it while there is none yet, or nothing: it can be filed.
+         */
+        JiraState: {
+            /** By */
+            by: string | null;
+            /** Issue */
+            issue: string | null;
+            /** Project */
+            project: string;
+            /** Since */
+            since: number | null;
+            /** Url */
+            url: string | null;
         };
         /**
          * KillSwitch
@@ -1151,6 +1254,107 @@ export interface operations {
         };
     };
     investigation_api_v1_investigations__investigation_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                investigation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvestigationPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    decision_api_v1_investigations__investigation_id__decision_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                investigation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DecisionIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvestigationPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    judge_api_v1_investigations__investigation_id__feedback_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                investigation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FeedbackIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvestigationPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    jira_issue_api_v1_investigations__investigation_id__jira_post: {
         parameters: {
             query?: never;
             header?: never;

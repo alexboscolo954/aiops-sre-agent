@@ -121,6 +121,7 @@ def test_one_investigation_in_full_with_its_report_as_fields(
     (tool,) = t["tool_calls"]
     assert tool["tool"] == "kubernetes_list_pods" and len(tool["result"]) == 4000
     assert t["scenario"] is False  # its input is recorded, but it isn't finished
+    assert t["can_judge"] is False  # it has a Report, but the Run isn't finished
     assert theirs["contract"] == "bank"  # each Investigation is shown with its own Contract
     assert unknown == gone == 404  # a Contract no longer loaded shows nothing
     assert [x["text"] for x in t["taught"]] == ["taught by t1"]
@@ -169,3 +170,105 @@ def test_the_token_call_sets_the_cookie_from_the_apps_own_page_only(
     assert "approver-token" not in cookie
     for flag in ("HttpOnly", "Secure", "SameSite=strict", "Path=/;"):
         assert flag in cookie, flag
+
+
+# --- acting on it (slice 11.5b) ----------------------------------------------------------
+
+SAME = {**VIEW, "Sec-Fetch-Site": "same-origin"}
+ACTING = {"integrations": [{"name": "kubernetes", "enable_actions": True}]}
+
+
+def acting(settings: Settings, fake_cluster: Any, database_url: str) -> Any:
+    from tests.test_api import EVICT_THEN_REPORT
+
+    settings.database_url = SecretStr(database_url)
+    settings.console_operators = {OPERATOR}
+    return client(settings, fake_cluster, *EVICT_THEN_REPORT, actions=True, acme=ACTING)
+
+
+def paused(c: Any) -> tuple[str, float]:
+    tid: str = c.post(URL, json=ALERT, headers=HOOK).json()["investigation"]
+    wait_for(c, tid, "awaiting_approval")
+    t = c.get(f"/api/v1/investigations/{tid}", headers=VIEW).json()
+    return tid, t["deadline"]
+
+
+def decided(database_url: str) -> list[tuple[Any, ...]]:
+    import psycopg
+
+    with psycopg.connect(database_url) as conn:
+        found = conn.execute("select approve, decided_by, message from decisions order by id")
+        return [tuple(r) for r in found.fetchall()]
+
+
+def test_approving_from_the_app_runs_the_pause_it_showed_once(
+    settings: Settings, fake_cluster: Any, database_url: str
+) -> None:
+    with acting(settings, fake_cluster, database_url) as c:
+        tid, deadline = paused(c)
+        path = f"/api/v1/investigations/{tid}/decision"
+        yes = {"deadline": deadline, "approve": True}
+        refused = [
+            c.post(path, json=yes, headers={**VIEW, "Sec-Fetch-Site": "cross-site"}).status_code,
+            c.post(
+                path, json=yes, headers={**AS_OPERATOR, "Sec-Fetch-Site": "same-origin"}
+            ).status_code,
+            c.post(path, json={**yes, "deadline": deadline + 1}, headers=SAME).status_code,
+        ]
+        shown = c.post(path, json=yes, headers=SAME).json()
+        again = c.post(path, json=yes, headers=SAME)
+        wait_for(c, tid, "done")
+    assert refused == [403, 401, 409]  # cross-site, no cookie, an older pause's deadline
+    assert shown["id"] == tid and shown["pending"] == []
+    assert again.status_code == 409
+    assert again.json()["detail"] == "already decided or Stale: nothing to decide"
+    assert fake_cluster[0].create_namespaced_pod_eviction.call_count == 1
+    assert decided(database_url) == [(True, f"console:{OPERATOR}", "")]
+
+
+def test_a_rejection_carries_its_reason_and_the_kill_switch_refuses_approving(
+    settings: Settings, fake_cluster: Any, database_url: str
+) -> None:
+    from aiops_agent.api import KILLED
+
+    with acting(settings, fake_cluster, database_url) as c:
+        tid, deadline = paused(c)
+        path = f"/api/v1/investigations/{tid}/decision"
+        c.post("/api/v1/contracts/acme/kill-switch", headers=SAME)
+        killed = c.post(path, json={"deadline": deadline, "approve": True}, headers=SAME)
+        no = {"deadline": deadline, "approve": False, "reason": "not during the sale"}
+        rejected = c.post(path, json=no, headers=SAME)
+        wait_for(c, tid, "done")
+    assert killed.status_code == 409 and killed.json()["detail"] == KILLED
+    assert rejected.status_code == 200
+    assert decided(database_url) == [(False, f"console:{OPERATOR}", "not during the sale")]
+    assert fake_cluster[0].create_namespaced_pod_eviction.call_count == 0
+
+
+def test_feedback_is_for_a_finished_report_and_a_wrong_one_says_why(
+    settings: Settings, fake_cluster: Any, database_url: str
+) -> None:
+    with acting(settings, fake_cluster, database_url) as c:
+        tid, deadline = paused(c)
+        path = f"/api/v1/investigations/{tid}/feedback"
+        early = c.post(path, json={"correct": True}, headers=SAME)
+        before = c.get(f"/api/v1/investigations/{tid}", headers=VIEW).json()
+        c.post(
+            f"/api/v1/investigations/{tid}/decision",
+            json={"deadline": deadline, "approve": False},
+            headers=SAME,
+        )
+        wait_for(c, tid, "done")
+        after = c.get(f"/api/v1/investigations/{tid}", headers=VIEW).json()
+        blank = c.post(path, json={"correct": False, "correction": "  "}, headers=SAME)
+        cross = c.post(
+            path, json={"correct": True}, headers={**VIEW, "Sec-Fetch-Site": "cross-site"}
+        )
+        right = c.post(path, json={"correct": True}, headers=SAME).json()
+    assert early.status_code == 409 and before["can_judge"] is False
+    assert after["can_judge"] is True
+    assert blank.status_code == 422 and cross.status_code == 403
+    assert [(f["correct"], f["correction"], f["by"]) for f in right["feedback"]] == [
+        (True, None, f"console:{OPERATOR}")
+    ]
+    assert after["jira"] is None  # acme has no Jira

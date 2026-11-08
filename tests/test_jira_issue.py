@@ -180,6 +180,50 @@ def test_the_console_files_it_and_the_slack_thread_shows_it(
     assert len(fake.creates) == 1
 
 
+def paused_with_report(database_url: str) -> None:
+    import asyncio
+
+    from aiops_agent.models import Investigation
+    from aiops_agent.store import Store, connect
+
+    async def go() -> None:
+        async with connect(database_url) as pool:
+            t = Investigation(
+                id="p1", contract_id="acme", title="t", started=1, status="awaiting_approval",
+                report=TriageReport.model_validate(REPORT),
+            )  # fmt: skip
+            await Store(pool).insert(t)
+            await Store(pool).save(t)
+
+    asyncio.run(go())
+
+
+def test_the_console_app_files_it_once_and_shows_the_issue(
+    settings: Any, fake_cluster: Any, sock: FakeSocket
+) -> None:
+    """Slice 11.5b: the app's button, the same filing as the older page's."""
+    slack, fake = FakeSlack(sock.url), FakeJira()
+    same = {**VIEW, "Sec-Fetch-Site": "same-origin"}
+    with done(settings, fake_cluster, slack, fake) as c:
+        tid = c.post(URL, json=ALERT, headers=HOOK).json()["investigation"]
+        wait_for(c, tid, "done")
+        path = f"/api/v1/investigations/{tid}/jira"
+        before = c.get(f"/api/v1/investigations/{tid}", headers=VIEW).json()["jira"]
+        paused_with_report(settings.database_url.get_secret_value())
+        unfinished = c.get("/api/v1/investigations/p1", headers=VIEW).json()
+        cross = c.post(path, headers={**VIEW, "Sec-Fetch-Site": "cross-site"}).status_code
+        filed = c.post(path, headers=same).json()["jira"]
+        again = c.post(path, headers=same)
+    assert before == {"project": "OPS", "issue": None, "url": None, "by": None, "since": None}
+    assert unfinished["jira"] is None  # a Report still waiting on a decision files nothing
+    assert cross == 403
+    assert filed["issue"] == "OPS-1" and filed["url"] == "https://acme.atlassian.net/browse/OPS-1"
+    assert filed["by"] == "console:alex@example.com"
+    assert again.status_code == 409
+    assert again.json()["detail"] == "Already filed (or being filed), or nothing to file."
+    assert len(fake.creates) == 1
+
+
 def test_each_contract_files_into_its_own_project_with_its_own_token(
     settings: Any, fake_cluster: Any, sock: FakeSocket
 ) -> None:
