@@ -142,7 +142,7 @@ export function HealthPage({ contract }: { contract: string }) {
             <tr key={p.name}>
               <td>{p.name}</td>
               <td className={p.ok ? undefined : "bad"}>{p.ok ? "ok" : "FAILING"}</td>
-              <td className="hint">{p.ms} ms</td>
+              <td className="hint nowrap">{p.ms} ms</td>
               <td className="text">{p.detail}</td>
             </tr>
           ))}

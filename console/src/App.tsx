@@ -13,6 +13,7 @@ import Chart from "./Chart";
 import { InvestigationList, InvestigationPage, TokenPage, page } from "./Investigations";
 import { TeachingsPage } from "./Teachings";
 import { ChecksPage, HealthPage } from "./Checks";
+import { ContractsPage } from "./Contracts";
 import { amount, change, cores, cpu, gib, memory, money, rank, when } from "./format";
 
 /** Where each cluster's price comes from, for a Contract priced from cloud list prices. */
@@ -120,7 +121,8 @@ export default function App() {
           <p className="notice">The Hub didn't answer: {error.message}</p>
         ) : null}
         {view === "investigation" && id && <InvestigationPage id={id} />}
-        {view !== "investigation" && contracts.length > 1 && (
+        {view === "contracts" && <ContractsPage />}
+        {view !== "investigation" && view !== "contracts" && contracts.length > 1 && (
           <label>
             Contract{" "}
             <select
@@ -136,7 +138,7 @@ export default function App() {
             </select>
           </label>
         )}
-        {shown && view !== "investigation" && <KillSwitchBar contract={shown} />}
+        {shown && view !== "investigation" && view !== "contracts" && <KillSwitchBar contract={shown} />}
         {shown && workloadsView && <AgendaPanel contract={shown} />}
         {data && workloadsView && <Page contract={shown} data={data} />}
         {shown && view === "investigations" && <InvestigationList contract={shown} />}
@@ -154,6 +156,7 @@ function Header({ here, current }: { here: string; current: (v: string) => "page
     <header>
       <a className="brand" href="/app/">aiops</a>
       <nav>
+        <a href="/app/?view=contracts" aria-current={current("contracts")}>Contracts</a>
         <a href={`/app/?${here}&view=investigations`} aria-current={current("investigations") ?? current("investigation")}>
           Investigations
         </a>

@@ -1536,6 +1536,7 @@ def create_app(
                 console_decide_teaching,
                 health,
                 shown_settings(settings),
+                console_ask,
             )
         )
 

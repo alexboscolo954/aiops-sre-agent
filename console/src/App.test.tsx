@@ -752,3 +752,74 @@ test("Health shows each integration now, the error as text, spend against the bu
   expect(screen.getByText(/prometheus-token loaded, jira-token MISSING/)).toBeTruthy();
   expect(screen.getByText(/approver_token: '\*\*\*\*\*\*\*\*\*\*'/)).toBeTruthy();
 });
+
+test("asking a Question posts it for the Contract shown, and a refusal shows the Hub's words", async () => {
+  history.replaceState(null, "", "/app/?view=investigations");
+  const sent: [string, unknown][] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url: string, init?: RequestInit) => {
+      const path = url.split("?")[0];
+      if (init?.method === "POST") {
+        sent.push([path, JSON.parse(String(init.body))]);
+        return new Response(JSON.stringify({ detail: "ask a question of 1 to 4000 characters" }), { status: 422 });
+      }
+      const body = path === "/api/v1/contracts" ? [{ id: "demo-shop", name: "demo-shop" }] : [];
+      return new Response(JSON.stringify(body), { status: 200 });
+    }),
+  );
+  render(<App />);
+  const box = (await screen.findByLabelText("Question")) as HTMLTextAreaElement;
+  fireEvent.change(box, { target: { value: "is checkout healthy?" } });
+  fireEvent.click(screen.getByText("Ask"));
+  expect(await screen.findByText("Couldn't: ask a question of 1 to 4000 characters")).toBeTruthy();
+  expect(sent).toEqual([["/api/v1/contracts/demo-shop/questions", { question: "is checkout healthy?" }]]);
+});
+
+test("a Question no longer answering takes a follow-up, and the page shows it answering", async () => {
+  history.replaceState(null, "", "/app/?view=investigation&id=t1");
+  const question = { ...PAGE, kind: "question", status: "done", report: null, pending: [], deadline: null, answer: { answer: "it is fine", evidence: [] }, can_follow_up: true };
+  const sent: [string, unknown][] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url: string, init?: RequestInit) => {
+      const path = url.split("?")[0];
+      if (init?.method === "POST") {
+        sent.push([path, JSON.parse(String(init.body))]);
+        return new Response(JSON.stringify({ ...question, status: "running", can_follow_up: false }), { status: 200 });
+      }
+      const body = path === "/api/v1/contracts" ? [{ id: "demo-shop", name: "demo-shop" }] : question;
+      return new Response(JSON.stringify(body), { status: 200 });
+    }),
+  );
+  render(<App />);
+  const box = (await screen.findByLabelText("Follow-up")) as HTMLTextAreaElement;
+  fireEvent.change(box, { target: { value: "and now?" } });
+  fireEvent.click(screen.getByText("Follow up"));
+  expect(await screen.findByText(/Working on it/)).toBeTruthy();
+  expect(screen.queryByLabelText("Follow-up")).toBeNull();
+  expect(sent).toEqual([["/api/v1/investigations/t1/questions", { question: "and now?" }]]);
+});
+
+test("the Contracts page lists every Contract with its spend against its budget", async () => {
+  history.replaceState(null, "", "/app/?view=contracts");
+  answer({
+    "/api/v1/contracts": [200, [{ id: "bank", name: "Bank" }, { id: "shop", name: "Shop" }]],
+    "/api/v1/overview": [
+      200,
+      [
+        { id: "bank", name: "Bank", clusters: ["east", "west"], operator_channel: "C0BANK000", model: "anthropic:claude-haiku-5-5", spent_usd: 2.5, budget_usd: 10 },
+        { id: "shop", name: "Shop", clusters: [], operator_channel: null, model: null, spent_usd: 0.0052, budget_usd: null },
+      ],
+    ],
+  });
+  const { container: page } = render(<App />);
+  await screen.findByText("Contracts", { selector: "h1" });
+  const rows = [...page.querySelectorAll(".investigations tbody tr")].map((tr) => tr.textContent);
+  expect(rows).toEqual([
+    "bankBankeast, westC0BANK000anthropic:claude-haiku-5-5$2.50 of $10.00 (25%)",
+    "shopShop--Hub default$0.0052",
+  ]);
+  expect(screen.getByText("bank").closest("a")?.getAttribute("href")).toBe("/app/?contract=bank");
+  expect(screen.queryByText("Turn on the Kill switch")).toBeNull(); // no one Contract here
+});

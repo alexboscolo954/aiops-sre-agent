@@ -29,6 +29,8 @@ from aiops_agent import agenda, billing, listprices, sizing, usage
 from aiops_agent.console import (
     COOKIE,
     CORRECTION_LIMIT,
+    QUESTION_LIMIT,
+    Ask,
     Decide,
     DecideTeaching,
     Feedback,
@@ -256,6 +258,17 @@ class ContractSummary(BaseModel):
     name: str
 
 
+class ContractOverview(ContractSummary):
+    """A Contract at a glance (slice 11.7a): where it runs, where it talks, which model,
+    and this month's model spend against its budget."""
+
+    clusters: list[str]
+    operator_channel: str | None
+    model: str | None  # None: the Hub's default
+    spent_usd: float
+    budget_usd: float | None
+
+
 class Brief(BaseModel):
     """An Investigation in a list (slice 11.5a)."""
 
@@ -342,6 +355,7 @@ class InvestigationPage(Brief):
     scenario: bool  # finished, with its input recorded: it downloads as a Scenario
     jira: JiraState | None  # a finished Report of a Contract with Jira
     can_judge: bool  # a finished Triage's or Check's Report: right or wrong
+    can_follow_up: bool  # a Question no longer answering (slice 11.7a)
 
 
 def brief(t: Investigation) -> dict[str, Any]:
@@ -365,6 +379,10 @@ class DecisionIn(BaseModel):
     deadline: float  # the pause's, as the page showed it: an older one decides nothing
     approve: bool
     reason: str = ""
+
+
+class QuestionIn(BaseModel):
+    question: str
 
 
 class FeedbackIn(BaseModel):
@@ -505,10 +523,11 @@ def router(
     decide_teaching: DecideTeaching,
     health: Health,
     hub_config: dict[str, Any],
+    ask: Ask,
 ) -> APIRouter:
     """decide, file_jira, jira_of, feedback and decide_teaching: the Jinja console's, so
     both consoles record the same thing (`console:<login>`). health and hub_config: the
-    Health page's, as the Jinja console's."""
+    Health page's, and ask a Question's, as the Jinja console's."""
     key = action_key(approver_token)
     r = APIRouter()
 
@@ -574,6 +593,22 @@ def router(
     async def contracts() -> list[ContractSummary]:
         return [
             ContractSummary(id=c.id, name=c.name)
+            for c in sorted(by_id.values(), key=lambda c: c.id)
+        ]
+
+    @api.get("/overview")
+    async def overview() -> list[ContractOverview]:
+        """Every Contract at a glance, by id."""
+        return [
+            ContractOverview(
+                id=c.id,
+                name=c.name,
+                clusters=[x.name for x in c.clusters],
+                operator_channel=c.slack.operator_channel if c.slack else None,
+                model=c.model,
+                spent_usd=await store().month_spend(c.id, now()),
+                budget_usd=c.monthly_budget_usd,
+            )
             for c in sorted(by_id.values(), key=lambda c: c.id)
         ]
 
@@ -677,6 +712,7 @@ def router(
                 "scenario": t.status == "done" and t.input is not None,
                 "jira": jira_state(t),
                 "can_judge": judged(t),
+                "can_follow_up": t.kind == "question" and t.status in ("done", "failed"),
             }
         )
 
@@ -703,6 +739,34 @@ def router(
         if not given.correct and not 0 < len(correction) <= CORRECTION_LIMIT:
             raise HTTPException(422, f"say what was wrong, in 1 to {CORRECTION_LIMIT} characters")
         await feedback(t, given.correct, None if given.correct else correction, login)
+        return await investigation(t.id)
+
+    def question_text(given: QuestionIn) -> str:
+        text = given.question.strip()
+        if not 0 < len(text) <= QUESTION_LIMIT:
+            raise HTTPException(422, f"ask a question of 1 to {QUESTION_LIMIT} characters")
+        return text
+
+    @api.post("/contracts/{contract_id}/questions")
+    async def question(
+        contract_id: str, given: QuestionIn, login: str = Depends(changing)
+    ) -> InvestigationPage:
+        """A Question about this Contract: it only reads, and is answered in the
+        background (the page shows it running)."""
+        c = contract(contract_id)
+        asked = await ask(c.id, question_text(given), None)
+        if asked is None:
+            raise HTTPException(409, "could not start the Question")
+        return await investigation(asked)
+
+    @api.post("/investigations/{investigation_id}/questions")
+    async def follow_up(
+        investigation_id: str, given: QuestionIn, login: str = Depends(changing)
+    ) -> InvestigationPage:
+        """A follow-up: the same Question, with its earlier exchange."""
+        t = await investigation_of(investigation_id)
+        if await ask(t.contract_id, question_text(given), t.id) is None:
+            raise HTTPException(409, "still answering, or not a Question")
         return await investigation(t.id)
 
     @api.post("/investigations/{investigation_id}/jira")
@@ -850,6 +914,6 @@ def openapi() -> str:
     app = FastAPI(title="aiops console", version="1")
     never: Any = None  # the schema needs no behaviour
     app.include_router(
-        router(set(), {}, never, "x", never, never, never, never, never, never, never, {})
+        router(set(), {}, never, "x", never, never, never, never, never, never, never, {}, never)
     )
     return json.dumps(app.openapi(), indent=2, sort_keys=True) + "\n"

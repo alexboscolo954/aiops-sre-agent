@@ -72,3 +72,4 @@ pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 .investigations tbody tr { cursor: default; }
 table + h2 { margin-top: 1.25rem; }
 .bad { color: var(--bad); font-weight: 600; }
+.nowrap { white-space: nowrap; }

@@ -1,8 +1,9 @@
 // Investigations (slice 11.5a): a Contract's list, one Investigation in full, and the
 // approver token page. Reports, Answers and tool output are model and client text: each
 // field is rendered as text, line breaks kept, never as markup, and an Evidence link
-// stays text too. Deciding, Report feedback and Jira filing (slice 11.5b) post to the
-// API and show the Investigation as it is after.
+// stays text too. Deciding, Report feedback and Jira filing (slice 11.5b), and asking
+// or following up a Question (slice 11.7a), post to the API and show the Investigation as
+// it is after.
 import { useEffect, useState } from "react";
 import * as api from "./api";
 import { when } from "./format";
@@ -11,6 +12,41 @@ export const page = (id: string) => `/app/?view=investigation&id=${encodeURIComp
 
 function state(t: { status: string; failed: boolean }): string {
   return t.failed ? "failed" : t.status.replace("_", " ");
+}
+
+/** Ask a Question about this Contract; its page opens while it is answered. */
+function AskForm({ contract }: { contract: string }) {
+  const [question, setQuestion] = useState("");
+  const [failed, setFailed] = useState("");
+  return (
+    <section className="panel">
+      <h2>Ask a Question</h2>
+      <p>
+        <textarea
+          rows={3}
+          cols={80}
+          maxLength={4000}
+          aria-label="Question"
+          placeholder="which pods in namespace demo are unhealthy?"
+          value={question}
+          onChange={(e) => setQuestion(e.target.value)}
+        />
+      </p>
+      <button
+        onClick={() => {
+          setFailed("");
+          api.ask(contract, question).then(
+            (t) => location.assign(page(t.id)),
+            (e: Error) => setFailed(e.message),
+          );
+        }}
+      >
+        Ask
+      </button>{" "}
+      <span className="hint">It only reads, and its Answer opens here.</span>
+      {failed && <p className="notice">Couldn't: {failed}</p>}
+    </section>
+  );
 }
 
 export function InvestigationList({ contract }: { contract: string }) {
@@ -26,6 +62,7 @@ export function InvestigationList({ contract }: { contract: string }) {
   return (
     <>
       <h1>{contract}: Investigations</h1>
+      <AskForm contract={contract} />
       <p className="hint">Newest first. Passing Checks are left out.</p>
       {rows.length === 0 ? (
         <p>None yet.</p>
@@ -114,6 +151,7 @@ export function InvestigationPage({ id }: { id: string }) {
   const [failed, setFailed] = useState("");
   const [reason, setReason] = useState("");
   const [correction, setCorrection] = useState("");
+  const [more, setMore] = useState("");
   useEffect(() => {
     setT(null);
     setError("");
@@ -181,6 +219,23 @@ export function InvestigationPage({ id }: { id: string }) {
           <p className="text">{t.answer.answer}</p>
           <h3>Evidence</h3>
           <EvidenceList items={t.answer.evidence} />
+        </section>
+      )}
+      {t.can_follow_up && (
+        <section className="panel">
+          <p>
+            <textarea
+              rows={2}
+              cols={80}
+              maxLength={4000}
+              aria-label="Follow-up"
+              placeholder="A follow-up"
+              value={more}
+              onChange={(e) => setMore(e.target.value)}
+            />
+          </p>
+          <button onClick={() => act(api.followUp(t.id, more).then((x) => (setMore(""), x)))}>Follow up</button>{" "}
+          <span className="hint">The agent keeps this Question's earlier exchange.</span>
         </section>
       )}
       {t.jira && (

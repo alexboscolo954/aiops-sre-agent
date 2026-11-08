@@ -168,6 +168,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/contracts/{contract_id}/questions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Question
+         * @description A Question about this Contract: it only reads, and is answered in the
+         *     background (the page shows it running).
+         */
+        post: operations["question_api_v1_contracts__contract_id__questions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/contracts/{contract_id}/teachings": {
         parameters: {
             query?: never;
@@ -325,6 +346,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/investigations/{investigation_id}/questions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Follow Up
+         * @description A follow-up: the same Question, with its earlier exchange.
+         */
+        post: operations["follow_up_api_v1_investigations__investigation_id__questions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/investigations/{investigation_id}/scenario.yaml": {
         parameters: {
             query?: never;
@@ -334,6 +375,26 @@ export interface paths {
         };
         /** Scenario */
         get: operations["scenario_api_v1_investigations__investigation_id__scenario_yaml_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/overview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Overview
+         * @description Every Contract at a glance, by id.
+         */
+        get: operations["overview_api_v1_overview_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -597,6 +658,27 @@ export interface components {
             /** Workload */
             workload: string;
         };
+        /**
+         * ContractOverview
+         * @description A Contract at a glance (slice 11.7a): where it runs, where it talks, which model,
+         *     and this month's model spend against its budget.
+         */
+        ContractOverview: {
+            /** Budget Usd */
+            budget_usd: number | null;
+            /** Clusters */
+            clusters: string[];
+            /** Id */
+            id: string;
+            /** Model */
+            model: string | null;
+            /** Name */
+            name: string;
+            /** Operator Channel */
+            operator_channel: string | null;
+            /** Spent Usd */
+            spent_usd: number;
+        };
         /** ContractSummary */
         ContractSummary: {
             /** Id */
@@ -764,6 +846,8 @@ export interface components {
          */
         InvestigationPage: {
             answer: components["schemas"]["Answer"] | null;
+            /** Can Follow Up */
+            can_follow_up: boolean;
             /** Can Judge */
             can_judge: boolean;
             check_result: components["schemas"]["CheckResult"] | null;
@@ -884,6 +968,11 @@ export interface components {
             name: string;
             /** Ok */
             ok: boolean;
+        };
+        /** QuestionIn */
+        QuestionIn: {
+            /** Question */
+            question: string;
         };
         /** Realized */
         Realized: {
@@ -1527,6 +1616,41 @@ export interface operations {
             };
         };
     };
+    question_api_v1_contracts__contract_id__questions_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                contract_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["QuestionIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvestigationPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     teachings_api_v1_contracts__contract_id__teachings_get: {
         parameters: {
             query?: never;
@@ -1824,6 +1948,41 @@ export interface operations {
             };
         };
     };
+    follow_up_api_v1_investigations__investigation_id__questions_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                investigation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["QuestionIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvestigationPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     scenario_api_v1_investigations__investigation_id__scenario_yaml_get: {
         parameters: {
             query?: never;
@@ -1849,6 +2008,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    overview_api_v1_overview_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ContractOverview"][];
                 };
             };
         };

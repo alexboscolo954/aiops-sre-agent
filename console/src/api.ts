@@ -83,6 +83,14 @@ export const decide = (id: string, deadline: number, approve: boolean, reason: s
 export const judge = (id: string, correct: boolean, correction: string) =>
   send<InvestigationPage>(`${at(id)}/feedback`, { correct, correction });
 export const fileJira = (id: string) => send<InvestigationPage>(`${at(id)}/jira`);
+/** A Question about this Contract (slice 11.7a): it opens running. */
+export const ask = (contract: string, question: string) =>
+  send<InvestigationPage>(`/contracts/${encodeURIComponent(contract)}/questions`, { question });
+export const followUp = (id: string, question: string) =>
+  send<InvestigationPage>(`${at(id)}/questions`, { question });
+
+export type ContractOverview = Schemas["ContractOverview"];
+export const overview = () => get<ContractOverview[]>("/overview");
 
 export type Teachings = Schemas["Teachings"];
 export type Teaching = Schemas["Teaching"];

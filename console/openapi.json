@@ -762,6 +762,74 @@
         "title": "Container",
         "type": "object"
       },
+      "ContractOverview": {
+        "description": "A Contract at a glance (slice 11.7a): where it runs, where it talks, which model,\nand this month's model spend against its budget.",
+        "properties": {
+          "budget_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Budget Usd"
+          },
+          "clusters": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Clusters",
+            "type": "array"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "operator_channel": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operator Channel"
+          },
+          "spent_usd": {
+            "title": "Spent Usd",
+            "type": "number"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "clusters",
+          "operator_channel",
+          "model",
+          "spent_usd",
+          "budget_usd"
+        ],
+        "title": "ContractOverview",
+        "type": "object"
+      },
       "ContractSummary": {
         "properties": {
           "id": {
@@ -1208,6 +1276,10 @@
               }
             ]
           },
+          "can_follow_up": {
+            "title": "Can Follow Up",
+            "type": "boolean"
+          },
           "can_judge": {
             "title": "Can Judge",
             "type": "boolean"
@@ -1380,7 +1452,8 @@
           "taught",
           "scenario",
           "jira",
-          "can_judge"
+          "can_judge",
+          "can_follow_up"
         ],
         "title": "InvestigationPage",
         "type": "object"
@@ -1647,6 +1720,19 @@
           "detail"
         ],
         "title": "Probe",
+        "type": "object"
+      },
+      "QuestionIn": {
+        "properties": {
+          "question": {
+            "title": "Question",
+            "type": "string"
+          }
+        },
+        "required": [
+          "question"
+        ],
+        "title": "QuestionIn",
         "type": "object"
       },
       "Realized": {
@@ -2984,6 +3070,56 @@
         "summary": "Turn On"
       }
     },
+    "/api/v1/contracts/{contract_id}/questions": {
+      "post": {
+        "description": "A Question about this Contract: it only reads, and is answered in the\nbackground (the page shows it running).",
+        "operationId": "question_api_v1_contracts__contract_id__questions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "contract_id",
+            "required": true,
+            "schema": {
+              "title": "Contract Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QuestionIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvestigationPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Question"
+      }
+    },
     "/api/v1/contracts/{contract_id}/teachings": {
       "get": {
         "description": "Lessons for this Contract's future Investigations: only approved ones are\nused, and never by another Contract.",
@@ -3397,6 +3533,56 @@
         "summary": "Jira Issue"
       }
     },
+    "/api/v1/investigations/{investigation_id}/questions": {
+      "post": {
+        "description": "A follow-up: the same Question, with its earlier exchange.",
+        "operationId": "follow_up_api_v1_investigations__investigation_id__questions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "investigation_id",
+            "required": true,
+            "schema": {
+              "title": "Investigation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QuestionIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvestigationPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Follow Up"
+      }
+    },
     "/api/v1/investigations/{investigation_id}/scenario.yaml": {
       "get": {
         "operationId": "scenario_api_v1_investigations__investigation_id__scenario_yaml_get",
@@ -3427,6 +3613,29 @@
           }
         },
         "summary": "Scenario"
+      }
+    },
+    "/api/v1/overview": {
+      "get": {
+        "description": "Every Contract at a glance, by id.",
+        "operationId": "overview_api_v1_overview_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ContractOverview"
+                  },
+                  "title": "Response Overview Api V1 Overview Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Overview"
       }
     },
     "/api/v1/token": {
