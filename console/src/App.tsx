@@ -12,6 +12,7 @@ import type { Allocation, Bills, Container, Point, Workload, Workloads } from ".
 import Chart from "./Chart";
 import { InvestigationList, InvestigationPage, TokenPage, page } from "./Investigations";
 import { TeachingsPage } from "./Teachings";
+import { ChecksPage, HealthPage } from "./Checks";
 import { amount, change, cores, cpu, gib, memory, money, rank, when } from "./format";
 
 /** Where each cluster's price comes from, for a Contract priced from cloud list prices. */
@@ -140,6 +141,8 @@ export default function App() {
         {data && workloadsView && <Page contract={shown} data={data} />}
         {shown && view === "investigations" && <InvestigationList contract={shown} />}
         {shown && view === "teachings" && <TeachingsPage contract={shown} />}
+        {shown && view === "checks" && <ChecksPage contract={shown} />}
+        {shown && view === "health" && <HealthPage contract={shown} />}
         {allocation && costView && <CostPage data={allocation} bills={bills} setBy={setBy} compare={compare} setCompare={setCompare} />}
       </main>
     </>
@@ -155,7 +158,8 @@ function Header({ here, current }: { here: string; current: (v: string) => "page
           Investigations
         </a>
         <a href={`/app/?${here}&view=teachings`} aria-current={current("teachings")}>Teachings</a>
-        <a href="/console/health">Health</a>
+        <a href={`/app/?${here}&view=checks`} aria-current={current("checks")}>Checks</a>
+        <a href={`/app/?${here}&view=health`} aria-current={current("health")}>Health</a>
         <a href={`/app/?${here}`} aria-current={current("")}>Workloads</a>
         <a href={`/app/?${here}&view=cost`} aria-current={current("cost")}>Cost</a>
         <a href="/app/?view=token" aria-current={current("token")}>Approver token</a>

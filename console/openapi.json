@@ -397,6 +397,138 @@
         "title": "CheckResult",
         "type": "object"
       },
+      "CheckSchedule": {
+        "properties": {
+          "failing_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failing Id"
+          },
+          "last_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Id"
+          },
+          "last_passed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Passed"
+          },
+          "last_started": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Started"
+          },
+          "last_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Status"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "next_due": {
+            "title": "Next Due",
+            "type": "number"
+          },
+          "schedule": {
+            "title": "Schedule",
+            "type": "string"
+          },
+          "skipped_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Skipped At"
+          },
+          "skipped_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Skipped Reason"
+          }
+        },
+        "required": [
+          "name",
+          "schedule",
+          "next_due",
+          "last_id",
+          "last_status",
+          "last_passed",
+          "last_started",
+          "failing_id",
+          "skipped_at",
+          "skipped_reason"
+        ],
+        "title": "CheckSchedule",
+        "type": "object"
+      },
+      "Checks": {
+        "description": "A Contract's scheduled Checks and latest Deploy verifications (slice 11.6b).",
+        "properties": {
+          "checks": {
+            "items": {
+              "$ref": "#/components/schemas/CheckSchedule"
+            },
+            "title": "Checks",
+            "type": "array"
+          },
+          "deploys": {
+            "items": {
+              "$ref": "#/components/schemas/DeployCheck"
+            },
+            "title": "Deploys",
+            "type": "array"
+          }
+        },
+        "required": [
+          "checks",
+          "deploys"
+        ],
+        "title": "Checks",
+        "type": "object"
+      },
       "ClusterStatus": {
         "properties": {
           "at": {
@@ -726,6 +858,93 @@
         "title": "DecisionIn",
         "type": "object"
       },
+      "DeployCheck": {
+        "properties": {
+          "changes": {
+            "items": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "title": "Changes",
+            "type": "array"
+          },
+          "cluster": {
+            "title": "Cluster",
+            "type": "string"
+          },
+          "due": {
+            "title": "Due",
+            "type": "number"
+          },
+          "investigation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Investigation Id"
+          },
+          "namespace": {
+            "title": "Namespace",
+            "type": "string"
+          },
+          "passed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Passed"
+          },
+          "run_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Status"
+          },
+          "skipped_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Skipped Reason"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "cluster",
+          "namespace",
+          "changes",
+          "due",
+          "state",
+          "investigation_id",
+          "run_status",
+          "passed",
+          "skipped_reason"
+        ],
+        "title": "DeployCheck",
+        "type": "object"
+      },
       "Drop": {
         "properties": {
           "after": {
@@ -895,6 +1114,69 @@
           }
         },
         "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "HealthPage": {
+        "description": "One Contract's integrations checked now through its own tools, its last finished\nInvestigation, its config with only the names of its secrets, this month's model\nspend, and the Hub's settings with every secret masked (slice 11.6b).",
+        "properties": {
+          "budget_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Budget Usd"
+          },
+          "config": {
+            "title": "Config",
+            "type": "string"
+          },
+          "hub": {
+            "title": "Hub",
+            "type": "string"
+          },
+          "integrations": {
+            "items": {
+              "$ref": "#/components/schemas/Probe"
+            },
+            "title": "Integrations",
+            "type": "array"
+          },
+          "last": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Brief"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "secrets": {
+            "additionalProperties": {
+              "type": "boolean"
+            },
+            "title": "Secrets",
+            "type": "object"
+          },
+          "spent_usd": {
+            "title": "Spent Usd",
+            "type": "number"
+          }
+        },
+        "required": [
+          "integrations",
+          "last",
+          "config",
+          "secrets",
+          "spent_usd",
+          "budget_usd",
+          "hub"
+        ],
+        "title": "HealthPage",
         "type": "object"
       },
       "History": {
@@ -1337,6 +1619,34 @@
           "note"
         ],
         "title": "PriceNote",
+        "type": "object"
+      },
+      "Probe": {
+        "properties": {
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          },
+          "ms": {
+            "title": "Ms",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "ok",
+          "ms",
+          "detail"
+        ],
+        "title": "Probe",
         "type": "object"
       },
       "Realized": {
@@ -2261,6 +2571,45 @@
         "summary": "Bills"
       }
     },
+    "/api/v1/contracts/{contract_id}/checks": {
+      "get": {
+        "operationId": "checks_api_v1_contracts__contract_id__checks_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "contract_id",
+            "required": true,
+            "schema": {
+              "title": "Contract Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Checks"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Checks"
+      }
+    },
     "/api/v1/contracts/{contract_id}/cost": {
       "get": {
         "operationId": "cost_api_v1_contracts__contract_id__cost_get",
@@ -2328,6 +2677,45 @@
           }
         },
         "summary": "Cost"
+      }
+    },
+    "/api/v1/contracts/{contract_id}/health": {
+      "get": {
+        "operationId": "health__api_v1_contracts__contract_id__health_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "contract_id",
+            "required": true,
+            "schema": {
+              "title": "Contract Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Health "
       }
     },
     "/api/v1/contracts/{contract_id}/history": {

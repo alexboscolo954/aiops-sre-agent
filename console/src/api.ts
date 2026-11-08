@@ -95,6 +95,14 @@ export const decideTeaching = (contract: string, id: number, approve: boolean, t
 export const retireTeaching = (contract: string, id: number) =>
   send<Teachings>(`${taught(contract)}/${id}/retire`);
 
+export type Checks = Schemas["Checks"];
+export type HealthPage = Schemas["HealthPage"];
+export const checks = (contract: string) =>
+  get<Checks>(`/contracts/${encodeURIComponent(contract)}/checks`);
+/** Checks the Contract's integrations now, through its own tools. */
+export const health = (contract: string) =>
+  get<HealthPage>(`/contracts/${encodeURIComponent(contract)}/health`);
+
 /** Earns this browser the cookie: the token page's only call without it. */
 export async function saveToken(token: string): Promise<void> {
   const r = await fetch("/api/v1/token", {

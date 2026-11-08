@@ -693,3 +693,62 @@ test("the Operator writes a Teaching for some alerts, and the form clears once i
   expect(alerts.value).toBe("");
   expect(sent).toEqual([["/api/v1/contracts/demo-shop/teachings", { text: "check the node first", alerts: ["KubeNodeNotReady", " KubeletDown"] }]]);
 });
+
+const CHECKS = {
+  checks: [
+    { name: "api answers", schedule: "*/5 * * * * UTC", next_due: 1_700_000_300, last_id: "r1", last_status: "done", last_passed: false, last_started: 1_700_000_000, failing_id: "r1", skipped_at: null, skipped_reason: null },
+    { name: "backups", schedule: "0 3 * * * UTC", next_due: 1_700_000_600, last_id: null, last_status: null, last_passed: null, last_started: null, failing_id: null, skipped_at: 1_700_000_000, skipped_reason: "over budget" },
+  ],
+  deploys: [
+    { cluster: "kind", namespace: "shop", changes: [{ namespace: "shop", object: "Deployment/api", revision: "4" }], due: 1_700_000_000, state: "skipped", investigation_id: null, run_status: null, passed: null, skipped_reason: "<b>Kill switch</b> on" },
+    { cluster: "kind", namespace: "shop", changes: [{ namespace: "shop", object: "Deployment/api", revision: "3" }], due: 1_700_000_000, state: "started", investigation_id: "r2", run_status: "done", passed: true, skipped_reason: null },
+  ],
+};
+
+test("Checks show each one's last Run and Open failure, and Deploy verifications their state", async () => {
+  history.replaceState(null, "", "/app/?view=checks");
+  answer({
+    "/api/v1/contracts": [200, [{ id: "demo-shop", name: "demo-shop" }]],
+    "/api/v1/contracts/demo-shop/checks": [200, CHECKS],
+  });
+  const { container: page } = render(<App />);
+  await screen.findByText("demo-shop: Checks");
+  expect(screen.getByText("failed").getAttribute("href")).toBe("/app/?view=investigation&id=r1");
+  expect(screen.getByText("failing since this Run").getAttribute("href")).toBe("/app/?view=investigation&id=r1");
+  expect(screen.getByText("2023-11-14 22:13 UTC: over budget")).toBeTruthy();
+  expect(screen.getByText("passed").getAttribute("href")).toBe("/app/?view=investigation&id=r2");
+  expect(screen.getByText("skipped: <b>Kill switch</b> on")).toBeTruthy(); // as text
+  expect(page.querySelector("main b")).toBeNull();
+  expect(screen.getByText("Deployment/api 4")).toBeTruthy();
+});
+
+test("Health shows each integration now, the error as text, spend against the budget, secrets by name", async () => {
+  history.replaceState(null, "", "/app/?view=health");
+  answer({
+    "/api/v1/contracts": [200, [{ id: "demo-shop", name: "demo-shop" }]],
+    "/api/v1/contracts/demo-shop/health": [
+      200,
+      {
+        integrations: [
+          { name: "kubernetes kind", ok: true, ms: 12, detail: "" },
+          { name: "prometheus", ok: false, ms: 5003, detail: "<img src=x> timed out" },
+        ],
+        last: { id: "t1", contract: "demo-shop", kind: "triage", title: "OOM", status: "done", failed: false, started: 1_700_000_000 },
+        config: "id: demo-shop\n",
+        secrets: { "prometheus-token": true, "jira-token": false },
+        spent_usd: 2.5,
+        budget_usd: 10,
+        hub: "approver_token: '**********'\n",
+      },
+    ],
+  });
+  const { container: page } = render(<App />);
+  await screen.findByText("demo-shop: Health");
+  expect(screen.getByText("FAILING").className).toBe("bad");
+  expect(screen.getByText("<img src=x> timed out")).toBeTruthy();
+  expect(page.querySelector("main img")).toBeNull();
+  expect(screen.getByText("OOM").getAttribute("href")).toBe("/app/?view=investigation&id=t1");
+  expect(screen.getByText("Model spend this month: $2.50 of $10.00 (25%)")).toBeTruthy();
+  expect(screen.getByText(/prometheus-token loaded, jira-token MISSING/)).toBeTruthy();
+  expect(screen.getByText(/approver_token: '\*\*\*\*\*\*\*\*\*\*'/)).toBeTruthy();
+});

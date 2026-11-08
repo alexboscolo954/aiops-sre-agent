@@ -20,6 +20,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal
 
+import yaml
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel
@@ -32,6 +33,7 @@ from aiops_agent.console import (
     DecideTeaching,
     Feedback,
     FileJira,
+    Health,
     action_key,
     same_origin,
     scenario_file,
@@ -39,6 +41,7 @@ from aiops_agent.console import (
 )
 from aiops_agent.contracts import Contract, Jira
 from aiops_agent.models import Answer, CheckResult, Investigation, TriageReport
+from aiops_agent.safety import redact
 from aiops_agent.store import Store
 from aiops_agent.teachings import LIMIT as TEACHING_LIMIT
 from aiops_agent.teachings import section
@@ -401,6 +404,59 @@ class TeachingIn(BaseModel):
     alerts: list[str] = []  # empty: every alert
 
 
+class CheckSchedule(BaseModel):
+    name: str
+    schedule: str  # "<cron> <timezone>"
+    next_due: float
+    last_id: str | None  # the latest Run's Investigation
+    last_status: str | None
+    last_passed: bool | None
+    last_started: float | None
+    failing_id: str | None  # the Open failure's Investigation
+    skipped_at: float | None
+    skipped_reason: str | None
+
+
+class DeployCheck(BaseModel):
+    cluster: str
+    namespace: str
+    changes: list[dict[str, str]]  # {namespace, object, revision}
+    due: float
+    state: str  # pending, started or skipped
+    investigation_id: str | None
+    run_status: str | None
+    passed: bool | None
+    skipped_reason: str | None
+
+
+class Checks(BaseModel):
+    """A Contract's scheduled Checks and latest Deploy verifications (slice 11.6b)."""
+
+    checks: list[CheckSchedule]
+    deploys: list[DeployCheck]  # newest first, at most 30
+
+
+class Probe(BaseModel):
+    name: str
+    ok: bool
+    ms: int
+    detail: str  # the error, redacted and capped
+
+
+class HealthPage(BaseModel):
+    """One Contract's integrations checked now through its own tools, its last finished
+    Investigation, its config with only the names of its secrets, this month's model
+    spend, and the Hub's settings with every secret masked (slice 11.6b)."""
+
+    integrations: list[Probe]
+    last: Brief | None
+    config: str  # the Contract as loaded, defaults included, as YAML
+    secrets: dict[str, bool]  # each secret's name: did it decrypt
+    spent_usd: float  # this calendar month (UTC)
+    budget_usd: float | None
+    hub: str
+
+
 class KillSwitch(BaseModel):
     """A Contract's Kill switch (slice 11.2a): who turned it on, and when."""
 
@@ -447,9 +503,12 @@ def router(
     jira_of: Callable[[Investigation], Jira | None],
     feedback: Feedback,
     decide_teaching: DecideTeaching,
+    health: Health,
+    hub_config: dict[str, Any],
 ) -> APIRouter:
     """decide, file_jira, jira_of, feedback and decide_teaching: the Jinja console's, so
-    both consoles record the same thing (`console:<login>`)."""
+    both consoles record the same thing (`console:<login>`). health and hub_config: the
+    Health page's, as the Jinja console's."""
     key = action_key(approver_token)
     r = APIRouter()
 
@@ -726,6 +785,34 @@ def router(
             raise HTTPException(409, "not an approved Teaching")
         return await teachings(c.id)
 
+    @api.get("/contracts/{contract_id}/checks")
+    async def checks(contract_id: str) -> Checks:
+        c = contract(contract_id)
+        return Checks.model_validate(
+            {
+                "checks": await store().check_schedules(c.id),
+                "deploys": await store().deploy_checks(c.id),
+            }
+        )
+
+    @api.get("/contracts/{contract_id}/health")
+    async def health_(contract_id: str) -> HealthPage:
+        c = contract(contract_id)
+        last = (await store().last_done()).get(c.id)
+        return HealthPage.model_validate(
+            {
+                "integrations": await health(c),
+                "last": brief(last) if last else None,
+                # Secret values never live in the model: only their names, and whether
+                # each one decrypted.
+                "config": yaml.safe_dump(c.model_dump(mode="json"), sort_keys=False),
+                "secrets": {name: c.has_secret(name) for name in sorted(c.secret_refs())},
+                "spent_usd": await store().month_spend(c.id, now()),
+                "budget_usd": c.monthly_budget_usd,
+                "hub": redact(yaml.safe_dump(hub_config, sort_keys=False)),  # to be sure
+            }
+        )
+
     async def switch(c: Contract) -> KillSwitch:
         on = await store().kill_switch(c.id)
         return (
@@ -762,5 +849,7 @@ def openapi() -> str:
     it: `make console-types`)."""
     app = FastAPI(title="aiops console", version="1")
     never: Any = None  # the schema needs no behaviour
-    app.include_router(router(set(), {}, never, "x", never, never, never, never, never, never))
+    app.include_router(
+        router(set(), {}, never, "x", never, never, never, never, never, never, never, {})
+    )
     return json.dumps(app.openapi(), indent=2, sort_keys=True) + "\n"

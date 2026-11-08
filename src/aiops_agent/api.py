@@ -1534,6 +1534,8 @@ def create_app(
                 jira_of,
                 console_feedback,
                 console_decide_teaching,
+                health,
+                shown_settings(settings),
             )
         )
 

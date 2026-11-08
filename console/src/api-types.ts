@@ -58,6 +58,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/contracts/{contract_id}/checks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Checks */
+        get: operations["checks_api_v1_contracts__contract_id__checks_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/contracts/{contract_id}/cost": {
         parameters: {
             query?: never;
@@ -67,6 +84,23 @@ export interface paths {
         };
         /** Cost */
         get: operations["cost_api_v1_contracts__contract_id__cost_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/contracts/{contract_id}/health": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Health */
+        get: operations["health__api_v1_contracts__contract_id__health_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -466,6 +500,39 @@ export interface components {
              */
             summary: string;
         };
+        /** CheckSchedule */
+        CheckSchedule: {
+            /** Failing Id */
+            failing_id: string | null;
+            /** Last Id */
+            last_id: string | null;
+            /** Last Passed */
+            last_passed: boolean | null;
+            /** Last Started */
+            last_started: number | null;
+            /** Last Status */
+            last_status: string | null;
+            /** Name */
+            name: string;
+            /** Next Due */
+            next_due: number;
+            /** Schedule */
+            schedule: string;
+            /** Skipped At */
+            skipped_at: number | null;
+            /** Skipped Reason */
+            skipped_reason: string | null;
+        };
+        /**
+         * Checks
+         * @description A Contract's scheduled Checks and latest Deploy verifications (slice 11.6b).
+         */
+        Checks: {
+            /** Checks */
+            checks: components["schemas"]["CheckSchedule"][];
+            /** Deploys */
+            deploys: components["schemas"]["DeployCheck"][];
+        };
         /** ClusterStatus */
         ClusterStatus: {
             /** At */
@@ -572,6 +639,29 @@ export interface components {
              */
             reason: string;
         };
+        /** DeployCheck */
+        DeployCheck: {
+            /** Changes */
+            changes: {
+                [key: string]: string;
+            }[];
+            /** Cluster */
+            cluster: string;
+            /** Due */
+            due: number;
+            /** Investigation Id */
+            investigation_id: string | null;
+            /** Namespace */
+            namespace: string;
+            /** Passed */
+            passed: boolean | null;
+            /** Run Status */
+            run_status: string | null;
+            /** Skipped Reason */
+            skipped_reason: string | null;
+            /** State */
+            state: string;
+        };
         /** Drop */
         Drop: {
             /** After */
@@ -638,6 +728,29 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /**
+         * HealthPage
+         * @description One Contract's integrations checked now through its own tools, its last finished
+         *     Investigation, its config with only the names of its secrets, this month's model
+         *     spend, and the Hub's settings with every secret masked (slice 11.6b).
+         */
+        HealthPage: {
+            /** Budget Usd */
+            budget_usd: number | null;
+            /** Config */
+            config: string;
+            /** Hub */
+            hub: string;
+            /** Integrations */
+            integrations: components["schemas"]["Probe"][];
+            last: components["schemas"]["Brief"] | null;
+            /** Secrets */
+            secrets: {
+                [key: string]: boolean;
+            };
+            /** Spent Usd */
+            spent_usd: number;
         };
         /** History */
         History: {
@@ -760,6 +873,17 @@ export interface components {
             note: string;
             /** Source */
             source: string;
+        };
+        /** Probe */
+        Probe: {
+            /** Detail */
+            detail: string;
+            /** Ms */
+            ms: number;
+            /** Name */
+            name: string;
+            /** Ok */
+            ok: boolean;
         };
         /** Realized */
         Realized: {
@@ -1141,6 +1265,37 @@ export interface operations {
             };
         };
     };
+    checks_api_v1_contracts__contract_id__checks_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                contract_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Checks"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     cost_api_v1_contracts__contract_id__cost_get: {
         parameters: {
             query?: {
@@ -1163,6 +1318,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Allocation"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    health__api_v1_contracts__contract_id__health_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                contract_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HealthPage"];
                 };
             };
             /** @description Validation Error */

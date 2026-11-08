@@ -70,3 +70,5 @@ button.link { background: none; border: 0; padding: 0; color: var(--accent); fon
 .meta { color: var(--muted); }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 .investigations tbody tr { cursor: default; }
+table + h2 { margin-top: 1.25rem; }
+.bad { color: var(--bad); font-weight: 600; }
