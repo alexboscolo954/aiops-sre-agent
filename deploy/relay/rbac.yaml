@@ -1,0 +1,34 @@
+# Read-only, and bound per namespace with RoleBindings, so RBAC enforces the same
+# namespaces as AIOPS_RELAY_NAMESPACES. Secrets and ConfigMaps are not readable.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: aiops-relay
+  namespace: aiops-relay
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: aiops-relay-read
+rules:
+  - apiGroups: [""]
+    resources: [pods, pods/log, events]
+    verbs: [get, list, watch]
+  - apiGroups: ["apps"]
+    resources: [deployments, replicasets]
+    verbs: [get, list, watch]
+---
+# One RoleBinding per namespace in AIOPS_RELAY_NAMESPACES. Copy for each.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aiops-relay-read
+  namespace: demo
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: aiops-relay-read
+subjects:
+  - kind: ServiceAccount
+    name: aiops-relay
+    namespace: aiops-relay

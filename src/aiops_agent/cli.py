@@ -580,6 +580,7 @@ def main(argv: list[str] | None = None) -> int:
     t.add_argument("--json", action="store_true", help="print the report as JSON")
     t.add_argument("--auto-reject", action="store_true", help="reject every action, report only")
 
+    sub.add_parser("relay", help="run a Relay inside a client's network (AIOPS_RELAY_* settings)")
     s = sub.add_parser("serve", help="run the Alertmanager webhook receiver")
     s.add_argument("--host", default="0.0.0.0")  # noqa: S104 - container entrypoint
     s.add_argument("--port", type=int, default=8080)
@@ -690,6 +691,13 @@ def main(argv: list[str] | None = None) -> int:
         return asyncio.run(triage(group, args.contract, args.json, args.auto_reject))
     if args.cmd == "mcp":
         return run_mcp(args.server, args.contract, args.transport, args.host, args.port)
+    if args.cmd == "relay":
+        from aiops_agent import relay
+
+        hub_logging()
+        settings = relay.RelaySettings()  # type: ignore[call-arg]  # from the environment
+        asyncio.run(relay.run(settings, relay.relay_server(settings)))
+        return 0
     if args.cmd == "serve":
         import uvicorn
 

@@ -241,3 +241,159 @@ def test_a_relay_token_is_no_other_token(settings: Settings, database_url: str) 
         hub(settings, database_url, hooked, relayed("bank", B_TOKEN))
     with pytest.raises(RuntimeError, match="another Relay's"):
         hub(settings, database_url, relayed("acme", A_TOKEN), relayed("bank", A_TOKEN))
+
+
+# --- the Relay process (slice 3.2) ------------------------------------------------------
+
+
+def settings_of(**env: Any) -> relay.RelaySettings:
+    base = {
+        "hub": "ws://hub/relay",
+        "token": A_TOKEN,
+        "cluster": "edge",
+        "namespaces": ["shop"],
+        "prometheus_url": "http://prometheus",
+    }
+    return relay.RelaySettings(**(base | env))
+
+
+async def names(server: FastMCP) -> list[str]:
+    async with Client(server) as c:
+        return sorted(t.name for t in await c.list_tools())
+
+
+@pytest.mark.anyio
+async def test_the_relay_serves_its_clusters_reads_with_the_hubs_names_and_no_write() -> None:
+    from tests.conftest import make_fake_cluster
+
+    served = await names(relay.relay_server(settings_of(), {"edge": make_fake_cluster()}))
+    assert "kubernetes_list_pods" in served and "prometheus_query" in served
+    assert {"hub_promql_instant", "hub_promql_range"} <= set(served)
+    assert not [n for n in served if "evict" in n or "scale" in n]  # writes are off
+    on = await names(relay.relay_server(settings_of(writes=True), {"edge": make_fake_cluster()}))
+    assert {"kubernetes_evict_pod", "kubernetes_scale_deployment"} <= set(on)
+    bare = await names(
+        relay.relay_server(settings_of(prometheus_url=None), {"edge": make_fake_cluster()})
+    )
+    assert not [n for n in bare if n.startswith(("prometheus_", "hub_"))]
+
+
+@pytest.mark.anyio
+async def test_the_relay_keeps_to_its_own_cluster_and_namespaces() -> None:
+    from tests.conftest import make_fake_cluster
+
+    server = relay.relay_server(settings_of(), {"edge": make_fake_cluster()})
+    async with Client(server) as c:
+        ok = await c.call_tool("kubernetes_list_pods", {"cluster": "edge", "namespace": "shop"})
+        other = await c.call_tool(
+            "kubernetes_list_pods",
+            {"cluster": "edge", "namespace": "kube-system"},
+            raise_on_error=False,
+        )
+        elsewhere = await c.call_tool(
+            "kubernetes_list_pods",
+            {"cluster": "test", "namespace": "shop"},
+            raise_on_error=False,
+        )
+    assert not ok.is_error and other.is_error and elsewhere.is_error
+
+
+@pytest.mark.anyio
+async def test_the_hubs_own_queries_read_the_relays_prometheus() -> None:
+    import httpx
+
+    asked: list[dict[str, str]] = []
+
+    def prometheus(request: httpx.Request) -> httpx.Response:
+        asked.append({"path": request.url.path, **request.url.params})
+        if request.url.path.endswith("query_range"):
+            return httpx.Response(500, json={"status": "error", "error": "down"})
+        result = [{"metric": {"namespace": "shop"}, "value": [0, "1"]}]
+        return httpx.Response(200, json={"status": "success", "data": {"result": result}})
+
+    http = httpx.Client(base_url="http://prometheus", transport=httpx.MockTransport(prometheus))
+    server = relay.relay_server(settings_of(), {"edge": (None, None)}, http)
+    async with Client(server) as c:
+        r = await c.call_tool("hub_promql_instant", {"promql": "up", "at": 1700000000})
+        down = await c.call_tool(
+            "hub_promql_range",
+            {"promql": "up", "start": 10, "end": 70, "step": 30},
+            raise_on_error=False,
+        )
+    assert r.structured_content["result"][0]["metric"]["namespace"] == "shop"  # type: ignore[index]
+    assert down.is_error and "Prometheus error 500" in down.content[0].text  # type: ignore[union-attr]
+    assert asked == [
+        {"path": "/api/v1/query", "query": "up", "time": "1700000000.0"},
+        {
+            "path": "/api/v1/query_range",
+            "query": "up",
+            "start": "10.0",
+            "end": "70.0",
+            "step": "30",
+        },
+    ]
+
+
+@pytest.mark.anyio
+async def test_the_relay_dials_again_slower_each_time_and_fast_after_a_held_connection() -> None:
+    clock = iter([0, 1, 2, 3, 10, 200, 300, 301])  # each attempt's start and end
+    outcomes: list[Any] = [OSError("refused"), OSError("refused"), None, None]
+    waits: list[float] = []
+
+    async def connect(url: str, token: str, server: Any) -> None:
+        assert (url, token) == ("ws://hub/relay", A_TOKEN)
+        outcome = outcomes.pop(0)
+        if outcome is not None:
+            raise outcome
+
+    async def sleep(seconds: float) -> None:
+        waits.append(seconds)
+        if not outcomes:
+            raise anyio.get_cancelled_exc_class()
+
+    with pytest.raises(anyio.get_cancelled_exc_class()):
+        await relay.run(settings_of(), FastMCP("x"), connect, sleep, lambda: next(clock))
+    assert waits == [1, 2, 1, 2]  # the third connection held 190 s: back to 1 s
+
+
+def test_the_relay_manifests_read_only_and_writes_only_in_the_overlay() -> None:
+    import yaml
+
+    from tests.test_shared import ROOT
+
+    docs = list(yaml.safe_load_all((ROOT / "deploy/relay/deployment.yaml").read_text()))
+    pod = docs[0]["spec"]["template"]["spec"]
+    (container,) = pod["containers"]
+    assert container["args"] == ["relay"]
+    assert container["securityContext"]["readOnlyRootFilesystem"] is True
+    assert "AIOPS_RELAY_WRITES" not in {e["name"] for e in container["env"]}
+    hub = next(yaml.safe_load_all((ROOT / "deploy/base/deployment.yaml").read_text()))
+    assert container["image"] == hub["spec"]["template"]["spec"]["containers"][0]["image"]
+    overlay = (ROOT / "deploy/relay-actions/kustomization.yaml").read_text()
+    assert "AIOPS_RELAY_WRITES" in overlay
+    rbac = (ROOT / "deploy/relay/rbac.yaml").read_text()
+    assert "secrets" not in rbac and "patch" not in rbac
+
+
+@pytest.mark.anyio
+async def test_a_refused_token_is_said_and_the_wait_stops_at_a_minute(caplog: Any) -> None:
+    from websockets.datastructures import Headers
+    from websockets.http11 import Response
+
+    refused = websockets.InvalidStatus(Response(403, "Forbidden", Headers()))
+    attempts = 9
+    waits: list[float] = []
+
+    async def connect(url: str, token: str, server: Any) -> None:
+        raise refused
+
+    async def sleep(seconds: float) -> None:
+        waits.append(seconds)
+        if len(waits) == attempts:
+            raise anyio.get_cancelled_exc_class()
+
+    with pytest.raises(anyio.get_cancelled_exc_class()):
+        await relay.run(settings_of(), FastMCP("x"), connect, sleep, lambda: 0.0)
+    assert waits == [1, 2, 4, 8, 16, 32, 60, 60, 60]
+    assert "refused the connection (403): check the token" in caplog.text
+    assert A_TOKEN not in caplog.text

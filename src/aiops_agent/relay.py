@@ -11,6 +11,7 @@ Everything a Relay sends is client-controlled data: the Hub keeps its own allowl
 cluster and namespace checks, redaction and caps on it (ADR 0002).
 """
 
+import asyncio
 import hashlib
 import hmac
 import logging
@@ -21,14 +22,20 @@ from dataclasses import dataclass
 from typing import Any
 
 import anyio
+import httpx
 import websockets
 from fastmcp import Client, FastMCP
 from fastmcp.client.transports.base import ClientTransport
 from fastmcp.client.transports.memory import _enter_server_lifespan, _lowlevel_of
 from mcp import ClientSession, types
 from mcp.shared.message import SessionMessage
+from mcp.types import ToolAnnotations
+from pydantic import SecretStr
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from aiops_agent import contracts, usage
 from aiops_agent.contracts import Contract
+from aiops_agent.servers import kubernetes, prometheus
 
 log = logging.getLogger("aiops.relay")
 
@@ -201,3 +208,88 @@ async def dial(url: str, token: str, server: FastMCP) -> None:
             return frame if isinstance(frame, str) else None  # a binary frame ends it
 
         await serve(server, ws.send, receive)
+
+
+class RelaySettings(BaseSettings):
+    """The Relay's own configuration, set by the client in its manifest (slice 3.2)."""
+
+    model_config = SettingsConfigDict(env_prefix="AIOPS_RELAY_")
+
+    hub: str  # wss://<the Hub's domain>/relay
+    token: SecretStr
+    cluster: str  # its name in the Contract
+    namespaces: list[str]  # JSON, as its RoleBindings grant
+    gitops_namespaces: list[str] = []
+    prometheus_url: str | None = None  # inside the client's network
+    prometheus_token: SecretStr | None = None
+    writes: bool = False  # the client's own switch: no write tool exists without it
+    tool_output_limit: int = 8000
+
+
+def relay_server(
+    s: RelaySettings,
+    apis: dict[str, tuple[Any, ...]] | None = None,
+    http: httpx.Client | None = None,
+) -> FastMCP:
+    """What the Relay serves: its cluster's Kubernetes tools (write tools only when the
+    client turns writes on), its Prometheus tools, and the Hub's own PromQL as
+    `hub_promql_*`, which the Hub never puts on the agent's list. Tool names are the
+    Hub's own (`kubernetes_list_pods`...). apis, http: fakes, for tests."""
+    cluster: dict[str, Any] = {"name": s.cluster, "namespaces": s.namespaces, "in_cluster": True}
+    cluster["gitops_namespaces"] = s.gitops_namespaces
+    k8s = {"name": "kubernetes", "enable_actions": s.writes}
+    c = contracts.build(
+        {"id": "relay", "name": "relay", "clusters": [cluster], "integrations": [k8s]}
+    )
+    k8s_integration = c.integrations[0]
+    assert isinstance(k8s_integration, contracts.Kubernetes)
+    root = FastMCP(f"aiops-relay-{s.cluster}")
+    tools = kubernetes.build_server(c, k8s_integration, s.tool_output_limit, apis)
+    root.mount(tools, namespace="kubernetes")
+    if s.prometheus_url:
+        store = {s.cluster: (s.prometheus_url, s.prometheus_token)}
+        tested = {s.cluster: http} if http else None
+        root.mount(prometheus.build_server(store, True, tested), namespace="prometheus")
+        target = usage.Target(s.cluster, s.prometheus_url, s.prometheus_token, {}, s.namespaces)
+        prom = usage.Prom(target, http)
+
+        @root.tool(annotations=ToolAnnotations(readOnlyHint=True))
+        async def hub_promql_instant(promql: str, at: float) -> list[dict[str, Any]]:
+            """The Hub's own query (Sizings, prices, Health): never the agent's."""
+            return await asyncio.to_thread(prom.instant, promql, at)
+
+        @root.tool(annotations=ToolAnnotations(readOnlyHint=True))
+        async def hub_promql_range(
+            promql: str, start: float, end: float, step: int
+        ) -> list[dict[str, Any]]:
+            """The Hub's own range query: never the agent's."""
+            return await asyncio.to_thread(prom.range, promql, start, end, step)
+
+    return root
+
+
+async def run(
+    s: RelaySettings,
+    server: FastMCP,
+    connect: Callable[[str, str, FastMCP], Awaitable[None]] = dial,
+    sleep: Callable[[float], Awaitable[None]] = anyio.sleep,
+    clock: Callable[[], float] = time.monotonic,
+) -> None:
+    """Dial the Hub and serve, forever: after a refusal, a dropped connection or the
+    Hub going away, wait and dial again, 1 s doubling to a minute, back to 1 s once
+    a connection held (a token the Hub refuses keeps retrying, slowly)."""
+    wait = 1.0
+    while True:
+        started = clock()
+        try:
+            await connect(s.hub, s.token.get_secret_value(), server)
+            why = "the Hub closed the connection"
+        except websockets.InvalidStatus as e:
+            why = f"the Hub refused the connection ({e.response.status_code}): check the token"
+        except (OSError, websockets.WebSocketException) as e:
+            why = f"no connection to the Hub: {type(e).__name__}"
+        if clock() - started > 60:
+            wait = 1.0
+        log.warning("relay %s: %s; dialing again in %.0f s", s.cluster, why, wait)
+        await sleep(wait)
+        wait = min(wait * 2, 60.0)

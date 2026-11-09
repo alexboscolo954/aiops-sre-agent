@@ -265,8 +265,8 @@ code, allowed environment variables, which are secrets), a snapshot of its tool 
   watch it with `gh run watch <id> --exit-status`.
 - **Release** (the owner asks for it; versions are `0.N.0`, patches `0.N.P`):
   1. Replace the old version in `pyproject.toml`, the `aiops-sre-agent` entry in `uv.lock`,
-     `deploy/base/deployment.yaml`, `deploy/hub/compose.yaml`, `deploy/hub/env.example` and
-     `demo/deploy-smoke.sh` (`git grep -n 0.15.0` before and after to check).
+     `deploy/base/deployment.yaml`, `deploy/relay/deployment.yaml`, `deploy/hub/compose.yaml`,
+     `deploy/hub/env.example` and `demo/deploy-smoke.sh` (`git grep -n 0.15.0` before and after to check).
   2. Commit `Version X.Y.Z: deploys and the Hub compose stack use the X.Y.Z image`.
   3. Push, tag `vX.Y.Z`, push the tag. The tag run builds and publishes the image
      (`ghcr.io/alexboscolo954/aiops-sre-agent:X.Y.Z`); wait for its `publish` job.

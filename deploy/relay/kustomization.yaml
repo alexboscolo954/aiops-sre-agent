@@ -1,0 +1,11 @@
+# The Relay (Phase 3), applied in the CLIENT's cluster: it reads that cluster and
+# dials the Hub; nothing reaches it from outside. Apply with: kubectl apply -k deploy/relay
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# No global namespace: RoleBindings must live in the namespaces they grant.
+resources:
+  - namespace.yaml
+  - rbac.yaml
+  - deployment.yaml
+# Create the token's Secret out of band (the value is the Contract's relay_token_secret):
+#   kubectl -n aiops-relay create secret generic aiops-relay --from-literal=AIOPS_RELAY_TOKEN=...
