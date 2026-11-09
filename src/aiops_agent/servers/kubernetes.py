@@ -73,7 +73,10 @@ ACCESS: dict[str, Access] = {
 def api_client(cluster: Cluster, contract: Contract) -> client.ApiClient:
     """The Contract schema already refuses a cluster with no context unless in_cluster.
     A kubeconfig that would run a credential plugin is refused before the client
-    loads it, unless the cluster sets allow_exec."""
+    loads it, unless the cluster sets allow_exec. A Relay's cluster is never reached
+    from the Hub: it has no context, and the default one is the Hub's own."""
+    if cluster.via == "relay":
+        raise RuntimeError(f"Contract {contract.id!r}, cluster {cluster.name!r}: via its Relay")
     if cluster.in_cluster:
         config.load_incluster_config()  # type: ignore[no-untyped-call]
         return client.ApiClient()
@@ -346,8 +349,8 @@ def build_server(
     connecting, for tests. Without the third, GitOps objects aren't read."""
     targets = {}
     customs: dict[str, Any] = {}
-    gitops = {c.name: sorted(c.gitops_namespaces) for c in contract.clusters}
-    for c in contract.clusters:
+    gitops = {c.name: sorted(c.gitops_namespaces) for c in contract.direct_clusters}
+    for c in contract.direct_clusters:  # a Relay's cluster is never reached from here
         if apis is None:
             api = api_client(c, contract)
             targets[c.name] = (client.CoreV1Api(api), client.AppsV1Api(api), set(c.namespaces))

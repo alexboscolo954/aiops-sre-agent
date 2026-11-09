@@ -83,6 +83,18 @@ class Billing(Strict):
     )
 
 
+# What a Relay cluster's own Relay holds: set on the Hub, they'd reach it Direct.
+RELAY_HOLDS = (
+    "in_cluster",
+    "context",
+    "kubeconfig_file",
+    "kubeconfig_secret",
+    "allow_exec",
+    "prometheus_url",
+    "prometheus_token_secret",
+)
+
+
 class Cluster(Strict):
     name: Slug
     namespaces: list[str] = Field(min_length=1)
@@ -106,9 +118,23 @@ class Cluster(Strict):
     prices: ClusterPrices | None = None  # else the Contract's
     provider: Literal["aws", "azure", "gcp"] | None = None  # else read from kube_node_info
     billing: Billing | None = None  # else no bill to reconcile with
+    # Reached through a Relay inside the client's network (slice 3.1), which holds this
+    # cluster's credentials and dials the Hub with this secret's value: the Hub never
+    # reaches it Direct, so it names no kube context, kubeconfig or Prometheus here.
+    via: Literal["direct", "relay"] = "direct"
+    relay_token_secret: str | None = None
 
     @model_validator(mode="after")
     def _one_source(self) -> "Cluster":
+        if self.via == "relay":
+            if not self.relay_token_secret:
+                raise ValueError("via: relay needs relay_token_secret")
+            direct = [f for f in RELAY_HOLDS if getattr(self, f) not in (None, False, {})]
+            if direct:
+                raise ValueError(f"via: relay: the Relay holds these, not the Hub: {direct}")
+            return self
+        if self.relay_token_secret:
+            raise ValueError("relay_token_secret is for via: relay")
         if self.prometheus_token_secret and not self.prometheus_url:
             raise ValueError("prometheus_token_secret needs prometheus_url")
         if (
@@ -745,6 +771,11 @@ class Contract(Strict):
         return self._dir
 
     @property
+    def direct_clusters(self) -> list["Cluster"]:
+        """The clusters the Hub reaches itself; a Relay serves the rest (slice 3.1)."""
+        return [c for c in self.clusters if c.via == "direct"]
+
+    @property
     def shared_stores(self) -> set[str]:
         """Clusters whose Prometheus another Contract also reads (set by load())."""
         return self._shared_stores
@@ -860,14 +891,14 @@ def _mark_shared_stores(loaded: Any) -> None:
     readers: dict[str, set[str]] = defaultdict(set)
     for c in loaded:
         shared = next((i.url for i in c.integrations if isinstance(i, Prometheus)), None)
-        for cl in c.clusters:
+        for cl in c.direct_clusters:
             if url := cl.prometheus_url or shared:
                 readers[_store(url)].add(c.id)
     for c in loaded:
         shared = next((i.url for i in c.integrations if isinstance(i, Prometheus)), None)
         c._shared_stores = {
             cl.name
-            for cl in c.clusters
+            for cl in c.direct_clusters
             if (url := cl.prometheus_url or shared) and len(readers[_store(url)]) > 1
         }
 
@@ -880,7 +911,7 @@ def _shared_metrics(directory: Path, loaded: Any) -> list[str]:
     problems = []
     for c in loaded:
         shared = next((i.url for i in c.integrations if isinstance(i, Prometheus)), None)
-        for cl in c.clusters:
+        for cl in c.direct_clusters:
             url = cl.prometheus_url or shared
             if not url:
                 continue

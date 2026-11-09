@@ -38,10 +38,10 @@ A pull request the Hub opens on the contracts repo, from the Hub MCP server, edi
 _Avoid_: Proposed action (that is a paused tool call), patch
 
 **Direct**:
-A way to reach a Contract where the Hub holds the Contract's credentials and calls its APIs itself.
+A way to reach a Contract's cluster or integration where the Hub holds the credentials and calls its APIs itself. The default; a cluster reached through a Relay is never reached Direct.
 
 **Relay**:
-A small process inside a client's network that holds that Contract's credentials and runs its tools. It connects out to the Hub, so the client network accepts no inbound connections. The agent's reasoning stays in the Hub. Only tool calls and their results pass through the Relay. Under Automation, the same connection also carries approved Sizings to the Actuator.
+A small process inside a client's network that serves one of a Contract's clusters (the cluster is reached `via: relay`): it holds that cluster's credentials and runs its Kubernetes tools and its Prometheus queries, for the agent and for the Hub's own reads. It connects out to the Hub with a token bound to that Contract and cluster, so the client network accepts no inbound connections. The agent's reasoning, the allowlist and the approval gate stay in the Hub; cloud and vendor integrations stay Direct. Only tool calls and their results pass through the Relay. Under Automation, the same connection also carries approved Sizings to the Actuator.
 _Avoid_: Satellite, agent
 
 ### Input

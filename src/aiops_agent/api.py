@@ -29,7 +29,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, WebSocket
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastmcp import Client
 from langchain_core.language_models import BaseChatModel
@@ -50,6 +50,7 @@ from aiops_agent import (
     masking,
     proposals,
     related,
+    relay,
     sizing,
     teachings,
     usage,
@@ -168,6 +169,18 @@ def create_app(
         for c in by_id.values():
             if contracts.token_matches(c, mcp_token):
                 raise RuntimeError(f"Contract {c.id!r}'s webhook token is the MCP token")
+    try:  # each Relay's token names one Contract's cluster, and nothing else (slice 3.1)
+        relay_tokens = relay.tokens(by_id)
+    except ValueError as e:
+        raise RuntimeError(str(e)) from None
+    for other, what in ((approver_token, "the approver token"), (mcp_token, "the MCP token")):
+        if other and relay.who(f"Bearer {other}", relay_tokens):
+            raise RuntimeError(f"a Relay token is {what}: give each its own")
+    for c in by_id.values():
+        for digest, (cid, cluster) in relay_tokens:
+            webhook = c.webhook_token_sha256 or ""
+            if secrets.compare_digest(digest.hex(), webhook):
+                raise RuntimeError(f"{cid}/{cluster}: its Relay token is {c.id!r}'s webhook token")
     if not settings.database_url:
         raise RuntimeError("set AIOPS_DATABASE_URL")
     database_url = settings.database_url.get_secret_value()
@@ -1087,7 +1100,7 @@ def create_app(
                 if c.id not in pollers:
                     pollers[c.id] = changes_server(c)
                 async with Client(pollers[c.id]) as client:
-                    for cl in c.clusters:
+                    for cl in c.direct_clusters:
                         args = {"cluster": cl.name, "since_minutes": deploys.WINDOW_MINUTES}
                         r = await client.call_tool("recent_changes", args, raise_on_error=False)
                         if r.is_error or not isinstance(r.structured_content, dict):
@@ -1527,6 +1540,27 @@ def create_app(
 
     if hub_mcp:  # the Hub MCP server: at /mcp/, only through tailscale serve
         app.mount("/mcp", hubmcp.guard(hub_mcp, mcp_token, settings.console_operators))
+
+    relays = relay.Relays()
+    app.state.relays = relays
+
+    @app.websocket("/relay")
+    async def relay_socket(ws: WebSocket) -> None:
+        """A Relay dialing in (slice 3.1). Its token alone says which Contract's cluster
+        it serves; refused before the socket opens otherwise. Never logged."""
+        named = relay.who(ws.headers.get("authorization", ""), relay_tokens)
+        if named is None:
+            await ws.close(code=1008)  # before accept: the upgrade gets a 403
+            return
+        await ws.accept()
+
+        async def receive() -> str | None:
+            m = await ws.receive()
+            if m["type"] == "websocket.disconnect":
+                return None
+            return m.get("text")  # None for a binary frame: that ends the connection
+
+        await relays.hold(named, ws.send_text, receive, ws.close)
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:

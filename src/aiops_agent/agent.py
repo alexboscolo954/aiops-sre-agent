@@ -372,7 +372,7 @@ def probes(contract: Contract) -> list[tuple[str, str | None, dict[str, Any]]]:
     checks: list[tuple[str, str | None, dict[str, Any]]] = []
     for i in contract.integrations:
         if isinstance(i, Kubernetes):
-            for c in contract.clusters:
+            for c in contract.direct_clusters:
                 where = {"cluster": c.name, "namespace": sorted(c.namespaces)[0]}
                 checks.append((f"kubernetes {c.name}", "kubernetes_list_deployments", where))
         elif isinstance(i, Prometheus) and not contract.clusters:

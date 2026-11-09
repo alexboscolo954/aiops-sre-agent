@@ -59,10 +59,11 @@ class Target:
 
 def targets(contract: Contract) -> list[Target]:
     """A Target per cluster with a Prometheus: its own URL, else the Contract's
-    prometheus integration's. A cluster with neither has no Sizings."""
+    prometheus integration's. A cluster with neither has no Sizings, nor one reached
+    through a Relay: the Hub never reads it Direct (slice 3.1)."""
     shared = next((i for i in contract.integrations if isinstance(i, Prometheus)), None)
     out = []
-    for c in contract.clusters:
+    for c in contract.direct_clusters:
         url, secret = (
             (c.prometheus_url, c.prometheus_token_secret)
             if c.prometheus_url
