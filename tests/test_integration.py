@@ -53,8 +53,10 @@ async def test_finds_all_three_failures(live: contracts.Contract) -> None:
         assert crashing, pods
         assert crashing[0]["last_terminated"]["app"]["exit_code"] == 1
 
-        reports = by_app(pods, "reports")[0]
-        assert reports["last_terminated"]["app"]["terminated"] == "OOMKilled"
+        # Killed at its memory limit: OOMKilled, or Error with SIGKILL's 137 when the runtime
+        # misses the cgroup's OOM event (one restart in CI, 2026-11-09; the next was OOMKilled).
+        last = by_app(pods, "reports")[0]["last_terminated"]["app"]
+        assert last["exit_code"] == 137 and last["terminated"] in {"OOMKilled", "Error"}, last
 
         frontend = by_app(pods, "frontend")[0]
         assert frontend["containers"]["web"]["waiting"] in {"ImagePullBackOff", "ErrImagePull"}
