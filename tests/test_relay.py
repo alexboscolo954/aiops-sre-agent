@@ -1091,3 +1091,30 @@ async def test_a_relays_alert_is_its_own_contracts_with_that_contracts_webhook_t
         assert stored == [(body["investigation"], "acme")]  # bank has none
         server.should_exit = True
         tg.cancel_scope.cancel()
+
+
+def test_the_relays_settings_survive_its_own_services_links(monkeypatch: Any) -> None:
+    """Kubernetes gives each pod environment variables for every Service in its
+    namespace: for the Relay's own Service (`aiops-relay`) they share its prefix, and
+    v0.32.0 read AIOPS_RELAY_PORT=tcp://... as its port and failed to start."""
+    import yaml
+
+    from tests.test_shared import ROOT
+
+    docs = list(yaml.safe_load_all((ROOT / "deploy/relay/deployment.yaml").read_text()))
+    service = next(d for d in docs if d["kind"] == "Service")
+    name = service["metadata"]["name"].upper().replace("-", "_")
+    port = service["spec"]["ports"][0]["port"]
+    links = {
+        f"{name}_SERVICE_HOST": "10.96.0.1",
+        f"{name}_SERVICE_PORT": str(port),
+        f"{name}_SERVICE_PORT_ALERTS": str(port),
+        f"{name}_PORT": f"tcp://10.96.0.1:{port}",
+        f"{name}_PORT_{port}_TCP": f"tcp://10.96.0.1:{port}",
+        f"{name}_PORT_{port}_TCP_PROTO": "tcp",
+        f"{name}_PORT_{port}_TCP_PORT": str(port),
+        f"{name}_PORT_{port}_TCP_ADDR": "10.96.0.1",
+    }
+    for k, v in links.items():
+        monkeypatch.setenv(k, v)
+    assert settings_of().alerts_port == 8080

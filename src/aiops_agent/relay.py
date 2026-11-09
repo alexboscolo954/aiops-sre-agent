@@ -525,7 +525,9 @@ class RelaySettings(BaseSettings):
     prometheus_token: SecretStr | None = None
     writes: bool = False  # the client's own switch: no write tool exists without it
     tool_output_limit: int = 8000
-    port: int = 8080  # its Alertmanager receiver
+    # Its Alertmanager receiver. Not `port`: Kubernetes sets AIOPS_RELAY_PORT=tcp://... in
+    # every pod in the namespace of a Service named aiops-relay (its service links).
+    alerts_port: int = 8080
 
 
 def relay_server(
@@ -602,7 +604,10 @@ async def run(
 async def main(s: RelaySettings) -> None:
     """`aiops relay`: the receiver for its cluster's Alertmanager, and the connection."""
     uplink = Uplink()
-    config = uvicorn.Config(webhook(uplink), host="0.0.0.0", port=s.port, log_level="warning")  # noqa: S104  # the Service in front of it is in-cluster
+    everywhere = "0.0.0.0"  # noqa: S104  # its Service, inside the client's cluster
+    config = uvicorn.Config(
+        webhook(uplink), host=everywhere, port=s.alerts_port, log_level="warning"
+    )
     async with anyio.create_task_group() as tg:
         tg.start_soon(uvicorn.Server(config).serve)
         await run(s, relay_server(s), partial(dial, uplink=uplink))
