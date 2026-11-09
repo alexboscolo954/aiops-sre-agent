@@ -32,6 +32,8 @@ spec:
             # Writes stay off unless deploy/relay-actions turns them on.
           envFrom:
             - secretRef: {name: aiops-relay}   # AIOPS_RELAY_TOKEN
+          ports:
+            - {name: alerts, containerPort: 8080}   # its Alertmanager receiver (AIOPS_RELAY_PORT)
           resources:
             requests: {cpu: 50m, memory: 128Mi}
             limits: {memory: 256Mi}
@@ -44,3 +46,16 @@ spec:
       volumes:
         - name: tmp
           emptyDir: {}
+---
+# The cluster's Alertmanager posts here (slice 3.4): POST /alertmanager with the
+# Contract's webhook token as its bearer credentials, as it would to the Hub.
+apiVersion: v1
+kind: Service
+metadata:
+  name: aiops-relay
+  namespace: aiops-relay
+  labels: {app: aiops-relay}
+spec:
+  selector: {app: aiops-relay}
+  ports:
+    - {name: alerts, port: 8080, targetPort: alerts}

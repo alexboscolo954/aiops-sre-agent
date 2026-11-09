@@ -696,7 +696,7 @@ def main(argv: list[str] | None = None) -> int:
 
         hub_logging()
         settings = relay.RelaySettings()  # type: ignore[call-arg]  # from the environment
-        asyncio.run(relay.run(settings, relay.relay_server(settings)))
+        asyncio.run(relay.main(settings))
         return 0
     if args.cmd == "serve":
         import uvicorn

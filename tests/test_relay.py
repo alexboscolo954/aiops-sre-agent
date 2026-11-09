@@ -384,6 +384,10 @@ def test_the_relay_manifests_read_only_and_writes_only_in_the_overlay() -> None:
     assert container["args"] == ["relay"]
     assert container["securityContext"]["readOnlyRootFilesystem"] is True
     assert "AIOPS_RELAY_WRITES" not in {e["name"] for e in container["env"]}
+    service = docs[1]  # the cluster's Alertmanager posts to its receiver (slice 3.4)
+    assert service["spec"]["selector"] == docs[0]["spec"]["selector"]["matchLabels"]
+    assert [p["targetPort"] for p in service["spec"]["ports"]] == ["alerts"]
+    assert container["ports"] == [{"name": "alerts", "containerPort": 8080}]
     hub = next(yaml.safe_load_all((ROOT / "deploy/base/deployment.yaml").read_text()))
     assert container["image"] == hub["spec"]["template"]["spec"]["containers"][0]["image"]
     overlay = (ROOT / "deploy/relay-actions/kustomization.yaml").read_text()
@@ -896,3 +900,194 @@ def test_gitops_rbac_grants_every_kind_recent_changes_reads_in_each_namespace(
         assert granted == wanted and verbs == {"get", "list"}, role["metadata"]["namespace"]
     kustomization = (ROOT / path).parent / "kustomization.yaml"  # opt-in: never in a base
     assert not kustomization.exists() or "rbac-gitops" not in kustomization.read_text()
+
+
+# --- alerts through the Relay (slice 3.4) ----------------------------------------------
+
+GROUP = {
+    "status": "firing",
+    "groupKey": "g1",
+    "commonLabels": {"alertname": "KubePodCrashLooping", "namespace": "shop"},
+    "alerts": [{"status": "firing", "labels": {"pod": "orders-7d9f-abc"}, "fingerprint": "f1"}],
+}
+
+
+async def relay_side(uplink: relay.Uplink, send: Any, receive: Any) -> None:
+    """A Relay's end of a socket, as `dial` runs it."""
+    send = relay.locked(send)
+    with uplink.over(send):
+        await relay.serve(tools_server(), send, receive, uplink.answered)
+
+
+async def with_alerts(alerts: Any, tg: Any) -> tuple[relay.Relays, relay.Uplink, Any, Any]:
+    """A Relay held by the Hub, `alerts` taking what it forwards; returns what closes
+    the socket under the Relay, what sends the Hub a raw frame, and when `hold` ended."""
+    relays, uplink = relay.Relays(), relay.Uplink()
+    hub_send, hub_receive, relay_send, relay_receive = pipe()
+    tg.start_soon(relay_side, uplink, relay_send, relay_receive)
+    held: list[bool] = []
+
+    async def close() -> None:
+        await relay_send(None)
+
+    async def hold() -> None:
+        await relays.hold(("acme", "edge"), hub_send, hub_receive, close, alerts)
+        held.append(True)
+
+    tg.start_soon(hold)
+    await until(lambda: relays.get("acme", "edge") is not None)
+
+    async def cut() -> None:
+        await hub_send(None)
+        await relay_send(None)
+
+    return relays, uplink, cut, (relay_send, held)
+
+
+@pytest.mark.anyio
+async def test_an_alert_rides_the_relays_socket_and_the_hubs_answer_comes_back() -> None:
+    got: list[Any] = []
+
+    async def alerts(named: relay.Who, params: Any) -> tuple[int, Any]:
+        got.append((named, params))
+        return 202, {"status": "accepted"}
+
+    async with anyio.create_task_group() as tg:
+        relays, uplink, _, (raw, _) = await with_alerts(alerts, tg)
+        assert await uplink.forward("hook", GROUP) == (202, {"status": "accepted"})
+        await raw('{"jsonrpc": "2.0", "id": 7, "method": "aiops/other", "params": {}}')
+        r = await relays.get("acme", "edge").call_tool(  # type: ignore[union-attr]
+            "list_pods", {"namespace": "shop"}
+        )
+        assert r.content[0].text == "pods in shop"  # type: ignore[union-attr]
+        tg.cancel_scope.cancel()
+    assert got == [(("acme", "edge"), {"token": "hook", "group": GROUP})]
+    assert uplink.waiting == {}
+
+
+@pytest.mark.anyio
+async def test_an_alert_the_hub_doesnt_take_is_a_5xx_alertmanager_sends_again(
+    monkeypatch: Any,
+) -> None:
+    assert await relay.Uplink().forward("hook", GROUP) == (
+        503,
+        {"detail": "the Relay has no connection to the Hub"},
+    )
+    answers: list[Any] = [RuntimeError("store down"), (999, {}), (401, {"detail": "no"})]
+    stuck = anyio.Event()
+
+    async def alerts(named: relay.Who, params: Any) -> tuple[int, Any]:
+        if not answers:
+            await stuck.wait()  # never set: a Hub that doesn't answer
+        answer = answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer  # type: ignore[no-any-return]
+
+    async with anyio.create_task_group() as tg:
+        relays, uplink, cut, (_, held) = await with_alerts(alerts, tg)
+        assert await uplink.forward("hook", GROUP) == (502, {"detail": "the Hub failed to take it"})
+        assert await uplink.forward("hook", GROUP) == (
+            502,
+            {"detail": "the Hub answered something else"},
+        )
+        assert await uplink.forward("hook", GROUP) == (401, {"detail": "no"})  # passed on
+        monkeypatch.setattr(relay, "ALERT_SECONDS", 0.1)
+        assert await uplink.forward("hook", GROUP) == (
+            503,
+            {"detail": "the Hub didn't answer in 0.1 s"},
+        )
+        r = await relays.get("acme", "edge").call_tool(  # type: ignore[union-attr]
+            "list_pods", {"namespace": "shop"}
+        )
+        assert r.content[0].text == "pods in shop"  # a failed alert ends nothing
+        monkeypatch.setattr(relay, "ALERT_SECONDS", 10)
+        async with anyio.create_task_group() as waiting:
+            outcome: list[Any] = []
+
+            async def forward() -> None:
+                outcome.append(await uplink.forward("hook", GROUP))
+
+            waiting.start_soon(forward)
+            await until(lambda: bool(uplink.waiting))
+            await until(lambda: not answers)  # the Hub holds it, stuck
+            await cut()  # the socket closes under it
+        assert outcome == [(503, {"detail": "no connection to the Hub: ConnectionError"})]
+        assert uplink.send is None and uplink.waiting == {}
+        await until(lambda: bool(held))  # the stuck alert didn't keep the connection
+        tg.cancel_scope.cancel()
+
+
+@pytest.mark.anyio
+async def test_the_relays_receiver_wants_a_bearer_and_an_alert_group(monkeypatch: Any) -> None:
+    import httpx
+
+    from aiops_agent.models import AlertGroup
+
+    uplink = relay.Uplink()
+    sent: list[Any] = []
+
+    async def forward(token: str, group: Any) -> tuple[int, Any]:
+        sent.append((token, group))
+        return 202, {"status": "accepted"}
+
+    monkeypatch.setattr(uplink, "forward", forward)
+    monkeypatch.setattr(relay, "MAX_ALERT", 2000)
+    app = relay.webhook(uplink)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://r") as c:
+        url, hook = "/alertmanager", {"Authorization": "Bearer hook"}
+        assert (await c.post(url, json=GROUP)).status_code == 401
+        assert (
+            await c.post(url, json=GROUP, headers={"Authorization": "Basic x"})
+        ).status_code == 401
+        assert (await c.post(url, json={"status": 1}, headers=hook)).status_code == 422
+        assert (await c.post(url, content=b"{", headers=hook)).status_code == 422
+        big = {**GROUP, "commonLabels": {"x": "y" * 2000}}
+        assert (await c.post(url, json=big, headers=hook)).status_code == 413
+        assert sent == []  # none of those reached the Hub
+        r = await c.post(url, json=GROUP, headers=hook)
+        assert (r.status_code, r.json()) == (202, {"status": "accepted"})
+        assert sent == [("hook", AlertGroup.model_validate(GROUP).model_dump(mode="json"))]
+        assert (await c.get(url)).status_code == 405
+    app = relay.webhook(relay.Uplink())  # not connected
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://r") as c:
+        assert (await c.post(url, json=GROUP, headers=hook)).status_code == 503
+
+
+@pytest.mark.anyio
+async def test_a_relays_alert_is_its_own_contracts_with_that_contracts_webhook_token(
+    settings: Settings, database_url: str
+) -> None:
+    import httpx
+
+    hooks = {"acme": "h" * 40, "bank": "i" * 40}
+    acme, bank = (
+        relayed(cid, token, webhook_token_sha256=contracts.token_hash(hooks[cid]))
+        for cid, token in (("acme", A_TOKEN), ("bank", B_TOKEN))
+    )
+    app = hub(settings, database_url, acme, bank)
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    base = f"127.0.0.1:{sock.getsockname()[1]}"
+    server = uvicorn.Server(uvicorn.Config(app, log_level="warning"))
+    relays: relay.Relays = app.state.relays
+    uplink = relay.Uplink()
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(lambda: server.serve(sockets=[sock]))
+        await until(lambda: server.started)
+        tg.start_soon(relay.dial, f"ws://{base}/relay", A_TOKEN, tools_server(), uplink)
+        await until(lambda: relays.get("acme", "edge") is not None)
+        assert await uplink.forward(hooks["bank"], GROUP) == (401, {"detail": "invalid token"})
+        assert await uplink.forward(A_TOKEN, GROUP) == (401, {"detail": "invalid token"})
+        status, body = await uplink.forward(hooks["acme"], GROUP)
+        assert (status, body["status"]) == (202, "accepted")
+        again = await uplink.forward(hooks["acme"], GROUP)  # Alertmanager's repeat
+        assert again == (202, {"status": "duplicate", "investigation": body["investigation"]})
+        bad = await uplink.forward(hooks["acme"], {"groupKey": 1})
+        assert bad == (422, {"detail": "not an Alertmanager alert group"})
+        async with httpx.AsyncClient(base_url=f"http://{base}") as c:
+            r = await c.get("/investigations", headers={"Authorization": "Bearer approver-token"})
+        stored = [(i["id"], i["contract_id"]) for i in r.json()]
+        assert stored == [(body["investigation"], "acme")]  # bank has none
+        server.should_exit = True
+        tg.cancel_scope.cancel()

@@ -35,7 +35,7 @@ from fastmcp import Client
 from langchain_core.language_models import BaseChatModel
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from aiops_agent import (
     agent,
@@ -1282,6 +1282,24 @@ def create_app(
     ) -> dict[str, Any]:
         if not contracts.token_matches(by_id.get(contract_id), creds.credentials):
             raise HTTPException(401, "invalid token")  # also for an unknown Contract
+        return await accept(contract_id, group)
+
+    async def relay_alert(named: relay.Who, params: Any) -> tuple[int, Any]:
+        """An alert group a Relay forwards (slice 3.4), with the token its Alertmanager
+        sent: the Contract is the Relay's own, by its token, never anything it sends,
+        and the alert's token is checked against it as the Contract's own route does."""
+        contract_id = named[0]
+        token = params.get("token") if isinstance(params, dict) else None
+        if not isinstance(token, str) or not contracts.token_matches(by_id[contract_id], token):
+            return 401, {"detail": "invalid token"}
+        try:
+            group = AlertGroup.model_validate(params.get("group"))
+        except ValidationError:
+            return 422, {"detail": "not an Alertmanager alert group"}
+        return 202, await accept(contract_id, group)
+
+    async def accept(contract_id: str, group: AlertGroup) -> dict[str, Any]:
+        """An alert group for the Contract, from its route or its Relay."""
         if not group.firing:
             # Still investigating ones go stale when they pause (see run()).
             same_group = await store().mark_group_resolved(contract_id, group.groupKey)
@@ -1567,7 +1585,7 @@ def create_app(
                 return None
             return m.get("text")  # None for a binary frame: that ends the connection
 
-        await relays.hold(named, ws.send_text, receive, ws.close)
+        await relays.hold(named, ws.send_text, receive, ws.close, relay_alert)
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:

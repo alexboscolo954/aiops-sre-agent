@@ -9,22 +9,30 @@ socket, the Relay's websockets connection and an in-memory pair all fit.
 
 Everything a Relay sends is client-controlled data: the Hub keeps its own allowlist,
 cluster and namespace checks, redaction and caps on it (ADR 0002).
+
+Alerts (slice 3.4) ride the same socket beside MCP: the Relay takes its cluster's
+Alertmanager webhook and sends each alert group as one JSON-RPC request (`ALERT`); the
+Hub answers it once the alert is taken. The bridge hands those to `intercept`, so the
+MCP session never sees them.
 """
 
 import asyncio
+import contextlib
 import hashlib
 import hmac
 import importlib.metadata
 import json
 import logging
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
+from functools import partial
 from typing import Any
 
 import anyio
 import httpx
+import uvicorn
 import websockets
 from fastmcp import Client, FastMCP
 from fastmcp.client.transports.base import ClientTransport
@@ -35,11 +43,16 @@ from fastmcp.tools.base import ToolResult
 from mcp import ClientSession, types
 from mcp.shared.message import SessionMessage
 from mcp.types import TextContent, ToolAnnotations
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from starlette.applications import Starlette
+from starlette.requests import Request
+from starlette.responses import JSONResponse
+from starlette.routing import Route
 
 from aiops_agent import contracts, usage
 from aiops_agent.contracts import Contract
+from aiops_agent.models import AlertGroup
 from aiops_agent.servers import kubernetes, prometheus
 from aiops_agent.sizing import utc
 
@@ -48,6 +61,8 @@ log = logging.getLogger("aiops.relay")
 Send = Callable[[str], Awaitable[None]]
 Receive = Callable[[], Awaitable[str | None]]  # None: the socket closed
 MAX_FRAME = 4 * 1024 * 1024  # characters: tool output is capped well below this
+ALERT = "aiops/alert"  # a Relay's alert group, beside MCP on its socket (slice 3.4)
+Intercept = Callable[[Any], bool]  # True: a message beside MCP, taken; the session never sees it
 
 
 class FrameTooLarge(ValueError):
@@ -55,7 +70,9 @@ class FrameTooLarge(ValueError):
 
 
 @asynccontextmanager
-async def bridge(send: Send, receive: Receive) -> AsyncIterator[tuple[Any, Any]]:
+async def bridge(
+    send: Send, receive: Receive, intercept: Intercept | None = None
+) -> AsyncIterator[tuple[Any, Any]]:
     """MCP's (read, write) streams over a socket. A frame that isn't one JSON-RPC
     message, or is too large, reaches the session as an Exception, as mcp's stdio
     transport does with a bad line: it never ends the connection by itself."""
@@ -73,6 +90,8 @@ async def bridge(send: Send, receive: Receive) -> AsyncIterator[tuple[Any, Any]]
                 except ValueError as e:
                     await read_writer.send(e)
                     continue
+                if intercept is not None and intercept(message):
+                    continue
                 await read_writer.send(SessionMessage(message))
 
     async def outbound() -> None:
@@ -89,26 +108,42 @@ async def bridge(send: Send, receive: Receive) -> AsyncIterator[tuple[Any, Any]]
             tg.cancel_scope.cancel()
 
 
-async def serve(server: FastMCP, send: Send, receive: Receive) -> None:
+def locked(send: Send) -> Send:
+    """One frame at a time: MCP's and an alert's share the socket."""
+    lock = anyio.Lock()
+
+    async def one(frame: str) -> None:
+        async with lock:
+            await send(frame)
+
+    return one
+
+
+async def serve(
+    server: FastMCP, send: Send, receive: Receive, intercept: Intercept | None = None
+) -> None:
     """The Relay's side: run `server` over the socket until it closes.
     ponytail: fastmcp 4.1 has no public way to serve over given streams; this is what its
     own in-memory transport does (exact pins; the bridge tests break on a bump)."""
     lowlevel = _lowlevel_of(server)
-    async with _enter_server_lifespan(server=server), bridge(send, receive) as (read, write):
+    async with (
+        _enter_server_lifespan(server=server),
+        bridge(send, receive, intercept) as (read, write),
+    ):
         await lowlevel.run(read, write, lowlevel.create_initialization_options())
 
 
 class RelayTransport(ClientTransport):
     """The Hub's side: a fastmcp Client over a Relay's socket."""
 
-    def __init__(self, send: Send, receive: Receive) -> None:
-        self.send, self.receive = send, receive
+    def __init__(self, send: Send, receive: Receive, intercept: Intercept | None = None) -> None:
+        self.send, self.receive, self.intercept = send, receive, intercept
 
     @asynccontextmanager
     async def connect_session(self, **session_kwargs: Any) -> AsyncIterator[ClientSession]:
         session_kwargs.pop("transport_options", None)
         async with (
-            bridge(self.send, self.receive) as (read, write),
+            bridge(self.send, self.receive, self.intercept) as (read, write),
             ClientSession(read, write, **session_kwargs) as session,
         ):
             yield session
@@ -117,6 +152,9 @@ class RelayTransport(ClientTransport):
 # --- the Hub's side: who a Relay is, and its live connection ------------------------------
 
 Who = tuple[str, str]  # (contract id, cluster)
+# Takes one alert group a Relay forwards (its Alertmanager's token and the group, as the
+# Relay sent them: unchecked): the HTTP status and body the Relay answers Alertmanager with.
+Alerts = Callable[[Who, Any], Awaitable[tuple[int, Any]]]
 
 
 def tokens(by_id: dict[str, Contract]) -> list[tuple[bytes, Who]]:
@@ -185,10 +223,17 @@ class Relays:
         return False, self.started, f"not connected since the Hub started at {utc(self.started)}"
 
     async def hold(
-        self, named: Who, send: Send, receive: Receive, close: Callable[[], Awaitable[None]]
+        self,
+        named: Who,
+        send: Send,
+        receive: Receive,
+        close: Callable[[], Awaitable[None]],
+        alerts: Alerts | None = None,
     ) -> None:
-        """Serve one Relay's connection until it closes; its MCP session opens first."""
+        """Serve one Relay's connection until it closes; its MCP session opens first.
+        `alerts` takes each alert group it forwards: its answer goes back to the Relay."""
         closed = anyio.Event()
+        send = locked(send)
 
         async def until_closed() -> str | None:
             frame = await receive()
@@ -196,22 +241,48 @@ class Relays:
                 closed.set()
             return frame
 
-        async with Client(RelayTransport(send, until_closed)) as client:
-            info = client.server_info
-            version = info.version[:40] if info and info.version else None
-            me = Live(client, close, self.clock(), asyncio.get_running_loop(), version)
-            old = self.live.get(named)
-            self.live[named] = me
-            log.info("relay %s/%s connected", *named)
-            if old is not None:
-                await old.close()
+        async def answer(m: types.JSONRPCRequest) -> None:
+            assert alerts is not None
+            reply: types.JSONRPCResponse | types.JSONRPCError
             try:
-                await closed.wait()
+                status, body = await alerts(named, m.params)
+                reply = types.JSONRPCResponse(
+                    jsonrpc="2.0", id=m.id, result={"status": status, "body": body}
+                )
+            except Exception:
+                log.exception("relay %s/%s: an alert it forwarded failed", *named)
+                failed = types.ErrorData(code=-32603, message="the Hub failed to take it")
+                reply = types.JSONRPCError(jsonrpc="2.0", id=m.id, error=failed)
+            with contextlib.suppress(Exception):  # gone: the Relay answers 503 itself
+                await send(reply.model_dump_json(by_alias=True, exclude_unset=True))
+
+        def intercept(m: Any) -> bool:
+            if not (isinstance(m, types.JSONRPCRequest) and m.method == ALERT):
+                return False
+            tg.start_soon(answer, m)  # the next frame is read meanwhile
+            return True
+
+        transport = RelayTransport(send, until_closed, intercept if alerts else None)
+        async with anyio.create_task_group() as tg:
+            try:
+                async with Client(transport) as client:
+                    info = client.server_info
+                    version = info.version[:40] if info and info.version else None
+                    me = Live(client, close, self.clock(), asyncio.get_running_loop(), version)
+                    old = self.live.get(named)
+                    self.live[named] = me
+                    log.info("relay %s/%s connected", *named)
+                    if old is not None:
+                        await old.close()
+                    try:
+                        await closed.wait()
+                    finally:
+                        if self.live.get(named) is me:
+                            del self.live[named]
+                            self.gone[named] = self.clock()
+                        log.info("relay %s/%s disconnected", *named)
             finally:
-                if self.live.get(named) is me:
-                    del self.live[named]
-                    self.gone[named] = self.clock()
-                log.info("relay %s/%s disconnected", *named)
+                tg.cancel_scope.cancel()  # an alert still being taken: its Relay has gone
 
 
 # The Hub's connected Relays: one process, one registry, so its own reads (Sizings,
@@ -334,9 +405,98 @@ class Forward(Middleware):
 # --- the Relay's side ---------------------------------------------------------------------
 
 
-async def dial(url: str, token: str, server: FastMCP) -> None:
-    """Connect to the Hub and serve `server` over the socket until it closes."""
+class Uplink:
+    """The Relay's alerts to the Hub (slice 3.4), over whichever connection is live. It
+    keeps no queue: an alert it can't hand over, or that the Hub doesn't answer in
+    `ALERT_SECONDS`, is a 503 and Alertmanager sends it again."""
+
+    def __init__(self) -> None:
+        self.send: Send | None = None
+        self.waiting: dict[str, asyncio.Future[Any]] = {}
+        self.sent = 0
+
+    @contextmanager
+    def over(self, send: Send) -> Iterator[None]:
+        """Alerts go through `send` while the connection holds."""
+        self.send = send
+        try:
+            yield
+        finally:
+            self.send = None
+            for answer in self.waiting.values():
+                if not answer.done():
+                    answer.set_exception(ConnectionError("the connection closed"))
+
+    def answered(self, m: Any) -> bool:
+        """The Hub's answer to an alert: taken, never the MCP session's."""
+        if not isinstance(m, types.JSONRPCResponse | types.JSONRPCError):
+            return False
+        if not (isinstance(m.id, str) and m.id.startswith("alert-")):
+            return False
+        if (answer := self.waiting.get(m.id)) is not None and not answer.done():
+            answer.set_result(m)
+        return True
+
+    async def forward(self, token: str, group: dict[str, Any]) -> tuple[int, Any]:
+        if self.send is None:
+            return 503, {"detail": "the Relay has no connection to the Hub"}
+        self.sent += 1
+        key = f"alert-{self.sent}"
+        answer = self.waiting[key] = asyncio.get_running_loop().create_future()
+        request = types.JSONRPCRequest(
+            jsonrpc="2.0", id=key, method=ALERT, params={"token": token, "group": group}
+        )
+        try:
+            await self.send(request.model_dump_json(by_alias=True, exclude_unset=True))
+            m = await asyncio.wait_for(answer, ALERT_SECONDS)
+        except TimeoutError:
+            return 503, {"detail": f"the Hub didn't answer in {ALERT_SECONDS} s"}
+        except Exception as e:  # the connection went under it
+            return 503, {"detail": f"no connection to the Hub: {type(e).__name__}"}
+        finally:
+            del self.waiting[key]
+        if isinstance(m, types.JSONRPCError):
+            return 502, {"detail": "the Hub failed to take it"}
+        result = m.result if isinstance(m.result, dict) else {}
+        status = result.get("status")
+        if not isinstance(status, int) or not 200 <= status < 600:
+            return 502, {"detail": "the Hub answered something else"}
+        return status, result.get("body")
+
+
+ALERT_SECONDS = 10  # the Hub only stores it before answering
+MAX_ALERT = 1024 * 1024  # bytes: an alert group is far smaller; a frame holds 4 MiB
+
+
+def webhook(uplink: Uplink) -> Starlette:
+    """The Relay's Alertmanager receiver, `POST /alertmanager` inside the client's
+    network: the alert group goes to the Hub with the bearer token Alertmanager sent,
+    which the Hub checks against the Contract's own webhook token."""
+
+    async def alertmanager(request: Request) -> JSONResponse:
+        scheme, _, token = request.headers.get("authorization", "").partition(" ")
+        if scheme.lower() != "bearer" or not token:
+            return JSONResponse({"detail": "invalid token"}, 401)
+        body = b""
+        async for chunk in request.stream():
+            body += chunk
+            if len(body) > MAX_ALERT:
+                return JSONResponse({"detail": "too large"}, 413)
+        try:
+            group = AlertGroup.model_validate_json(body)
+        except ValidationError:
+            return JSONResponse({"detail": "not an Alertmanager alert group"}, 422)
+        status, answer = await uplink.forward(token, group.model_dump(mode="json"))
+        return JSONResponse(answer, status)
+
+    return Starlette(routes=[Route("/alertmanager", alertmanager, methods=["POST"])])
+
+
+async def dial(url: str, token: str, server: FastMCP, uplink: Uplink | None = None) -> None:
+    """Connect to the Hub and serve `server` over the socket until it closes; `uplink`'s
+    alerts go over it meanwhile."""
     headers = {"Authorization": f"Bearer {token}"}
+    uplink = uplink or Uplink()
     async with websockets.connect(url, additional_headers=headers, max_size=MAX_FRAME) as ws:
 
         async def receive() -> str | None:
@@ -346,7 +506,9 @@ async def dial(url: str, token: str, server: FastMCP) -> None:
                 return None
             return frame if isinstance(frame, str) else None  # a binary frame ends it
 
-        await serve(server, ws.send, receive)
+        send = locked(ws.send)
+        with uplink.over(send):
+            await serve(server, send, receive, uplink.answered)
 
 
 class RelaySettings(BaseSettings):
@@ -363,6 +525,7 @@ class RelaySettings(BaseSettings):
     prometheus_token: SecretStr | None = None
     writes: bool = False  # the client's own switch: no write tool exists without it
     tool_output_limit: int = 8000
+    port: int = 8080  # its Alertmanager receiver
 
 
 def relay_server(
@@ -434,3 +597,12 @@ async def run(
         log.warning("relay %s: %s; dialing again in %.0f s", s.cluster, why, wait)
         await sleep(wait)
         wait = min(wait * 2, 60.0)
+
+
+async def main(s: RelaySettings) -> None:
+    """`aiops relay`: the receiver for its cluster's Alertmanager, and the connection."""
+    uplink = Uplink()
+    config = uvicorn.Config(webhook(uplink), host="0.0.0.0", port=s.port, log_level="warning")  # noqa: S104  # the Service in front of it is in-cluster
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(uvicorn.Server(config).serve)
+        await run(s, relay_server(s), partial(dial, uplink=uplink))
