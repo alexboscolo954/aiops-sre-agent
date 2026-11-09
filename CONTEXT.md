@@ -30,7 +30,7 @@ The Operator's own MCP endpoint on the Hub, for an MCP client such as Claude Cod
 _Avoid_: Operator API, admin MCP
 
 **Agenda**:
-What the Operator should look at now in one Contract, ranked without a model in a fixed order of urgency: the Kill switch while it is on, pauses waiting for an Approval decision (soonest deadline first), failing Checks, data the Hub can't read (oldest first), Bills outside their tolerance (biggest gap first), running Investigations, and the three Workloads whose waste costs most. Across Contracts it gives only the counts.
+What the Operator should look at now in one Contract, ranked without a model in a fixed order of urgency: the Kill switch while it is on, pauses waiting for an Approval decision (soonest deadline first), failing Checks, data the Hub can't read (oldest first; a Relay that is offline counts), Bills outside their tolerance (biggest gap first), running Investigations, and the three Workloads whose waste costs most. Across Contracts it gives only the counts.
 _Avoid_: Inbox, to-do, dashboard
 
 **Proposed change**:

@@ -351,7 +351,7 @@ async def report(
     c: Contract,
     now: float,
     days: int = 7,
-    prom: Callable[[usage.Target], usage.Prom] = usage.Prom,
+    prom: Callable[[usage.Target], usage.Prom] = usage.reader,
 ) -> list[dict[str, Any]]:
     """Per billed cluster: the period, the bill, the estimate at the Hub's prices, their
     gap and whether it is within TOLERANCE, or `note` saying why there is none. Money

@@ -221,7 +221,7 @@ def create_app(
             models[c.id] = agent.build_model(agent.for_contract(settings, c))
         return models[c.id]
 
-    relays = relay.Relays()  # the connected Relays, by Contract and cluster
+    relays = relay.HUB  # the connected Relays, by Contract and cluster
     if mcp_factory is None:
         mcp_factory = lambda c: agent.build_mcp(c, settings, store=store(), relays=relays)  # noqa: E731
 
@@ -1509,12 +1509,19 @@ def create_app(
             ms = round(1000 * (time.monotonic() - start))
             return {"name": name, "ok": not detail, "ms": ms, "detail": redact_capped(detail, 300)}
 
+        # Each Relay: connected since when and its version, or offline since when (3.3b).
+        shown = [(cl.name, relays.state(c.id, cl.name)) for cl in c.clusters if cl.via == "relay"]
+        states = [
+            {"name": f"relay {name}", "ok": ok, "ms": 0, "detail": redact_capped(text, 300)}
+            for name, (ok, _, text) in shown
+        ]
         try:
             async with Client(mcp_factory(c).mcp) as client:
-                return list(await asyncio.gather(*(check(client, *p) for p in agent.probes(c))))
+                probed = await asyncio.gather(*(check(client, *p) for p in agent.probes(c)))
+                return [*states, *probed]
         except Exception as e:  # the tools couldn't even be built (a bad kubeconfig)
             detail = redact_capped(f"{type(e).__name__}: {e}", 300)
-            return [{"name": "tools", "ok": False, "ms": 0, "detail": detail}]
+            return [*states, {"name": "tools", "ok": False, "ms": 0, "detail": detail}]
 
     async def console_file_jira(t: Investigation, login: str) -> tuple[str | None, str]:
         return await file_jira(t, f"console:{login}", login)

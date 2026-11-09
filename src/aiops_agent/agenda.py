@@ -1,9 +1,9 @@
 """The Agenda (slice 11.4): what the Operator should look at now in one Contract, from
 what the Hub already stores, ranked without a model in a fixed order of urgency: the
 Kill switch while it is on, pauses waiting for an Approval decision (they go Stale),
-failing Checks, data the Hub can't read, Bills outside their tolerance, running
-Investigations, and the Workloads whose waste costs most. The Hub MCP server's `now`
-and the console app's Workloads page show it.
+failing Checks, data the Hub can't read (an offline Relay too), Bills outside their
+tolerance, running Investigations, and the Workloads whose waste costs most. The Hub
+MCP server's `now` and the console app's Workloads page show it.
 """
 
 from collections import Counter
@@ -12,7 +12,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from aiops_agent import billing, usage
+from aiops_agent import billing, relay, usage
 from aiops_agent.contracts import Contract
 from aiops_agent.sizing import show
 from aiops_agent.store import Store
@@ -82,6 +82,11 @@ async def of(st: Store, c: Contract, now: float) -> Agenda:
         for k, s in w.clusters.items()
         if s.error
     ]
+    for cl in (cl for cl in c.clusters if cl.via == "relay"):  # slice 3.3b
+        ok, since, text = relay.HUB.state(c.id, cl.name)
+        if not ok:
+            title = f"Relay {text}: the Hub can't read cluster {cl.name}"
+            stale.append(Item(kind="stale", title=title, at=since, cluster=cl.name))
     names = {t.cluster for t in usage.targets(c)}
     _, tries = await st.bills(c.id)
     stale += [

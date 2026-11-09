@@ -2,6 +2,7 @@
 the token binding it to one Contract's cluster, and a Relay's cluster never reached
 Direct."""
 
+import importlib.metadata
 import json
 import logging
 import socket
@@ -85,18 +86,22 @@ def test_a_relay_cluster_names_its_token_and_none_of_the_hubs_credentials() -> N
     assert ok.via == "relay" and ok.context is None
 
 
-def test_the_hub_never_reaches_a_relay_cluster_direct() -> None:
+def test_the_hub_never_reaches_a_relay_cluster_direct_nor_its_prometheus() -> None:
     c = relayed("acme", A_TOKEN, integrations=[
         {"name": "kubernetes"}, {"name": "prometheus", "url": "http://shared:9090"},
     ])  # fmt: skip
     assert [cl.name for cl in c.direct_clusters] == ["test"]
     assert "r" in c.secret_refs()  # checked like every secret
-    assert [t.cluster for t in usage.targets(c)] == ["test"]  # not even the shared URL
+    edge_target = next(t for t in usage.targets(c) if t.cluster == "edge")
+    assert (edge_target.url, edge_target.token) == ("", None)  # not even the shared URL
+    assert edge_target.relay == ("acme", "edge")  # read through its Relay (3.3b)
     edge = next(cl for cl in c.clusters if cl.name == "edge")
     with pytest.raises(RuntimeError, match="via its Relay"):
         kubernetes.api_client(edge, c)  # it has no context: the default would be the Hub's
     probes = [label for label, _, _ in __import__("aiops_agent.agent").agent.probes(c)]
-    assert "kubernetes test" in probes and "kubernetes edge" not in probes
+    assert {"kubernetes test", "kubernetes edge", "prometheus edge"} <= set(probes)  # 3.3b
+    without = relayed("acme", A_TOKEN)  # no Prometheus: no Sizings, as no PromQL tools
+    assert usage.targets(without) == []
 
 
 @pytest.mark.anyio
@@ -698,3 +703,182 @@ async def test_a_relays_recent_changes_keep_to_the_contracts_namespaces(
     want = [rows[0], rows[3]]
     assert json.loads(text(kept)) == want and kept.structured_content == {"result": want}
     assert odd.is_error and text(odd) == "cluster 'edge''s Relay sent changes that aren't a list"
+
+
+# --- the Hub's own reads through the Relay, and its state (slice 3.3b) ----------------------
+
+
+def promql_relay(asked: list[str], fail: bool = False) -> FastMCP:
+    """A Relay whose Prometheus answers one series to any query (or a 500)."""
+    import httpx
+
+    def prometheus(request: httpx.Request) -> httpx.Response:
+        asked.append(request.url.params["query"])
+        if fail:
+            return httpx.Response(500, json={"status": "error", "error": "down"})
+        if request.url.path.endswith("query_range"):
+            series = [{"metric": {"namespace": "shop"}, "values": [[0, "1"]]}]
+            data = {"resultType": "matrix", "result": series}
+        else:
+            series = [{"metric": {"namespace": "shop"}, "value": [0, "1"]}]
+            data = {"resultType": "vector", "result": series}
+        return httpx.Response(200, json={"status": "success", "data": data})
+
+    http = httpx.Client(base_url="http://prometheus", transport=httpx.MockTransport(prometheus))
+    return relay.relay_server(settings_of(), {"edge": (None, None)}, http)
+
+
+@pytest.mark.anyio
+async def test_the_hubs_own_reads_go_through_its_relay_from_a_worker_thread() -> None:
+    relays, asked = relay.Relays(), list[str]()
+    mine, theirs = relay.Reader(relays, ("acme", "edge")), relay.Reader(relays, ("bank", "edge"))
+    with pytest.raises(usage.UsageError, match="Relay offline: cluster 'edge' has no Relay"):
+        await anyio.to_thread.run_sync(mine.instant, "up", 1.0)
+    async with anyio.create_task_group() as tg:
+        close = await connected(relays, ("acme", "edge"), promql_relay(asked), tg)
+        rows = await anyio.to_thread.run_sync(mine.instant, "up", 1.0)
+        ranged = await anyio.to_thread.run_sync(mine.range, "up", 0.0, 60.0, 60)
+        with pytest.raises(usage.UsageError, match="has no Relay connected"):
+            await anyio.to_thread.run_sync(theirs.instant, "up", 1.0)  # A's Relay never B's
+        await close()
+        await until(lambda: relays.get("acme", "edge") is None)
+        close = await connected(relays, ("acme", "edge"), promql_relay(asked, fail=True), tg)
+        with pytest.raises(usage.UsageError, match=r"through cluster 'edge''s Relay: .*500"):
+            await anyio.to_thread.run_sync(mine.instant, "up", 1.0)
+        await close()
+        await until(lambda: relays.get("acme", "edge") is None)
+        await connected(relays, ("acme", "edge"), FastMCP("bare"), tg)
+        with pytest.raises(usage.UsageError, match=r"through cluster 'edge''s Relay: .*hub_promql"):
+            await anyio.to_thread.run_sync(mine.instant, "up", 1.0)  # none on this Relay
+        tg.cancel_scope.cancel()
+    assert rows == [{"metric": {"namespace": "shop"}, "value": [0, "1"]}]
+    assert ranged == [{"metric": {"namespace": "shop"}, "values": [[0, "1"]]}]
+    assert asked == ["up", "up", "up"]
+
+
+@pytest.mark.anyio
+async def test_a_relay_that_answers_no_series_is_an_error() -> None:
+    relays = relay.Relays()
+    odd = FastMCP("odd")
+
+    @odd.tool
+    def hub_promql_instant(promql: str, at: float) -> list[Any]:
+        return ["not a series"]
+
+    async with anyio.create_task_group() as tg:
+        await connected(relays, ("acme", "edge"), odd, tg)
+        with pytest.raises(usage.UsageError, match="something else than series"):
+            reader = relay.Reader(relays, ("acme", "edge"))
+            await anyio.to_thread.run_sync(reader.instant, "up", 1.0)
+        tg.cancel_scope.cancel()
+
+
+def relay_only(contract_id: str, token: str) -> contracts.Contract:
+    """One cluster, `edge`, through its Relay, with Prometheus."""
+    data = {
+        "id": contract_id,
+        "name": contract_id,
+        "clusters": [
+            {"name": "edge", "namespaces": ["shop"], "via": "relay", "relay_token_secret": "r"}
+        ],
+        "integrations": [{"name": "kubernetes"}, {"name": "prometheus", "url": "http://prom"}],
+    }
+    return contracts.build(data, secrets={"r": SecretStr(token)})
+
+
+@pytest.mark.anyio
+async def test_hourly_usage_reads_a_relay_cluster_through_the_hubs_relays() -> None:
+    asked: list[str] = []
+    c = relay_only("acme", A_TOKEN)
+    offline = await anyio.to_thread.run_sync(usage.collect, c, [3600], 7200.0)
+    async with anyio.create_task_group() as tg:
+        await connected(relay.HUB, ("acme", "edge"), promql_relay(asked), tg)
+        read = await anyio.to_thread.run_sync(usage.collect, c, [3600], 7200.0)
+        tg.cancel_scope.cancel()
+    await until(lambda: relay.HUB.get("acme", "edge") is None)
+    assert offline.clusters["edge"].startswith("Relay offline: cluster 'edge'")  # type: ignore[union-attr]
+    assert read.clusters == {"edge": None} and asked  # read, through the Relay
+    probe = 'count(kube_pod_owner{exported_namespace!=""})'  # how ksm is scraped, as Direct
+    assert all('namespace=~"shop"' in q for q in asked if q != probe)  # its namespaces only
+
+
+@pytest.mark.anyio
+async def test_a_relays_state_says_since_when_and_its_version() -> None:
+    times = iter([1700000000.0, 1700000600.0, 1700003600.0])
+    relays = relay.Relays(clock=lambda: next(times))
+    never = relays.state("acme", "edge")
+    async with anyio.create_task_group() as tg:
+        close = await connected(relays, ("acme", "edge"), promql_relay([]), tg)
+        on = relays.state("acme", "edge")
+        await close()
+        await until(lambda: relays.get("acme", "edge") is None)
+        tg.cancel_scope.cancel()
+    off = relays.state("acme", "edge")
+    version = importlib.metadata.version("aiops-sre-agent")
+    assert never == (
+        False,
+        1700000000.0,
+        "not connected since the Hub started at 2023-11-14 22:13 UTC",
+    )
+    assert on == (True, 1700000600.0, f"connected since 2023-11-14 22:23 UTC, version {version}")
+    assert off == (False, 1700003600.0, "offline since 2023-11-14 23:13 UTC")
+    assert relays.state("bank", "edge")[0] is False  # another Contract's cluster of that name
+
+
+def test_health_shows_each_relay_and_probes_through_it(
+    settings: Settings, database_url: str
+) -> None:
+    from fastapi.testclient import TestClient
+
+    from aiops_agent import agent
+    from tests.test_console import OPERATOR, VIEW
+
+    settings.database_url = SecretStr(database_url)
+    settings.console_operators = {OPERATOR}
+    settings.approver_token = SecretStr("approver-token")
+    by_id = {c.id: c for c in (relayed("acme", A_TOKEN), relayed("bank", B_TOKEN))}
+
+    def mcp(c: contracts.Contract) -> agent.Toolbox:
+        return agent.build_mcp(c, settings, k8s_apis=local(), relays=relay.HUB)
+
+    async def close() -> None:
+        pass
+
+    up = relay.Live(None, close, 1700000600.0, None, "0.31.0")  # type: ignore[arg-type]
+    relay.HUB.live[("acme", "edge")] = up
+    try:
+        with TestClient(create_app(settings, scripted(), mcp, by_id)) as c:
+            acme = c.get("/api/v1/contracts/acme/health", headers=VIEW).json()["integrations"]
+            bank = c.get("/api/v1/contracts/bank/health", headers=VIEW).json()["integrations"]
+    finally:
+        del relay.HUB.live[("acme", "edge")]
+    rows = {p["name"]: p for p in acme}
+    assert rows["relay edge"] == {
+        "name": "relay edge",
+        "ok": True,
+        "ms": 0,
+        "detail": "connected since 2023-11-14 22:23 UTC, version 0.31.0",
+    }
+    assert rows["kubernetes test"]["ok"] is True
+    theirs = {p["name"]: p for p in bank}
+    assert theirs["relay edge"]["ok"] is False  # A's Relay is never B's
+    assert theirs["relay edge"]["detail"].startswith("not connected since the Hub started at")
+    assert theirs["kubernetes edge"]["detail"].startswith("Relay offline: cluster 'edge' has no")
+
+
+def test_the_relays_gitops_rbac_is_opt_in_and_reads_gitops_objects_only() -> None:
+    import yaml
+
+    from tests.test_shared import ROOT
+
+    text = (ROOT / "deploy/relay/rbac-gitops.yaml").read_text()
+    docs = list(yaml.safe_load_all(text))
+    subjects = [s for d in docs if d["kind"] == "RoleBinding" for s in d["subjects"]]
+    assert subjects and all(
+        (s["name"], s["namespace"]) == ("aiops-relay", "aiops-relay") for s in subjects
+    )
+    resources = {
+        r for d in docs if d["kind"] == "Role" for rule in d["rules"] for r in rule["resources"]
+    }
+    assert resources == {"applications", "kustomizations", "helmreleases"}
+    assert "rbac-gitops" not in (ROOT / "deploy/relay/kustomization.yaml").read_text()

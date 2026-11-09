@@ -55,15 +55,23 @@ class Target:
     # kube-state-metrics scraped without honor_labels puts the pod's namespace in
     # exported_namespace (its own namespace wins `namespace`); check() finds out.
     ksm_namespace: str = "namespace"
+    relay: tuple[str, str] | None = None  # (contract, cluster): read through its Relay
 
 
 def targets(contract: Contract) -> list[Target]:
     """A Target per cluster with a Prometheus: its own URL, else the Contract's
-    prometheus integration's. A cluster with neither has no Sizings, nor one reached
-    through a Relay: the Hub never reads it Direct (slice 3.1)."""
+    prometheus integration's. A cluster with neither has no Sizings. A Relay's cluster
+    is read through its Relay (slice 3.3b), never Direct: no URL, only when the Contract
+    has Prometheus at all, as its tools are."""
     shared = next((i for i in contract.integrations if isinstance(i, Prometheus)), None)
     out = []
-    for c in contract.direct_clusters:
+    for c in contract.clusters:
+        if c.via == "relay":
+            if shared:
+                where = (contract.id, c.name)
+                labels, spaces = dict(c.prometheus_labels), list(c.namespaces)
+                out.append(Target(c.name, "", None, labels, spaces, relay=where))
+            continue
         url, secret = (
             (c.prometheus_url, c.prometheus_token_secret)
             if c.prometheus_url
@@ -125,6 +133,15 @@ class Prom:
 
 class UsageError(Exception):
     pass
+
+
+def reader(t: Target) -> Prom:
+    """How the Hub reads a Target: Prometheus' API, or its Relay's (slice 3.3b)."""
+    if t.relay is None:
+        return Prom(t)
+    from aiops_agent import relay  # it imports this module
+
+    return relay.Reader(relay.HUB, t.relay)
 
 
 def step_for(window_s: int) -> int:
@@ -523,13 +540,15 @@ def collect(c: Contract, windows: list[int], end: float | None = None) -> Collec
                 k.CoreV1Api(api), k.AppsV1Api(api), k.BatchV1Api(api), t.namespaces
             )
 
-        prom = Prom(t)
+        prom = reader(t)
+        # A Relay's cluster has no Kubernetes API here: its Workloads come from metrics.
+        fallback = from_api if t.relay is None else None
         try:
             t, missing = check(prom, t, end)
             # ponytail: each window queried in full (a 7d and a 14d policy read the 14d
             # range twice), so a policy's OOM kills, throttling and step are its own
             by_window = {
-                w: usage(prom, t, w, end, fallback=from_api, labels=c.allocation.labels)
+                w: usage(prom, t, w, end, fallback=fallback, labels=c.allocation.labels)
                 for w in windows
             }
         except UsageError as e:

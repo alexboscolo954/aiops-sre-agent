@@ -378,7 +378,7 @@ def probes(contract: Contract) -> list[tuple[str, str | None, dict[str, Any]]]:
     checks: list[tuple[str, str | None, dict[str, Any]]] = []
     for i in contract.integrations:
         if isinstance(i, Kubernetes):
-            for c in contract.direct_clusters:
+            for c in contract.clusters:  # a Relay's: through it (slice 3.3b)
                 where = {"cluster": c.name, "namespace": sorted(c.namespaces)[0]}
                 checks.append((f"kubernetes {c.name}", "kubernetes_list_deployments", where))
         elif isinstance(i, Prometheus) and not contract.clusters:
@@ -429,7 +429,7 @@ def integration_server(
         return kubernetes.build_server(contract, integration, limit, k8s_apis), kubernetes.ACCESS
     if isinstance(integration, Prometheus):
         if contract.clusters:  # each cluster's own Prometheus, none on a shared store
-            found = usage.targets(contract)
+            found = [t for t in usage.targets(contract) if t.relay is None]
             off = {t.cluster for t in found if t.labels} | contract.shared_stores
             stores = {t.cluster: (t.url, t.token) for t in found if t.cluster not in off}
             shared = [t.cluster for t in found if t.cluster in off]

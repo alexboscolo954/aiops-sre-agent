@@ -14,6 +14,7 @@ cluster and namespace checks, redaction and caps on it (ADR 0002).
 import asyncio
 import hashlib
 import hmac
+import importlib.metadata
 import json
 import logging
 import time
@@ -40,6 +41,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from aiops_agent import contracts, usage
 from aiops_agent.contracts import Contract
 from aiops_agent.servers import kubernetes, prometheus
+from aiops_agent.sizing import utc
 
 log = logging.getLogger("aiops.relay")
 
@@ -155,6 +157,8 @@ class Live:
     client: Client[Any]
     close: Callable[[], Awaitable[None]]
     since: float
+    loop: asyncio.AbstractEventLoop  # where its session runs: the Hub's reads call into it
+    version: str | None = None  # as the Relay says: shown, never trusted
 
 
 class Relays:
@@ -162,12 +166,23 @@ class Relays:
     here, never anything the Relay sends. A new connection with the same token
     replaces the old one (a Relay that restarted before the Hub saw it go)."""
 
-    def __init__(self) -> None:
+    def __init__(self, clock: Callable[[], float] = time.time) -> None:
         self.live: dict[Who, Live] = {}
+        self.clock, self.started = clock, clock()
+        self.gone: dict[Who, float] = {}  # when each last went
 
     def get(self, contract_id: str, cluster: str) -> Client[Any] | None:
         found = self.live.get((contract_id, cluster))
         return found.client if found else None
+
+    def state(self, contract_id: str, cluster: str) -> tuple[bool, float, str]:
+        """Connected or not, since when, and that in words (Health, the Agenda)."""
+        if live := self.live.get((contract_id, cluster)):
+            version = f", version {live.version}" if live.version else ""
+            return True, live.since, f"connected since {utc(live.since)}{version}"
+        if gone := self.gone.get((contract_id, cluster)):
+            return False, gone, f"offline since {utc(gone)}"
+        return False, self.started, f"not connected since the Hub started at {utc(self.started)}"
 
     async def hold(
         self, named: Who, send: Send, receive: Receive, close: Callable[[], Awaitable[None]]
@@ -182,7 +197,9 @@ class Relays:
             return frame
 
         async with Client(RelayTransport(send, until_closed)) as client:
-            me = Live(client, close, time.time())
+            info = client.server_info
+            version = info.version[:40] if info and info.version else None
+            me = Live(client, close, self.clock(), asyncio.get_running_loop(), version)
             old = self.live.get(named)
             self.live[named] = me
             log.info("relay %s/%s connected", *named)
@@ -193,7 +210,60 @@ class Relays:
             finally:
                 if self.live.get(named) is me:
                     del self.live[named]
+                    self.gone[named] = self.clock()
                 log.info("relay %s/%s disconnected", *named)
+
+
+# The Hub's connected Relays: one process, one registry, so its own reads (Sizings,
+# bills), Health and the Agenda see the connections its /relay route holds.
+HUB = Relays()
+READ_SECONDS = 120  # one of the Hub's own reads: a 14-day range takes longer than a tool call
+
+
+class Reader(usage.Prom):
+    """The Hub's own PromQL on a Relay's cluster (slice 3.3b): the Relay's `hub_promql_*`,
+    called on the loop that holds its connection, from the worker thread usage reads run
+    in (never from that loop: it would wait on itself). Anything but rows is a
+    UsageError, as Prometheus' own errors are."""
+
+    def __init__(self, relays: Relays, who: Who) -> None:  # no HTTP client of its own
+        self.relays, self.who = relays, who
+
+    def _call(self, tool: str, args: dict[str, Any]) -> list[dict[str, Any]]:
+        cluster = self.who[1]
+        live = self.relays.live.get(self.who)
+        if live is None:
+            raise usage.UsageError(f"{OFFLINE}: cluster {cluster!r} has no Relay connected")
+        call = asyncio.wait_for(
+            live.client.call_tool(tool, args, raise_on_error=False), READ_SECONDS
+        )
+        try:
+            result = asyncio.run_coroutine_threadsafe(call, live.loop).result(READ_SECONDS + 5)
+        except TimeoutError:
+            raise usage.UsageError(
+                f"{OFFLINE}: cluster {cluster!r}'s Relay didn't answer in {READ_SECONDS} s"
+            ) from None
+        except Exception as e:  # the connection ended under the read
+            raise usage.UsageError(
+                f"{OFFLINE}: cluster {cluster!r}'s Relay: {type(e).__name__}"
+            ) from None
+        texts = " ".join(getattr(b, "text", "") for b in result.content)
+        if result.is_error:
+            raise usage.UsageError(f"through cluster {cluster!r}'s Relay: {texts[:300]}")
+        rows = (result.structured_content or {}).get("result")
+        if not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):
+            raise usage.UsageError(
+                f"cluster {cluster!r}'s Relay answered something else than series"
+            )
+        return rows
+
+    def instant(self, promql: str, at: float) -> list[dict[str, Any]]:
+        return self._call("hub_promql_instant", {"promql": promql, "at": at})
+
+    def range(self, promql: str, start: float, end: float, step: int) -> list[dict[str, Any]]:
+        return self._call(
+            "hub_promql_range", {"promql": promql, "start": start, "end": end, "step": step}
+        )
 
 
 OFFLINE = "Relay offline"
@@ -312,7 +382,9 @@ def relay_server(
     )
     k8s_integration = c.integrations[0]
     assert isinstance(k8s_integration, contracts.Kubernetes)
-    root = FastMCP(f"aiops-relay-{s.cluster}")
+    root = FastMCP(
+        f"aiops-relay-{s.cluster}", version=importlib.metadata.version("aiops-sre-agent")
+    )
     tools = kubernetes.build_server(c, k8s_integration, s.tool_output_limit, apis)
     root.mount(tools, namespace="kubernetes")
     if s.prometheus_url:

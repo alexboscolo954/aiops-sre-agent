@@ -165,3 +165,26 @@ async def test_another_contracts_items_never_appear(store: Store) -> None:
     a = await agenda.of(store, contract(), NOW)
     assert a.items == []
     assert len((await agenda.of(store, contract("bank"), NOW)).items) == 6
+
+
+@pytest.mark.anyio
+async def test_an_offline_relay_is_data_the_hub_cant_read(store: Store) -> None:
+    from aiops_agent import relay
+    from tests.test_relay import A_TOKEN, B_TOKEN, relayed
+
+    async def close() -> None:
+        pass
+
+    offline = await agenda.of(store, relayed("acme", A_TOKEN), NOW)
+    relay.HUB.live[("bank", "edge")] = relay.Live(None, close, NOW, None)  # type: ignore[arg-type]
+    try:
+        still = await agenda.of(store, relayed("acme", A_TOKEN), NOW)  # B's Relay isn't A's
+        up = await agenda.of(store, relayed("bank", B_TOKEN), NOW)
+    finally:
+        del relay.HUB.live[("bank", "edge")]
+    (item,) = offline.items
+    started = relay.HUB.started
+    assert item.kind == "stale" and item.cluster == "edge" and item.at == started
+    assert item.title.startswith("Relay not connected since the Hub started at ")
+    assert item.title.endswith(": the Hub can't read cluster edge")
+    assert still.items == offline.items and up.items == []
