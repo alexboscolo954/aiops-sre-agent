@@ -51,9 +51,11 @@ def captured(monkeypatch: pytest.MonkeyPatch, c: contracts.Contract, settings: S
     got: dict[str, Any] = {}
     real = prometheus.build_server
 
-    def spy(stores: Any, clustered: bool, http: Any = None, shared: Any = None) -> Any:
-        got.update(stores=stores, clustered=clustered, shared=shared)
-        return real(stores, clustered, http, shared)
+    def spy(
+        stores: Any, clustered: bool, http: Any = None, shared: Any = None, relayed: Any = None
+    ) -> Any:
+        got.update(stores=stores, clustered=clustered, shared=shared, relayed=relayed)
+        return real(stores, clustered, http, shared, relayed)
 
     monkeypatch.setattr(prometheus, "build_server", spy)
     k8s = next(i for i in c.integrations if i.name == "prometheus")
@@ -69,7 +71,7 @@ def test_each_cluster_gets_its_own_prometheus_and_a_shared_store_none(
         k: (url, t.get_secret_value() if t else None) for k, (url, t) in got["stores"].items()
     }
     assert stores == {"eu": ("http://eu", "eu-tok"), "us": ("http://central", "c-tok")}
-    assert got["clustered"] is True and got["shared"] == ["lab"]
+    assert got["clustered"] is True and got["shared"] == ["lab"] and got["relayed"] == []
 
 
 def test_a_contract_without_clusters_keeps_the_integrations_url_and_no_cluster_argument(

@@ -359,9 +359,11 @@ def build_server(
             core, apps, *custom = apis[c.name]
             targets[c.name] = (core, apps, set(c.namespaces))
             customs[c.name] = custom[0] if custom else None
-    names = sorted(targets)
+    # Every cluster is the model's to name; a Relay's is answered through it (slice 3.3a).
+    namespaces_of = {c.name: set(c.namespaces) for c in contract.clusters}
+    names = sorted(namespaces_of)
     # Namespaces too: a Question names no namespace, and a guessed one only errors.
-    spaces = {n: ", ".join(sorted(targets[n][2])) for n in names}
+    spaces = {n: ", ".join(sorted(namespaces_of[n])) for n in names}
     if len(names) == 1:
         # The alert's cluster label may name the cluster differently: don't send
         # the model looking for a match that isn't there.
@@ -379,9 +381,11 @@ def build_server(
 
     def allowed_in(cluster: str) -> set[str]:
         """The real check: the schema's enum is only a hint to the model."""
-        if cluster not in targets:
+        if cluster not in namespaces_of:
             raise ToolError(f"cluster {cluster!r} is not one of this Contract's clusters: {names}")
-        return set(targets[cluster][2])
+        if cluster not in targets:  # the Hub forwards these before they get here
+            raise ToolError(f"cluster {cluster!r} is reached through its Relay, not from here")
+        return namespaces_of[cluster]
 
     def target(cluster: str, namespace: str) -> tuple[Any, Any]:
         allowed = allowed_in(cluster)

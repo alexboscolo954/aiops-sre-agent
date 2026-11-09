@@ -221,8 +221,9 @@ def create_app(
             models[c.id] = agent.build_model(agent.for_contract(settings, c))
         return models[c.id]
 
+    relays = relay.Relays()  # the connected Relays, by Contract and cluster
     if mcp_factory is None:
-        mcp_factory = lambda c: agent.build_mcp(c, settings, store=store())  # noqa: E731
+        mcp_factory = lambda c: agent.build_mcp(c, settings, store=store(), relays=relays)  # noqa: E731
 
     def kube(c: contracts.Contract) -> Kubernetes:
         return next(i for i in c.integrations if isinstance(i, Kubernetes))
@@ -1541,7 +1542,6 @@ def create_app(
     if hub_mcp:  # the Hub MCP server: at /mcp/, only through tailscale serve
         app.mount("/mcp", hubmcp.guard(hub_mcp, mcp_token, settings.console_operators))
 
-    relays = relay.Relays()
     app.state.relays = relays
 
     @app.websocket("/relay")

@@ -14,6 +14,7 @@ cluster and namespace checks, redaction and caps on it (ADR 0002).
 import asyncio
 import hashlib
 import hmac
+import json
 import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -27,9 +28,12 @@ import websockets
 from fastmcp import Client, FastMCP
 from fastmcp.client.transports.base import ClientTransport
 from fastmcp.client.transports.memory import _enter_server_lifespan, _lowlevel_of
+from fastmcp.exceptions import ToolError
+from fastmcp.server.middleware import Middleware, MiddlewareContext
+from fastmcp.tools.base import ToolResult
 from mcp import ClientSession, types
 from mcp.shared.message import SessionMessage
-from mcp.types import ToolAnnotations
+from mcp.types import TextContent, ToolAnnotations
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -190,6 +194,71 @@ class Relays:
                 if self.live.get(named) is me:
                     del self.live[named]
                 log.info("relay %s/%s disconnected", *named)
+
+
+OFFLINE = "Relay offline"
+# The tools a Relay answers for its cluster: the same names on the Hub and the Relay.
+FORWARDED = frozenset(
+    {f"kubernetes_{t}" for t in kubernetes.ACCESS} | {f"prometheus_{t}" for t in prometheus.ACCESS}
+)
+
+
+class RelayOffline(RuntimeError):
+    """A Run called a Relay that isn't connected, or didn't answer in time."""
+
+
+class Forward(Middleware):
+    """The Hub's side of a call to a Relay's cluster (slice 3.3a): the Hub's own cluster
+    and namespace check, then the same call on that cluster's live Relay. The tools are
+    the Hub's own (its list, schemas, approval gate); nothing a Relay offers is ever
+    listed, so `hub_promql_*` is never the agent's. A call to another cluster, or any
+    other tool (a Sizing's takes a cluster too), passes by untouched."""
+
+    def __init__(self, contract: Contract, relays: Relays, seconds: float) -> None:
+        self.contract_id, self.relays, self.seconds = contract.id, relays, seconds
+        self.clusters = {c.name: set(c.namespaces) for c in contract.clusters if c.via == "relay"}
+        self.gitops = {c.name: set(c.gitops_namespaces) for c in contract.clusters}
+
+    def within(self, cluster: str, row: Any) -> bool:
+        """A change the Contract may see: every namespace it names is one of the
+        cluster's (a GitOps notice: one of its GitOps namespaces)."""
+        where = row.get("namespace") if isinstance(row, dict) else None
+        if not isinstance(where, str):
+            return False
+        allowed = self.gitops[cluster] if "gitops" in row else self.clusters[cluster]
+        return set(where.split(", ")) <= allowed
+
+    async def on_call_tool(self, context: MiddlewareContext[Any], call_next: Any) -> Any:
+        name, args = context.message.name, context.message.arguments or {}
+        cluster = args.get("cluster")
+        if name not in FORWARDED or not isinstance(cluster, str) or cluster not in self.clusters:
+            return await call_next(context)
+        if "namespace" in args and args["namespace"] not in self.clusters[cluster]:
+            raise ToolError(
+                f"namespace {args['namespace']!r} is not allowed in cluster {cluster!r}; "
+                f"allowed: {sorted(self.clusters[cluster])}"
+            )
+        client = self.relays.get(self.contract_id, cluster)
+        if client is None:
+            raise ToolError(f"{OFFLINE}: cluster {cluster!r} has no Relay connected")
+        try:
+            with anyio.fail_after(self.seconds):
+                result = await client.call_tool(name, args, raise_on_error=False)
+        except TimeoutError:
+            raise ToolError(
+                f"{OFFLINE}: cluster {cluster!r}'s Relay didn't answer in {self.seconds:g} s"
+            ) from None
+        except Exception as e:  # the connection ended under the call
+            raise ToolError(f"{OFFLINE}: cluster {cluster!r}'s Relay: {type(e).__name__}") from None
+        if name == "kubernetes_recent_changes" and not result.is_error:
+            # It takes no namespace: the Relay reads what it allows, which may be more
+            # than the Contract does, so the Hub keeps only the Contract's.
+            rows = (result.structured_content or {}).get("result")
+            if not isinstance(rows, list):
+                raise ToolError(f"cluster {cluster!r}'s Relay sent changes that aren't a list")
+            kept = [r for r in rows if self.within(cluster, r)]
+            return ToolResult([TextContent(type="text", text=json.dumps(kept))], {"result": kept})
+        return ToolResult(result.content, result.structured_content, is_error=result.is_error)
 
 
 # --- the Relay's side ---------------------------------------------------------------------

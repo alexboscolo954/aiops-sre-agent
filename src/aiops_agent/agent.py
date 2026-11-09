@@ -40,7 +40,7 @@ from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.types import Command
 from pydantic import BaseModel
 
-from aiops_agent import embeddings, masking, usage
+from aiops_agent import embeddings, masking, relay, usage
 from aiops_agent.config import Settings
 from aiops_agent.contracts import (
     Aws,
@@ -315,13 +315,16 @@ def build_mcp(
     k8s_apis: dict[str, tuple[Any, Any]] | None = None,
     snapshots: bool = False,
     store: Store | None = None,
+    relays: relay.Relays | None = None,
 ) -> Toolbox:
     """One Contract's integrations, mounted in-process under one namespace-prefixed
     root. Nothing of another Contract is reachable from it.
     k8s_apis: cluster name -> (CoreV1Api, AppsV1Api) instead of connecting, for tests.
     snapshots: vendors' tools from their schema snapshots, never started (replay).
     store: the Hub's database, for past incidents and Sizings; without it (the CLI)
-    they're left out, guide and all."""
+    they're left out, guide and all.
+    relays: the Hub's connected Relays; without them (the CLI) a Relay's cluster is
+    offline."""
     root, access, guides = FastMCP(f"aiops-{contract.id}"), dict[str, Access](), []
     link_tools: set[str] = set()
     for i in contract.integrations:
@@ -360,7 +363,10 @@ def build_mcp(
                 for tool, sentence in spec.changes
                 if tool in i.tools
             ]
-    root.add_middleware(AuditMiddleware(contract.id))
+    root.add_middleware(AuditMiddleware(contract.id))  # outermost: forwarded calls too
+    if any(c.via == "relay" for c in contract.clusters):
+        seconds = settings.relay_call_seconds
+        root.add_middleware(relay.Forward(contract, relays or relay.Relays(), seconds))
     return Toolbox(root, access, guides, link_tools)
 
 
@@ -427,7 +433,9 @@ def integration_server(
             off = {t.cluster for t in found if t.labels} | contract.shared_stores
             stores = {t.cluster: (t.url, t.token) for t in found if t.cluster not in off}
             shared = [t.cluster for t in found if t.cluster in off]
-            return prometheus.build_server(stores, True, shared=shared), prometheus.ACCESS
+            relayed = [c.name for c in contract.clusters if c.via == "relay"]
+            server = prometheus.build_server(stores, True, shared=shared, relayed=relayed)
+            return server, prometheus.ACCESS
         token = contract.secret(integration.token_secret) if integration.token_secret else None
         return prometheus.build_server({"": (integration.url, token)}, False), prometheus.ACCESS
     if isinstance(integration, Runbooks):
@@ -606,6 +614,25 @@ RAW_RESULT_LIMIT = 200_000
 ToolSink = Callable[[str, dict[str, Any], str, bool], Awaitable[None]]
 
 
+def fail_when_relay_offline() -> Any:
+    """A Relay that isn't connected, or didn't answer in time, ends the Run Failed
+    (slice 3.3a): a Report written without that cluster would read as one written
+    with it. Outside the recorder, so the failed call is recorded first."""
+
+    @wrap_tool_call
+    async def fail(
+        request: ToolCallRequest, handler: Callable[[ToolCallRequest], Awaitable[Any]]
+    ) -> Any:
+        result = await handler(request)
+        if isinstance(result, ToolMessage) and result.status == "error":
+            text = text_of(result)
+            if text.startswith(relay.OFFLINE):
+                raise relay.RelayOffline(text)
+        return result
+
+    return fail
+
+
 def record_tool_results(sink: ToolSink) -> Any:
     """Innermost wrapper: sees each result before the cap, as the tool returned it.
     Redacted, since third-party tool output isn't. Kept for audit and for turning an
@@ -718,6 +745,7 @@ async def open_agent(
                 # inside the recorder: a refused change is recorded as FAILED
                 *([refuse_when_killed(needs_approval, killed)] if killed else []),
                 spill_tool_output(settings.tool_output_limit),
+                fail_when_relay_offline(),
                 *([record_tool_results(record)] if record else []),
                 *([record_usage(usage)] if usage else []),
                 masking.on_the_wire(masker, masked),  # innermost: the rest see plaintext

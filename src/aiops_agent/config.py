@@ -44,6 +44,7 @@ class Settings(BaseSettings):
     max_model_calls: int = 30
     max_tool_calls: int = 25
     tool_output_limit: int = 8000  # max characters per tool result
+    relay_call_seconds: float = 30  # a Relay that doesn't answer a call in time is offline
     # Similar incidents by meaning (embeddings.py): an embedding model on the model
     # gateway, e.g. openai/text-embedding-3-small on OpenRouter. Unset: words only.
     embedding_model: str | None = None

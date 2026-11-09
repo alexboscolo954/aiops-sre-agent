@@ -2,6 +2,7 @@
 the token binding it to one Contract's cluster, and a Relay's cluster never reached
 Direct."""
 
+import json
 import logging
 import socket
 from collections.abc import Callable
@@ -96,6 +97,17 @@ def test_the_hub_never_reaches_a_relay_cluster_direct() -> None:
         kubernetes.api_client(edge, c)  # it has no context: the default would be the Hub's
     probes = [label for label, _, _ in __import__("aiops_agent.agent").agent.probes(c)]
     assert "kubernetes test" in probes and "kubernetes edge" not in probes
+
+
+@pytest.mark.anyio
+async def test_the_hubs_own_kubernetes_tools_refuse_a_relay_cluster() -> None:
+    from tests.conftest import make_fake_cluster
+
+    c = relayed("acme", A_TOKEN)
+    server = kubernetes.build_server(c, c.integrations[0], 8000, {"test": make_fake_cluster()})  # type: ignore[arg-type]
+    async with Client(server) as hub_client:
+        r = await hub_client.call_tool("recent_changes", {"cluster": "edge"}, raise_on_error=False)
+    assert r.is_error and "reached through its Relay" in r.content[0].text  # type: ignore[union-attr]
 
 
 # --- tokens -----------------------------------------------------------------------------
@@ -397,3 +409,292 @@ async def test_a_refused_token_is_said_and_the_wait_stops_at_a_minute(caplog: An
     assert waits == [1, 2, 4, 8, 16, 32, 60, 60, 60]
     assert "refused the connection (403): check the token" in caplog.text
     assert A_TOKEN not in caplog.text
+
+
+# --- the Hub's side: a Run's calls through the Relay (slice 3.3a) ---------------------------
+
+
+async def connected(relays: relay.Relays, named: relay.Who, server: FastMCP, tg: Any) -> Any:
+    """`server` served as a Relay, held in `relays`; returns what closes its socket."""
+    hub_send, hub_receive, relay_send, relay_receive = pipe()
+    tg.start_soon(relay.serve, server, relay_send, relay_receive)
+
+    async def close() -> None:
+        await relay_send(None)
+
+    tg.start_soon(relays.hold, named, hub_send, hub_receive, close)
+    await until(lambda: relays.get(*named) is not None)
+    return close
+
+
+def local() -> dict[str, Any]:
+    """The Direct cluster `test`, faked."""
+    from tests.conftest import make_fake_cluster
+
+    return {"test": make_fake_cluster()}
+
+
+def with_prometheus(contract_id: str, token: str) -> contracts.Contract:
+    return relayed(
+        contract_id,
+        token,
+        integrations=[{"name": "kubernetes"}, {"name": "prometheus", "url": "http://prom"}],
+    )
+
+
+def text(result: Any) -> str:
+    return " ".join(getattr(b, "text", "") for b in result.content)
+
+
+@pytest.mark.anyio
+async def test_a_relay_clusters_calls_go_through_its_relay_after_the_hubs_own_checks(
+    settings: Settings, caplog: Any
+) -> None:
+    import httpx
+
+    from aiops_agent import agent
+    from tests.conftest import make_fake_cluster
+
+    caplog.set_level(logging.INFO)
+
+    def prometheus(request: httpx.Request) -> httpx.Response:
+        series = [{"metric": {"job": "edge"}, "value": [0, "1"]}]
+        data = {"resultType": "vector", "result": series}
+        return httpx.Response(200, json={"status": "success", "data": data})
+
+    relays, here, edge = relay.Relays(), make_fake_cluster(), make_fake_cluster()
+    toolbox = agent.build_mcp(
+        with_prometheus("acme", A_TOKEN), settings, k8s_apis={"test": here}, relays=relays
+    )
+    http = httpx.Client(base_url="http://prometheus", transport=httpx.MockTransport(prometheus))
+    # The Relay allows more than the Contract does: the Hub's check is the one that holds.
+    wide = settings_of(namespaces=["shop", "kube-system"], writes=True)
+    async with anyio.create_task_group() as tg:
+        await connected(
+            relays, ("acme", "edge"), relay.relay_server(wide, {"edge": edge}, http), tg
+        )
+
+        @toolbox.mcp.tool
+        def sizing_like(cluster: str) -> str:  # takes a cluster, isn't the Relay's
+            return f"the Hub's own, for {cluster}"
+
+        async with Client(toolbox.mcp) as hub_client:
+            tools = {t.name: t for t in await hub_client.list_tools()}
+            mine = await hub_client.call_tool("sizing_like", {"cluster": "edge"})
+            pods = {"cluster": "edge", "namespace": "shop"}
+            via = await hub_client.call_tool("kubernetes_list_pods", pods)
+            query = await hub_client.call_tool(
+                "prometheus_query", {"cluster": "edge", "promql": "up"}
+            )
+            barred = await hub_client.call_tool(
+                "kubernetes_list_pods",
+                {"cluster": "edge", "namespace": "kube-system"},
+                raise_on_error=False,
+            )
+            local = await hub_client.call_tool(
+                "kubernetes_list_pods", {"cluster": "test", "namespace": "shop"}
+            )
+        tg.cancel_scope.cancel()
+    for name in ("kubernetes_list_pods", "prometheus_query"):
+        assert tools[name].input_schema["properties"]["cluster"]["enum"] == ["edge", "test"]
+    assert not [n for n in tools if n.startswith("hub_") or "evict" in n]  # the Hub's list
+    assert "checkout-7d9f-abc" in text(via) and '{"job":"edge"}' in text(query)
+    assert barred.is_error and "'kube-system' is not allowed in cluster 'edge'" in text(barred)
+    assert "checkout-7d9f-abc" in text(local) and text(mine) == "the Hub's own, for edge"
+    assert edge[0].list_namespaced_pod.call_count == 1  # kube-system never reached it
+    assert here[0].list_namespaced_pod.call_count == 1
+    assert caplog.text.count('"tool": "kubernetes_list_pods"') == 3  # audited, forwarded too
+
+
+def hanging(entered: anyio.Event) -> FastMCP:
+    """A Relay whose list_pods never answers."""
+    server = FastMCP("relay")
+
+    @server.tool
+    async def kubernetes_list_pods(cluster: str, namespace: str) -> str:
+        entered.set()
+        await anyio.sleep_forever()
+        return "never"
+
+    return server
+
+
+@pytest.mark.anyio
+async def test_a_relay_offline_slow_or_gone_mid_call_is_offline(settings: Settings) -> None:
+    from aiops_agent import agent
+
+    relays = relay.Relays()
+    settings.relay_call_seconds = 0.3
+    toolbox = agent.build_mcp(relayed("acme", A_TOKEN), settings, k8s_apis=local(), relays=relays)
+    pods = {"cluster": "edge", "namespace": "shop"}
+    async with Client(toolbox.mcp) as hub_client:
+        offline = await hub_client.call_tool("kubernetes_list_pods", pods, raise_on_error=False)
+        async with anyio.create_task_group() as tg:
+            entered = anyio.Event()
+            await connected(relays, ("acme", "edge"), hanging(entered), tg)
+            with anyio.fail_after(5):
+                slow = await hub_client.call_tool(
+                    "kubernetes_list_pods", pods, raise_on_error=False
+                )
+            settings.relay_call_seconds = 30
+            toolbox = agent.build_mcp(
+                relayed("acme", A_TOKEN), settings, k8s_apis=local(), relays=relays
+            )
+            entered = anyio.Event()
+            close = await connected(relays, ("acme", "edge"), hanging(entered), tg)
+            async with Client(toolbox.mcp) as patient:
+                with anyio.fail_after(5):  # well inside the 30 s: the socket closed
+
+                    async def kill() -> None:
+                        await entered.wait()
+                        await close()
+
+                    tg.start_soon(kill)
+                    gone = await patient.call_tool(
+                        "kubernetes_list_pods", pods, raise_on_error=False
+                    )
+            tg.cancel_scope.cancel()
+    assert text(offline) == "Relay offline: cluster 'edge' has no Relay connected"
+    assert text(slow) == "Relay offline: cluster 'edge''s Relay didn't answer in 0.3 s"
+    assert gone.is_error and text(gone).startswith("Relay offline: cluster 'edge''s Relay: ")
+
+
+@pytest.mark.anyio
+async def test_a_run_that_calls_an_offline_relay_fails_after_recording_the_call(
+    settings: Settings,
+) -> None:
+    from aiops_agent import agent
+    from tests.conftest import REPORT, call
+    from tests.test_agent import ALERT
+
+    recorded: list[tuple[str, bool]] = []
+
+    async def sink(tool: str, args: Any, result: str, error: bool) -> None:
+        recorded.append((tool, error))
+
+    toolbox = agent.build_mcp(
+        relayed("acme", A_TOKEN), settings, k8s_apis=local(), relays=relay.Relays()
+    )
+    model = scripted(
+        call("kubernetes_list_pods", "c1", cluster="edge", namespace="shop"),
+        call("TriageReport", "c2", **REPORT),
+    )
+    async with agent.open_agent(settings, toolbox, model, record=sink) as a:
+        with pytest.raises(relay.RelayOffline, match="cluster 'edge' has no Relay connected"):
+            await agent.start(a, ALERT, "t1")
+    assert recorded == [("kubernetes_list_pods", True)]
+
+
+@pytest.mark.anyio
+async def test_one_contracts_relay_never_answers_anothers_cluster_of_the_same_name(
+    settings: Settings,
+) -> None:
+    from aiops_agent import agent
+    from tests.conftest import make_fake_cluster
+
+    relays, edge = relay.Relays(), make_fake_cluster()
+    bank = agent.build_mcp(relayed("bank", B_TOKEN), settings, k8s_apis=local(), relays=relays)
+    async with anyio.create_task_group() as tg:
+        await connected(
+            relays, ("acme", "edge"), relay.relay_server(settings_of(), {"edge": edge}), tg
+        )
+        async with Client(bank.mcp) as hub_client:
+            r = await hub_client.call_tool(
+                "kubernetes_list_pods",
+                {"cluster": "edge", "namespace": "shop"},
+                raise_on_error=False,
+            )
+        tg.cancel_scope.cancel()
+    assert text(r) == "Relay offline: cluster 'edge' has no Relay connected"
+    assert edge[0].list_namespaced_pod.call_count == 0
+
+
+@pytest.mark.anyio
+async def test_a_write_needs_the_relays_own_switch_too(settings: Settings) -> None:
+    from aiops_agent import agent
+    from tests.conftest import make_fake_cluster
+
+    relays, edge = relay.Relays(), make_fake_cluster()
+    actions = relayed(
+        "acme", A_TOKEN, integrations=[{"name": "kubernetes", "enable_actions": True}]
+    )
+    toolbox = agent.build_mcp(actions, settings, k8s_apis=local(), relays=relays)
+    async with anyio.create_task_group() as tg:
+        await connected(
+            relays, ("acme", "edge"), relay.relay_server(settings_of(), {"edge": edge}), tg
+        )
+        async with Client(toolbox.mcp) as hub_client:
+            offered = {t.name for t in await hub_client.list_tools()}
+            r = await hub_client.call_tool(
+                "kubernetes_scale_deployment",
+                {"cluster": "edge", "namespace": "shop", "name": "checkout", "replicas": 2},
+                raise_on_error=False,
+            )
+        tg.cancel_scope.cancel()
+    assert "kubernetes_scale_deployment" in offered  # the Hub's gate is open
+    assert r.is_error and "Relay offline" not in text(r)  # the Relay has no such tool
+    assert edge[1].patch_namespaced_deployment_scale.call_count == 0
+
+
+def changes(rows: list[dict[str, Any]] | None) -> FastMCP:
+    """A Relay whose recent_changes answers `rows`, whatever the Contract allows;
+    None: text, not a list."""
+    server = FastMCP("relay")
+    if rows is None:
+
+        @server.tool(name="kubernetes_recent_changes")
+        def text_only(cluster: str) -> str:
+            return "everything"
+
+        return server
+
+    @server.tool
+    def kubernetes_recent_changes(cluster: str) -> list[dict[str, Any]]:  # as the real one
+        return rows
+
+    return server
+
+
+@pytest.mark.anyio
+async def test_a_relays_recent_changes_keep_to_the_contracts_namespaces(
+    settings: Settings,
+) -> None:
+    from aiops_agent import agent
+
+    clusters = [
+        {"name": "test", "context": "test", "namespaces": ["shop"]},
+        {
+            "name": "edge",
+            "namespaces": ["shop"],
+            "gitops_namespaces": ["flux-system"],
+            "via": "relay",
+            "relay_token_secret": "r",
+        },
+    ]
+    c = relayed("acme", A_TOKEN, clusters=clusters)
+    rows = [
+        {"namespace": "shop", "deployment": "checkout"},
+        {"namespace": "kube-system", "deployment": "coredns"},
+        {"namespace": "shop, payments", "kustomization": "apps"},  # deploys beyond the Contract
+        {"namespace": "flux-system", "gitops": "kustomizations", "error": "403"},
+        {"namespace": "flux-system", "deployment": "source-controller"},  # not a notice
+        {"deployment": "nameless"},
+        {"namespace": ["shop"], "deployment": "listed"},
+    ]
+    pods = {"cluster": "edge"}
+    relays = relay.Relays()
+    toolbox = agent.build_mcp(c, settings, k8s_apis=local(), relays=relays)
+    async with anyio.create_task_group() as tg:
+        close = await connected(relays, ("acme", "edge"), changes(rows), tg)
+        async with Client(toolbox.mcp) as hub_client:
+            kept = await hub_client.call_tool("kubernetes_recent_changes", pods)
+            await close()
+            await until(lambda: relays.get("acme", "edge") is None)
+            await connected(relays, ("acme", "edge"), changes(None), tg)
+            odd = await hub_client.call_tool(
+                "kubernetes_recent_changes", pods, raise_on_error=False
+            )
+        tg.cancel_scope.cancel()
+    want = [rows[0], rows[3]]
+    assert json.loads(text(kept)) == want and kept.structured_content == {"result": want}
+    assert odd.is_error and text(odd) == "cluster 'edge''s Relay sent changes that aren't a list"

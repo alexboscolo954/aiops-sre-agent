@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # The Hub's compose stack (deploy/hub) on this machine, with the demo Contracts:
 # - comes up healthy, and both Contracts decrypt inside the image;
-# - only the alert route is public: everything else through Caddy is a 404,
+# - only the alert route and the Relays' websocket are public: everything else
+#   through Caddy is a 404,
 #   the console included, even with a forged Tailscale identity header;
 # - the console renders on 127.0.0.1 for the Operator's identity plus the token cookie;
 # - an alert is stored and fails as expected (no cluster, no model key in CI);
@@ -115,7 +116,14 @@ as_operator=(-H 'Tailscale-User-Login: smoke@example.com')
 for path in /app/ /api/v1/contracts; do
   [[ $(code "${as_operator[@]}" "$public$path") == 404 ]] || fail "$path is public"
 done
-echo "ok   only the alert route is public; bodies over 1 MB refused"
+upgrade=(--http1.1 -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13'
+  -H 'Sec-WebSocket-Key: c21va2UtcmVsYXktbm9uY2U=')
+[[ $(code "${upgrade[@]}" "$public/relay") == 403 ]] || fail "a Relay without a token wasn't refused"
+[[ $(code "${upgrade[@]}" -H 'Authorization: Bearer nope' "$public/relay") == 403 ]] \
+  || fail "a Relay with a wrong token wasn't refused"
+[[ $(code "$public/relay") == 404 ]] || fail "GET /relay without an upgrade is public"
+[[ $(code "${upgrade[@]}" "$public/relay/x") == 404 ]] || fail "/relay/x is public"
+echo "ok   only the alert route and the Relays' websocket are public; bodies over 1 MB refused"
 
 local_api=http://127.0.0.1:18000
 for _ in $(seq 60); do

@@ -47,10 +47,12 @@ def build_server(
     clustered: bool,
     http: dict[str, httpx.Client] | None = None,
     shared: list[str] | None = None,
+    relayed: list[str] | None = None,
 ) -> FastMCP:
     """stores: cluster -> (url, token); one under "" when not clustered (a Contract
     without clusters: no `cluster` argument). shared: the clusters left out, for the
-    argument's description. http: cluster -> client, for tests."""
+    argument's description. relayed: clusters the model may name whose Prometheus the
+    Hub reaches through their Relay (slice 3.3a). http: cluster -> client, for tests."""
     clients = http or {
         name: httpx.Client(
             base_url=url,
@@ -60,7 +62,7 @@ def build_server(
         for name, (url, token) in stores.items()
     }
     mcp = FastMCP("prometheus", instructions="Query metrics and alerts with PromQL.")
-    names = sorted(stores)
+    names = sorted([*stores, *(relayed or [])])
 
     def client(cluster: str) -> httpx.Client:
         if cluster not in clients:
