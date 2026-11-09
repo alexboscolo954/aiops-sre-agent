@@ -117,10 +117,11 @@ for path in /app/ /api/v1/contracts; do
   [[ $(code "${as_operator[@]}" "$public$path") == 404 ]] || fail "$path is public"
 done
 upgrade=(--http1.1 -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13'
-  -H 'Sec-WebSocket-Key: c21va2UtcmVsYXktbm9uY2U=')
-[[ $(code "${upgrade[@]}" "$public/relay") == 403 ]] || fail "a Relay without a token wasn't refused"
-[[ $(code "${upgrade[@]}" -H 'Authorization: Bearer nope' "$public/relay") == 403 ]] \
-  || fail "a Relay with a wrong token wasn't refused"
+  -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==')
+got=$(code "${upgrade[@]}" "$public/relay")
+[[ $got == 403 ]] || fail "a Relay without a token wasn't refused ($got)"
+got=$(code "${upgrade[@]}" -H 'Authorization: Bearer nope' "$public/relay")
+[[ $got == 403 ]] || fail "a Relay with a wrong token wasn't refused ($got)"
 [[ $(code "$public/relay") == 404 ]] || fail "GET /relay without an upgrade is public"
 [[ $(code "${upgrade[@]}" "$public/relay/x") == 404 ]] || fail "/relay/x is public"
 echo "ok   only the alert route and the Relays' websocket are public; bodies over 1 MB refused"
