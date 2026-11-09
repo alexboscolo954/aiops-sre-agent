@@ -866,19 +866,33 @@ def test_health_shows_each_relay_and_probes_through_it(
     assert theirs["kubernetes edge"]["detail"].startswith("Relay offline: cluster 'edge' has no")
 
 
-def test_the_relays_gitops_rbac_is_opt_in_and_reads_gitops_objects_only() -> None:
+@pytest.mark.parametrize(
+    ("path", "account"),
+    [
+        ("deploy/gitops/rbac-gitops.yaml", ("aiops-agent", "aiops")),
+        ("deploy/relay/rbac-gitops.yaml", ("aiops-relay", "aiops-relay")),
+    ],
+)
+def test_gitops_rbac_grants_every_kind_recent_changes_reads_in_each_namespace(
+    path: str, account: tuple[str, str]
+) -> None:
+    """recent_changes asks every GitOps kind in every GitOps namespace and reports a
+    403 as a missing grant: a namespace granted only some kinds reads as misconfigured."""
     import yaml
 
     from tests.test_shared import ROOT
 
-    text = (ROOT / "deploy/relay/rbac-gitops.yaml").read_text()
-    docs = list(yaml.safe_load_all(text))
+    docs = list(yaml.safe_load_all((ROOT / path).read_text()))
     subjects = [s for d in docs if d["kind"] == "RoleBinding" for s in d["subjects"]]
-    assert subjects and all(
-        (s["name"], s["namespace"]) == ("aiops-relay", "aiops-relay") for s in subjects
-    )
-    resources = {
-        r for d in docs if d["kind"] == "Role" for rule in d["rules"] for r in rule["resources"]
-    }
-    assert resources == {"applications", "kustomizations", "helmreleases"}
-    assert "rbac-gitops" not in (ROOT / "deploy/relay/kustomization.yaml").read_text()
+    assert subjects and all((s["name"], s["namespace"]) == account for s in subjects)
+    wanted = {(group, plural) for group, _, plural in kubernetes.GITOPS}
+    roles = [d for d in docs if d["kind"] == "Role"]
+    assert {r["metadata"]["namespace"] for r in roles} == {"argocd", "flux-system"}
+    for role in roles:
+        granted = {
+            (g, r) for rule in role["rules"] for g in rule["apiGroups"] for r in rule["resources"]
+        }
+        verbs = {v for rule in role["rules"] for v in rule["verbs"]}
+        assert granted == wanted and verbs == {"get", "list"}, role["metadata"]["namespace"]
+    kustomization = (ROOT / path).parent / "kustomization.yaml"  # opt-in: never in a base
+    assert not kustomization.exists() or "rbac-gitops" not in kustomization.read_text()
