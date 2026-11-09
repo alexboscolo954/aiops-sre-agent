@@ -591,7 +591,10 @@ async def run(
             await connect(s.hub, s.token.get_secret_value(), server)
             why = "the Hub closed the connection"
         except websockets.InvalidStatus as e:
-            why = f"the Hub refused the connection ({e.response.status_code}): check the token"
+            code = e.response.status_code
+            # 401 or 403 is the token; anything else (Caddy's 502 while the Hub is down) isn't
+            hint = ": check the token" if code in (401, 403) else ""
+            why = f"the Hub refused the connection ({code}){hint}"
         except (OSError, websockets.WebSocketException) as e:
             why = f"no connection to the Hub: {type(e).__name__}"
         if clock() - started > 60:

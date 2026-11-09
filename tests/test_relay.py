@@ -420,6 +420,23 @@ async def test_a_refused_token_is_said_and_the_wait_stops_at_a_minute(caplog: An
     assert A_TOKEN not in caplog.text
 
 
+@pytest.mark.anyio
+async def test_a_hub_that_is_down_is_not_said_to_be_the_token(caplog: Any) -> None:
+    from websockets.datastructures import Headers
+    from websockets.http11 import Response
+
+    async def connect(url: str, token: str, server: Any) -> None:
+        raise websockets.InvalidStatus(Response(502, "Bad Gateway", Headers()))
+
+    async def sleep(seconds: float) -> None:
+        raise anyio.get_cancelled_exc_class()
+
+    with pytest.raises(anyio.get_cancelled_exc_class()):
+        await relay.run(settings_of(), FastMCP("x"), connect, sleep, lambda: 0.0)
+    assert "refused the connection (502); dialing again" in caplog.text
+    assert "check the token" not in caplog.text
+
+
 # --- the Hub's side: a Run's calls through the Relay (slice 3.3a) ---------------------------
 
 
