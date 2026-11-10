@@ -173,8 +173,9 @@ async def test_recent_changes_reads_gitops_objects_of_its_own_namespaces(
 async def test_the_actuator_resizes_a_deployment_in_place_without_a_restart(
     live: contracts.Contract,
 ) -> None:
-    """Slice 12.1 on a real cluster: inventory's pod takes 5m more CPU each run, the kubelet
-    allocates it (the pod's status, not just the API server's yes), and it never restarts."""
+    """Slices 12.1 and 12.3 on a real cluster: inventory's pod takes 5m more CPU each run, the
+    kubelet allocates it (the pod's status, not just the API server's yes), and it never
+    restarts."""
     import time
 
     import anyio
@@ -201,19 +202,19 @@ async def test_the_actuator_resizes_a_deployment_in_place_without_a_restart(
         cpu=cpu,
         memory=None,
     )
-    a, _ = actuator.apply(core, apps, wanted, time.time())
-    assert (a.outcome, a.pods) == ("applied", 1), a.reason
+    scalers = (client.AutoscalingV2Api(api), client.CustomObjectsApi(api))
+    a, held = actuator.apply(core, apps, wanted, time.time(), *scalers)
+    assert a is None, a.reason  # its one pod is the canary: resized, now watched
     for _ in range(60):
         p = core.read_namespaced_pod(before.metadata.name, "orders")
-        status = p.status.container_statuses[0]
-        allocated = (status.resources.requests or {}) if status.resources else {}
-        if "cpu" in allocated and actuator.qty(allocated["cpu"]) == actuator.qty(
-            actuator.cpu_text(cpu)
-        ):
+        state, message = actuator.resize_state(p, "app", held["requests"])
+        if state == "done":  # the kubelet allocated it, and the pod is Ready
             break
+        assert state == "waiting", f"{state}: {message}"
         await anyio.sleep(1)
     else:
-        pytest.fail(f"the kubelet never allocated {actuator.cpu_text(cpu)}: {status}")
+        pytest.fail(f"the kubelet never allocated {actuator.cpu_text(cpu)}: {message}")
+    status = p.status.container_statuses[0]
     assert p.metadata.uid == before.metadata.uid and status.restart_count == restarts
 
 

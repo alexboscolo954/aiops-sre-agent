@@ -185,7 +185,7 @@ The process in a client cluster that applies approved Sizings, in place first, a
 _Avoid_: Agent, controller (alone)
 
 **Actuation**:
-One outcome the Actuator reports for one container of a Workload: applied (the cluster accepted the new requests on its pods), skipped, failed, or handed back (a person changed the template's requests it held, or the Workload is gone: the Actuator lets go), with the reason and how many pods. The Hub keeps them as the Actuator's audit trail.
+One outcome the Actuator reports for one container of a Workload: applied (every live pod of the Workload has the new requests, allocated by the kubelet), skipped, failed, or handed back (a person changed the template's requests it held, or the Workload is gone: the Actuator lets go), with the reason and how many pods. The Hub keeps them as the Actuator's audit trail.
 _Avoid_: Executed action (that is a Proposed action the Operator approved)
 
 **Revert**:

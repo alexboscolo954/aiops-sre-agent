@@ -12,8 +12,11 @@ What it applied it holds (slice 12.2): its pod-creation webhook gives a new pod 
 Deployment the same requests (it fails open: with the Actuator down, pods start from their
 template), until a person changes the template's requests, which hands the container back.
 
-Thin on purpose: Deployments only, every pod at once, and "applied" means the API server
-took the new requests (whether the kubelet could is slice 12.3).
+Before a resize (slice 12.3) it checks what would refuse or fight it: a pod's QoS class, a
+VPA, an HPA on a resource's utilization, the namespace's LimitRange and ResourceQuota. Then
+it resizes one canary pod, watches it 10 minutes, and the others one at a time, each until
+the kubelet allocated it and the pod is Ready; an Infeasible resize, or one not done in 10
+minutes, stops it there. Deployments only.
 """
 
 import base64
@@ -55,7 +58,9 @@ MI = 2**20
 WEBHOOK = "aiops-actuator"  # its MutatingWebhookConfiguration and its Service, by name
 WEBHOOK_PORT = 8443
 MAX_REVIEW = 1024 * 1024  # bytes: an AdmissionReview of one pod is far smaller
-Outcome = Literal["applied", "skipped", "failed", "handed_back"]
+CANARY_SECONDS = 600  # the first pod resized is watched this long before the others
+WAIT_SECONDS = 600  # how long one pod's resize may take, Deferred included
+Outcome = Literal["applied", "skipped", "failed", "handed_back"]  # held also: "rolling"
 
 
 class ActuatorSettings(BaseSettings):
@@ -151,11 +156,156 @@ def pods_of(core: Any, apps: Any, d: Any) -> list[Any]:
     ]
 
 
-def apply(core: Any, apps: Any, w: Wanted, at: float) -> tuple[Actuation, dict[str, Any]]:
-    """Resize `w`'s container in place on every pod of its Deployment, never above its
-    limit: the Actuation, and what to remember of it."""
+def requests_of(c: Any) -> dict[str, str]:
+    return dict((c.resources.requests if c and c.resources else None) or {})
+
+
+def limits_of(c: Any) -> dict[str, str]:
+    return dict((c.resources.limits if c and c.resources else None) or {})
+
+
+def qos(containers: list[tuple[dict[str, str], dict[str, str]]]) -> str:
+    """A pod's QoS class from its containers' (requests, limits). Kubernetes refuses a
+    resize that changes it. ponytail: init containers left out; add them if one matters."""
+    if all(not r and not lim for r, lim in containers):
+        return "BestEffort"
+    guaranteed = all(
+        all(res in lim and same(r.get(res, lim[res]), lim[res]) for res in ("cpu", "memory"))
+        for r, lim in containers
+    )
+    return "Guaranteed" if guaranteed else "Burstable"
+
+
+def qos_change(
+    containers: list[tuple[str, dict[str, str], dict[str, str]]], name: str, set_to: dict[str, str]
+) -> str | None:
+    """Why setting `name`'s requests to `set_to` would change the pod's QoS class, or None."""
+    before = [(r, lim) for _, r, lim in containers]
+    after = [({**r, **set_to} if n == name else r, lim) for n, r, lim in containers]
+    was, would = qos(before), qos(after)
+    if was == would:
+        return None
+    if was == "Guaranteed":
+        return "it is Guaranteed: its limits must change too"
+    return f"it would turn its pods from {was} to {would}"
+
+
+def vpa_mode(custom: Any, ns: str, name: str) -> str | None:
+    """The mode of a VPA that changes this Deployment's pods, or None (none, or `Off`)."""
+    try:
+        found = custom.list_namespaced_custom_object(
+            "autoscaling.k8s.io", "v1", ns, "verticalpodautoscalers"
+        )
+    except ApiException as e:
+        if e.status == 404:  # no VPA installed
+            return None
+        raise
+    for v in found.get("items") or []:
+        spec = v.get("spec") or {}
+        ref = spec.get("targetRef") or {}
+        if ref.get("kind") == "Deployment" and ref.get("name") == name:
+            mode = (spec.get("updatePolicy") or {}).get("updateMode") or "Auto"
+            if mode != "Off":
+                return str(mode)
+    return None
+
+
+def hpa_resources(autoscaling: Any, ns: str, name: str, container: str) -> set[str]:
+    """The resources an HPA of this Deployment scales on by utilization: a request it
+    divides by, so the Actuator leaves it alone. An HPA without metrics means cpu."""
+    out: set[str] = set()
+    for h in autoscaling.list_namespaced_horizontal_pod_autoscaler(ns).items:
+        ref = h.spec.scale_target_ref
+        if ref.kind != "Deployment" or ref.name != name:
+            continue
+        if not h.spec.metrics:
+            out.add("cpu")
+        for m in h.spec.metrics or []:
+            if m.type == "Resource" and m.resource.target.type == "Utilization":
+                out.add(m.resource.name)
+            if (
+                m.type == "ContainerResource"
+                and m.container_resource.container == container
+                and m.container_resource.target.type == "Utilization"
+            ):
+                out.add(m.container_resource.name)
+    return out
+
+
+def limit_range_breach(
+    core: Any, ns: str, set_to: dict[str, str], limits: dict[str, str]
+) -> str | None:
+    """Why the namespace's LimitRange would refuse these requests, or None. Never clamped."""
+    for lr in core.list_namespaced_limit_range(ns).items:
+        for item in lr.spec.limits or []:
+            if item.type != "Container":
+                continue
+            for r, q in set_to.items():
+                low, high = (item.min or {}).get(r), (item.max or {}).get(r)
+                ratio = (item.max_limit_request_ratio or {}).get(r)
+                if low and qty(q) < qty(low):
+                    return f"{r} {q} is under its LimitRange's minimum {low}"
+                if high and qty(q) > qty(high):
+                    return f"{r} {q} is over its LimitRange's maximum {high}"
+                if ratio and r in limits and qty(limits[r]) / qty(q) > qty(ratio):
+                    return f"{r} {q} under limit {limits[r]} passes its LimitRange's ratio {ratio}"
+    return None
+
+
+def quota_breach(
+    core: Any, ns: str, set_to: dict[str, str], now: dict[str, str], pods: int
+) -> str | None:
+    """Why raising requests on `pods` pods would pass a ResourceQuota, or None."""
+    for rq in core.list_namespaced_resource_quota(ns).items:
+        hard, used = (rq.status.hard or {}), (rq.status.used or {})
+        for r, q in set_to.items():
+            more = (qty(q) - qty(now.get(r) or "0")) * pods
+            for key in (f"requests.{r}", r):
+                if more > 0 and key in hard and qty(used.get(key) or "0") + more > qty(hard[key]):
+                    quota = f"ResourceQuota {rq.metadata.name}'s {key} {hard[key]}"
+                    return f"{pods} pods at {r} {q} would pass {quota}"
+    return None
+
+
+def resize_state(pod: Any, container: str, set_to: dict[str, str]) -> tuple[str, str]:
+    """Where a pod's resize is: done (allocated, and the pod Ready), waiting, deferred or
+    infeasible (the kubelet's word, Kubernetes 1.33+), with its message."""
+    conditions = pod.status.conditions or []
+    for c in conditions:
+        if c.type == "PodResizePending" and c.status == "True":
+            state = "infeasible" if (c.reason or "").lower() == "infeasible" else "deferred"
+            return state, c.message or ""
+        if c.type == "PodResizeInProgress" and c.status == "True":
+            return "waiting", "in progress"
+    st = next((s for s in pod.status.container_statuses or [] if s.name == container), None)
+    allocated = (st.resources.requests if st and st.resources else None) or {}
+    if not all(same(allocated.get(r), q) for r, q in set_to.items()):
+        return "waiting", "not yet allocated"
+    if not any(c.type == "Ready" and c.status == "True" for c in conditions):
+        return "waiting", "not Ready"
+    return "done", ""
+
+
+def resize(core: Any, pod: Any, container: str, set_to: dict[str, str]) -> None:
+    body = {"spec": {"containers": [{"name": container, "resources": {"requests": set_to}}]}}
+    core.patch_namespaced_pod_resize(pod.metadata.name, pod.metadata.namespace, body)
+
+
+def needs(pod: Any, container: str, set_to: dict[str, str]) -> bool:
+    c = next((c for c in pod.spec.containers if c.name == container), None)
+    now = requests_of(c)
+    return not all(same(now.get(r), q) for r, q in set_to.items())
+
+
+def apply(
+    core: Any, apps: Any, w: Wanted, at: float, autoscaling: Any, custom: Any
+) -> tuple[Actuation | None, dict[str, Any]]:
+    """Start resizing `w`'s container in place on its Deployment's pods (slice 12.3): the
+    pre-checks, then one canary pod. An Actuation when it ends here (skipped or failed),
+    None while it rolls; and what to remember of it."""
     set_to: dict[str, str] = {}
     template_had: dict[str, str | None] = {}  # its template's requests then: a change hands back
+    notes: list[str] = []
 
     def done(outcome: Outcome, pods: int, reason: str) -> tuple[Actuation, dict[str, Any]]:
         values = {r: float(qty(q)) for r, q in set_to.items()}
@@ -163,7 +313,7 @@ def apply(core: Any, apps: Any, w: Wanted, at: float) -> tuple[Actuation, dict[s
             **w.model_dump(exclude={"cpu", "memory"}),
             outcome=outcome,
             pods=pods,
-            reason=reason[:1000],
+            reason=(reason + "".join(notes))[:1000],
             at=at,
             **values,
         )
@@ -176,11 +326,11 @@ def apply(core: Any, apps: Any, w: Wanted, at: float) -> tuple[Actuation, dict[s
         if e.status == 404:
             return done("skipped", 0, "no such Deployment")
         return done("failed", 0, f"reading the Deployment: {why(e)}")
-    template = next((c for c in d.spec.template.spec.containers if c.name == w.container), None)
+    containers = d.spec.template.spec.containers
+    template = next((c for c in containers if c.name == w.container), None)
     if template is None:
         return done("skipped", 0, f"no container {w.container!r} in its template")
-    limits = (template.resources.limits if template.resources else None) or {}
-    asked = (template.resources.requests if template.resources else None) or {}
+    limits, asked = limits_of(template), requests_of(template)
     capped = []
     for res, value, text in (("cpu", w.cpu, cpu_text), ("memory", w.memory, memory_text)):
         if value is None:
@@ -191,6 +341,8 @@ def apply(core: Any, apps: Any, w: Wanted, at: float) -> tuple[Actuation, dict[s
             capped.append(res)
         set_to[res] = q
         template_had[res] = asked.get(res)
+    if capped:
+        notes.append(f"; capped at its limit: {capped}")
     restarts = sorted(
         p.resource_name
         for p in template.resize_policy or []
@@ -199,31 +351,100 @@ def apply(core: Any, apps: Any, w: Wanted, at: float) -> tuple[Actuation, dict[s
     if restarts:
         return done("skipped", 0, f"its resizePolicy restarts the container for {restarts}")
     try:
+        mode = vpa_mode(custom, w.namespace, w.name)
+        if mode:
+            return done("skipped", 0, f"a VPA in mode {mode} sizes it")
+        for r in sorted(hpa_resources(autoscaling, w.namespace, w.name, w.container) & set(set_to)):
+            del set_to[r], template_had[r]
+            notes.append(f"; {r} left to its HPA, which scales on its utilization")
+        if not set_to:
+            return done("skipped", 0, "nothing its HPA doesn't scale on")
+        pairs = [(c.name, requests_of(c), limits_of(c)) for c in containers]
+        why_not = qos_change(pairs, w.container, set_to) or limit_range_breach(
+            core, w.namespace, set_to, limits
+        )
+        if why_not:
+            return done("skipped", 0, why_not)
         pods = pods_of(core, apps, d)
+        if not pods:
+            return done("skipped", 0, "no live pods")
+        why_not = quota_breach(core, w.namespace, set_to, asked, len(pods))
+        if why_not:
+            return done("skipped", 0, why_not)
     except ApiException as e:  # a namespace its RoleBinding misses: the others still go on
-        return done("failed", 0, f"listing its pods: {why(e)}")
-    if not pods:
-        return done("skipped", 0, "no live pods")
-    resized, failures = 0, []
-    for p in pods:
-        c = next((c for c in p.spec.containers if c.name == w.container), None)
-        now = (c.resources.requests if c and c.resources else None) or {}
-        if all(r in now and qty(now[r]) == qty(q) for r, q in set_to.items()):
-            continue
-        body = {"spec": {"containers": [{"name": w.container, "resources": {"requests": set_to}}]}}
-        try:
-            core.patch_namespaced_pod_resize(p.metadata.name, w.namespace, body)
-            resized += 1
-        except ApiException as e:
-            failures.append(f"{p.metadata.name}: {why(e)}")
-    note = f"; capped at its limit: {capped}" if capped else ""
-    if failures:
-        note += f"; {len(failures)} refused, first {failures[0]}"
-    if resized:
-        return done("applied", resized, f"{resized} of {len(pods)} pods resized in place{note}")
-    if failures:
-        return done("failed", 0, f"no pod resized{note}")
-    return done("skipped", 0, f"all {len(pods)} pods already have these requests{note}")
+        return done("failed", 0, f"checking it: {why(e)}")
+    todo = [p for p in pods if needs(p, w.container, set_to)]
+    if not todo:
+        return done("skipped", 0, f"all {len(pods)} pods already have these requests")
+    try:
+        resize(core, todo[0], w.container, set_to)
+    except ApiException as e:
+        return done("failed", 0, f"{todo[0].metadata.name}: {why(e)}")
+    _, held = done("applied", 1, "")
+    held |= {
+        "outcome": "rolling",
+        "pod": todo[0].metadata.name,
+        "since": at,
+        "canary_until": at + CANARY_SECONDS,
+        "resized": 1,
+        "notes": "".join(notes),
+    }
+    return None, held
+
+
+def advance(core: Any, apps: Any, key: str, h: dict[str, Any], now: float) -> Actuation | None:
+    """One minute of a rolling resize: wait for its current pod, then (after the canary's
+    10 minutes) resize the next one. An Actuation once it ends: applied when every live pod
+    has the requests, failed when a pod's resize is Infeasible or not done in 10 minutes."""
+    ns, kind, name, container = key.split("/")
+    set_to = h["requests"]
+
+    def end(outcome: Outcome, reason: str) -> Actuation:
+        h["outcome"] = outcome
+        for k in ("pod", "since", "canary_until", "resized", "notes"):
+            h.pop(k, None)
+        return Actuation(
+            namespace=ns,
+            kind=kind,
+            name=name,
+            container=container,
+            run_id=h["run_id"],
+            outcome=outcome,
+            pods=resized,
+            reason=(reason + notes)[:1000],
+            at=now,
+            **{r: float(qty(q)) for r, q in set_to.items()},
+        )
+
+    resized, notes, pod = h["resized"], h.get("notes", ""), h["pod"]
+    try:
+        p = core.read_namespaced_pod(pod, ns)
+    except ApiException as e:
+        if e.status != 404:
+            log.warning("reading %s/%s: %s", ns, pod, why(e))
+            return None
+        p = None  # gone: its replacement is one of the pods still to do
+    if p is not None and not p.metadata.deletion_timestamp:
+        state, message = resize_state(p, container, set_to)
+        if state == "infeasible":
+            return end("failed", f"{pod}: Infeasible: {message}; {resized - 1} other pods resized")
+        if state != "done":
+            if now - h["since"] < WAIT_SECONDS:
+                return None
+            return end("failed", f"{pod}: {state} for {WAIT_SECONDS // 60} minutes: {message}")
+    if now < h["canary_until"]:
+        return None
+    try:
+        d = apps.read_namespaced_deployment(name, ns)
+        pods = pods_of(core, apps, d)
+        todo = [x for x in pods if needs(x, container, set_to)]
+        if not todo:
+            return end("applied", f"{resized} of {len(pods)} pods resized in place, one at a time")
+        resize(core, todo[0], container, set_to)
+    except ApiException as e:
+        return end("failed", f"resizing its next pod: {why(e)}")
+    h.update(pod=todo[0].metadata.name, since=now, resized=resized + 1)
+    return None
 
 
 EVENTS = {
@@ -316,8 +537,16 @@ def mutation(req: dict[str, Any], held: dict[str, dict[str, Any]], own: str) -> 
                 q = limits[r]
             if not same(requests.get(r), q):
                 new[r] = q
-        if not new:
-            continue
+        everyone = [
+            (
+                x.get("name", ""),
+                dict((x.get("resources") or {}).get("requests") or {}),
+                dict((x.get("resources") or {}).get("limits") or {}),
+            )
+            for x in (pod.get("spec") or {}).get("containers") or []
+        ]
+        if not new or qos_change(everyone, c.get("name", ""), new):
+            continue  # a pod's QoS class stays its template's (slice 12.3)
         at = f"/spec/containers/{i}/resources"
         if "resources" not in c:
             ops.append({"op": "add", "path": at, "value": {"requests": new}})
@@ -424,6 +653,8 @@ class Actuator:
     held: dict[str, dict[str, Any]] = field(default_factory=dict)
     unsent: list[Actuation] = field(default_factory=list)
     killed: bool = False
+    autoscaling: Any = None  # AutoscalingV2Api: HPAs (slice 12.3)
+    custom: Any = None  # CustomObjectsApi: VPAs
 
     def load(self) -> None:
         try:
@@ -480,29 +711,41 @@ class Actuator:
 
     def step(self) -> None:
         desired = self.pull()
-        if desired is not None:
-            if desired.kill_switch != self.killed:
-                self.killed = desired.kill_switch
-                log.warning("the Kill switch is %s", "on" if self.killed else "off")
-            done = [] if self.killed else self.act(desired.sizings)
-        else:
-            done = []
-        done += self.hand_back()
-        if done:
+        if desired is not None and desired.kill_switch != self.killed:
+            self.killed = desired.kill_switch
+            log.warning("the Kill switch is %s", "on" if self.killed else "off")
+        done = self.hand_back()
+        if desired is not None and not self.killed:  # the Hub's word: rollouts go on
+            done += self.advance() + self.act(desired.sizings)
+        rolling = any(h.get("outcome") == "rolling" for h in self.held.values())
+        if done or rolling:
             self.save()
-            self.unsent += done
+        self.unsent += done
         self.report()
+
+    def advance(self) -> list[Actuation]:
+        out = []
+        for key, h in self.held.items():
+            if h.get("outcome") == "rolling":
+                a = advance(self.core, self.apps, key, h, time.time())
+                if a:
+                    log.info("%s %s: %s", a.outcome, key, a.reason)
+                    event(self.core, a)
+                    out.append(a)
+        return out
 
     def hand_back(self) -> list[Actuation]:
         """Each container it holds whose Deployment's template now asks other requests than
         when it applied (a person's change), or that is gone: its own again, never held."""
         out = []
         for key, h in self.held.items():
-            if h.get("outcome") == "applied":
+            if h.get("outcome") in ("applied", "rolling"):
                 reason = self.changed(key, h)
                 if reason is None:
                     continue
                 ns, kind, name, container = key.split("/")
+                for k in ("pod", "since", "canary_until", "resized", "notes"):
+                    h.pop(k, None)
                 h["outcome"] = "handed_back"
                 a = Actuation(
                     namespace=ns,
@@ -552,7 +795,12 @@ class Actuator:
             key = "/".join((w.namespace, w.kind, w.name, w.container))
             if self.held.get(key, {}).get("run_id", -1) >= w.run_id:
                 continue
-            a, self.held[key] = apply(self.core, self.apps, w, time.time())
+            a, self.held[key] = apply(
+                self.core, self.apps, w, time.time(), self.autoscaling, self.custom
+            )
+            if a is None:
+                log.info("rolling %s: canary %s", key, self.held[key]["pod"])
+                continue
             log.info("%s %s: %s", a.outcome, key, a.reason)
             event(self.core, a)
             out.append(a)
@@ -567,6 +815,7 @@ def main(s: ActuatorSettings) -> None:  # pragma: no cover - the cluster's own p
     headers = {"Authorization": f"Bearer {s.token.get_secret_value()}"}
     with httpx.Client(base_url=s.hub, headers=headers, timeout=15) as http:
         a = Actuator(http, core, apps, s.namespace)
+        a.autoscaling, a.custom = client.AutoscalingV2Api(), client.CustomObjectsApi()
         a.load()
         serve(a, cert, key)
         try:  # until then the API server can't call it, and pods start unchanged

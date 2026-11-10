@@ -24,6 +24,16 @@ rules:
   - apiGroups: ["apps"]
     resources: [deployments, replicasets]
     verbs: [get, list]
+  # What would refuse or fight a resize (slice 12.3): read only.
+  - apiGroups: [""]
+    resources: [limitranges, resourcequotas]
+    verbs: [get, list]
+  - apiGroups: [autoscaling]
+    resources: [horizontalpodautoscalers]
+    verbs: [get, list]
+  - apiGroups: [autoscaling.k8s.io]
+    resources: [verticalpodautoscalers]
+    verbs: [get, list]
 ---
 # Its own webhook's caBundle, at each start: that one object only.
 apiVersion: rbac.authorization.k8s.io/v1
