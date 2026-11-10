@@ -90,6 +90,8 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository }}
           tags: type=semver,pattern={{version}}
+          # GitHub doesn't recognise PolyForm, so its license would read NOASSERTION.
+          labels: org.opencontainers.image.licenses=PolyForm-Noncommercial-1.0.0
       - uses: docker/build-push-action@v7
         with:
           context: .
