@@ -29,7 +29,7 @@ tools:
         exit_code: 1
         finished: 22s
         message: null
-    node: aiops-control-plane
+    node: squero-control-plane
     age: 35s
   - name: frontend-6f6b4986b9-hxdf2
     phase: Pending
@@ -42,7 +42,7 @@ tools:
           failed to resolve reference "docker.io/library/nginx:1.99.99-does-not-exist": docker.io/library/nginx:1.99.99-does-not-exist:
           not found'
     last_terminated: {}
-    node: aiops-control-plane
+    node: squero-control-plane
     age: 2m
   - name: reports-55b4fffc66-hmq7f
     phase: Running
@@ -60,7 +60,7 @@ tools:
         exit_code: 137
         finished: 25s
         message: null
-    node: aiops-control-plane
+    node: squero-control-plane
     age: 2m
   kubernetes_list_deployments:
     result:
@@ -306,7 +306,7 @@ tools:
     result:
       name: checkout-869fc5bcc6-db5ps
       phase: Running
-      node: aiops-control-plane
+      node: squero-control-plane
       owner:
       - ReplicaSet/checkout-869fc5bcc6
       conditions:
@@ -377,7 +377,7 @@ tools:
       - type: Normal
         reason: Scheduled
         object: Pod/checkout-869fc5bcc6-db5ps
-        message: Successfully assigned demo/checkout-869fc5bcc6-db5ps to aiops-control-plane
+        message: Successfully assigned demo/checkout-869fc5bcc6-db5ps to squero-control-plane
         count: 1
         last_seen: 36s
   - match:
@@ -385,7 +385,7 @@ tools:
     result:
       name: frontend-6f6b4986b9-hxdf2
       phase: Pending
-      node: aiops-control-plane
+      node: squero-control-plane
       owner:
       - ReplicaSet/frontend-6f6b4986b9
       conditions:
@@ -459,7 +459,7 @@ tools:
       - type: Normal
         reason: Scheduled
         object: Pod/frontend-6f6b4986b9-hxdf2
-        message: Successfully assigned demo/frontend-6f6b4986b9-hxdf2 to aiops-control-plane
+        message: Successfully assigned demo/frontend-6f6b4986b9-hxdf2 to squero-control-plane
         count: 1
         last_seen: 2m
       - type: Warning
@@ -474,7 +474,7 @@ tools:
     result:
       name: reports-55b4fffc66-hmq7f
       phase: Running
-      node: aiops-control-plane
+      node: squero-control-plane
       owner:
       - ReplicaSet/reports-55b4fffc66
       conditions:
@@ -552,7 +552,7 @@ tools:
       - type: Normal
         reason: Scheduled
         object: Pod/reports-55b4fffc66-hmq7f
-        message: Successfully assigned demo/reports-55b4fffc66-hmq7f to aiops-control-plane
+        message: Successfully assigned demo/reports-55b4fffc66-hmq7f to squero-control-plane
         count: 1
         last_seen: 2m
       - type: Normal

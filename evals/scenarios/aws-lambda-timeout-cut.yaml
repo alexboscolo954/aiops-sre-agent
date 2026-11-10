@@ -944,6 +944,6 @@ tools:
       resources:
       - checkout
       error: null
-      request: '{"functionName": "checkout", "runtime": "python3.12", "role": "arn:aws:iam::123456789012:role/aiops-checkout-role",
+      request: '{"functionName": "checkout", "runtime": "python3.12", "role": "arn:aws:iam::123456789012:role/squero-checkout-role",
         "handler": "lambda_function.handler", "code": {}, "timeout": 10, "memorySize": 128, "publish":
         false, "environment": {}}'

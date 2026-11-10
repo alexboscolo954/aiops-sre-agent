@@ -37,7 +37,7 @@ tools:
       app:
         running_since: 44s
     last_terminated: {}
-    node: aiops-control-plane
+    node: squero-control-plane
     age: 44s
   - name: orders-api-568b7b8d9f-vzp22
     phase: Running
@@ -55,7 +55,7 @@ tools:
         exit_code: 1
         finished: 26s
         message: null
-    node: aiops-control-plane
+    node: squero-control-plane
     age: 2m
   kubernetes_list_deployments:
     result:
@@ -227,7 +227,7 @@ tools:
     result:
       name: inventory-b775d96fd-qq86l
       phase: Running
-      node: aiops-control-plane
+      node: squero-control-plane
       owner:
       - ReplicaSet/inventory-b775d96fd
       conditions:
@@ -267,7 +267,7 @@ tools:
       - type: Normal
         reason: Scheduled
         object: Pod/inventory-b775d96fd-qq86l
-        message: Successfully assigned orders/inventory-b775d96fd-qq86l to aiops-control-plane
+        message: Successfully assigned orders/inventory-b775d96fd-qq86l to squero-control-plane
         count: 1
         last_seen: 44s
       - type: Normal
@@ -300,7 +300,7 @@ tools:
     result:
       name: orders-api-568b7b8d9f-vzp22
       phase: Running
-      node: aiops-control-plane
+      node: squero-control-plane
       owner:
       - ReplicaSet/orders-api-568b7b8d9f
       conditions:
@@ -379,7 +379,7 @@ tools:
       - type: Normal
         reason: Scheduled
         object: Pod/orders-api-568b7b8d9f-vzp22
-        message: Successfully assigned orders/orders-api-568b7b8d9f-vzp22 to aiops-control-plane
+        message: Successfully assigned orders/orders-api-568b7b8d9f-vzp22 to squero-control-plane
         count: 1
         last_seen: 2m
       - type: Normal

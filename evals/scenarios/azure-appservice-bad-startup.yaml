@@ -42,8 +42,8 @@ tools:
       message: Success
       results:
         resources:
-        - name: aiops-plan
-          id: /subscriptions/00000000-0000-0000-0000-00000000a001/resourceGroups/shop-prod-rg/providers/Microsoft.Web/serverFarms/aiops-plan
+        - name: squero-plan
+          id: /subscriptions/00000000-0000-0000-0000-00000000a001/resourceGroups/shop-prod-rg/providers/Microsoft.Web/serverFarms/squero-plan
           type: Microsoft.Web/serverFarms
           location: centralus
         - name: shop-web
@@ -770,7 +770,7 @@ tools:
       message: Success
       results:
         statuses:
-        - resourceId: /subscriptions/00000000-0000-0000-0000-00000000a001/resourcegroups/shop-prod-rg/providers/microsoft.web/serverfarms/aiops-plan/providers/Microsoft.ResourceHealth/availabilityStatuses/current
+        - resourceId: /subscriptions/00000000-0000-0000-0000-00000000a001/resourcegroups/shop-prod-rg/providers/microsoft.web/serverfarms/squero-plan/providers/Microsoft.ResourceHealth/availabilityStatuses/current
           availabilityState: Available
           summary: The App Service plan is running normally.
           detailedStatus: null

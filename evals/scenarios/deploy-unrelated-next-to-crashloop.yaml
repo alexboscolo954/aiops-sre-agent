@@ -82,7 +82,7 @@ tools:
       pause:
         running_since: 2m
     last_terminated: {}
-    node: aiops-control-plane
+    node: squero-control-plane
     age: 2m
   - name: inventory-b775d96fd-rmlvd
     phase: Running
@@ -92,7 +92,7 @@ tools:
       app:
         running_since: 11m
     last_terminated: {}
-    node: aiops-control-plane
+    node: squero-control-plane
     age: 11m
   - name: orders-api-79cd5d49dc-28wnk
     phase: Running
@@ -108,7 +108,7 @@ tools:
         exit_code: 1
         finished: 3m
         message: null
-    node: aiops-control-plane
+    node: squero-control-plane
     age: 1h
   kubernetes_recent_changes:
   - when: 2m
@@ -133,7 +133,7 @@ tools:
     result:
       name: orders-api-79cd5d49dc-28wnk
       phase: Running
-      node: aiops-control-plane
+      node: squero-control-plane
       owner:
       - ReplicaSet/orders-api-79cd5d49dc
       conditions:
@@ -205,7 +205,7 @@ tools:
     result:
       name: audit-6cfdd68f8c-2xr5p
       phase: Running
-      node: aiops-control-plane
+      node: squero-control-plane
       owner:
       - ReplicaSet/audit-6cfdd68f8c
       conditions:
@@ -241,7 +241,7 @@ tools:
       - type: Normal
         reason: Scheduled
         object: Pod/audit-6cfdd68f8c-2xr5p
-        message: Successfully assigned orders/audit-6cfdd68f8c-2xr5p to aiops-control-plane
+        message: Successfully assigned orders/audit-6cfdd68f8c-2xr5p to squero-control-plane
         count: 1
         last_seen: 2m
       - type: Normal

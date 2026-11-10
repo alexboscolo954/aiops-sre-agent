@@ -1,0 +1,77 @@
+[
+  {
+    "scenario": "teaching-restores-from-secret",
+    "passed": true,
+    "failures": [],
+    "category": "bad_rollout",
+    "tool_calls": 6,
+    "seconds": 11.5,
+    "calls": [
+      "runbooks_runbook_for_alert",
+      "kubernetes_describe_pod",
+      "kubernetes_pod_logs",
+      "kubernetes_recent_changes",
+      "incidents_search",
+      "kubernetes_describe_deployment"
+    ],
+    "call_log": [
+      {
+        "name": "runbooks_runbook_for_alert",
+        "args": {
+          "alertname": "KubePodCrashLooping"
+        },
+        "error": false
+      },
+      {
+        "name": "kubernetes_describe_pod",
+        "args": {
+          "cluster": "kind",
+          "namespace": "demo",
+          "name": "checkout-869fc5bcc6-db5ps"
+        },
+        "error": false
+      },
+      {
+        "name": "kubernetes_pod_logs",
+        "args": {
+          "cluster": "kind",
+          "namespace": "demo",
+          "name": "checkout-869fc5bcc6-db5ps",
+          "container": null,
+          "tail_lines": 100,
+          "previous": true
+        },
+        "error": false
+      },
+      {
+        "name": "kubernetes_recent_changes",
+        "args": {
+          "cluster": "kind",
+          "since_minutes": 360
+        },
+        "error": false
+      },
+      {
+        "name": "incidents_search",
+        "args": {
+          "keywords": "checkout DATABASE_URL crashloop",
+          "days": 90,
+          "limit": 5
+        },
+        "error": false
+      },
+      {
+        "name": "kubernetes_describe_deployment",
+        "args": {
+          "cluster": "kind",
+          "namespace": "demo",
+          "name": "checkout"
+        },
+        "error": false
+      }
+    ],
+    "proposed": [],
+    "dropped_links": 0,
+    "report": "## The checkout pod is crash looping because revision 2 of the checkout deployment removed the DATABASE_URL env var from the app container. The app exits at startup with \"FATAL: required env var DATABASE_URL is not set\". Revision 1 had DATABASE_URL, so this is a bad rollout that dropped config.\n\n**Root cause** (high confidence, `bad_rollout`): Checkout revision 2 (ReplicaSet checkout-869fc5bcc6, created about 36-48s before triage) removed DATABASE_URL from the app container. Revision 1 (checkout-67d9799c78) had DATABASE_URL in its env; revision 2 has env: [] and env_from: []. The app logs \"FATAL: required env var DATABASE_URL is not set\" and exits with code 1 (Error), with restarts=3. The image (python:3.12-alpine) and resource limits are unchanged, so the missing env var is the cause.\n**Severity:** high  \u00b7  **Affected:** demo/Deployment/checkout, demo/Pod/checkout-869fc5bcc6-db5ps\n\n**Evidence**\n- `kubernetes_pod_logs`: Previous logs were gone; latest instance shows \"FATAL: required env var DATABASE_URL is not set\" followed by \"checkout starting, version 1.4.0\".\n- `kubernetes_describe_pod`: checkout-869fc5bcc6-db5ps container app: state terminated Error, exit_code 1, restarts 3, env [] and env_from [], Ready False (ContainersNotReady), BackOff events.\n- `kubernetes_recent_changes`: demo/checkout revision 2 rollout 48s ago: env_removed {app: [DATABASE_URL]}. Revision 1 was created 2m ago.\n- `kubernetes_describe_deployment`: rollout_history revision 1 (checkout-67d9799c78) config app env: [DATABASE_URL]; revision 2 (checkout-869fc5bcc6) config app env: []. Deployment Available=False, MinimumReplicasUnavailable, replicas ready 0 of 1.\n\n**Recommendations**\n1. Do not roll back the checkout deployment for this crash loop, per the Operator's teaching for this client.\n2. Restore DATABASE_URL on the checkout deployment's app container from secret checkout-db (for example, a secretKeyRef or envFrom for that secret, matching the key used in revision 1), then redeploy so a new revision starts.\n3. Verify the new pod reaches Ready and the checkout deployment shows Available=True, and that the restart count stops increasing.\n4. Check why the revision 2 manifest dropped DATABASE_URL (for example, a Helm values or GitOps change) so it does not recur.\n\nRunbook: `pod-crashlooping`"
+  }
+]

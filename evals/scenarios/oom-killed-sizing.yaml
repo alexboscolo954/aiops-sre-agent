@@ -45,7 +45,7 @@ tools:
         exit_code: 255
         finished: 9h
         message: null
-    node: aiops-control-plane
+    node: squero-control-plane
     age: 1d
   - name: api-696b5789fd-p5vgt
     phase: Running
@@ -60,7 +60,7 @@ tools:
         exit_code: 255
         finished: 9h
         message: null
-    node: aiops-control-plane
+    node: squero-control-plane
     age: 1d
   - name: api-696b5789fd-qdzj8
     phase: Running
@@ -75,7 +75,7 @@ tools:
         exit_code: 255
         finished: 9h
         message: null
-    node: aiops-control-plane
+    node: squero-control-plane
     age: 1d
   - name: api-696b5789fd-whxf7
     phase: Running
@@ -90,7 +90,7 @@ tools:
         exit_code: 255
         finished: 9h
         message: null
-    node: aiops-control-plane
+    node: squero-control-plane
     age: 1d
   - name: db-0
     phase: Running
@@ -105,7 +105,7 @@ tools:
         exit_code: 255
         finished: 9h
         message: null
-    node: aiops-control-plane
+    node: squero-control-plane
     age: 1d
   - name: idle-7974d8b67-29fgk
     phase: Running
@@ -120,7 +120,7 @@ tools:
         exit_code: 255
         finished: 9h
         message: null
-    node: aiops-control-plane
+    node: squero-control-plane
     age: 1d
   - name: leaky-8555f7bc7c-mtzbj
     phase: Running
@@ -135,7 +135,7 @@ tools:
         exit_code: 137
         finished: 27m
         message: null
-    node: aiops-control-plane
+    node: squero-control-plane
     age: 1d
   - name: report-29879850-z8g4n
     phase: Succeeded
@@ -148,7 +148,7 @@ tools:
         finished: 14m
         message: null
     last_terminated: {}
-    node: aiops-control-plane
+    node: squero-control-plane
     age: 15m
   - name: report-29879860-8wxrn
     phase: Succeeded
@@ -161,7 +161,7 @@ tools:
         finished: 4m
         message: null
     last_terminated: {}
-    node: aiops-control-plane
+    node: squero-control-plane
     age: 5m
   - name: spiky-db64d8d85-5hbzf
     phase: Running
@@ -176,7 +176,7 @@ tools:
         exit_code: 255
         finished: 9h
         message: null
-    node: aiops-control-plane
+    node: squero-control-plane
     age: 1d
   - name: throttled-64f4d747c5-k86kl
     phase: Running
@@ -191,7 +191,7 @@ tools:
         exit_code: 255
         finished: 9h
         message: null
-    node: aiops-control-plane
+    node: squero-control-plane
     age: 1d
   - name: web-57d6b698f9-jkrpv
     phase: Running
@@ -206,7 +206,7 @@ tools:
         exit_code: 255
         finished: 9h
         message: null
-    node: aiops-control-plane
+    node: squero-control-plane
     age: 1d
   - name: web-57d6b698f9-t9f9n
     phase: Running
@@ -221,7 +221,7 @@ tools:
         exit_code: 255
         finished: 9h
         message: null
-    node: aiops-control-plane
+    node: squero-control-plane
     age: 1d
   kubernetes_list_deployments:
   - name: api
@@ -268,7 +268,7 @@ tools:
     result:
       name: leaky-8555f7bc7c-mtzbj
       phase: Running
-      node: aiops-control-plane
+      node: squero-control-plane
       owner:
       - ReplicaSet/leaky-8555f7bc7c
       conditions:
