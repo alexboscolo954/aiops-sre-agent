@@ -456,6 +456,10 @@ def advance(core: Any, apps: Any, key: str, h: dict[str, Any], now: float) -> Ac
     return None
 
 
+def texts(requests: dict[str, str]) -> str:
+    return ", ".join(f"{r} {q}" for r, q in sorted(requests.items()))
+
+
 def baseline(pod: Any, container: str, at: float) -> dict[str, Any]:
     """What a pod was when it was resized: a later restart is counted from here."""
     return {"at": at, "restarts": restarts_of(pod, container)}
@@ -530,7 +534,9 @@ def rollback(core: Any, apps: Any, key: str, h: dict[str, Any], why_: str, now: 
     for k in ROLLOUT + WATCHED:
         h.pop(k, None)
     h.update(outcome="rolled_back", rollbacks=rollbacks, backoff_until=until)
-    reason = f"{why_}: {done} pods back to their template's requests"
+    reason = f"{why_}: {done} pods back from {texts(h['requests'])}"
+    if back:
+        reason += f" to their template's {texts(back)}"
     if unset:
         reason += f" ({unset} left: the template sets none)"
     if refused:
@@ -576,7 +582,7 @@ def event(core: Any, a: Actuation) -> None:
             api_version="apps/v1", kind=a.kind, name=a.name, namespace=a.namespace
         ),
         reason=EVENTS[a.outcome],
-        message=f"{a.container}: {values or GONE.get(a.outcome, 'no change')} "
+        message=f"{a.container}: {GONE.get(a.outcome) or values or 'no change'} "
         f"(Approved Sizing, run {a.run_id}): "
         f"{a.reason}"[:1024],
         type="Warning" if a.outcome in ("failed", "rolled_back") else "Normal",
@@ -822,7 +828,7 @@ class Actuator:
         if not self.killed:  # the Actuator undoes its own harm, the Hub reachable or not
             done += self.watch()
         if desired is not None and not self.killed:  # the Hub's word: rollouts go on
-            done += self.advance() + self.act(desired.sizings)
+            done += self.advance() + self.act(desired.sizings) + self.catch_up()
         rolling = any(h.get("outcome") == "rolling" or "pods" in h for h in self.held.values())
         if done or rolling:
             self.save()
@@ -856,6 +862,43 @@ class Actuator:
                     log.info("%s %s: %s", a.outcome, key, a.reason)
                     event(self.core, a)
                     out.append(a)
+        return out
+
+    def catch_up(self) -> list[Actuation]:
+        """Pods that started from their template while it held a Sizing (the Kill switch on,
+        or the Actuator down: its webhook fails open) get its requests again: the pre-checks
+        again, then a canary and one pod at a time, as a new approval would. The pods it
+        is still watching stay watched."""
+        out = []
+        for key, h in self.held.items():
+            if h.get("outcome") != "applied":
+                continue
+            ns, kind, name, container = key.split("/")
+            try:
+                pods = pods_of(self.core, self.apps, self.apps.read_namespaced_deployment(name, ns))
+            except ApiException as e:
+                log.warning("checking %s: %s", key, why(e))
+                continue
+            behind = [p.metadata.name for p in pods if needs(p, container, h["requests"])]
+            if not behind:
+                continue
+            values = {r: float(qty(q)) for r, q in h["requests"].items()}
+            w = Wanted(
+                run_id=h["run_id"], namespace=ns, kind=kind, name=name, container=container,
+                cpu=values.get("cpu"), memory=values.get("memory"),
+            )  # fmt: skip
+            a, new = apply(self.core, self.apps, w, time.time(), self.autoscaling, self.custom)
+            kept = {k: h[k] for k in ("rollbacks", "backoff_until", "watch_until") if k in h}
+            watched = (h.get("pods") or {}) | (new.get("pods") or {})
+            if watched:
+                new["pods"] = watched
+            self.held[key] = new | kept
+            if a is None:
+                log.info("catching up %s: %s from its template", key, ", ".join(behind))
+                continue
+            log.info("%s %s: %s", a.outcome, key, a.reason)
+            event(self.core, a)
+            out.append(a)
         return out
 
     def hand_back(self) -> list[Actuation]:

@@ -287,7 +287,8 @@ def cluster(
     core.list_namespaced_pod.return_value = k.V1PodList(items=pods)
 
     def patch(name: str, ns: str, body: Any) -> None:
-        c = next(p for p in pods if p.metadata.name == name).spec.containers[0]
+        live = core.list_namespaced_pod.return_value.items  # pods added later included
+        c = next(p for p in live if p.metadata.name == name).spec.containers[0]
         c.resources.requests = {
             **c.resources.requests,
             **body["spec"]["containers"][0]["resources"]["requests"],
@@ -734,6 +735,8 @@ def test_what_it_applied_survives_a_restart() -> None:
     core.read_namespaced_config_map.return_value = k.V1ConfigMap(
         data={actuator.KEY: json.dumps(held)}
     )
+    for p in core.list_namespaced_pod.return_value.items:  # as it left them
+        p.spec.containers[0].resources.requests = dict(held[KEY]["requests"])
     a = make(hub_of([desired(1)], []), core, apps)
     a.load()
     a.step()
@@ -1078,7 +1081,7 @@ def test_a_rollback_puts_its_pods_back_and_backs_off_doubling() -> None:
     assert resized(core) == [("api-1-a", body(cpu="1")), ("api-1-b", body(cpu="1"))]
     assert (first.outcome, first.pods, first.cpu) == ("rolled_back", 2, 1.0)
     assert first.reason == (
-        "api-1-a: app restarted: 2 pods back to their template's requests; "
+        "api-1-a: app restarted: 2 pods back from cpu 115m to their template's cpu 1; "
         "no new Sizing of it until 1970-01-02 02:00 UTC"
     )
     assert h == {
@@ -1101,7 +1104,8 @@ def test_a_rollback_puts_its_pods_back_and_backs_off_doubling() -> None:
     h["template"] = {"cpu": None}  # the template asked no cpu: nothing to put back
     core.patch_namespaced_pod_resize.reset_mock()
     unset = actuator.rollback(core, apps, KEY, h, "x", 0.0)
-    assert not resized(core) and "(['cpu'] left: the template sets none)" in unset.reason
+    assert not resized(core)
+    assert unset.reason.startswith("x: 0 pods back from cpu 115m (['cpu'] left: the template sets")
     core, apps = cluster()
     h = watched(core, apps)
     core.patch_namespaced_pod_resize.side_effect = refusal(403, "forbidden")
@@ -1110,6 +1114,8 @@ def test_a_rollback_puts_its_pods_back_and_backs_off_doubling() -> None:
     actuator.event(core, refused)
     shown = core.create_namespaced_event.call_args.args[1]
     assert (shown.reason, shown.type) == ("SizingRolledBack", "Warning")
+    # what it went back to is in the reason; the values never read as the ones approved
+    assert shown.message.startswith("app: back to its template (Approved Sizing, run 1): x: 0 pods")
 
 
 def test_an_unhealthy_rollout_is_rolled_back_and_the_next_approval_waits(
@@ -1194,3 +1200,48 @@ def test_a_rollback_reaches_the_operators_channel_once(
             "api-1-a: app was OOM-killed: 2 pods back",
         )
     ]
+
+
+def test_pods_that_missed_the_held_requests_get_them_again(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A pod started from its template while the Kill switch was on (or the webhook down)
+    gets the Sizing again once the Actuator may change things: the pre-checks, a canary,
+    and the pods it already watched stay watched (found live, 2026-11-10)."""
+    monkeypatch.setattr(actuator, "CANARY_SECONDS", 0)
+    core, apps = cluster()
+    h = watched(core, apps)
+    h["watch_until"], h["rollbacks"] = 10**12, [5.0]
+    seen: list[httpx.Request] = []
+    a = make(hub_of([desired(1, killed=True), *[desired(1)] * 6], seen), core, apps)
+    a.held = {KEY: h}
+    core.patch_namespaced_pod_resize.reset_mock()
+    late = pod("api-1-c", "api-1")  # from the template: cpu 1
+    late.metadata.namespace = "shop"
+    core.list_namespaced_pod.return_value.items.append(late)
+    a.step()  # the Kill switch: left as it is
+    assert not resized(core) and a.held[KEY]["outcome"] == "applied"
+    a.step()  # off: it catches up, as a canary
+    assert resized(core) == [("api-1-c", body(cpu="115m"))]
+    now = a.held[KEY]
+    assert (now["outcome"], now["pod"], now["watch_until"]) == ("rolling", "api-1-c", 10**12)
+    assert set(now["pods"]) == {"api-1-a", "api-1-b", "api-1-c"}  # still watched
+    assert now["rollbacks"] == [5.0]  # kept for the doubling
+    a.step()  # allocated: applied again
+    a.step()  # nothing behind: nothing to do
+    assert len(resized(core)) == 1 and a.held[KEY]["outcome"] == "applied"
+    posted = [x for r in seen if r.method == "POST" for x in json.loads(r.content)]
+    assert [(x["run_id"], x["outcome"], x["pods"]) for x in posted] == [(1, "applied", 1)]
+    # A pre-check that fails now (a VPA since) ends the hold: reported, never resized.
+    behind = pod("api-1-d", "api-1")
+    behind.metadata.namespace = "shop"
+    core.list_namespaced_pod.return_value.items.append(behind)
+    vpa = {"spec": {"targetRef": {"kind": "Deployment", "name": "api"}}}
+    a.custom = scalers(vpas=[vpa])[1]
+    a.step()
+    assert len(resized(core)) == 1 and a.held[KEY]["outcome"] == "skipped"
+    last = json.loads([r for r in seen if r.method == "POST"][-1].content)[0]
+    assert (last["outcome"], last["reason"]) == ("skipped", "a VPA in mode Auto sizes it")
+    a.custom = scalers()[1]
+    a.step()  # no longer held: never caught up
+    a.held[KEY]["outcome"] = "rolled_back"
+    a.step()  # rolled back: never caught up either
+    assert len(resized(core)) == 1
