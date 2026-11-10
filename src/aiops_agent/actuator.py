@@ -60,7 +60,13 @@ WEBHOOK_PORT = 8443
 MAX_REVIEW = 1024 * 1024  # bytes: an AdmissionReview of one pod is far smaller
 CANARY_SECONDS = 600  # the first pod resized is watched this long before the others
 WAIT_SECONDS = 600  # how long one pod's resize may take, Deferred included
-Outcome = Literal["applied", "skipped", "failed", "handed_back"]  # held also: "rolling"
+WATCH_SECONDS = 3600  # resized pods are watched this long for a rollback (slice 12.4)
+NOT_READY_SECONDS = 120  # a resized pod NotReady this long is a reason to roll back
+BACKOFF_SECONDS = 86400  # after a rollback, no new Sizing of that container this long, doubling
+ROLLBACKS_FOR = 7 * 86400  # how far back rollbacks count for the doubling
+ROLLOUT = ("pod", "since", "canary_until", "resized", "notes")  # held while rolling
+WATCHED = ("pods", "watch_until")  # held while watched
+Outcome = Literal["applied", "skipped", "failed", "handed_back", "rolled_back"]  # also "rolling"
 
 
 class ActuatorSettings(BaseSettings):
@@ -383,6 +389,7 @@ def apply(
     _, held = done("applied", 1, "")
     held |= {
         "outcome": "rolling",
+        "pods": {todo[0].metadata.name: baseline(todo[0], w.container, at)},
         "pod": todo[0].metadata.name,
         "since": at,
         "canary_until": at + CANARY_SECONDS,
@@ -401,8 +408,9 @@ def advance(core: Any, apps: Any, key: str, h: dict[str, Any], now: float) -> Ac
 
     def end(outcome: Outcome, reason: str) -> Actuation:
         h["outcome"] = outcome
-        for k in ("pod", "since", "canary_until", "resized", "notes"):
+        for k in ROLLOUT:
             h.pop(k, None)
+        h["watch_until"] = now + WATCH_SECONDS  # the pods resized, applied or not
         return Actuation(
             namespace=ns,
             kind=kind,
@@ -444,7 +452,102 @@ def advance(core: Any, apps: Any, key: str, h: dict[str, Any], now: float) -> Ac
     except ApiException as e:
         return end("failed", f"resizing its next pod: {why(e)}")
     h.update(pod=todo[0].metadata.name, since=now, resized=resized + 1)
+    h.setdefault("pods", {})[todo[0].metadata.name] = baseline(todo[0], container, now)
     return None
+
+
+def baseline(pod: Any, container: str, at: float) -> dict[str, Any]:
+    """What a pod was when it was resized: a later restart is counted from here."""
+    return {"at": at, "restarts": restarts_of(pod, container)}
+
+
+def restarts_of(pod: Any, container: str) -> int:
+    st = container_status(pod, container)
+    return int(st.restart_count or 0) if st else 0
+
+
+def container_status(pod: Any, container: str) -> Any:
+    statuses = (pod.status.container_statuses if pod.status else None) or []
+    return next((s for s in statuses if s.name == container), None)
+
+
+def trouble(core: Any, apps: Any, key: str, h: dict[str, Any], now: float) -> str | None:
+    """Why the Sizing held as `h` made its pods unhealthy (slice 12.4), or None: a pod with
+    its requests whose container restarted (an OOM kill named as one) since it got them, or
+    a pod it resized that has been NotReady for 2 minutes since. Throttling is not one."""
+    ns, _, name, container = key.split("/")
+    try:
+        pods = pods_of(core, apps, apps.read_namespaced_deployment(name, ns))
+    except ApiException as e:
+        log.warning("watching %s: %s", key, why(e))
+        return None
+    seen = h.get("pods") or {}
+    for p in pods:
+        if needs(p, container, h["requests"]):
+            continue  # not the Actuator's requests: not its doing
+        st = container_status(p, container)
+        mine = seen.get(p.metadata.name) or {"at": 0.0, "restarts": 0}  # new: from the webhook
+        if st and (st.restart_count or 0) > mine["restarts"]:
+            ended = st.last_state.terminated if st.last_state else None
+            what = "was OOM-killed" if ended and ended.reason == "OOMKilled" else "restarted"
+            return f"{p.metadata.name}: {container} {what}"
+        if p.metadata.name not in seen:
+            continue  # a new pod may take its time to be Ready
+        for c in (p.status.conditions if p.status else None) or []:
+            since = c.last_transition_time.timestamp() if c.last_transition_time else None
+            if (
+                c.type == "Ready"
+                and c.status != "True"
+                and since is not None
+                and since >= mine["at"]
+                and now - since >= NOT_READY_SECONDS
+            ):
+                return f"{p.metadata.name}: NotReady for {NOT_READY_SECONDS // 60} minutes"
+    return None
+
+
+def rollback(core: Any, apps: Any, key: str, h: dict[str, Any], why_: str, now: float) -> Actuation:
+    """Every pod with the Actuator's requests back to its template's, in place and at once;
+    then no new Sizing of that container for 24 hours, doubling with each rollback in 7 days."""
+    ns, kind, name, container = key.split("/")
+    had = h.get("template") or {}
+    back = {r: had[r] for r in h["requests"] if had.get(r) is not None}
+    unset = sorted(r for r in h["requests"] if had.get(r) is None)
+    done, refused = 0, []
+    try:
+        pods = pods_of(core, apps, apps.read_namespaced_deployment(name, ns))
+    except ApiException as e:
+        pods, refused = [], [f"listing its pods: {why(e)}"]
+    for p in pods:
+        if back and not needs(p, container, h["requests"]):
+            try:
+                resize(core, p, container, back)
+                done += 1
+            except ApiException as e:
+                refused.append(f"{p.metadata.name}: {why(e)}")
+    rollbacks = [t for t in h.get("rollbacks") or [] if now - t < ROLLBACKS_FOR] + [now]
+    until = now + BACKOFF_SECONDS * 2 ** (len(rollbacks) - 1)
+    for k in ROLLOUT + WATCHED:
+        h.pop(k, None)
+    h.update(outcome="rolled_back", rollbacks=rollbacks, backoff_until=until)
+    reason = f"{why_}: {done} pods back to their template's requests"
+    if unset:
+        reason += f" ({unset} left: the template sets none)"
+    if refused:
+        reason += f"; {len(refused)} refused, first {refused[0]}"
+    reason += f"; no new Sizing of it until {datetime.fromtimestamp(until, UTC):%Y-%m-%d %H:%M} UTC"
+    return Actuation(
+        namespace=ns,
+        kind=kind,
+        name=name,
+        container=container,
+        run_id=h["run_id"],
+        outcome="rolled_back",
+        pods=done,
+        reason=reason[:1000],
+        at=now,
+        **{r: float(qty(q)) for r, q in back.items()},
+    )
 
 
 EVENTS = {
@@ -452,10 +555,11 @@ EVENTS = {
     "skipped": "SizingSkipped",
     "failed": "SizingFailed",
     "handed_back": "HandedBack",
+    "rolled_back": "SizingRolledBack",
 }
 
 
-GONE = {"handed_back": "back to its template"}
+GONE = {"handed_back": "back to its template", "rolled_back": "back to its template"}
 
 
 def event(core: Any, a: Actuation) -> None:
@@ -475,7 +579,7 @@ def event(core: Any, a: Actuation) -> None:
         message=f"{a.container}: {values or GONE.get(a.outcome, 'no change')} "
         f"(Approved Sizing, run {a.run_id}): "
         f"{a.reason}"[:1024],
-        type="Warning" if a.outcome == "failed" else "Normal",
+        type="Warning" if a.outcome in ("failed", "rolled_back") else "Normal",
         source=client.V1EventSource(component="aiops-actuator"),
         reporting_component="aiops-actuator",
         first_timestamp=now,
@@ -715,13 +819,33 @@ class Actuator:
             self.killed = desired.kill_switch
             log.warning("the Kill switch is %s", "on" if self.killed else "off")
         done = self.hand_back()
+        if not self.killed:  # the Actuator undoes its own harm, the Hub reachable or not
+            done += self.watch()
         if desired is not None and not self.killed:  # the Hub's word: rollouts go on
             done += self.advance() + self.act(desired.sizings)
-        rolling = any(h.get("outcome") == "rolling" for h in self.held.values())
+        rolling = any(h.get("outcome") == "rolling" or "pods" in h for h in self.held.values())
         if done or rolling:
             self.save()
         self.unsent += done
         self.report()
+
+    def watch(self) -> list[Actuation]:
+        """Roll back each Sizing that made its pods unhealthy within its hour (slice 12.4)."""
+        out, now = [], time.time()
+        for key, h in self.held.items():
+            if "pods" not in h:
+                continue
+            if h.get("outcome") != "rolling" and now >= h.get("watch_until", 0):
+                for k in WATCHED:  # its hour is over: kept, no longer watched
+                    h.pop(k, None)
+                continue
+            reason = trouble(self.core, self.apps, key, h, now)
+            if reason:
+                a = rollback(self.core, self.apps, key, h, reason, now)
+                log.warning("rolled back %s: %s", key, a.reason)
+                event(self.core, a)
+                out.append(a)
+        return out
 
     def advance(self) -> list[Actuation]:
         out = []
@@ -744,7 +868,7 @@ class Actuator:
                 if reason is None:
                     continue
                 ns, kind, name, container = key.split("/")
-                for k in ("pod", "since", "canary_until", "resized", "notes"):
+                for k in ROLLOUT + WATCHED:
                     h.pop(k, None)
                 h["outcome"] = "handed_back"
                 a = Actuation(
@@ -793,11 +917,33 @@ class Actuator:
         out = []
         for w in sizings:
             key = "/".join((w.namespace, w.kind, w.name, w.container))
-            if self.held.get(key, {}).get("run_id", -1) >= w.run_id:
+            old = self.held.get(key, {})
+            if old.get("run_id", -1) >= w.run_id:
                 continue
-            a, self.held[key] = apply(
-                self.core, self.apps, w, time.time(), self.autoscaling, self.custom
-            )
+            carry: dict[str, Any] = {k: old[k] for k in ("rollbacks", "backoff_until") if k in old}
+            now = time.time()
+            a: Actuation | None
+            if now < old.get("backoff_until", 0):
+                until = datetime.fromtimestamp(old["backoff_until"], UTC)
+                a = Actuation(
+                    **w.model_dump(exclude={"cpu", "memory"}),
+                    outcome="skipped",
+                    pods=0,
+                    reason=f"rolled back {len(old.get('rollbacks') or [])} times in 7 days: "
+                    f"no new Sizing of it until {until:%Y-%m-%d %H:%M} UTC",
+                    at=now,
+                )
+                self.held[key] = {
+                    "run_id": w.run_id,
+                    "outcome": "skipped",
+                    "requests": {},
+                    "template": {},
+                    "at": now,
+                    **carry,
+                }
+            else:
+                a, new = apply(self.core, self.apps, w, now, self.autoscaling, self.custom)
+                self.held[key] = new | carry
             if a is None:
                 log.info("rolling %s: canary %s", key, self.held[key]["pod"])
                 continue

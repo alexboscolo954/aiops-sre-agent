@@ -362,6 +362,7 @@ def test_a_canary_first_then_one_pod_at_a_time_never_above_the_limit() -> None:
         "requests": {"cpu": "115m", "memory": "64Mi"},
         "template": {"cpu": "1", "memory": None},  # what a person's change is told from
         "at": 0.0,
+        "pods": {"api-1-a": {"at": 0.0, "restarts": 0}},  # watched from its resize (12.4)
         "pod": "api-1-a",
         "since": 0.0,
         "canary_until": 600.0,
@@ -390,6 +391,8 @@ def test_a_canary_first_then_one_pod_at_a_time_never_above_the_limit() -> None:
         "requests": {"cpu": "115m", "memory": "64Mi"},
         "template": {"cpu": "1", "memory": None},
         "at": 0.0,
+        "pods": {n: {"at": t, "restarts": 0} for n, t in (("api-1-a", 0.0), ("api-1-b", 600.0))},
+        "watch_until": 660.0 + 3600,  # an hour for a rollback
     }
     labels = apps.list_namespaced_replica_set.call_args.kwargs["label_selector"]
     assert labels == "app=api" == core.list_namespaced_pod.call_args.kwargs["label_selector"]
@@ -684,7 +687,7 @@ def test_a_rollout_goes_on_only_while_the_hub_answers_and_the_kill_switch_is_off
     assert all(r.headers["authorization"] == f"Bearer {A_TOKEN}" for r in seen)
     held = json.loads(core.replace_namespaced_config_map.call_args.args[2].data[actuator.KEY])
     assert held[KEY]["outcome"] == "applied"
-    assert core.replace_namespaced_config_map.call_count == 5  # each step while rolling, then done
+    assert core.replace_namespaced_config_map.call_count == 7  # each step while rolling or watched
     events = [c.args[1] for c in core.create_namespaced_event.call_args_list]
     assert [(e.reason, e.type, e.involved_object.name) for e in events] == [
         ("SizingApplied", "Normal", "api")
@@ -1001,3 +1004,193 @@ def test_a_person_changing_the_template_gets_the_container_back() -> None:
     apps.read_namespaced_deployment.side_effect = ApiException(status=500)
     a.held = {KEY: {**HELD[KEY]}}
     assert a.hand_back() == []  # the API server failing is no change by a person
+
+
+# --- rollback (slice 12.4) ----------------------------------------------------------------
+
+
+def unhealthy(
+    p: Any, restarts: int = 0, oom: bool = False, ready: bool = True, since: float = 0.0
+) -> Any:
+    """`p` as the kubelet reports it: its container's restarts, last end, Ready since `since`."""
+    ended = k.V1ContainerStateTerminated(exit_code=137, reason="OOMKilled" if oom else "Error")
+    st = status("app", None)
+    st.restart_count, st.last_state = restarts, k.V1ContainerState(terminated=ended)
+    when = datetime.fromtimestamp(since, UTC)
+    ready_now = k.V1PodCondition(
+        type="Ready", status="True" if ready else "False", last_transition_time=when
+    )
+    p.status = k.V1PodStatus(phase="Running", conditions=[ready_now], container_statuses=[st])
+    return p
+
+
+def watched(core: Any, apps: Any, at: float = 1000.0) -> dict[str, Any]:
+    """api's Sizing applied on both pods at `at`, each with no restart then."""
+    _, h = start(core, apps, wanted(memory=None))
+    actuator.advance(core, apps, KEY, h, 600.0)
+    actuator.advance(core, apps, KEY, h, 660.0)
+    assert h["outcome"] == "applied"
+    h["pods"] = {n: {"at": at, "restarts": 0} for n in ("api-1-a", "api-1-b")}
+    return h
+
+
+def test_what_makes_a_sizing_unhealthy_and_what_does_not() -> None:
+    core, apps = cluster()
+    h = watched(core, apps)
+    a, b = core.list_namespaced_pod.return_value.items[:2]
+
+    def found(now: float = 2000.0) -> str | None:
+        return actuator.trouble(core, apps, KEY, h, now)
+
+    assert found() is None  # healthy
+    unhealthy(a, restarts=1, oom=True)
+    assert found() == "api-1-a: app was OOM-killed"
+    unhealthy(a, restarts=1)
+    assert found() == "api-1-a: app restarted"
+    h["pods"]["api-1-a"]["restarts"] = 1  # it had restarted once before it was resized
+    assert found() is None
+    unhealthy(b, ready=False, since=1500.0)
+    assert found(1619.0) is None and found(1620.0) == "api-1-b: NotReady for 2 minutes"
+    unhealthy(b, ready=True, since=1500.0)  # Ready again since: fine
+    assert found() is None
+    unhealthy(b, ready=False, since=900.0)  # NotReady since before its resize: not its doing
+    assert found() is None
+    unhealthy(b)
+    new = pod("api-1-c", "api-1", cpu="115m")  # created by the webhook, with its requests
+    core.list_namespaced_pod.return_value.items.append(new)
+    unhealthy(new, ready=False, since=0.0)
+    assert found() is None  # a new pod may take its time to be Ready
+    unhealthy(new, restarts=1)
+    assert found() == "api-1-c: app restarted"
+    other = pod("api-1-d", "api-1")  # the template's requests: not the Actuator's doing
+    core.list_namespaced_pod.return_value.items[-1] = unhealthy(other, restarts=5, oom=True)
+    assert found() is None
+    apps.read_namespaced_deployment.side_effect = ApiException(status=500)
+    assert found() is None
+
+
+def test_a_rollback_puts_its_pods_back_and_backs_off_doubling() -> None:
+    core, apps = cluster()
+    h = watched(core, apps)
+    core.patch_namespaced_pod_resize.reset_mock()
+    h["template"] = {"cpu": "1"}
+    first = actuator.rollback(core, apps, KEY, h, "api-1-a: app restarted", 7200.0)
+    assert resized(core) == [("api-1-a", body(cpu="1")), ("api-1-b", body(cpu="1"))]
+    assert (first.outcome, first.pods, first.cpu) == ("rolled_back", 2, 1.0)
+    assert first.reason == (
+        "api-1-a: app restarted: 2 pods back to their template's requests; "
+        "no new Sizing of it until 1970-01-02 02:00 UTC"
+    )
+    assert h == {
+        "run_id": 1,
+        "outcome": "rolled_back",
+        "requests": {"cpu": "115m"},
+        "template": {"cpu": "1"},
+        "at": 0.0,
+        "rollbacks": [7200.0],
+        "backoff_until": 7200.0 + 86400,
+    }
+    h["rollbacks"] = [0.0, 7200.0]
+    later = 7 * 86400.0 + 100  # the one at 0 is over 7 days old, the one at 7200 not
+    again = actuator.rollback(core, apps, KEY, h, "x", later)
+    assert h["rollbacks"] == [7200.0, later]
+    assert h["backoff_until"] == later + 2 * 86400  # the second in 7 days: two days
+    assert again.pods == 0  # already back
+    core, apps = cluster()
+    h = watched(core, apps)
+    h["template"] = {"cpu": None}  # the template asked no cpu: nothing to put back
+    core.patch_namespaced_pod_resize.reset_mock()
+    unset = actuator.rollback(core, apps, KEY, h, "x", 0.0)
+    assert not resized(core) and "(['cpu'] left: the template sets none)" in unset.reason
+    core, apps = cluster()
+    h = watched(core, apps)
+    core.patch_namespaced_pod_resize.side_effect = refusal(403, "forbidden")
+    refused = actuator.rollback(core, apps, KEY, h, "x", 0.0)
+    assert refused.pods == 0 and "2 refused, first api-1-a: 403: forbidden" in refused.reason
+    actuator.event(core, refused)
+    shown = core.create_namespaced_event.call_args.args[1]
+    assert (shown.reason, shown.type) == ("SizingRolledBack", "Warning")
+
+
+def test_an_unhealthy_rollout_is_rolled_back_and_the_next_approval_waits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(actuator, "CANARY_SECONDS", 0)
+    core, apps = cluster()
+    seen: list[httpx.Request] = []
+    answers = [
+        desired(1),  # the canary
+        httpx.Response(503),  # the canary restarts: rolled back, the Hub down or not
+        desired(1, 2),  # a newer approval during the backoff: skipped
+        desired(2, 3),  # after the backoff: applied
+    ]
+    a = make(hub_of(answers, seen), core, apps)
+    a.step()
+    canary = core.list_namespaced_pod.return_value.items[0]
+    core.read_namespaced_pod.side_effect = None
+    core.read_namespaced_pod.return_value = unhealthy(canary, restarts=1, oom=True)
+    a.step()
+    assert a.held[KEY]["outcome"] == "rolled_back"
+    assert [n for n, _ in resized(core)] == ["api-1-a", "api-1-a"]  # resized, then back
+    a.step()
+    assert a.held[KEY]["outcome"] == "skipped" and a.held[KEY]["rollbacks"]
+    a.held[KEY]["backoff_until"] = 0.0
+    unhealthy(canary)  # healthy again
+    a.step()
+    assert a.held[KEY]["run_id"] == 3 and a.held[KEY]["outcome"] == "rolling"
+    assert a.held[KEY]["rollbacks"]  # kept for the doubling
+    posted = [x for r in seen if r.method == "POST" for x in json.loads(r.content)]
+    assert [(x["run_id"], x["outcome"]) for x in posted] == [(1, "rolled_back"), (2, "skipped")]
+    assert posted[0]["reason"].startswith("api-1-a: app was OOM-killed: 1 pods back")
+    assert posted[1]["reason"].startswith("rolled back 1 times in 7 days: no new Sizing of it")
+
+
+def test_no_rollback_under_the_kill_switch_and_none_once_its_hour_is_over() -> None:
+    core, apps = cluster()
+    h = watched(core, apps)
+    unhealthy(core.list_namespaced_pod.return_value.items[0], restarts=1)
+    a = make(hub_of([desired(1, killed=True), httpx.Response(503)], []), core, apps)
+    a.held = {KEY: h}
+    h["watch_until"] = 10**12
+    a.step()  # the Kill switch: nothing changes, not even a rollback
+    assert h["outcome"] == "applied"
+    h["watch_until"] = 0.0
+    a.killed = False
+    a.step()  # its hour is over: no longer watched
+    assert h["outcome"] == "applied" and "pods" not in h and "watch_until" not in h
+
+
+def test_a_rollback_reaches_the_operators_channel_once(
+    settings: Settings, database_url: str
+) -> None:
+    from tests.test_slack import TOKEN, FakeSlack
+
+    settings.slack_bot_token = SecretStr(TOKEN)
+    slack = FakeSlack()
+    channel = {"slack": {"operator_channel": "C0123456789"}}
+    acme = contracts.build(
+        {**actuated("acme", A_TOKEN).model_dump(mode="json", exclude_none=True), **channel},
+        secrets={"act": SecretStr(A_TOKEN), "r": SecretStr("r" * 40)},
+    )
+    settings.database_url = SecretStr(database_url)
+    settings.approver_token = SecretStr("approver-token")
+    app = create_app(
+        settings,
+        scripted(),
+        lambda c: None,
+        {"acme": acme, "bank": actuated("bank", B_TOKEN)},
+        slack_http=httpx.AsyncClient(transport=slack.transport()),
+    )
+    back = report(outcome="rolled_back", reason="api-1-a: app was OOM-killed: 2 pods back")
+    with TestClient(app) as c:
+        for _ in range(2):  # sent again: posted once
+            c.post("/actuator/reports", json=[back, report(at=1.0)], headers=as_actuator(A_TOKEN))
+        c.post("/actuator/reports", json=[back], headers=as_actuator(B_TOKEN))  # no Slack
+    posts = [p for m, p, _ in slack.calls if m == "chat.postMessage"]
+    assert [(p["channel"], p["text"]) for p in posts] == [
+        (
+            "C0123456789",
+            ":rewind: acme: the Actuator rolled back test/shop/Deployment/api container app: "
+            "api-1-a: app was OOM-killed: 2 pods back",
+        )
+    ]

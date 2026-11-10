@@ -173,9 +173,9 @@ async def test_recent_changes_reads_gitops_objects_of_its_own_namespaces(
 async def test_the_actuator_resizes_a_deployment_in_place_without_a_restart(
     live: contracts.Contract,
 ) -> None:
-    """Slices 12.1 and 12.3 on a real cluster: inventory's pod takes 5m more CPU each run, the
-    kubelet allocates it (the pod's status, not just the API server's yes), and it never
-    restarts."""
+    """Slices 12.1, 12.3 and 12.4 on a real cluster: inventory's pod takes 5m more CPU than it
+    has, the kubelet allocates it (the pod's status, not just the API server's yes),
+    it is rolled back to the template's, and it never restarts."""
     import time
 
     import anyio
@@ -216,6 +216,18 @@ async def test_the_actuator_resizes_a_deployment_in_place_without_a_restart(
         pytest.fail(f"the kubelet never allocated {actuator.cpu_text(cpu)}: {message}")
     status = p.status.container_statuses[0]
     assert p.metadata.uid == before.metadata.uid and status.restart_count == restarts
+    # Slice 12.4: rolled back, in place, to the template's requests (no restart either).
+    back = actuator.rollback(core, apps, "orders/Deployment/inventory/app", held, "a test", 0.0)
+    assert (back.outcome, back.pods) == ("rolled_back", 1), back.reason
+    template = {"cpu": held["template"]["cpu"]}
+    for _ in range(60):
+        p = core.read_namespaced_pod(before.metadata.name, "orders")
+        if actuator.resize_state(p, "app", template)[0] == "done":
+            break
+        await anyio.sleep(1)
+    else:
+        pytest.fail(f"never back to {template}")
+    assert p.status.container_statuses[0].restart_count == restarts
 
 
 async def test_record_eval_fixtures(live: contracts.Contract) -> None:

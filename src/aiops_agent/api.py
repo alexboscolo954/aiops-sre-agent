@@ -1638,9 +1638,18 @@ def create_app(
         outside = sorted({r.namespace for r in reports} - set(cluster.namespaces))
         if outside:
             raise HTTPException(422, f"namespaces not in cluster {cluster.name!r}: {outside}")
-        await store().record_actuations(
+        new = await store().record_actuations(
             cid, cluster.name, [r.model_dump() for r in reports], time.time()
         )
+        slack = by_id[cid].slack
+        for n in new:  # a rollback reaches the Operator at once (slice 12.4); once
+            if n["outcome"] == "rolled_back" and slack and settings.slack_bot_token:
+                where = f"{cluster.name}/{n['namespace']}/{n['kind']}/{n['name']}"
+                text = (
+                    f":rewind: {cid}: the Actuator rolled back {where} container "
+                    f"{n['container']}: {redact(n['reason'])}"
+                )
+                await db["slack"].post(slack.operator_channel, text)
         for r in reports:
             log.info(
                 "actuation %s/%s %s %s/%s/%s/%s: %s",

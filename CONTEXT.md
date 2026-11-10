@@ -185,8 +185,12 @@ The process in a client cluster that applies approved Sizings, in place first, a
 _Avoid_: Agent, controller (alone)
 
 **Actuation**:
-One outcome the Actuator reports for one container of a Workload: applied (every live pod of the Workload has the new requests, allocated by the kubelet), skipped, failed, or handed back (a person changed the template's requests it held, or the Workload is gone: the Actuator lets go), with the reason and how many pods. The Hub keeps them as the Actuator's audit trail.
+One outcome the Actuator reports for one container of a Workload: applied (every live pod of the Workload has the new requests, allocated by the kubelet), skipped, failed, rolled back (see Rollback), or handed back (a person changed the template's requests it held, or the Workload is gone: the Actuator lets go), with the reason and how many pods. The Hub keeps them as the Actuator's audit trail.
 _Avoid_: Executed action (that is a Proposed action the Operator approved)
+
+**Rollback**:
+The Actuator's own undo of a Sizing that made pods unhealthy within an hour of its resize (a container with its requests restarted or was OOM-killed, or a pod it resized stayed NotReady for 2 minutes): every such pod back to its template's requests, in place and at once. Then no new Sizing of that container for 24 hours, doubling with each rollback within 7 days. Not while the Kill switch is on; the Operator hears of it in Slack at once.
+_Avoid_: Revert (that is the Operator's undo)
 
 **Revert**:
 The Operator's undo of what the Actuator holds for a container: its pods go back to their template's requests, in place, and the Actuator stops holding it.

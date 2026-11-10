@@ -715,12 +715,14 @@ class Store:
 
     async def record_actuations(
         self, contract_id: str, cluster: str, rows: list[dict[str, Any]], at: float
-    ) -> None:
-        """Store what an Actuator reported (slice 12.1); a row it sends again is kept once."""
+    ) -> list[dict[str, Any]]:
+        """Store what an Actuator reported (slice 12.1); a row it sends again is kept once.
+        The rows new to the Hub: what it tells the Operator about (slice 12.4)."""
+        new = []
         for r in rows:
-            await self._exec(
+            stored = await self._one(
                 "insert into actuations values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
-                "%s, %s, %s) on conflict do nothing",
+                "%s, %s, %s) on conflict do nothing returning run_id",
                 (
                     contract_id,
                     cluster,
@@ -728,6 +730,9 @@ class Store:
                     at,
                 ),
             )
+            if stored:
+                new.append(r)
+        return new
 
     async def actuations(self, contract_id: str, since: float) -> list[dict[str, Any]]:
         """The Contract's Actuations since `since`, newest first."""
