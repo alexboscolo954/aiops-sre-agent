@@ -1,5 +1,6 @@
 # The Hub's only public routes: each Contract's Alertmanager or Grafana posting alerts,
-# and Relays dialing in (a websocket; the Hub refuses one without a Relay token).
+# Relays dialing in (a websocket; the Hub refuses one without a Relay token), and
+# Actuators pulling and reporting (the Hub refuses either without an Actuator token).
 # Investigations, decisions, metrics and the API docs stay on 127.0.0.1, reached
 # through `tailscale serve`. Anything else gets a 404 here and never reaches the Hub.
 {$AIOPS_DOMAIN:localhost} {
@@ -21,6 +22,13 @@
 		header Upgrade websocket
 	}
 	handle @relay {
+		reverse_proxy hub:8080
+	}
+	@actuator {
+		method GET POST
+		path /actuator/desired /actuator/reports
+	}
+	handle @actuator {
 		reverse_proxy hub:8080
 	}
 	handle {

@@ -124,7 +124,13 @@ got=$(code "${upgrade[@]}" -H 'Authorization: Bearer nope' "$public/relay")
 [[ $got == 403 ]] || fail "a Relay with a wrong token wasn't refused ($got)"
 [[ $(code "$public/relay") == 404 ]] || fail "GET /relay without an upgrade is public"
 [[ $(code "${upgrade[@]}" "$public/relay/x") == 404 ]] || fail "/relay/x is public"
-echo "ok   only the alert route and the Relays' websocket are public; bodies over 1 MB refused"
+got=$(code -H 'Authorization: Bearer nope' "$public/actuator/desired")
+[[ $got == 401 ]] || fail "an Actuator with a wrong token wasn't refused ($got)"
+got=$(code -X POST -H 'Authorization: Bearer nope' -H 'Content-Type: application/json' -d '[]' \
+  "$public/actuator/reports")
+[[ $got == 401 ]] || fail "an Actuator's report with a wrong token wasn't refused ($got)"
+[[ $(code "$public/actuator/x") == 404 ]] || fail "/actuator/x is public"
+echo "ok   only the alert route, the Relays' websocket and the Actuators' two routes are public; bodies over 1 MB refused"
 
 local_api=http://127.0.0.1:18000
 for _ in $(seq 60); do

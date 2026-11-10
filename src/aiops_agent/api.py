@@ -38,6 +38,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel, ValidationError
 
 from aiops_agent import (
+    actuator,
     agent,
     billing,
     checks,
@@ -169,18 +170,27 @@ def create_app(
         for c in by_id.values():
             if contracts.token_matches(c, mcp_token):
                 raise RuntimeError(f"Contract {c.id!r}'s webhook token is the MCP token")
-    try:  # each Relay's token names one Contract's cluster, and nothing else (slice 3.1)
+    # Each Relay's and Actuator's token names one Contract's cluster, and nothing else
+    # (slices 3.1, 12.1).
+    try:
         relay_tokens = relay.tokens(by_id)
+        actuator_tokens = relay.tokens(by_id, "Actuator", relay_tokens)
     except ValueError as e:
         raise RuntimeError(str(e)) from None
-    for other, what in ((approver_token, "the approver token"), (mcp_token, "the MCP token")):
-        if other and relay.who(f"Bearer {other}", relay_tokens):
-            raise RuntimeError(f"a Relay token is {what}: give each its own")
-    for c in by_id.values():
-        for digest, (cid, cluster) in relay_tokens:
-            webhook = c.webhook_token_sha256 or ""
-            if secrets.compare_digest(digest.hex(), webhook):
-                raise RuntimeError(f"{cid}/{cluster}: its Relay token is {c.id!r}'s webhook token")
+    for article, role, known in (
+        ("a", "Relay", relay_tokens),
+        ("an", "Actuator", actuator_tokens),
+    ):
+        for other, what in ((approver_token, "the approver token"), (mcp_token, "the MCP token")):
+            if other and relay.who(f"Bearer {other}", known):
+                raise RuntimeError(f"{article} {role} token is {what}: give each its own")
+        for c in by_id.values():
+            for digest, (cid, cluster) in known:
+                webhook = c.webhook_token_sha256 or ""
+                if secrets.compare_digest(digest.hex(), webhook):
+                    raise RuntimeError(
+                        f"{cid}/{cluster}: its {role} token is {c.id!r}'s webhook token"
+                    )
     if not settings.database_url:
         raise RuntimeError("set AIOPS_DATABASE_URL")
     database_url = settings.database_url.get_secret_value()
@@ -1586,6 +1596,63 @@ def create_app(
             return m.get("text")  # None for a binary frame: that ends the connection
 
         await relays.hold(named, ws.send_text, receive, ws.close, relay_alert)
+
+    def actuator_of(creds: HTTPAuthorizationCredentials) -> tuple[str, contracts.Cluster]:
+        """The Contract and cluster an Actuator's token names (slice 12.1), or a 401."""
+        named = relay.who(f"Bearer {creds.credentials}", actuator_tokens)
+        if named is None:
+            raise HTTPException(401, "invalid token")
+        cid, name = named
+        return cid, next(cl for cl in by_id[cid].clusters if cl.name == name)
+
+    @app.get("/actuator/desired")
+    async def actuator_desired(
+        creds: HTTPAuthorizationCredentials = Depends(bearer),  # noqa: B008
+    ) -> actuator.Desired:
+        """What an Actuator should apply now: its cluster's current Approved Sizings of
+        Deployments in the cluster's namespaces, none while the Kill switch is on."""
+        cid, cluster = actuator_of(creds)
+        killed = await store().kill_switch(cid) is not None
+        approved = [] if killed else await store().approved_sizings(cid)
+        return actuator.Desired(
+            kill_switch=killed,
+            sizings=[
+                actuator.Wanted.model_validate(a)
+                for a in approved
+                if a["cluster"] == cluster.name
+                and a["namespace"] in cluster.namespaces
+                and a["kind"] == "Deployment"  # other kinds in slice 12.8
+            ],
+        )
+
+    @app.post("/actuator/reports", status_code=204)
+    async def actuator_reports(
+        reports: list[actuator.Actuation],
+        creds: HTTPAuthorizationCredentials = Depends(bearer),  # noqa: B008
+    ) -> None:
+        """An Actuator's Actuations, stored as its Contract's cluster's, by its token only;
+        one naming a namespace outside the cluster's is refused whole."""
+        cid, cluster = actuator_of(creds)
+        if len(reports) > actuator.MAX_REPORTS:
+            raise HTTPException(413, f"at most {actuator.MAX_REPORTS} reports at once")
+        outside = sorted({r.namespace for r in reports} - set(cluster.namespaces))
+        if outside:
+            raise HTTPException(422, f"namespaces not in cluster {cluster.name!r}: {outside}")
+        await store().record_actuations(
+            cid, cluster.name, [r.model_dump() for r in reports], time.time()
+        )
+        for r in reports:
+            log.info(
+                "actuation %s/%s %s %s/%s/%s/%s: %s",
+                cid,
+                cluster.name,
+                r.outcome,
+                r.namespace,
+                r.kind,
+                r.name,
+                r.container,
+                redact(r.reason),
+            )
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:

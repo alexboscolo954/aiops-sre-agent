@@ -29,6 +29,21 @@ MIGRATION_LOCK = 4_242_001  # pg_advisory_xact_lock key: one Hub migrates at a t
 SIZING_LOCK = 4_242_002  # with the Contract's hash: one Sizing run claimed at a time
 HOURLY_FOR = 14 * 86400  # Sizing runs kept hourly this long, then the last of each day
 DAILY_FOR = 400 * 86400  # and those this long
+ACTUATIONS_FOR = 90 * 86400  # an Actuator's audit trail (slice 12.1)
+# An Actuation's columns after contract_id and cluster, in order, up to received_at
+ACTUATION_FIELDS = (
+    "namespace",
+    "kind",
+    "name",
+    "container",
+    "run_id",
+    "outcome",
+    "cpu",
+    "memory",
+    "pods",
+    "reason",
+    "at",
+)
 COLUMNS = (
     "id, kind, contract_id, title, group_key, group_resolved, status, started, report, "
     "pending, executed_actions, error, deadline, slack_channel, slack_ts, client_sent_at, "
@@ -625,6 +640,10 @@ class Store:
             "and clusters <> '{}' group by floor(at / 86400))))",
             (contract_id, at - DAILY_FOR, at - HOURLY_FOR, contract_id),
         )
+        await self._exec(
+            "delete from actuations where contract_id = %s and at < %s",
+            (contract_id, at - ACTUATIONS_FOR),
+        )
 
     async def latest_sizings(
         self, contract_id: str, clusters: set[str], before: float | None = None
@@ -692,6 +711,30 @@ class Store:
             "and r.id > a.run_id and r.clusters -> a.cluster = 'null'::jsonb) "
             "order by approved_at",
             (contract_id,),
+        )
+
+    async def record_actuations(
+        self, contract_id: str, cluster: str, rows: list[dict[str, Any]], at: float
+    ) -> None:
+        """Store what an Actuator reported (slice 12.1); a row it sends again is kept once."""
+        for r in rows:
+            await self._exec(
+                "insert into actuations values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
+                "%s, %s, %s) on conflict do nothing",
+                (
+                    contract_id,
+                    cluster,
+                    *(r[k] for k in ACTUATION_FIELDS),
+                    at,
+                ),
+            )
+
+    async def actuations(self, contract_id: str, since: float) -> list[dict[str, Any]]:
+        """The Contract's Actuations since `since`, newest first."""
+        return await self._all(
+            "select * from actuations where contract_id = %s and at >= %s "
+            "order by at desc, namespace, name, container",
+            (contract_id, since),
         )
 
     async def first_sizings(self, contract_id: str, clusters: set[str]) -> dict[str, float]:

@@ -123,6 +123,9 @@ class Cluster(Strict):
     # reaches it Direct, so it names no kube context, kubeconfig or Prometheus here.
     via: Literal["direct", "relay"] = "direct"
     relay_token_secret: str | None = None
+    # This cluster runs an Actuator (slice 12.1), which pulls with this secret's value.
+    # Its own token, never the Relay's: the Relay stays read-only. Direct or Relay alike.
+    actuator_token_secret: str | None = None
 
     @model_validator(mode="after")
     def _one_source(self) -> "Cluster":

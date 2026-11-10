@@ -41,7 +41,7 @@ _Avoid_: Proposed action (that is a paused tool call), patch
 A way to reach a Contract's cluster or integration where the Hub holds the credentials and calls its APIs itself. The default; a cluster reached through a Relay is never reached Direct.
 
 **Relay**:
-A small process inside a client's network that serves one of a Contract's clusters (the cluster is reached `via: relay`): it holds that cluster's credentials and runs its Kubernetes tools and its Prometheus queries, for the agent and for the Hub's own reads. It connects out to the Hub with a token bound to that Contract and cluster, so the client network accepts no inbound connections. The agent's reasoning, the allowlist and the approval gate stay in the Hub; cloud and vendor integrations stay Direct. Only tool calls and their results pass through the Relay. A Run that calls a Relay that isn't connected, or doesn't answer within the call timeout, ends Failed ("Relay offline"): its Report would otherwise read as if the cluster had been seen. Under Automation, the same connection also carries approved Sizings to the Actuator.
+A small process inside a client's network that serves one of a Contract's clusters (the cluster is reached `via: relay`): it holds that cluster's credentials and runs its Kubernetes tools and its Prometheus queries, for the agent and for the Hub's own reads. It connects out to the Hub with a token bound to that Contract and cluster, so the client network accepts no inbound connections. The agent's reasoning, the allowlist and the approval gate stay in the Hub; cloud and vendor integrations stay Direct. Only tool calls and their results pass through the Relay. A Run that calls a Relay that isn't connected, or doesn't answer within the call timeout, ends Failed ("Relay offline"): its Report would otherwise read as if the cluster had been seen. The Actuator has its own token and connection, so the Relay never holds write access.
 _Avoid_: Satellite, agent
 
 ### Input
@@ -166,7 +166,7 @@ The CPU and memory requests the Hub computes for one container of a Workload fro
 _Avoid_: Recommendation (that is advice for a human), rightsizing recommendation
 
 **Approved Sizing**:
-One container's Sizing that the Operator approved from the Hub MCP server, kept with the exact requests approved, for the Actuator to apply. It is current until a later Sizing of that container is stored, which supersedes it whatever its values. Refused for a container that is learning or has no change, and while the Contract's Kill switch is on. Approving changes nothing in a cluster until the Actuator applies it.
+One container's Sizing that the Operator approved from the Hub MCP server, kept with the exact requests approved, for the Actuator to apply. It is current, waiting to be applied, until a later Sizing of that container is stored, which supersedes it whatever its values: one superseded before the Actuator applied it never is. Once applied, the Actuator holds its requests until a later Approved Sizing of that container or a Revert. Refused for a container that is learning or has no change, and while the Contract's Kill switch is on. Approving changes nothing in a cluster until the Actuator applies it.
 _Avoid_: Applied Sizing, Executed action (nothing ran)
 
 **Sizing policy**:
@@ -181,8 +181,16 @@ The standing approval for one Workload: the Operator approves its Sizing policy 
 _Avoid_: Auto mode, Proposed action (a Sizing under Automation never pauses)
 
 **Actuator**:
-The process in a client cluster that applies approved Sizings, in place first, and reports what it did. It runs only what the Hub approved, and pods start unchanged when it is down.
+The process in a client cluster that applies approved Sizings, in place first, and reports what it did. It runs only what the Hub approved: every minute it pulls its cluster's desired state from the Hub with its own token, bound to one Contract's cluster, and nothing while the Kill switch is on. Pods start unchanged when it is down.
 _Avoid_: Agent, controller (alone)
+
+**Actuation**:
+One outcome the Actuator reports for one container of a Workload: applied (the cluster accepted the new requests on its pods), skipped or failed, with the reason and how many pods. The Hub keeps them as the Actuator's audit trail.
+_Avoid_: Executed action (that is a Proposed action the Operator approved)
+
+**Revert**:
+The Operator's undo of what the Actuator holds for a container: its pods go back to their template's requests, in place, and the Actuator stops holding it.
+_Avoid_: Rollback (that is the Actuator's own undo of a Sizing that made pods unhealthy)
 
 **Reflex**:
 A bounded, expiring change the Actuator makes on its own under Automation: memory step-up after an OOM kill, burst CPU headroom, startup CPU boost, rollback of a Sizing that made pods unhealthy.

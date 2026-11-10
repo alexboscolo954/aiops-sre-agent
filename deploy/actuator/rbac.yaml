@@ -1,0 +1,70 @@
+# The Actuator's writes are pod resizes (pods/resize: requests and limits only, never an
+# image or a command), Events, and its own ConfigMap. It never patches a Deployment.
+# Bound per namespace with RoleBindings: the Contract's namespaces on this cluster.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: aiops-actuator
+  namespace: aiops-actuator
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: aiops-actuator-resize
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list]
+  - apiGroups: [""]
+    resources: [pods/resize]
+    verbs: [patch]
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [create]
+  - apiGroups: ["apps"]
+    resources: [deployments, replicasets]
+    verbs: [get, list]
+---
+# One RoleBinding per namespace of the Contract's cluster. Copy for each.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aiops-actuator-resize
+  namespace: demo
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: aiops-actuator-resize
+subjects:
+  - kind: ServiceAccount
+    name: aiops-actuator
+    namespace: aiops-actuator
+---
+# What it applied, in its own namespace: one ConfigMap, read and replaced by name.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aiops-actuator-state
+  namespace: aiops-actuator
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [aiops-actuator]
+    verbs: [get, update]
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [create]   # RBAC can't limit create by name
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aiops-actuator-state
+  namespace: aiops-actuator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: aiops-actuator-state
+subjects:
+  - kind: ServiceAccount
+    name: aiops-actuator
+    namespace: aiops-actuator

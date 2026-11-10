@@ -28,7 +28,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from functools import partial
-from typing import Any
+from typing import Any, Literal
 
 import anyio
 import httpx
@@ -157,21 +157,30 @@ Who = tuple[str, str]  # (contract id, cluster)
 Alerts = Callable[[Who, Any], Awaitable[tuple[int, Any]]]
 
 
-def tokens(by_id: dict[str, Contract]) -> list[tuple[bytes, Who]]:
-    """Each Relay cluster's token, as its sha256 and whom it names. ValueError: one
-    that's too short or names two clusters."""
+def tokens(
+    by_id: dict[str, Contract],
+    role: Literal["Relay", "Actuator"] = "Relay",
+    taken: list[tuple[bytes, Who]] | None = None,
+) -> list[tuple[bytes, Who]]:
+    """Each Relay's (or Actuator's, slice 12.1) cluster token, as its sha256 and whom it
+    names. ValueError: one that's too short, or names two clusters or roles (`taken`: the
+    other role's tokens, so a Relay's token never opens an Actuator's door)."""
     out: list[tuple[bytes, Who]] = []
     for c in by_id.values():
         for cl in c.clusters:
-            if cl.via != "relay":
+            name = cl.relay_token_secret if role == "Relay" else cl.actuator_token_secret
+            if not name:
                 continue
-            assert cl.relay_token_secret  # the schema requires it for via: relay
-            token = c.secret(cl.relay_token_secret).get_secret_value()
+            token = c.secret(name).get_secret_value()
             if len(token) < 32:
-                raise ValueError(f"{c.id}/{cl.name}: its Relay token is too short (32+ characters)")
+                raise ValueError(
+                    f"{c.id}/{cl.name}: its {role} token is too short (32+ characters)"
+                )
             digest = hashlib.sha256(token.encode()).digest()
-            if any(hmac.compare_digest(digest, d) for d, _ in out):
-                raise ValueError(f"{c.id}/{cl.name}: its Relay token is another Relay's")
+            if any(hmac.compare_digest(digest, d) for d, _ in [*out, *(taken or [])]):
+                raise ValueError(
+                    f"{c.id}/{cl.name}: its {role} token is another Relay's or Actuator's"
+                )
             out.append((digest, (c.id, cl.name)))
     return out
 

@@ -170,6 +170,53 @@ async def test_recent_changes_reads_gitops_objects_of_its_own_namespaces(
     assert "bank" not in str(changes) and not any("error" in ch for ch in changes)
 
 
+async def test_the_actuator_resizes_a_deployment_in_place_without_a_restart(
+    live: contracts.Contract,
+) -> None:
+    """Slice 12.1 on a real cluster: inventory's pod takes 5m more CPU each run, the kubelet
+    allocates it (the pod's status, not just the API server's yes), and it never restarts."""
+    import time
+
+    import anyio
+    from kubernetes import client
+
+    from aiops_agent import actuator
+
+    api = kubernetes.api_client(live.clusters[0], live)
+    core, apps = client.CoreV1Api(api), client.AppsV1Api(api)
+    try:
+        actuator.check_version(client.VersionApi(api))
+    except SystemExit as e:
+        pytest.skip(str(e))
+    d = apps.read_namespaced_deployment("inventory", "orders")
+    (before,) = actuator.pods_of(core, apps, d)
+    restarts = before.status.container_statuses[0].restart_count
+    cpu = float(actuator.qty(before.spec.containers[0].resources.requests["cpu"])) + 0.005
+    wanted = actuator.Wanted(
+        run_id=1,
+        namespace="orders",
+        kind="Deployment",
+        name="inventory",
+        container="app",
+        cpu=cpu,
+        memory=None,
+    )
+    a, _ = actuator.apply(core, apps, wanted, time.time())
+    assert (a.outcome, a.pods) == ("applied", 1), a.reason
+    for _ in range(60):
+        p = core.read_namespaced_pod(before.metadata.name, "orders")
+        status = p.status.container_statuses[0]
+        allocated = (status.resources.requests or {}) if status.resources else {}
+        if "cpu" in allocated and actuator.qty(allocated["cpu"]) == actuator.qty(
+            actuator.cpu_text(cpu)
+        ):
+            break
+        await anyio.sleep(1)
+    else:
+        pytest.fail(f"the kubelet never allocated {actuator.cpu_text(cpu)}: {status}")
+    assert p.metadata.uid == before.metadata.uid and status.restart_count == restarts
+
+
 async def test_record_eval_fixtures(live: contracts.Contract) -> None:
     """With AIOPS_RECORD_DIR set, save real tool outputs for the eval scenarios."""
     out = os.environ.get("AIOPS_RECORD_DIR")
