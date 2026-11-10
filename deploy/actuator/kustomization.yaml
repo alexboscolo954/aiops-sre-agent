@@ -8,6 +8,7 @@ resources:
   - namespace.yaml
   - rbac.yaml
   - deployment.yaml
+  - webhook.yaml
 # Create the token's Secret out of band (the value is the Contract's actuator_token_secret,
 # never the Relay's):
 #   kubectl -n aiops-actuator create secret generic aiops-actuator --from-literal=AIOPS_ACTUATOR_TOKEN=...

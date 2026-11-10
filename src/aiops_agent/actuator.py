@@ -8,23 +8,37 @@ applies nothing twice, writes an Event on the Deployment and reports each outcom
 Actuation) to the Hub. The Hub decides and never pushes; a Kill switch reaches it as no
 Sizings at all.
 
+What it applied it holds (slice 12.2): its pod-creation webhook gives a new pod of that
+Deployment the same requests (it fails open: with the Actuator down, pods start from their
+template), until a person changes the template's requests, which hands the container back.
+
 Thin on purpose: Deployments only, every pod at once, and "applied" means the API server
-took the new requests (whether the kubelet could is slice 12.3). New pods start from their
-template until the webhook (12.2).
+took the new requests (whether the kubelet could is slice 12.3).
 """
 
+import base64
 import json
 import logging
 import math
 import re
+import ssl
+import tempfile
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 import httpx
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.x509.oid import NameOID
 from kubernetes import client, config
 from kubernetes.client.exceptions import ApiException
 from kubernetes.utils.quantity import parse_quantity
@@ -38,6 +52,10 @@ KEY = "applied.json"
 MAX_REPORTS = 1000  # per POST, and kept unsent while the Hub is unreachable
 MIN_MINOR = 33  # Kubernetes 1.33: in-place pod resize on by default
 MI = 2**20
+WEBHOOK = "aiops-actuator"  # its MutatingWebhookConfiguration and its Service, by name
+WEBHOOK_PORT = 8443
+MAX_REVIEW = 1024 * 1024  # bytes: an AdmissionReview of one pod is far smaller
+Outcome = Literal["applied", "skipped", "failed", "handed_back"]
 
 
 class ActuatorSettings(BaseSettings):
@@ -81,7 +99,7 @@ class Actuation(BaseModel):
     name: str = Field(max_length=253)
     container: str = Field(max_length=253)
     run_id: int
-    outcome: Literal["applied", "skipped", "failed"]
+    outcome: Outcome
     cpu: float | None = None
     memory: float | None = None
     pods: int = Field(ge=0)
@@ -99,6 +117,11 @@ def cpu_text(cores: float) -> str:
 
 def memory_text(b: float) -> str:
     return f"{math.ceil(round(b / MI, 6))}Mi"
+
+
+def same(a: str | None, b: str | None) -> bool:
+    """Two requests as quantities (`0.1` is `100m`); unset is only ever unset."""
+    return a == b if a is None or b is None else qty(a) == qty(b)
 
 
 def why(e: ApiException) -> str:
@@ -132,10 +155,9 @@ def apply(core: Any, apps: Any, w: Wanted, at: float) -> tuple[Actuation, dict[s
     """Resize `w`'s container in place on every pod of its Deployment, never above its
     limit: the Actuation, and what to remember of it."""
     set_to: dict[str, str] = {}
+    template_had: dict[str, str | None] = {}  # its template's requests then: a change hands back
 
-    def done(
-        outcome: Literal["applied", "skipped", "failed"], pods: int, reason: str
-    ) -> tuple[Actuation, dict[str, Any]]:
+    def done(outcome: Outcome, pods: int, reason: str) -> tuple[Actuation, dict[str, Any]]:
         values = {r: float(qty(q)) for r, q in set_to.items()}
         a = Actuation(
             **w.model_dump(exclude={"cpu", "memory"}),
@@ -145,7 +167,8 @@ def apply(core: Any, apps: Any, w: Wanted, at: float) -> tuple[Actuation, dict[s
             at=at,
             **values,
         )
-        return a, {"run_id": w.run_id, "outcome": outcome, "requests": set_to, "at": at}
+        kept = {"requests": set_to, "template": template_had}
+        return a, {"run_id": w.run_id, "outcome": outcome, **kept, "at": at}
 
     try:
         d = apps.read_namespaced_deployment(w.name, w.namespace)
@@ -157,6 +180,7 @@ def apply(core: Any, apps: Any, w: Wanted, at: float) -> tuple[Actuation, dict[s
     if template is None:
         return done("skipped", 0, f"no container {w.container!r} in its template")
     limits = (template.resources.limits if template.resources else None) or {}
+    asked = (template.resources.requests if template.resources else None) or {}
     capped = []
     for res, value, text in (("cpu", w.cpu, cpu_text), ("memory", w.memory, memory_text)):
         if value is None:
@@ -166,6 +190,7 @@ def apply(core: Any, apps: Any, w: Wanted, at: float) -> tuple[Actuation, dict[s
             q = limits[res]  # requests never above the limit: the Sizing's risk stays shown
             capped.append(res)
         set_to[res] = q
+        template_had[res] = asked.get(res)
     restarts = sorted(
         p.resource_name
         for p in template.resize_policy or []
@@ -201,6 +226,17 @@ def apply(core: Any, apps: Any, w: Wanted, at: float) -> tuple[Actuation, dict[s
     return done("skipped", 0, f"all {len(pods)} pods already have these requests{note}")
 
 
+EVENTS = {
+    "applied": "SizingApplied",
+    "skipped": "SizingSkipped",
+    "failed": "SizingFailed",
+    "handed_back": "HandedBack",
+}
+
+
+GONE = {"handed_back": "back to its template"}
+
+
 def event(core: Any, a: Actuation) -> None:
     """A Kubernetes Event on the Deployment, so `kubectl describe` shows what was done."""
     now = datetime.now(UTC)
@@ -214,10 +250,9 @@ def event(core: Any, a: Actuation) -> None:
         involved_object=client.V1ObjectReference(
             api_version="apps/v1", kind=a.kind, name=a.name, namespace=a.namespace
         ),
-        reason={"applied": "SizingApplied", "skipped": "SizingSkipped"}.get(
-            a.outcome, "SizingFailed"
-        ),
-        message=f"{a.container}: {values or 'no change'} (Approved Sizing, run {a.run_id}): "
+        reason=EVENTS[a.outcome],
+        message=f"{a.container}: {values or GONE.get(a.outcome, 'no change')} "
+        f"(Approved Sizing, run {a.run_id}): "
         f"{a.reason}"[:1024],
         type="Warning" if a.outcome == "failed" else "Normal",
         source=client.V1EventSource(component="aiops-actuator"),
@@ -238,6 +273,144 @@ def check_version(version: Any) -> None:
     minor = re.match(r"\d+", v.minor or "")
     if (int(v.major), int(minor.group()) if minor else 0) < (1, MIN_MINOR):
         raise SystemExit(f"Kubernetes {v.git_version}: the Actuator needs 1.{MIN_MINOR} or later")
+
+
+# --- the pod-creation webhook (slice 12.2) ------------------------------------------------
+
+
+def mutation(req: dict[str, Any], held: dict[str, dict[str, Any]], own: str) -> list[Any]:
+    """The JSON Patch giving a new pod of a Deployment the requests applied to it: only
+    where its container still asks what the template asked then (a person's change wins),
+    never above its limit, never in kube-* or the Actuator's own namespace."""
+    ns = req.get("namespace") or ""
+    if req.get("operation") != "CREATE" or ns == own or ns.startswith("kube-"):
+        return []
+    pod = req.get("object") or {}
+    meta = pod.get("metadata") or {}
+    hashed = (meta.get("labels") or {}).get("pod-template-hash")
+    rs = next(
+        (
+            o.get("name", "")
+            for o in meta.get("ownerReferences") or []
+            if o.get("kind") == "ReplicaSet"
+        ),
+        "",
+    )
+    if not hashed or not rs.endswith(f"-{hashed}"):
+        return []  # not a Deployment's pod
+    deployment = rs.removesuffix(f"-{hashed}")
+    ops: list[Any] = []
+    for i, c in enumerate((pod.get("spec") or {}).get("containers") or []):
+        h = held.get(f"{ns}/Deployment/{deployment}/{c.get('name')}")
+        if not h or h.get("outcome") != "applied":
+            continue
+        resources = c.get("resources") or {}
+        requests = resources.get("requests") or {}
+        limits = resources.get("limits") or {}
+        had = h.get("template")  # None: held before slice 12.2 recorded it
+        if had is None or not all(same(requests.get(r), had.get(r)) for r in h["requests"]):
+            continue  # its template's requests changed since: theirs, not ours
+        new = {}
+        for r, q in h["requests"].items():
+            if r in limits and qty(q) > qty(limits[r]):
+                q = limits[r]
+            if not same(requests.get(r), q):
+                new[r] = q
+        if not new:
+            continue
+        at = f"/spec/containers/{i}/resources"
+        if "resources" not in c:
+            ops.append({"op": "add", "path": at, "value": {"requests": new}})
+        elif "requests" not in resources:
+            ops.append({"op": "add", "path": f"{at}/requests", "value": new})
+        else:
+            ops += [{"op": "add", "path": f"{at}/requests/{r}", "value": q} for r, q in new.items()]
+    return ops
+
+
+def admit(review: Any, held: dict[str, dict[str, Any]], killed: bool, own: str) -> dict[str, Any]:
+    """The AdmissionReview answer: always allowed; a patch unless the Kill switch is on."""
+    req = review.get("request") if isinstance(review, dict) else None
+    req = req if isinstance(req, dict) else {}
+    answer: dict[str, Any] = {"uid": req.get("uid", ""), "allowed": True}
+    try:
+        ops = [] if killed else mutation(req, held, own)
+    except Exception:  # fail open, as the webhook's failurePolicy does
+        log.exception("webhook: pod left as it is")
+        ops = []
+    if ops:
+        answer["patchType"] = "JSONPatch"
+        answer["patch"] = base64.b64encode(json.dumps(ops).encode()).decode()
+    return {"apiVersion": "admission.k8s.io/v1", "kind": "AdmissionReview", "response": answer}
+
+
+def certificate(host: str) -> tuple[bytes, bytes]:
+    """A self-signed certificate for `host` and its key (PEM), new at every start: the
+    Actuator patches it into its own webhook's caBundle, so no cert-manager is needed."""
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, host)])
+    now = datetime.now(UTC)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(minutes=5))
+        .not_valid_after(now + timedelta(days=3650))
+        .add_extension(x509.SubjectAlternativeName([x509.DNSName(host)]), critical=False)
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .sign(key, hashes.SHA256())
+    )
+    pem = serialization.Encoding.PEM
+    private = key.private_bytes(
+        pem, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()
+    )
+    return cert.public_bytes(pem), private
+
+
+def trust(admission: Any, cert: bytes) -> None:
+    """Its webhook's caBundle becomes this start's certificate (RBAC: this object only)."""
+    ca = base64.b64encode(cert).decode()
+    patch = [{"op": "replace", "path": "/webhooks/0/clientConfig/caBundle", "value": ca}]
+    admission.patch_mutating_webhook_configuration(WEBHOOK, patch)
+
+
+def serve(a: "Actuator", cert: bytes, key: bytes, port: int = WEBHOOK_PORT) -> ThreadingHTTPServer:
+    """The webhook over TLS on `port`, in its own threads; it reads `a`'s holds and Kill
+    switch as they are at each pod's creation."""
+
+    class Webhook(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            length = int(self.headers.get("Content-Length") or 0)
+            path = urlsplit(self.path).path  # the API server adds ?timeout=2s
+            if path != "/mutate" or not 0 < length <= MAX_REVIEW:
+                self.send_error(404 if path != "/mutate" else 413)
+                return
+            try:
+                review = json.loads(self.rfile.read(length))
+            except ValueError:
+                self.send_error(400)
+                return
+            body = json.dumps(admit(review, a.held, a.killed, a.namespace)).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format: str, *args: Any) -> None:
+            pass  # every pod's creation: too much for the log
+
+    server = ThreadingHTTPServer(("0.0.0.0", port), Webhook)  # noqa: S104
+    tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    with tempfile.TemporaryDirectory() as d:  # ssl reads files; gone once loaded
+        (Path(d) / "tls.crt").write_bytes(cert)
+        (Path(d) / "tls.key").write_bytes(key)
+        tls.load_cert_chain(Path(d) / "tls.crt", Path(d) / "tls.key")
+    server.socket = tls.wrap_socket(server.socket, server_side=True)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
 
 
 @dataclass
@@ -312,10 +485,64 @@ class Actuator:
                 self.killed = desired.kill_switch
                 log.warning("the Kill switch is %s", "on" if self.killed else "off")
             done = [] if self.killed else self.act(desired.sizings)
-            if done:
-                self.save()
-                self.unsent += done
+        else:
+            done = []
+        done += self.hand_back()
+        if done:
+            self.save()
+            self.unsent += done
         self.report()
+
+    def hand_back(self) -> list[Actuation]:
+        """Each container it holds whose Deployment's template now asks other requests than
+        when it applied (a person's change), or that is gone: its own again, never held."""
+        out = []
+        for key, h in self.held.items():
+            if h.get("outcome") == "applied":
+                reason = self.changed(key, h)
+                if reason is None:
+                    continue
+                ns, kind, name, container = key.split("/")
+                h["outcome"] = "handed_back"
+                a = Actuation(
+                    namespace=ns,
+                    kind=kind,
+                    name=name,
+                    container=container,
+                    run_id=h["run_id"],
+                    outcome="handed_back",
+                    pods=0,
+                    reason=reason,
+                    at=time.time(),
+                )
+                log.info("handed back %s: %s", key, reason)
+                event(self.core, a)
+                out.append(a)
+        return out
+
+    def changed(self, key: str, h: dict[str, Any]) -> str | None:
+        """Why the container held as `h` is no longer the Actuator's, or None."""
+        had = h.get("template")
+        if had is None:
+            return "held without its template's requests (before slice 12.2)"
+        ns, _, name, container = key.split("/")
+        try:
+            d = self.apps.read_namespaced_deployment(name, ns)
+        except ApiException as e:
+            if e.status == 404:
+                return "no such Deployment"
+            log.warning("reading %s: %s", key, why(e))  # the API server's trouble, no change
+            return None
+        c = next((c for c in d.spec.template.spec.containers if c.name == container), None)
+        if c is None:
+            return f"no container {container!r} in its template"
+        now = (c.resources.requests if c.resources else None) or {}
+        moved = [r for r in h.get("requests") or {} if not same(now.get(r), had.get(r))]
+        if not moved:
+            return None
+        return "its template's requests changed: " + ", ".join(
+            f"{r} {had.get(r) or 'unset'} to {now.get(r) or 'unset'}" for r in moved
+        )
 
     def act(self, sizings: list[Wanted]) -> list[Actuation]:
         """Each Approved Sizing newer than what it applied to that container: applied once,
@@ -336,10 +563,16 @@ def main(s: ActuatorSettings) -> None:  # pragma: no cover - the cluster's own p
     config.load_incluster_config()  # type: ignore[no-untyped-call]
     core, apps = client.CoreV1Api(), client.AppsV1Api()
     check_version(client.VersionApi())
+    cert, key = certificate(f"{WEBHOOK}.{s.namespace}.svc")
     headers = {"Authorization": f"Bearer {s.token.get_secret_value()}"}
     with httpx.Client(base_url=s.hub, headers=headers, timeout=15) as http:
         a = Actuator(http, core, apps, s.namespace)
         a.load()
+        serve(a, cert, key)
+        try:  # until then the API server can't call it, and pods start unchanged
+            trust(client.AdmissionregistrationV1Api(), cert)
+        except ApiException as e:
+            log.error("its webhook's caBundle: %s: new pods start from their template", why(e))
         log.info("actuator started: %d containers held", len(a.held))
         while True:
             a.step()

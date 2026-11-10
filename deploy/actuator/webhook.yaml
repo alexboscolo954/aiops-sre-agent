@@ -1,0 +1,29 @@
+# Its pod-creation webhook (slice 12.2): a new pod of a Deployment whose requests the
+# Actuator applied gets them too. It fails open: with the Actuator down or slow (2 s), the
+# API server creates the pod unchanged. Only the Contract's namespaces on this cluster,
+# never kube-* or the Actuator's own (it refuses those itself as well). The Actuator puts
+# its own certificate in caBundle when it starts.
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: aiops-actuator
+webhooks:
+  - name: pods.aiops-actuator.io
+    admissionReviewVersions: [v1]
+    sideEffects: None
+    failurePolicy: Ignore
+    timeoutSeconds: 2
+    reinvocationPolicy: Never
+    clientConfig:
+      service: {name: aiops-actuator, namespace: aiops-actuator, path: /mutate}
+    rules:
+      - operations: [CREATE]
+        apiGroups: [""]
+        apiVersions: [v1]
+        resources: [pods]
+        scope: Namespaced
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: In
+          values: [demo]   # the Contract's namespaces on this cluster, as the RoleBindings grant

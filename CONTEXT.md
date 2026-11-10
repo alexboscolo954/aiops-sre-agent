@@ -181,11 +181,11 @@ The standing approval for one Workload: the Operator approves its Sizing policy 
 _Avoid_: Auto mode, Proposed action (a Sizing under Automation never pauses)
 
 **Actuator**:
-The process in a client cluster that applies approved Sizings, in place first, and reports what it did. It runs only what the Hub approved: every minute it pulls its cluster's desired state from the Hub with its own token, bound to one Contract's cluster, and nothing while the Kill switch is on. Pods start unchanged when it is down.
+The process in a client cluster that applies approved Sizings, in place first, and reports what it did. It runs only what the Hub approved: every minute it pulls its cluster's desired state from the Hub with its own token, bound to one Contract's cluster, and nothing while the Kill switch is on. What it applied it holds: new pods of that Workload get the same requests until a person changes them in its template. Pods start unchanged when it is down.
 _Avoid_: Agent, controller (alone)
 
 **Actuation**:
-One outcome the Actuator reports for one container of a Workload: applied (the cluster accepted the new requests on its pods), skipped or failed, with the reason and how many pods. The Hub keeps them as the Actuator's audit trail.
+One outcome the Actuator reports for one container of a Workload: applied (the cluster accepted the new requests on its pods), skipped, failed, or handed back (a person changed the template's requests it held, or the Workload is gone: the Actuator lets go), with the reason and how many pods. The Hub keeps them as the Actuator's audit trail.
 _Avoid_: Executed action (that is a Proposed action the Operator approved)
 
 **Revert**:

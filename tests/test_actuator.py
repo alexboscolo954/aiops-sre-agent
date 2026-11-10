@@ -2,7 +2,9 @@
 Contract's cluster, and the Actuator resizing a Deployment's pods in place."""
 
 import asyncio
+import base64
 import json
+import ssl
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -149,7 +151,7 @@ def test_reports_are_stored_as_the_tokens_contract_and_cluster_once(
     with TestClient(app) as c:
         ok = c.post("/actuator/reports", json=[report()], headers=as_actuator(A_TOKEN))
         again = c.post("/actuator/reports", json=[report()], headers=as_actuator(A_TOKEN))
-        later = report(outcome="skipped", at=160.0, pods=0)
+        later = report(outcome="handed_back", at=160.0, pods=0)  # slice 12.2
         c.post("/actuator/reports", json=[later], headers=as_actuator(B_TOKEN))
         outside = c.post(
             "/actuator/reports",
@@ -169,7 +171,10 @@ def test_reports_are_stored_as_the_tokens_contract_and_cluster_once(
         database_url,
         ("select contract_id, cluster, outcome, pods, at from actuations order by at", ()),
     )
-    assert rows == [("acme", "test", "applied", 2, 100.0), ("bank", "test", "skipped", 0, 160.0)]
+    assert rows == [
+        ("acme", "test", "applied", 2, 100.0),
+        ("bank", "test", "handed_back", 0, 160.0),
+    ]
 
 
 def test_actuations_are_kept_90_days(database_url: str) -> None:
@@ -310,6 +315,7 @@ def test_only_its_deployments_live_pods_are_resized_and_never_above_the_limit() 
         "run_id": 1,
         "outcome": "applied",
         "requests": {"cpu": "115m", "memory": "64Mi"},
+        "template": {"cpu": "1", "memory": None},  # what a person's change is told from
         "at": 5.0,
     }
     labels = apps.list_namespaced_replica_set.call_args.kwargs["label_selector"]
@@ -447,7 +453,7 @@ def test_reports_the_hub_refuses_are_dropped_and_the_next_ones_go(caplog: Any) -
 
 def test_what_it_applied_survives_a_restart() -> None:
     core, apps = cluster()
-    held = {"shop/Deployment/api/app": {"run_id": 1, "outcome": "applied"}}
+    held = {k: {**v} for k, v in HELD.items()}
     core.read_namespaced_config_map.return_value = k.V1ConfigMap(
         data={actuator.KEY: json.dumps(held)}
     )
@@ -494,10 +500,211 @@ def test_the_manifests_resize_pods_and_never_edit_a_deployment() -> None:
         ("events", "create"),
         ("configmaps", "update"),
         ("configmaps", "create"),
+        ("mutatingwebhookconfigurations", "patch"),
     }
     assert "secrets" not in str(rules)
-    (deploy,) = yaml.safe_load_all((ROOT / "deploy/actuator/deployment.yaml").read_text())
+    webhook_rbac = next(r for r in rules if "mutatingwebhookconfigurations" in r["resources"])
+    assert webhook_rbac["resourceNames"] == [actuator.WEBHOOK]
+    deploy, service = yaml.safe_load_all((ROOT / "deploy/actuator/deployment.yaml").read_text())
+    assert deploy["spec"]["template"]["spec"]["enableServiceLinks"] is False
+    assert service["metadata"]["name"] == actuator.WEBHOOK
+    assert service["spec"]["ports"] == [{"name": "webhook", "port": 443, "targetPort": "webhook"}]
+    (hook,) = yaml.safe_load_all((ROOT / "deploy/actuator/webhook.yaml").read_text())
+    (w,) = hook["webhooks"]
+    assert (w["failurePolicy"], w["timeoutSeconds"], w["sideEffects"]) == ("Ignore", 2, "None")
+    assert w["clientConfig"]["service"] == {
+        "name": actuator.WEBHOOK,
+        "namespace": "aiops-actuator",
+        "path": "/mutate",
+    }
+    assert w["rules"][0]["operations"] == ["CREATE"] and w["rules"][0]["resources"] == ["pods"]
     (c,) = deploy["spec"]["template"]["spec"]["containers"]
     hub_image = next(yaml.safe_load_all((ROOT / "deploy/base/deployment.yaml").read_text()))
     assert c["image"] == hub_image["spec"]["template"]["spec"]["containers"][0]["image"]
     assert c["args"] == ["actuator"] and c["securityContext"]["readOnlyRootFilesystem"] is True
+
+
+# --- the pod-creation webhook (slice 12.2) ------------------------------------------------
+
+HELD = {
+    "shop/Deployment/api/app": {
+        "run_id": 1,
+        "outcome": "applied",
+        "requests": {"cpu": "115m", "memory": "64Mi"},
+        "template": {"cpu": "1", "memory": None},
+    }
+}
+
+
+def new_pod(ns: str = "shop", operation: str = "CREATE", **resources: Any) -> dict[str, Any]:
+    """The AdmissionReview of a new pod of api's ReplicaSet api-5d8f, its container `app`."""
+    c: dict[str, Any] = {"name": "app"}
+    if resources != {"none": True}:
+        c["resources"] = resources or {"requests": {"cpu": "1"}, "limits": {"memory": "48Mi"}}
+    return {
+        "apiVersion": "admission.k8s.io/v1",
+        "kind": "AdmissionReview",
+        "request": {
+            "uid": "u-1",
+            "operation": operation,
+            "namespace": ns,
+            "object": {
+                "metadata": {
+                    "generateName": "api-5d8f-",
+                    "labels": {"app": "api", "pod-template-hash": "5d8f"},
+                    "ownerReferences": [
+                        {"kind": "ReplicaSet", "name": "api-5d8f", "controller": True}
+                    ],
+                },
+                "spec": {"containers": [{"name": "sidecar"}, c]},
+            },
+        },
+    }
+
+
+def patched(review: Any, held: Any = HELD, killed: bool = False) -> list[Any] | None:
+    answer = actuator.admit(review, held, killed, "aiops-actuator")
+    response = answer["response"]
+    assert response["allowed"] is True and response["uid"] == (
+        review.get("request", {}).get("uid", "") if isinstance(review, dict) else ""
+    )
+    if "patch" not in response:
+        return None
+    assert response["patchType"] == "JSONPatch"
+    return json.loads(base64.b64decode(response["patch"]))  # type: ignore[no-any-return]
+
+
+def test_a_new_pod_gets_the_requests_applied_never_above_its_limit() -> None:
+    assert patched(new_pod()) == [
+        {"op": "add", "path": "/spec/containers/1/resources/requests/cpu", "value": "115m"},
+        {"op": "add", "path": "/spec/containers/1/resources/requests/memory", "value": "48Mi"},
+    ]
+    no_resources = patched(new_pod(none=True), held=untemplated(cpu=None, memory=None))
+    assert no_resources == [
+        {
+            "op": "add",
+            "path": "/spec/containers/1/resources",
+            "value": {"requests": {"cpu": "115m", "memory": "64Mi"}},
+        }
+    ]
+    no_requests = patched(new_pod(limits={"cpu": "2"}), held=untemplated(cpu=None, memory=None))
+    assert no_requests == [
+        {
+            "op": "add",
+            "path": "/spec/containers/1/resources/requests",
+            "value": {"cpu": "115m", "memory": "64Mi"},
+        }
+    ]
+    already = new_pod(requests={"cpu": "0.115", "memory": "64Mi"})
+    assert patched(already, held=untemplated(cpu="0.115", memory="64Mi")) is None
+
+
+def untemplated(**template: str | None) -> Any:
+    """HELD, with the template's requests as they were when it applied."""
+    return {k: {**v, "template": template} for k, v in HELD.items()}
+
+
+def test_a_new_pod_keeps_its_own_requests_when_the_hold_does_not_apply() -> None:
+    changed = new_pod(requests={"cpu": "2"})  # a person changed the template since
+    assert patched(changed) is None
+    assert patched(new_pod(), killed=True) is None  # the Kill switch: pods start unchanged
+    for ns in ("aiops-actuator", "kube-system"):
+        assert (
+            patched(new_pod(ns=ns), held={k.replace("shop", ns): v for k, v in HELD.items()})
+            is None
+        )
+    assert patched(new_pod(operation="UPDATE")) is None
+    assert patched(new_pod(ns="bank")) is None  # nothing held there
+    gone = {k: {**v, "outcome": "handed_back"} for k, v in HELD.items()}
+    assert patched(new_pod(), held=gone) is None
+    before_12_2 = {k: {kk: vv for kk, vv in v.items() if kk != "template"} for k, v in HELD.items()}
+    assert patched(new_pod(), held=before_12_2) is None
+    assert patched(new_pod(none=True), held=before_12_2) is None
+    bare = new_pod()
+    bare["request"]["object"]["metadata"]["labels"].pop("pod-template-hash")  # not a Deployment's
+    assert patched(bare) is None
+    bare_rs = new_pod()  # a ReplicaSet of its own named api: not one of Deployment api's
+    bare_rs["request"]["object"]["metadata"]["ownerReferences"][0]["name"] = "api"
+    assert patched(bare_rs) is None
+    assert patched(["not", "a", "review"]) is None
+    broken = {k: {**v, "requests": ["cpu"]} for k, v in HELD.items()}
+    assert patched(new_pod(), held=broken) is None  # whatever goes wrong, the pod is created
+
+
+def test_the_webhook_answers_over_tls_with_its_own_certificate() -> None:
+    cert, key = actuator.certificate("localhost")
+    a = actuator.Actuator(MagicMock(), MagicMock(), MagicMock(), "aiops-actuator", held=HELD)
+    server = actuator.serve(a, cert, key, port=0)
+    try:
+        url = f"https://localhost:{server.server_address[1]}"
+        trusted = ssl.create_default_context(cadata=cert.decode())
+        with httpx.Client(verify=trusted) as http:
+            ok = http.post(f"{url}/mutate?timeout=2s", json=new_pod())  # as the API server calls
+            a.killed = True
+            killed = http.post(f"{url}/mutate", json=new_pod())
+            elsewhere = http.post(f"{url}/other", json=new_pod())
+            garbage = http.post(f"{url}/mutate", content=b"{not json")
+        with pytest.raises(httpx.ConnectError):
+            httpx.post(f"{url}/mutate", json=new_pod())  # an untrusted certificate
+    finally:
+        server.shutdown()
+    assert ok.status_code == 200 and "patch" in ok.json()["response"]
+    assert "patch" not in killed.json()["response"]
+    assert (elsewhere.status_code, garbage.status_code) == (404, 400)
+
+
+def test_it_puts_its_certificate_in_its_own_webhooks_ca_bundle() -> None:
+    admission = MagicMock()
+    actuator.trust(admission, b"PEM")
+    admission.patch_mutating_webhook_configuration.assert_called_once_with(
+        "aiops-actuator",
+        [{"op": "replace", "path": "/webhooks/0/clientConfig/caBundle", "value": "UEVN"}],
+    )
+
+
+def test_a_person_changing_the_template_gets_the_container_back() -> None:
+    core, apps = cluster()  # api's template asks cpu 1, as when it applied
+    held = {
+        **HELD,
+        "shop/Deployment/gone/app": {**HELD["shop/Deployment/api/app"]},
+        "shop/Deployment/other/app": {**HELD["shop/Deployment/api/app"], "outcome": "failed"},
+        "shop/Deployment/old/app": {"run_id": 1, "outcome": "applied", "requests": {"cpu": "1"}},
+    }
+    held = {k: {**v} for k, v in held.items()}
+
+    def read(name: str, ns: str) -> Any:
+        if name == "gone":
+            raise ApiException(status=404)
+        return apps.read_namespaced_deployment.return_value
+
+    apps.read_namespaced_deployment.side_effect = read
+    seen: list[httpx.Request] = []
+    a = actuator.Actuator(hub_of([httpx.Response(503)] * 2, seen), core, apps, "x", held=held)
+    a.step()  # the Hub is down: hand-backs still happen, and are saved and reported
+    assert [(k, v["outcome"]) for k, v in a.held.items()] == [
+        ("shop/Deployment/api/app", "applied"),
+        ("shop/Deployment/gone/app", "handed_back"),
+        ("shop/Deployment/other/app", "failed"),
+        ("shop/Deployment/old/app", "handed_back"),
+    ]
+    template = apps.read_namespaced_deployment.return_value.spec.template.spec.containers[0]
+    template.resources.requests = {"cpu": "200m"}
+    a.step()
+    assert a.held["shop/Deployment/api/app"]["outcome"] == "handed_back"
+    reports = [x for r in seen if r.method == "POST" for x in json.loads(r.content)]
+    assert [(r["name"], r["outcome"], r["reason"]) for r in reports] == [
+        ("gone", "handed_back", "no such Deployment"),
+        ("old", "handed_back", "held without its template's requests (before slice 12.2)"),
+        ("api", "handed_back", "its template's requests changed: cpu 1 to 200m"),
+    ]
+    events = [c.args[1] for c in core.create_namespaced_event.call_args_list]
+    assert [e.reason for e in events] == ["HandedBack"] * 3
+    assert events[2].message.startswith("app: back to its template (Approved Sizing, run 1)")
+    assert core.replace_namespaced_config_map.call_count == 2
+    template.name = "web"
+    a.held["shop/Deployment/api/app"]["outcome"] = "applied"
+    (renamed,) = a.hand_back()
+    assert renamed.reason == "no container 'app' in its template"
+    apps.read_namespaced_deployment.side_effect = ApiException(status=500)
+    a.held["shop/Deployment/api/app"]["outcome"] = "applied"
+    assert a.hand_back() == []  # the API server failing is no change by a person
