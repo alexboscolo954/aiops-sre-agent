@@ -154,7 +154,7 @@ export default function App() {
 function Header({ here, current }: { here: string; current: (v: string) => "page" | undefined }) {
   return (
     <header>
-      <a className="brand" href="/app/">aiops</a>
+      <a className="brand" href="/app/">squero</a>
       <nav>
         <a href="/app/?view=contracts" aria-current={current("contracts")}>Contracts</a>
         <a href={`/app/?${here}&view=investigations`} aria-current={current("investigations") ?? current("investigation")}>

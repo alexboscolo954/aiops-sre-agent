@@ -5,10 +5,10 @@ only within the Contract in the path."""
 import asyncio
 from typing import Any
 
-from aiops_agent.config import Settings
-from aiops_agent.models import Investigation
-from aiops_agent.store import Store, connect
-from aiops_agent.teachings import MAX_IN_PROMPT
+from squero.config import Settings
+from squero.models import Investigation
+from squero.store import Store, connect
+from squero.teachings import MAX_IN_PROMPT
 from tests.test_app_investigations import SAME, hub
 from tests.test_console import AS_OPERATOR, OPERATOR, VIEW
 

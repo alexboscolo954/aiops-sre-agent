@@ -79,15 +79,15 @@ COPY console/ ./
 RUN npm run build
 
 FROM python:3.12-slim
-RUN useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin aiops
+RUN useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin squero
 WORKDIR /app
 COPY --from=build /app/.venv /app/.venv
 COPY --from=build /usr/local/bin/sops /usr/local/bin/sops
 COPY --from=build /usr/local/bin/mcp-grafana /usr/local/bin/mcp-grafana
 COPY --from=build /opt/azmcp /opt/azmcp
-COPY --from=console /console/dist /opt/aiops/app
+COPY --from=console /console/dist /opt/squero/app
 ENV PATH=/app/.venv/bin:$PATH PYTHONUNBUFFERED=1
 USER 10001
 EXPOSE 8080
-ENTRYPOINT ["aiops"]
+ENTRYPOINT ["squero"]
 CMD ["serve"]

@@ -3,7 +3,7 @@
 # Actuators pulling and reporting (the Hub refuses either without an Actuator token).
 # Investigations, decisions, metrics and the API docs stay on 127.0.0.1, reached
 # through `tailscale serve`. Anything else gets a 404 here and never reaches the Hub.
-{$AIOPS_DOMAIN:localhost} {
+{$SQUERO_DOMAIN:localhost} {
 	# The Hub parses the whole body before it checks the token: cap it here.
 	request_body {
 		max_size 1MB

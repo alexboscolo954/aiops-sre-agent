@@ -4,13 +4,13 @@ A Lambda function, checkout, did a 1.2 s inventory lookup with a 10 s timeout un
 its timeout was cut to 1 s; then every call timed out and its Errors alarm fired.
 Run it in the image, through the Hub's real path, with the read-only IAM user's key:
 
-    AWS_KEY="$(cat key.json)" AIOPS_SCRUB='{"real": "fake", ...}' docker run --rm \\
-      -e AWS_KEY -e AIOPS_SCRUB -v "$PWD/evals:/evals" \\
-      --entrypoint /app/.venv/bin/python aiops-sre-agent:ci /evals/record_aws.py <account> <region>
+    AWS_KEY="$(cat key.json)" SQUERO_SCRUB='{"real": "fake", ...}' docker run --rm \\
+      -e AWS_KEY -e SQUERO_SCRUB -v "$PWD/evals:/evals" \\
+      --entrypoint /app/.venv/bin/python squero:ci /evals/record_aws.py <account> <region>
 
 key.json is `aws iam create-access-key` output. This repo is public: the account id
 maps to a fixed fake, the region to us-east-1 (what a replayed aws Contract names),
-and AIOPS_SCRUB adds the rest (the deployer's user name); every access key id becomes
+and SQUERO_SCRUB adds the rest (the deployer's user name); every access key id becomes
 AWS's example one. Nothing is written if a real value survives. Each tool keeps one
 result, whatever its arguments, except get_metric_data, matched on the metric.
 query_logs' one result is two real queries merged, newest first: the newest failures
@@ -29,8 +29,8 @@ from fastmcp import Client
 from pydantic import SecretStr
 from scrub import mask_aws_key_ids, refuse_leaks, scrubber  # evals/scrub.py, next to this file
 
-from aiops_agent import agent, contracts
-from aiops_agent.config import Settings
+from squero import agent, contracts
+from squero.config import Settings
 
 OUT = Path(__file__).parent / "scenarios"
 ACCOUNT, REGION = "123456789012", "us-east-1"
@@ -48,7 +48,7 @@ def result(r: Any) -> Any:
 
 
 async def record(account: str, region: str) -> None:
-    fakes = {account: ACCOUNT, region: REGION, **json.loads(os.environ.get("AIOPS_SCRUB", "{}"))}
+    fakes = {account: ACCOUNT, region: REGION, **json.loads(os.environ.get("SQUERO_SCRUB", "{}"))}
     scrub = scrubber(fakes, set())
     key = json.loads(os.environ["AWS_KEY"])["AccessKey"]
     aws = {

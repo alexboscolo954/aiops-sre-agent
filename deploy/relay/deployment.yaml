@@ -1,19 +1,19 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: aiops-relay
-  namespace: aiops-relay
-  labels: {app: aiops-relay}
+  name: squero-relay
+  namespace: squero-relay
+  labels: {app: squero-relay}
 spec:
   replicas: 1                 # one live connection per token: a second would replace the first
   strategy: {type: Recreate}
   selector:
-    matchLabels: {app: aiops-relay}
+    matchLabels: {app: squero-relay}
   template:
     metadata:
-      labels: {app: aiops-relay}
+      labels: {app: squero-relay}
     spec:
-      serviceAccountName: aiops-relay
+      serviceAccountName: squero-relay
       automountServiceAccountToken: true
       securityContext:
         runAsNonRoot: true
@@ -21,19 +21,19 @@ spec:
         seccompProfile: {type: RuntimeDefault}
       containers:
         - name: relay
-          image: ghcr.io/alexboscolo954/aiops-sre-agent:0.36.0
+          image: ghcr.io/alexboscolo954/squero:0.36.0
           args: [relay]
           env:
             - {name: HOME, value: /tmp}   # read-only root fs
-            - {name: AIOPS_RELAY_HUB, value: "wss://hub.example.com/relay"}
-            - {name: AIOPS_RELAY_CLUSTER, value: "demo"}          # its name in the Contract
-            - {name: AIOPS_RELAY_NAMESPACES, value: '["demo"]'}   # as the RoleBindings grant
-            # - {name: AIOPS_RELAY_PROMETHEUS_URL, value: "http://prometheus.monitoring:9090"}
+            - {name: SQUERO_RELAY_HUB, value: "wss://hub.example.com/relay"}
+            - {name: SQUERO_RELAY_CLUSTER, value: "demo"}          # its name in the Contract
+            - {name: SQUERO_RELAY_NAMESPACES, value: '["demo"]'}   # as the RoleBindings grant
+            # - {name: SQUERO_RELAY_PROMETHEUS_URL, value: "http://prometheus.monitoring:9090"}
             # Writes stay off unless deploy/relay-actions turns them on.
           envFrom:
-            - secretRef: {name: aiops-relay}   # AIOPS_RELAY_TOKEN
+            - secretRef: {name: squero-relay}   # SQUERO_RELAY_TOKEN
           ports:
-            - {name: alerts, containerPort: 8080}   # its Alertmanager receiver (AIOPS_RELAY_ALERTS_PORT)
+            - {name: alerts, containerPort: 8080}   # its Alertmanager receiver (SQUERO_RELAY_ALERTS_PORT)
           resources:
             requests: {cpu: 50m, memory: 128Mi}
             limits: {memory: 256Mi}
@@ -52,10 +52,10 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: aiops-relay
-  namespace: aiops-relay
-  labels: {app: aiops-relay}
+  name: squero-relay
+  namespace: squero-relay
+  labels: {app: squero-relay}
 spec:
-  selector: {app: aiops-relay}
+  selector: {app: squero-relay}
   ports:
     - {name: alerts, port: 8080, targetPort: alerts}

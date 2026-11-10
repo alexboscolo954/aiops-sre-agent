@@ -9,21 +9,21 @@
 set -eu
 umask 077
 dump() {
-  f="/backups/aiops-$(date -u +%Y%m%dT%H%M%SZ).dump"
+  f="/backups/squero-$(date -u +%Y%m%dT%H%M%SZ).dump"
   if ! pg_dump --format=custom --file="$f.part"; then
     rm -f "$f.part"
     return 1
   fi
   mv "$f.part" "$f" && echo "backup: $f"
-  find /backups -name 'aiops-*.dump' -mtime +"${KEEP_DAYS:-14}" -delete
+  find /backups -name 'squero-*.dump' -mtime +"${KEEP_DAYS:-14}" -delete
 }
 if [ "${1:-}" = once ]; then
   dump
   exit
 fi
-find /backups -name 'aiops-*.dump.part' -delete  # left by a dump that was killed
+find /backups -name 'squero-*.dump.part' -delete  # left by a dump that was killed
 while true; do
-  if [ -z "$(find /backups -name 'aiops-*.dump' -mmin -1440)" ]; then
+  if [ -z "$(find /backups -name 'squero-*.dump' -mmin -1440)" ]; then
     dump || echo "backup failed; trying again in 5 minutes" >&2
   fi
   sleep 300

@@ -1,4 +1,4 @@
-CLUSTER := aiops
+CLUSTER := squero
 CTX     := kind-$(CLUSTER)
 PG      := pgvector/pgvector:0.8.7-pg17-trixie
 
@@ -10,12 +10,12 @@ lint:
 	uv run mypy src
 
 test: db
-	uv run pytest --cov=aiops_agent --cov-report=term-missing
+	uv run pytest --cov=squero --cov-report=term-missing
 
 db: ## throwaway Postgres for the tests; each test gets its own database in it
-	docker ps --format '{{.Names}}' | grep -qx aiops-pg || docker run -d --rm --name aiops-pg \
+	docker ps --format '{{.Names}}' | grep -qx squero-pg || docker run -d --rm --name squero-pg \
 	  -e POSTGRES_PASSWORD=postgres -p 55432:5432 $(PG) >/dev/null
-	until docker exec aiops-pg pg_isready -h 127.0.0.1 -U postgres -q; do sleep 0.5; done
+	until docker exec squero-pg pg_isready -h 127.0.0.1 -U postgres -q; do sleep 0.5; done
 
 cluster:
 	kind get clusters | grep -qx $(CLUSTER) || kind create cluster --config demo/kind.yaml
@@ -56,13 +56,13 @@ integration: ## real MCP tools on the kind demo, as the demo Contracts (kind con
 	uv run pytest -m integration -v
 
 image:
-	docker build -t aiops-sre-agent:ci .
+	docker build -t squero:ci .
 
 NODE := node:22-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914
 NPM := docker run --rm -v "$(CURDIR)/console:/w" -w /w $(NODE) npm
 
 console-types: ## the console app's API types, from the Hub's OpenAPI (commit both)
-	uv run python -c "from aiops_agent.webapp import openapi; print(openapi(), end='')" > console/openapi.json
+	uv run python -c "from squero.webapp import openapi; print(openapi(), end='')" > console/openapi.json
 	$(NPM) run -s types
 
 console-check: ## the console app: install, types in sync, typecheck, lint, test, build
@@ -74,22 +74,22 @@ console-check: ## the console app: install, types in sync, typecheck, lint, test
 	$(NPM) test
 	$(NPM) run -s build
 
-console-dev: ## Vite on 127.0.0.1:5173 against a local Hub (AIOPS_DEV_HUB, AIOPS_DEV_LOGIN)
+console-dev: ## Vite on 127.0.0.1:5173 against a local Hub (SQUERO_DEV_HUB, SQUERO_DEV_LOGIN)
 	cd console && npm ci --no-fund --no-audit && npm run dev
 
 snapshots: image ## vendors' tool schemas, from the pinned binaries in the image
-	docker run --rm aiops-sre-agent:ci integrations snapshot grafana --out - \
-	  >src/aiops_agent/servers/snapshots/grafana.json.tmp
-	mv src/aiops_agent/servers/snapshots/grafana.json.tmp src/aiops_agent/servers/snapshots/grafana.json
-	docker run --rm aiops-sre-agent:ci integrations snapshot azure --out - \
-	  >src/aiops_agent/servers/snapshots/azure.json.tmp
-	mv src/aiops_agent/servers/snapshots/azure.json.tmp src/aiops_agent/servers/snapshots/azure.json
-	docker run --rm aiops-sre-agent:ci integrations snapshot gcp --out - \
-	  >src/aiops_agent/servers/snapshots/gcp.json.tmp
-	mv src/aiops_agent/servers/snapshots/gcp.json.tmp src/aiops_agent/servers/snapshots/gcp.json
+	docker run --rm squero:ci integrations snapshot grafana --out - \
+	  >src/squero/servers/snapshots/grafana.json.tmp
+	mv src/squero/servers/snapshots/grafana.json.tmp src/squero/servers/snapshots/grafana.json
+	docker run --rm squero:ci integrations snapshot azure --out - \
+	  >src/squero/servers/snapshots/azure.json.tmp
+	mv src/squero/servers/snapshots/azure.json.tmp src/squero/servers/snapshots/azure.json
+	docker run --rm squero:ci integrations snapshot gcp --out - \
+	  >src/squero/servers/snapshots/gcp.json.tmp
+	mv src/squero/servers/snapshots/gcp.json.tmp src/squero/servers/snapshots/gcp.json
 
 deploy-smoke: image ## real image + shipped manifests on kind
-	kind load docker-image aiops-sre-agent:ci --name $(CLUSTER)
+	kind load docker-image squero:ci --name $(CLUSTER)
 	./demo/deploy-smoke.sh $(CTX)
 	./demo/rbac-check.sh $(CTX)
 	./demo/actuator-smoke.sh $(CTX)
@@ -100,8 +100,8 @@ deploy-smoke: image ## real image + shipped manifests on kind
 	./demo/rbac-check.sh $(CTX) true true
 
 hub-smoke: image ## the Hub's compose stack: health, public boundary, backups, contracts updates
-	./demo/hub-smoke.sh aiops-sre-agent:ci
+	./demo/hub-smoke.sh squero:ci
 
 down:
 	kind delete cluster --name $(CLUSTER)
-	docker rm -f aiops-pg >/dev/null 2>&1 || true
+	docker rm -f squero-pg >/dev/null 2>&1 || true

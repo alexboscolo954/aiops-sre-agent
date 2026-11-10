@@ -2,7 +2,7 @@
 # Prove the shipped RBAC is least privilege by impersonating the agent's ServiceAccount.
 set -euo pipefail
 ctx=$1; actions=${2:-false}; gitops=${3:-false}
-sa=system:serviceaccount:aiops:aiops-agent
+sa=system:serviceaccount:squero:squero
 fail=0
 check() {  # expected namespace verb resource [--subresource=x]
   local want=$1 ns=$2; shift 2

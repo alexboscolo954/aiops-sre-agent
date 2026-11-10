@@ -7,8 +7,8 @@ from typing import Any
 
 import pytest
 
-from aiops_agent import contracts, sizing
-from aiops_agent.store import Store, connect
+from squero import contracts, sizing
+from squero.store import Store, connect
 from tests.test_sizing_store import NOW, H, row, stored
 from tests.test_teams import allocated, r
 
@@ -237,7 +237,7 @@ def test_sizing_cost_compares_and_refuses_a_bad_ago(
 ) -> None:
     import asyncio
 
-    from aiops_agent import cli
+    from squero import cli
 
     async def seed() -> None:
         async with connect(database_url) as pool:
@@ -252,7 +252,7 @@ def test_sizing_cost_compares_and_refuses_a_bad_ago(
             )
 
     asyncio.run(seed())
-    monkeypatch.setenv("AIOPS_DATABASE_URL", database_url)
+    monkeypatch.setenv("SQUERO_DATABASE_URL", database_url)
     monkeypatch.setattr(cli, "contract", lambda settings, cid: allocated())
     monkeypatch.setattr("time.time", lambda: NOW + DAY + H)
     assert cli.main(["sizing", "cost", "--contract", "acme", "--compare", "1d"]) == 0

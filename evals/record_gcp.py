@@ -4,11 +4,11 @@ A Cloud Run service, checkout, worked until a new revision set its inventory tim
 (UPSTREAM_TIMEOUT_MS) to 1 ms, then answered 503 under traffic. Run it in the image,
 through the Hub's real path, with the Contract's service account key only:
 
-    GOOGLE_SERVICE_ACCOUNT_KEY="$(cat key.json)" AIOPS_SCRUB='{"real": "fake", ...}' \\
-    docker run --rm -e GOOGLE_SERVICE_ACCOUNT_KEY -e AIOPS_SCRUB -v "$PWD/evals:/evals" \\
-      --entrypoint /app/.venv/bin/python aiops-sre-agent:ci /evals/record_gcp.py <project> <number>
+    GOOGLE_SERVICE_ACCOUNT_KEY="$(cat key.json)" SQUERO_SCRUB='{"real": "fake", ...}' \\
+    docker run --rm -e GOOGLE_SERVICE_ACCOUNT_KEY -e SQUERO_SCRUB -v "$PWD/evals:/evals" \\
+      --entrypoint /app/.venv/bin/python squero:ci /evals/record_gcp.py <project> <number>
 
-This repo is public: the project id and number map to fixed fakes, AIOPS_SCRUB adds
+This repo is public: the project id and number map to fixed fakes, SQUERO_SCRUB adds
 the rest (the deployer's email), and `requestMetadata` and request IPs and user agents (who called,
 from where) are dropped. Nothing is written if a real value survives.
 Each tool keeps one result, whatever its filter or query. list_log_entries' one
@@ -29,8 +29,8 @@ from fastmcp import Client
 from pydantic import SecretStr
 from scrub import refuse_leaks, scrubber  # evals/scrub.py, next to this file
 
-from aiops_agent import agent, contracts
-from aiops_agent.config import Settings
+from squero import agent, contracts
+from squero.config import Settings
 
 OUT = Path(__file__).parent / "scenarios"
 PROJECT, NUMBER = "shop-prod-4f2a", "100000000001"
@@ -57,7 +57,7 @@ def result(r: Any) -> Any:
 
 
 async def record(project: str, number: str) -> None:
-    fakes = {project: PROJECT, number: NUMBER, **json.loads(os.environ.get("AIOPS_SCRUB", "{}"))}
+    fakes = {project: PROJECT, number: NUMBER, **json.loads(os.environ.get("SQUERO_SCRUB", "{}"))}
     scrub = scrubber(fakes, DROPPED)
     gcp = {
         "name": "gcp",

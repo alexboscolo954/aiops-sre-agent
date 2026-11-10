@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-3 0 64 64">
+  <style>.i{fill:#1d2733}@media (prefers-color-scheme: dark){.i{fill:#e6edf3}}</style>
+  <path class="i" d="M28 50 V30 C26 20 29 9 43 1 C42 8 42.5 15 42.5 20 V30 H40.5 A2.5 2.5 0 0 0 35.5 30 H35 V50 Z"/>
+  <path class="i" d="M28 49 C28 55 23 60 12 63 C25 62 33 58 35 49 Z"/>
+  <rect class="i" x="19" y="26" width="10" height="3" rx="1.5"/>
+  <g fill="#B23A2E"><rect x="34" y="29.5" width="12" height="2.8" rx="1.4"/><rect x="34" y="33.5" width="12" height="2.8" rx="1.4"/><rect x="34" y="37.5" width="12" height="2.8" rx="1.4"/><rect x="34" y="41.5" width="12" height="2.8" rx="1.4"/><rect x="34" y="45.5" width="11" height="2.8" rx="1.4"/><rect x="34" y="49.5" width="10" height="2.8" rx="1.4"/></g>
+</svg>

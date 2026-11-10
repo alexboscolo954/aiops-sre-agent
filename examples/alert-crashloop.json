@@ -1,7 +1,7 @@
 {
   "version": "4",
   "status": "firing",
-  "receiver": "aiops-agent",
+  "receiver": "squero",
   "groupKey": "{}:{alertname=\"KubePodCrashLooping\"}",
   "groupLabels": {"alertname": "KubePodCrashLooping"},
   "commonLabels": {"alertname": "KubePodCrashLooping", "namespace": "demo", "severity": "warning"},

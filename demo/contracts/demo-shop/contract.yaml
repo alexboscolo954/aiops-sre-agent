@@ -4,7 +4,7 @@ id: demo-shop
 name: Demo shop
 clusters:
   - name: kind
-    context: kind-aiops
+    context: kind-squero
     namespaces: [demo, orders]
     gitops_namespaces: [argocd, flux-system]  # stand-in CRDs on kind (demo/gitops.sh)
 integrations:
@@ -20,7 +20,7 @@ data_policy:
     terms: [shop.example]
 # Unit prices (docs/optimizer.md: Unit prices): Sizings show what their waste and requests cost
 prices: {currency: USD, cpu: 0.0316, memory: 0.0042}  # per vCPU-hour, per GiB-hour
-# Sizing policies (aiops sizing show). Built-ins: production (the default),
+# Sizing policies (squero sizing show). Built-ins: production (the default),
 # high-availability, batch (every Job and CronJob unless a rule says otherwise), off.
 sizing:
   policies:

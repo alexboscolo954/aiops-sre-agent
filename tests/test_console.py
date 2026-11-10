@@ -6,9 +6,9 @@ from typing import Any
 
 from pydantic import SecretStr
 
-from aiops_agent import agent
-from aiops_agent.config import Settings
-from aiops_agent.console import COOKIE, action_key
+from squero import agent
+from squero.config import Settings
+from squero.console import COOKIE, action_key
 from tests.conftest import REPORT, call, make_contract, make_fake_cluster
 from tests.test_api import ALERT, AUTH, BANK_HOOK, BANK_URL, HOOK, URL, client
 from tests.test_restart import wait_for

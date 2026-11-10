@@ -12,9 +12,9 @@ from fastmcp import Client
 from langchain.mcp import MCPAdapter
 from pydantic import SecretStr
 
-from aiops_agent import agent, contracts, evals
-from aiops_agent.config import Settings
-from aiops_agent.servers import aws
+from squero import agent, contracts, evals
+from squero.config import Settings
+from squero.servers import aws
 
 KEY_ID, SECRET = "AKIDEXAMPLE", "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY"
 NOW = datetime(2026, 10, 18, 23, 47, 52, tzinfo=UTC)

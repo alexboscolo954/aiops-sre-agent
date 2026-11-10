@@ -13,8 +13,8 @@ An agent that reads logs and can change a cluster is a prompt-injection target. 
 | Secrets in context | Env var *values* are never returned, only names. Logs and events are redacted (tokens, JWTs, keys, `password=`), and so is every request to the model, alert labels and Questions included. |
 | Client identifiers | A Contract's Data policy can mask its hostnames, names, emails and IPs: the LLM provider sees placeholders, everyone else the real values ([Masking](contracts.md#masking)). |
 | Prompt injection | Alerts and tool output are framed as data. An eval scenario plants an instruction in pod logs, and it fails if the agent even *attempts* a write. |
-| Blast radius | Per-run tool-call and model-call limits. The model sees at most `AIOPS_TOOL_OUTPUT_LIMIT` characters of any tool result at once; a larger one is kept, redacted, in that Investigation's state, and `read_more` pages or filters it. The receiver runs a bounded number of triages at once. |
+| Blast radius | Per-run tool-call and model-call limits. The model sees at most `SQUERO_TOOL_OUTPUT_LIMIT` characters of any tool result at once; a larger one is kept, redacted, in that Investigation's state, and `read_more` pages or filters it. The receiver runs a bounded number of triages at once. |
 | Auth | Two tokens: Alertmanager's token can only submit alerts. Reading reports and deciding on proposed actions needs the approver token. |
-| Audit | Every tool call is logged as one JSON line and counted in `aiops_tool_calls_total{tool,status}`. A triage's executed actions are recorded where the tool ran, never taken from the model's own account, and an approved call that failed is marked `FAILED`. |
+| Audit | Every tool call is logged as one JSON line and counted in `squero_tool_calls_total{tool,status}`. A triage's executed actions are recorded where the tool ran, never taken from the model's own account, and an approved call that failed is marked `FAILED`. |
 
 MCP tool annotations are *hints* from the server. The security boundary is RBAC, the namespace allowlist, the tool registration done on the server side, and the Hub's own read/write list.

@@ -7,7 +7,7 @@ import psycopg
 import pytest
 from pydantic import SecretStr
 
-from aiops_agent.config import Settings
+from squero.config import Settings
 from tests.conftest import REPORT, call, make_contract, make_fake_cluster
 from tests.test_api import ALERT, AUTH, BANK_HOOK, BANK_URL, HOOK, URL, client
 from tests.test_console import OPERATOR, SAME

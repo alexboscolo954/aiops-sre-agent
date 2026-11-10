@@ -11,8 +11,8 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
-from aiops_agent import api
-from aiops_agent.config import Settings
+from squero import api
+from squero.config import Settings
 from tests.conftest import REPORT, call
 from tests.test_api import AUTH, BANK_HOOK, BANK_URL, EVICT_THEN_REPORT, HOOK, URL, bank, client
 from tests.test_console import OPERATOR, VIEW
@@ -160,8 +160,8 @@ def test_a_contracts_own_window_overrides_the_hubs(
 @pytest.mark.anyio
 async def test_only_triages_are_open(database_url: str) -> None:
     """A Question has no Alert group to compare: never a candidate."""
-    from aiops_agent.models import Investigation
-    from aiops_agent.store import Store, connect
+    from squero.models import Investigation
+    from squero.store import Store, connect
 
     async with connect(database_url) as pool:
         store = Store(pool)
@@ -399,8 +399,8 @@ def test_a_forged_click_cannot_separate_another_triages_group(
 @pytest.mark.anyio
 async def test_a_related_group_is_claimed_once(database_url: str) -> None:
     """Two claims, as two clicks racing past the read: one Triage, the other rolled back."""
-    from aiops_agent.models import AlertGroup, Investigation
-    from aiops_agent.store import Store, connect
+    from squero.models import AlertGroup, Investigation
+    from squero.store import Store, connect
 
     async with connect(database_url) as pool:
         store = Store(pool)

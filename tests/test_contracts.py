@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 import yaml
 
-from aiops_agent import cli, contracts
+from squero import cli, contracts
 from tests.conftest import DEMO_CONTRACTS, EXEC_USER, GCP_USER, kubeconfig, use_age_keys
 
 BASE: dict[str, Any] = {

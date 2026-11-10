@@ -11,9 +11,9 @@ from langchain_core.messages import BaseMessage
 from mcp.types import ToolAnnotations
 from pydantic import Field, SecretStr
 
-from aiops_agent import agent, contracts, embeddings, masking, teachings
-from aiops_agent.config import Settings
-from aiops_agent.models import AlertGroup
+from squero import agent, contracts, embeddings, masking, teachings
+from squero.config import Settings
+from squero.models import AlertGroup
 from tests.conftest import REPORT, ScriptedModel, call, make_contract
 
 KEY = "k-acme"
@@ -135,7 +135,7 @@ def masked_contract(contract_id: str = "acme", key: str = KEY) -> contracts.Cont
 
 
 def test_the_embedder_and_a_scenario_get_the_contracts_mask(settings: Settings) -> None:
-    from aiops_agent import evals
+    from squero import evals
 
     data = masked_contract().model_dump()
     data["integrations"].append({"name": "incidents"})
@@ -156,7 +156,7 @@ async def test_an_eval_masks_what_its_scenario_says(
 ) -> None:
     import yaml
 
-    from aiops_agent import evals
+    from squero import evals
 
     model = recording(call("TriageReport", "c1", **REPORT))
     monkeypatch.setattr(agent, "build_model", lambda _s: model)

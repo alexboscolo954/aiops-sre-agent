@@ -9,11 +9,11 @@ import pytest
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
 
-from aiops_agent import agent, contracts, evals
-from aiops_agent.config import Settings
-from aiops_agent.servers import sizing as tool
-from aiops_agent.store import Store, connect
-from aiops_agent.usage import ContainerUsage, Workload
+from squero import agent, contracts, evals
+from squero.config import Settings
+from squero.servers import sizing as tool
+from squero.store import Store, connect
+from squero.usage import ContainerUsage, Workload
 from tests.conftest import make_contract
 from tests.test_sizing_store import MI, NOW, container, prometheus_contract, rows_of
 

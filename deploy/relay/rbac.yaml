@@ -1,15 +1,15 @@
 # Read-only, and bound per namespace with RoleBindings, so RBAC enforces the same
-# namespaces as AIOPS_RELAY_NAMESPACES. Secrets and ConfigMaps are not readable.
+# namespaces as SQUERO_RELAY_NAMESPACES. Secrets and ConfigMaps are not readable.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: aiops-relay
-  namespace: aiops-relay
+  name: squero-relay
+  namespace: squero-relay
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: aiops-relay-read
+  name: squero-relay-read
 rules:
   - apiGroups: [""]
     resources: [pods, pods/log, events]
@@ -18,17 +18,17 @@ rules:
     resources: [deployments, replicasets]
     verbs: [get, list, watch]
 ---
-# One RoleBinding per namespace in AIOPS_RELAY_NAMESPACES. Copy for each.
+# One RoleBinding per namespace in SQUERO_RELAY_NAMESPACES. Copy for each.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: aiops-relay-read
+  name: squero-relay-read
   namespace: demo
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: aiops-relay-read
+  name: squero-relay-read
 subjects:
   - kind: ServiceAccount
-    name: aiops-relay
-    namespace: aiops-relay
+    name: squero-relay
+    namespace: squero-relay

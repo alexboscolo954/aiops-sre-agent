@@ -3,15 +3,15 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: aiops-postgres
-  namespace: aiops
+  name: squero-postgres
+  namespace: squero
 spec:
   replicas: 1
   selector:
-    matchLabels: {app: aiops-postgres}
+    matchLabels: {app: squero-postgres}
   template:
     metadata:
-      labels: {app: aiops-postgres}
+      labels: {app: squero-postgres}
     spec:
       containers:
         - name: postgres
@@ -26,9 +26,9 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: aiops-postgres
-  namespace: aiops
+  name: squero-postgres
+  namespace: squero
 spec:
-  selector: {app: aiops-postgres}
+  selector: {app: squero-postgres}
   ports:
     - {port: 5432}

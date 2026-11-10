@@ -12,9 +12,9 @@ import yaml
 from fastmcp import Client
 from pydantic import SecretStr
 
-from aiops_agent import agent, contracts, evals
-from aiops_agent.config import Settings
-from aiops_agent.servers import jira
+from squero import agent, contracts, evals
+from squero.config import Settings
+from squero.servers import jira
 from tests.conftest import REPORT, call, scripted
 from tests.test_agent import ALERT
 
@@ -183,7 +183,7 @@ def test_jira_has_a_health_check_and_a_guide_only_when_present(settings: Setting
 async def test_a_saved_jira_investigation_replays(settings: Settings) -> None:
     """Save as Scenario names the builtin; replay offers its tools with a placeholder
     Contract that has no secrets, and answers from the recording."""
-    from aiops_agent.models import Investigation, TriageReport
+    from squero.models import Investigation, TriageReport
 
     c = contracts.build(
         {"id": "a", "name": "a", "integrations": [INTEGRATION]},

@@ -12,10 +12,10 @@ from kubernetes import client as k
 from kubernetes.client.exceptions import ApiException
 from pydantic import SecretStr, ValidationError
 
-from aiops_agent import contracts, deploys
-from aiops_agent.config import Settings
-from aiops_agent.models import Investigation
-from aiops_agent.store import Store, connect, now
+from squero import contracts, deploys
+from squero.config import Settings
+from squero.models import Investigation
+from squero.store import Store, connect, now
 from tests import test_api
 from tests.conftest import make_contract, make_fake_cluster
 from tests.test_api import client
@@ -391,7 +391,7 @@ def test_a_pending_verification_fires_after_a_restart(
 def test_the_scheduler_polls_and_fires(
     settings: Settings, fake_cluster: Any, database_url: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from aiops_agent import api
+    from squero import api
 
     monkeypatch.setattr(api, "CHECK_TICK", 0.05)
     monkeypatch.setattr(deploys, "POLL_SECONDS", 0.1)
@@ -412,7 +412,7 @@ def test_the_scheduler_polls_and_fires(
 def test_each_contracts_poll_server_is_built_once(
     settings: Settings, fake_cluster: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from aiops_agent import agent
+    from squero import agent
 
     built: list[str] = []
     real = agent.integration_server

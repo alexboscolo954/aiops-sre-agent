@@ -5,7 +5,7 @@
 # commit that was running, and the Hub keeps running untouched.
 set -euo pipefail
 cd "$(dirname "$0")"
-contracts=${AIOPS_CONTRACTS:-./contracts}
+contracts=${SQUERO_CONTRACTS:-./contracts}
 before=$(git -C "$contracts" rev-parse HEAD)
 git -C "$contracts" pull --ff-only --quiet
 if ! docker compose run --rm --no-deps -T hub contracts validate /contracts; then

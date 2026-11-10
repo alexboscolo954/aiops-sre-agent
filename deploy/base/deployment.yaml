@@ -1,22 +1,22 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: aiops-agent
-  namespace: aiops
-  labels: {app: aiops-agent}
+  name: squero
+  namespace: squero
+  labels: {app: squero}
 spec:
   replicas: 1                 # timers and the concurrency limit are per process; see api.py
   strategy: {type: Recreate}
   selector:
-    matchLabels: {app: aiops-agent}
+    matchLabels: {app: squero}
   template:
     metadata:
-      labels: {app: aiops-agent}
+      labels: {app: squero}
       annotations:
         prometheus.io/scrape: "true"
         prometheus.io/port: "8080"
     spec:
-      serviceAccountName: aiops-agent
+      serviceAccountName: squero
       automountServiceAccountToken: true
       securityContext:
         runAsNonRoot: true
@@ -24,14 +24,14 @@ spec:
         seccompProfile: {type: RuntimeDefault}
       containers:
         - name: agent
-          image: ghcr.io/alexboscolo954/aiops-sre-agent:0.36.0
+          image: ghcr.io/alexboscolo954/squero:0.36.0
           args: [serve, --port, "8080"]
           env:
             - {name: HOME, value: /tmp}   # read-only root fs
-            - {name: AIOPS_CONTRACTS_DIR, value: /contracts}
-            - {name: AIOPS_MODEL, value: "anthropic:claude-sonnet-5-5"}
+            - {name: SQUERO_CONTRACTS_DIR, value: /contracts}
+            - {name: SQUERO_MODEL, value: "anthropic:claude-sonnet-5-5"}
           envFrom:
-            - secretRef: {name: aiops-secrets}
+            - secretRef: {name: squero-secrets}
           ports:
             - {name: http, containerPort: 8080}
           readinessProbe:
@@ -53,14 +53,14 @@ spec:
         - name: tmp
           emptyDir: {}
         - name: contract
-          configMap: {name: aiops-contract}
+          configMap: {name: squero-contract}
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: aiops-agent
-  namespace: aiops
+  name: squero
+  namespace: squero
 spec:
-  selector: {app: aiops-agent}
+  selector: {app: squero}
   ports:
     - {name: http, port: 8080, targetPort: http}

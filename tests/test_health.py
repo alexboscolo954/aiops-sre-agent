@@ -7,9 +7,9 @@ from fastapi.testclient import TestClient
 from kubernetes.client import ApiException
 from pydantic import SecretStr
 
-from aiops_agent import agent, contracts
-from aiops_agent.api import create_app
-from aiops_agent.config import Settings
+from squero import agent, contracts
+from squero.api import create_app
+from squero.config import Settings
 from tests.conftest import REPORT, call, make_contract, make_fake_cluster, scripted
 from tests.test_api import ALERT, HOOK, URL, client
 from tests.test_console import AS_OPERATOR, OPERATOR, VIEW
@@ -73,7 +73,7 @@ def test_secret_values_never_show_and_unbuildable_tools_fail_the_check(
 
 
 def test_hub_settings_never_show_credentials_in_plain_strings() -> None:
-    from aiops_agent.api import shown_settings
+    from squero.api import shown_settings
 
     settings = Settings(
         _env_file=None,

@@ -5,9 +5,9 @@ from typing import Any
 import pytest
 import yaml
 
-from aiops_agent import agent, evals
-from aiops_agent.config import Settings
-from aiops_agent.models import AlertGroup, TriageReport
+from squero import agent, evals
+from squero.config import Settings
+from squero.models import AlertGroup, TriageReport
 from tests.conftest import REPORT, call, scripted
 from tests.test_agent import ALERT
 

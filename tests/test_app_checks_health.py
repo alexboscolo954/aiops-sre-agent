@@ -10,11 +10,11 @@ from fastapi.testclient import TestClient
 from kubernetes.client import ApiException
 from pydantic import SecretStr
 
-from aiops_agent import agent, contracts
-from aiops_agent.api import create_app
-from aiops_agent.config import Settings
-from aiops_agent.models import CheckResult, Evidence, Investigation, TriageReport
-from aiops_agent.store import Store, connect
+from squero import agent, contracts
+from squero.api import create_app
+from squero.config import Settings
+from squero.models import CheckResult, Evidence, Investigation, TriageReport
+from squero.store import Store, connect
 from tests.conftest import REPORT, call, make_contract, make_fake_cluster, scripted
 from tests.test_api import ALERT, HOOK, URL, client
 from tests.test_console import AS_OPERATOR, OPERATOR, VIEW

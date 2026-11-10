@@ -6,7 +6,7 @@ from typing import Any
 
 from pydantic import SecretStr
 
-from aiops_agent.config import Settings
+from squero.config import Settings
 from tests.test_api import client
 
 OPERATOR = "alex@example.com"

@@ -300,7 +300,7 @@ const COST = {
   total: { requests: { cpu: 0, memory: 0 }, waste: { cpu: 0, memory: 0 }, cost: { requests: 0, waste: 0 } },
   realized: { currency: null, rate: { cpu: 0, memory: 0 }, accrued: { cpu: 0, memory: 0 }, week: { cpu: 0, memory: 0 }, cost: null, drops: [] },
 };
-const BILL = { cluster: "kind", tag: "aiops-cluster=kind", start: "2026-10-19", end: "2026-10-25", days: 7, currency: "USD", hours: 168, sampled: 168, coverage: 1, note: null };
+const BILL = { cluster: "kind", tag: "squero-cluster=kind", start: "2026-10-19", end: "2026-10-25", days: 7, currency: "USD", hours: 168, sampled: 168, coverage: 1, note: null };
 
 test("the Cost page sets a cluster's AWS bill beside its estimate, flagged outside the tolerance", async () => {
   history.replaceState(null, "", "/app/?view=cost");

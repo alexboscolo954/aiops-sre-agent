@@ -14,11 +14,11 @@ from fastapi.testclient import TestClient
 from fastmcp import Client
 from pydantic import SecretStr
 
-from aiops_agent import agent, cli, contracts, hubmcp, masking, webapp
-from aiops_agent.api import create_app
-from aiops_agent.config import Settings
-from aiops_agent.models import Answer, Investigation, TriageReport
-from aiops_agent.store import Store, connect
+from squero import agent, cli, contracts, hubmcp, masking, webapp
+from squero.api import create_app
+from squero.config import Settings
+from squero.models import Answer, Investigation, TriageReport
+from squero.store import Store, connect
 from tests.conftest import REPORT, make_contract
 from tests.conftest import call as call_step
 from tests.test_api import client, scripted, wait_for
@@ -56,7 +56,7 @@ TOOLS = {
 
 @pytest.fixture(autouse=True)
 def _clock(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("aiops_agent.api.now", lambda: NOW)
+    monkeypatch.setattr("squero.api.now", lambda: NOW)
 
 
 def hub(
@@ -153,7 +153,7 @@ def test_a_call_needs_the_token_and_a_listed_operators_identity(
         listed = rpc(c, "tools/list", {})
     assert refused == [401, 401, 401, 403, 403]
     assert "result" in ok.json(), ok.text
-    assert ok.json()["result"]["serverInfo"]["name"] == "aiops-hub"
+    assert ok.json()["result"]["serverInfo"]["name"] == "squero-hub"
     tools = {t["name"]: t for t in listed.json()["result"]["tools"]}
     assert set(tools) == TOOLS
 
@@ -170,7 +170,7 @@ def test_it_is_off_without_its_token(
 @pytest.mark.parametrize(
     ("change", "error"),
     [
-        ({"console_operators": set()}, "needs AIOPS_CONSOLE_OPERATORS"),
+        ({"console_operators": set()}, "needs SQUERO_CONSOLE_OPERATORS"),
         ({"mcp_token": SecretStr("t" * 31)}, "too short"),
         ({"mcp_token": SecretStr("a" * 32), "approver_token": SecretStr("a" * 32)}, "approver"),
         ({"mcp_token": SecretStr("h" * 32)}, "webhook token is the MCP token"),
@@ -373,20 +373,20 @@ def test_a_placeholder_never_handed_out_stays_as_written(
 def test_serve_writes_the_audit_log_to_stderr(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Live 11.1a found every aiops INFO line dropped: uvicorn configures only its own."""
+    """Live 11.1a found every squero INFO line dropped: uvicorn configures only its own."""
     import uvicorn
 
-    hub = logging.getLogger("aiops")
+    hub = logging.getLogger("squero")
     before = (hub.handlers[:], hub.level)
     monkeypatch.setattr(uvicorn, "run", lambda *a, **k: None)
     monkeypatch.chdir("/")  # no .env with moved settings here
     try:
         assert cli.main(["serve"]) == 0
-        logging.getLogger("aiops.audit").info('{"event": "tool_call", "channel": "mcp"}')
+        logging.getLogger("squero.audit").info('{"event": "tool_call", "channel": "mcp"}')
     finally:
         hub.handlers[:], hub.level = before
     assert (
-        'INFO:     aiops.audit {"event": "tool_call", "channel": "mcp"}' in capsys.readouterr().err
+        'INFO:     squero.audit {"event": "tool_call", "channel": "mcp"}' in capsys.readouterr().err
     )
 
 
@@ -394,12 +394,12 @@ def test_every_call_is_an_audit_line_with_its_channel_login_and_contract(
     settings: Settings, fake_cluster: Any, database_url: str, caplog: pytest.LogCaptureFixture
 ) -> None:
     with (
-        caplog.at_level(logging.INFO, logger="aiops.audit"),
+        caplog.at_level(logging.INFO, logger="squero.audit"),
         hub(settings, fake_cluster, database_url) as c,
     ):
         acme = call(c, "list_contracts")[0]["id"]
         call(c, "sizings", contract=acme, namespace=mask("shop"))
-    lines = [json.loads(r.message) for r in caplog.records if r.name == "aiops.audit"]
+    lines = [json.loads(r.message) for r in caplog.records if r.name == "squero.audit"]
     assert [(x["tool"], x["status"]) for x in lines] == [
         ("list_contracts", "ok"),
         ("sizings", "ok"),
@@ -691,7 +691,7 @@ def test_a_rejections_reason_reaches_the_agent_with_the_placeholders_put_back(
 def test_the_kill_switch_goes_on_from_mcp_and_refuses_approving_not_rejecting(
     settings: Settings, fake_cluster: Any, database_url: str
 ) -> None:
-    from aiops_agent.api import KILLED
+    from squero.api import KILLED
     from tests.test_api import EVICT_THEN_REPORT
 
     with hub(settings, fake_cluster, database_url, steps=EVICT_THEN_REPORT, acme_extra=ACTING) as c:
@@ -888,7 +888,7 @@ def test_approving_a_sizing_is_refused_while_the_kill_switch_is_on(
 
 
 def clone(tmp_path: Any, settings: Settings) -> None:
-    """The contracts repo cloned at AIOPS_CONTRACTS_DIR, acme's file at MAIN."""
+    """The contracts repo cloned at SQUERO_CONTRACTS_DIR, acme's file at MAIN."""
     from tests.test_proposals import MAIN, TEXT
 
     (tmp_path / ".git" / "refs" / "heads").mkdir(parents=True)
@@ -932,7 +932,7 @@ def test_a_change_is_proposed_as_a_pull_request_with_the_placeholders_put_back(
         unloaded = call(c, "propose_change", contract="bank", edits=[plain], title="t")
     assert opened == {"pull_request": "https://github.com/me/contracts/pull/7"}
     (ref, put, pull) = gh.writes()
-    assert ref[2]["ref"] == "refs/heads/aiops/acme-19720927-000000"
+    assert ref[2]["ref"] == "refs/heads/squero/acme-19720927-000000"
     rules = sizing(base64.b64decode(put[2]["content"]).decode())["rules"]
     assert rules[0] == {"namespace": "shop", "name": "db", "policy": "lean"}
     assert pull[2]["body"].startswith("shop db idles\n")
@@ -968,7 +968,7 @@ def test_without_the_repo_and_its_token_nothing_is_proposed(
     with hub(settings, fake_cluster, database_url) as c:
         refused = call(c, "propose_change", contract="bank", edits=[edit], title="t")
     assert refused == {
-        "error": "set AIOPS_CONTRACTS_REPO and AIOPS_CONTRACTS_TOKEN to propose changes"
+        "error": "set SQUERO_CONTRACTS_REPO and SQUERO_CONTRACTS_TOKEN to propose changes"
     }
 
 

@@ -411,7 +411,7 @@ export function TokenPage() {
       <h1>Approver token</h1>
       <p>
         Your Tailscale identity says who you are. To see anything else here, and to approve, reject
-        or ask, the console also needs <code>AIOPS_APPROVER_TOKEN</code>, once per browser: it stays as
+        or ask, the console also needs <code>SQUERO_APPROVER_TOKEN</code>, once per browser: it stays as
         a cookie that proves the token without holding it.
       </p>
       <form

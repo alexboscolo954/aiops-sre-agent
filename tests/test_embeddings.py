@@ -12,10 +12,10 @@ import pytest
 from fastmcp import Client
 from pydantic import SecretStr, ValidationError
 
-from aiops_agent import cli, contracts, embeddings
-from aiops_agent.config import Price, Settings
-from aiops_agent.servers import incidents
-from aiops_agent.store import Store, connect, now
+from squero import cli, contracts, embeddings
+from squero.config import Price, Settings
+from squero.servers import incidents
+from squero.store import Store, connect, now
 from tests.conftest import REPORT, call, make_contract
 from tests.test_api import ALERT, HOOK, URL, client
 from tests.test_api import wait_for as wait_status
@@ -180,20 +180,20 @@ async def test_the_gateway_call(store: Store) -> None:
         data = [{"embedding": [0.5] * size}]
         return httpx.Response(200, json={"data": data, "usage": {"prompt_tokens": 7}})
 
-    settings = hub(model_api_key=SecretStr("k"), model_headers={"X-Title": "aiops"})
+    settings = hub(model_api_key=SecretStr("k"), model_headers={"X-Title": "squero"})
     e = embeddings.Embedder(settings, store, "acme", httpx.MockTransport(answer))
     v, tokens = await e.vector("hello")
     assert (len(v), tokens) == (embeddings.DIMENSIONS, 7)
     r = seen[0]
     assert str(r.url) == "http://gw/v1/embeddings"
-    assert r.headers["authorization"] == "Bearer k" and r.headers["x-title"] == "aiops"
+    assert r.headers["authorization"] == "Bearer k" and r.headers["x-title"] == "squero"
     assert json.loads(r.content) == {"model": MODEL, "input": "hello", "dimensions": 512}
     with pytest.raises(ValueError, match="3 dimensions"):
         await e.vector("short")
 
 
 def test_embeddings_need_the_gateway() -> None:
-    with pytest.raises(ValidationError, match="AIOPS_MODEL_BASE_URL"):
+    with pytest.raises(ValidationError, match="SQUERO_MODEL_BASE_URL"):
         Settings(_env_file=None, embedding_model=MODEL)
 
 
@@ -280,7 +280,7 @@ async def test_the_backfill_fails_when_an_embedding_failed(
 
 
 def test_a_budget_needs_the_embedding_model_priced() -> None:
-    from aiops_agent.api import create_app
+    from squero.api import create_app
 
     incidents = [{"name": "kubernetes"}, {"name": "incidents"}]
     budget = make_contract(integrations=incidents, monthly_budget_usd=5)

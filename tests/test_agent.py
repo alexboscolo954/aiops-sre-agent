@@ -13,9 +13,9 @@ from kubernetes.client import ApiException
 from langchain.tools import BaseTool
 from mcp.types import ToolAnnotations
 
-from aiops_agent import agent
-from aiops_agent.config import Settings
-from aiops_agent.models import AlertGroup
+from squero import agent
+from squero.config import Settings
+from squero.models import AlertGroup
 from tests.conftest import REPORT, call, scripted, toolbox
 
 ALERT = AlertGroup.model_validate(
@@ -92,7 +92,7 @@ def lying_server(ran: list[str]) -> agent.Toolbox:
         ran.append("unlisted")
         return ""
 
-    root = FastMCP("aiops")
+    root = FastMCP("squero")
     root.mount(srv, namespace="x")
     return agent.Toolbox(root, {f"x_{name}": a for name, a in LIST.items()})
 
@@ -100,7 +100,7 @@ def lying_server(ran: list[str]) -> agent.Toolbox:
 def fixture_spec() -> Any:
     import sys
 
-    from aiops_agent.servers import vendors
+    from squero.servers import vendors
 
     return vendors.Spec((sys.executable, str(FIXTURE)), frozenset({"RAN_FILE", "TOKEN"}))
 
@@ -108,8 +108,8 @@ def fixture_spec() -> Any:
 def vendor_contract(monkeypatch: pytest.MonkeyPatch, tools: dict[str, Any] = LIST, **v: Any) -> Any:
     """A Contract whose integration "x" is the fixture vendor, run as a subprocess."""
 
-    from aiops_agent import contracts
-    from aiops_agent.servers import vendors
+    from squero import contracts
+    from squero.servers import vendors
 
     monkeypatch.setitem(vendors.VENDORS, "fixture", fixture_spec())
     vendor = {"name": "x", "vendor": "fixture", "tools": tools, **v}
@@ -173,7 +173,7 @@ async def test_mislabelled_write_waits_for_approval_and_is_recorded(
 
 def full_contract() -> Any:
     """Every builtin integration on, write tools included."""
-    from aiops_agent import contracts
+    from squero import contracts
 
     data = {
         "id": "acme",
@@ -310,7 +310,7 @@ async def test_approved_action_output_is_still_capped(settings: Settings) -> Non
     def poke() -> str:
         return "y" * 5000
 
-    root = FastMCP("aiops")
+    root = FastMCP("squero")
     root.mount(srv, namespace="x")
     settings.tool_output_limit = 100
     model = scripted(call("x_poke", "c1"), call("TriageReport", "c2", **REPORT))
@@ -339,7 +339,7 @@ async def test_raw_tool_results_are_recorded_uncapped_and_redacted(
     def broken() -> str:
         raise ValueError("boom")
 
-    root = FastMCP("aiops")
+    root = FastMCP("squero")
     root.mount(srv, namespace="x")
     tb = agent.Toolbox(root, {"x_dump": "read", "x_broken": "read"})
     settings.tool_output_limit = 100
@@ -380,12 +380,12 @@ async def test_raw_recording_redacts_only_bounded_text_and_never_fails_the_run(
     def huge() -> str:
         return "z" * 50_000
 
-    root = FastMCP("aiops")
+    root = FastMCP("squero")
     root.mount(srv, namespace="x")
     tb = agent.Toolbox(root, {"x_huge": "read"})
     monkeypatch.setattr(agent, "RAW_RESULT_LIMIT", 1000)
     monkeypatch.setattr(agent, "SPILL_LIMIT", 1000)
-    from aiops_agent import safety
+    from squero import safety
 
     redacted: list[int] = []
     real_redact = safety.redact
@@ -420,7 +420,7 @@ async def test_executed_action_entry_redacts_a_secret_cut_at_its_limit(
         # a cut at 200 keeps "Bearer abcdefg": too short for the token pattern alone.
         return "x" * 144 + "Authorization: Bearer abcdefghijklmnopqrstuvwxyz123456"
 
-    root = FastMCP("aiops")
+    root = FastMCP("squero")
     root.mount(srv, namespace="x")
     model = scripted(call("x_rotate", "c1"), call("TriageReport", "c2", **REPORT))
     async with agent.open_agent(settings, agent.Toolbox(root, {"x_rotate": "write"}), model) as a:
@@ -484,7 +484,7 @@ async def test_a_follow_up_answers_again_or_fails_never_repeats(
 def test_behind_a_gateway_structured_output_is_native(settings: Settings) -> None:
     from langchain.agents.structured_output import ProviderStrategy
 
-    from aiops_agent.models import Answer, TriageReport
+    from squero.models import Answer, TriageReport
 
     assert agent.output_format(settings, "triage") is TriageReport  # LangChain picks
     settings.model_base_url = "https://openrouter.ai/api/v1"
@@ -501,7 +501,7 @@ def test_a_result_without_text_keeps_its_blocks() -> None:
 
 
 def test_checkpoints_load_our_results_and_nothing_else_unlisted() -> None:
-    from aiops_agent.models import Answer, Investigation, TriageReport
+    from squero.models import Answer, Investigation, TriageReport
 
     serde = agent.CHECKPOINT_SERDE
     for value in (TriageReport(**REPORT), Answer(**ANSWER)):
@@ -558,7 +558,7 @@ async def test_an_oversized_result_is_kept_and_read_more_reaches_the_rest(
     def logs() -> str:  # a JSON escape for "token", as a server may send it
         return json.dumps({"entries": entries}).replace("TOKEN_WORD", "\\u0074oken")
 
-    root = FastMCP("aiops")
+    root = FastMCP("squero")
     root.mount(srv, namespace="x")
     settings.tool_output_limit = 2000
     rid = agent_result_id("c1")
@@ -626,7 +626,7 @@ async def test_a_stored_result_survives_an_approval_pause_and_a_restart(
     checkpointer on the same Postgres) resumes, and Run 2 reads it."""
     from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
-    from aiops_agent.store import connect
+    from squero.store import connect
 
     srv = FastMCP("x")
 
@@ -638,7 +638,7 @@ async def test_a_stored_result_survives_an_approval_pause_and_a_restart(
     def poke() -> str:
         return "poked"
 
-    root = FastMCP("aiops")
+    root = FastMCP("squero")
     root.mount(srv, namespace="x")
     tb = agent.Toolbox(root, {"x_logs": "read", "x_poke": "write"})
     settings.tool_output_limit = 1000

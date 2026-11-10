@@ -8,8 +8,8 @@ import pytest
 from kubernetes import client as k
 from pydantic import SecretStr, ValidationError
 
-from aiops_agent import contracts, usage
-from aiops_agent.usage import Target, Workload
+from squero import contracts, usage
+from squero.usage import Target, Workload
 from tests.conftest import make_contract
 from tests.fake_prometheus import FakePrometheus
 
@@ -642,19 +642,19 @@ def test_prometheus_does_the_time_math() -> None:
     )
 
 
-# --- aiops sizing usage ------------------------------------------------------------
+# --- squero sizing usage ------------------------------------------------------------
 
 
 @pytest.mark.parametrize(("text", "seconds"), [("90m", 5400), ("6h", 21600), ("7d", 604800)])
 def test_window_seconds(text: str, seconds: int) -> None:
-    from aiops_agent import cli
+    from squero import cli
 
     assert cli.window_seconds(text) == seconds
 
 
 @pytest.mark.parametrize("bad", ["0d", "7", "1w", "-1h", "1.5h"])
 def test_window_seconds_refuses_anything_else(bad: str) -> None:
-    from aiops_agent import cli
+    from squero import cli
 
     with pytest.raises(SystemExit):
         cli.window_seconds(bad)
@@ -663,7 +663,7 @@ def test_window_seconds_refuses_anything_else(bad: str) -> None:
 def test_sizing_usage_command(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from aiops_agent import cli
+    from squero import cli
 
     fake = FakePrometheus()
     (p,) = deployment(fake, pods=1)
@@ -684,7 +684,7 @@ def test_sizing_usage_command(
 def test_sizing_usage_without_any_prometheus_says_so(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from aiops_agent import cli
+    from squero import cli
 
     monkeypatch.setattr(cli, "contract", lambda settings, cid: make_contract())
     assert cli.main(["sizing", "usage", "--contract", "acme"]) == 1
@@ -867,7 +867,7 @@ def test_sizing_show_command(
 ) -> None:
     """Two days of usage at 0.1 core and 80 MiB against 1 CPU and 1 GiB is lowered; a
     pod with ten samples (18 minutes at production's 2-minute step) is still learning."""
-    from aiops_agent import cli
+    from squero import cli
 
     fake = FakePrometheus()
     (old,) = deployment(fake, "api", pods=1)

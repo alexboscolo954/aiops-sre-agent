@@ -16,8 +16,8 @@ from langchain.messages import AIMessage, ToolCall
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from pydantic import SecretStr
 
-from aiops_agent import agent, contracts
-from aiops_agent.config import Settings
+from squero import agent, contracts
+from squero.config import Settings
 
 NOW = datetime.now(UTC)
 
@@ -88,7 +88,7 @@ def toolbox(settings: Settings, fake_cluster: Any, **contract: Any) -> agent.Too
 
 
 TEST_DATABASE = os.environ.get(
-    "AIOPS_TEST_DATABASE_URL", "postgresql://postgres:postgres@localhost:55432/postgres"
+    "SQUERO_TEST_DATABASE_URL", "postgresql://postgres:postgres@localhost:55432/postgres"
 )
 
 

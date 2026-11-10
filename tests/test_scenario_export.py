@@ -10,9 +10,9 @@ import yaml
 from langchain.messages import ToolMessage
 from pydantic import SecretStr
 
-from aiops_agent import agent, evals
-from aiops_agent.config import Settings
-from aiops_agent.models import AlertGroup, Investigation
+from squero import agent, evals
+from squero.config import Settings
+from squero.models import AlertGroup, Investigation
 from tests.conftest import REPORT, call, make_contract, make_fake_cluster, scripted
 from tests.test_api import ALERT, BANK_HOOK, BANK_URL, HOOK, URL, client
 from tests.test_console import AS_OPERATOR, OPERATOR, SAME, VIEW
@@ -149,7 +149,7 @@ def test_only_a_finished_investigation_with_its_input_saves(
 ) -> None:
     import asyncio
 
-    from aiops_agent.store import Store, connect
+    from squero.store import Store, connect
 
     evict = call("kubernetes_evict_pod", "e", cluster="test", namespace="shop", name="p")
     acting = {**full, "integrations": [{"name": "kubernetes", "enable_actions": True}]}
@@ -281,7 +281,7 @@ def test_a_saved_scenario_carries_the_contracts_approved_teachings() -> None:
 async def test_a_saved_check_replays_and_scores(
     ok: bool, settings: Settings, fake_cluster: Any, full: dict[str, Any]
 ) -> None:
-    from aiops_agent.store import now
+    from squero.store import now
     from tests.test_checks import CHECK, DAY, tick
 
     ev = [{"source": "kubernetes_list_pods", "finding": "all run"}]

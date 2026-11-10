@@ -1,25 +1,25 @@
 # The Hub on one machine (a VM or a laptop): Hub + Postgres + Caddy + nightly backups.
 # Setup and day-to-day use: docs/running-the-hub.md. Compose reads .env here
 # (see env.example); the Hub reads hub.env (see hub.env.example).
-name: aiops
+name: squero
 
 services:
   hub:
-    image: ${AIOPS_IMAGE:-ghcr.io/alexboscolo954/aiops-sre-agent:0.36.0}
+    image: ${SQUERO_IMAGE:-ghcr.io/alexboscolo954/squero:0.36.0}
     command: [serve, --host, 0.0.0.0, --port, "8080"]
     env_file: hub.env
     environment:
-      AIOPS_CONTRACTS_DIR: /contracts
-      AIOPS_DATABASE_URL: postgresql://aiops:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/aiops
+      SQUERO_CONTRACTS_DIR: /contracts
+      SQUERO_DATABASE_URL: postgresql://squero:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/squero
       SOPS_AGE_KEY_FILE: /age/keys.txt
       HOME: /tmp
     volumes:
-      - ${AIOPS_CONTRACTS:-./contracts}:/contracts:ro
-      - ${AIOPS_AGE_KEYS:-./age-keys.txt}:/age/keys.txt:ro   # owned by uid 10001, mode 0400
+      - ${SQUERO_CONTRACTS:-./contracts}:/contracts:ro
+      - ${SQUERO_AGE_KEYS:-./age-keys.txt}:/age/keys.txt:ro   # owned by uid 10001, mode 0400
     ports:
       # Investigations and approvals: this host only, reached through `tailscale
       # serve`. Docker-published ports bypass host firewalls: never publish it wider.
-      - "127.0.0.1:${AIOPS_LOCAL_PORT:-8080}:8080"
+      - "127.0.0.1:${SQUERO_LOCAL_PORT:-8080}:8080"
     read_only: true
     tmpfs: [/tmp]
     cap_drop: [ALL]
@@ -35,13 +35,13 @@ services:
   postgres:
     image: pgvector/pgvector:0.8.7-pg17-trixie
     environment:
-      POSTGRES_USER: aiops
+      POSTGRES_USER: squero
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
-      POSTGRES_DB: aiops
+      POSTGRES_DB: squero
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "aiops"]
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "squero"]
       interval: 5s
       retries: 24
     restart: unless-stopped
@@ -50,10 +50,10 @@ services:
     # The only public entry point: TLS, and nothing but the alert route (Caddyfile).
     image: caddy:2.11.4
     environment:
-      AIOPS_DOMAIN: ${AIOPS_DOMAIN:-localhost}
+      SQUERO_DOMAIN: ${SQUERO_DOMAIN:-localhost}
     ports:
-      - "${AIOPS_HTTP_PORT:-80}:80"
-      - "${AIOPS_HTTPS_PORT:-443}:443"
+      - "${SQUERO_HTTP_PORT:-80}:80"
+      - "${SQUERO_HTTPS_PORT:-443}:443"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
@@ -66,13 +66,13 @@ services:
     entrypoint: [/backup.sh]
     environment:
       PGHOST: postgres
-      PGUSER: aiops
+      PGUSER: squero
       PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
-      PGDATABASE: aiops
+      PGDATABASE: squero
       KEEP_DAYS: "14"
     volumes:
       - ./backup.sh:/backup.sh:ro
-      - ${AIOPS_BACKUPS:-./backups}:/backups
+      - ${SQUERO_BACKUPS:-./backups}:/backups
     depends_on:
       postgres: {condition: service_healthy}
     restart: unless-stopped

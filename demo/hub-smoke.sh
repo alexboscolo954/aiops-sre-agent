@@ -11,10 +11,10 @@
 #   remote and unpinned: a warning only).
 # Usage: demo/hub-smoke.sh [image]
 set -euo pipefail
-image=${1:-aiops-sre-agent:ci}
+image=${1:-squero:ci}
 root=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d)
-export COMPOSE_PROJECT_NAME=aiops-smoke
+export COMPOSE_PROJECT_NAME=squero-smoke
 dc() { (cd "$work" && docker compose "$@"); }
 trap 'dc down -v --remove-orphans >/dev/null 2>&1 || true' EXIT
 fail() { echo "FAIL: $*" >&2; dc logs hub --tail 50 >&2 || true; exit 1; }
@@ -49,17 +49,17 @@ mkdir -m 0700 "$work/backups"
 if [[ $(uname) == Linux ]]; then sudo chown 999 "$work/backups"; fi   # postgres image's uid
 
 cat >"$work/.env" <<EOF
-AIOPS_IMAGE=$image
+SQUERO_IMAGE=$image
 POSTGRES_PASSWORD=smoke-$RANDOM$RANDOM
-AIOPS_DOMAIN=localhost
-AIOPS_LOCAL_PORT=18000
-AIOPS_HTTP_PORT=18081
-AIOPS_HTTPS_PORT=18443
+SQUERO_DOMAIN=localhost
+SQUERO_LOCAL_PORT=18000
+SQUERO_HTTP_PORT=18081
+SQUERO_HTTPS_PORT=18443
 EOF
-printf 'AIOPS_APPROVER_TOKEN=smoke-approver\nAIOPS_MODEL_API_KEY=not-a-real-key\n' >"$work/hub.env"
-echo 'AIOPS_CONSOLE_OPERATORS=["smoke@example.com"]' >>"$work/hub.env"
+printf 'SQUERO_APPROVER_TOKEN=smoke-approver\nSQUERO_MODEL_API_KEY=not-a-real-key\n' >"$work/hub.env"
+echo 'SQUERO_CONSOLE_OPERATORS=["smoke@example.com"]' >>"$work/hub.env"
 mcp_token=smoke-mcp-token-0123456789abcdef
-echo "AIOPS_MCP_TOKEN=$mcp_token" >>"$work/hub.env"
+echo "SQUERO_MCP_TOKEN=$mcp_token" >>"$work/hub.env"
 
 dc up -d --wait --quiet-pull || fail "stack did not come up healthy"
 [[ $(dc port hub 8080) == 127.0.0.1:18000 ]] || fail "hub published on $(dc port hub 8080)"
@@ -151,7 +151,7 @@ echo "ok   investigation stored, failed as expected without a cluster"
 # The console app, as `tailscale serve` reaches it: its page and built files are in the
 # image, behind the identity; its API also wants the token.
 # The cookie the token page sets: an HMAC of the approver token (console.py).
-key=$(python3 -c 'import hashlib,hmac; print(hmac.new(b"smoke-approver", b"aiops-console", hashlib.sha256).hexdigest())')
+key=$(python3 -c 'import hashlib,hmac; print(hmac.new(b"smoke-approver", b"squero-console", hashlib.sha256).hexdigest())')
 with_token=("${as_operator[@]}" -H "Cookie: aiops_actions=$key")
 page=$(curl -sf "${as_operator[@]}" "$local_api/app/") || fail "console app page"
 js=$(grep -o '/app/assets/[A-Za-z0-9._-]*\.js' <<<"$page" | head -1)
@@ -170,7 +170,7 @@ echo "ok   console app on 127.0.0.1 for the Operator with the token only, old ad
 
 dc exec -T backup /backup.sh once >/dev/null || fail "backup"
 dc exec -T backup sh -c '
-  f=$(ls -t /backups/aiops-*.dump | head -1)
+  f=$(ls -t /backups/squero-*.dump | head -1)
   [ "$(stat -c %a "$f")" = 600 ] || { echo "dump mode $(stat -c %a "$f")"; exit 1; }
   createdb restored && pg_restore --no-owner -d restored "$f"
   psql -d restored -tAc "select count(*) from investigations where id = '"'$id'"'"' |
@@ -181,7 +181,7 @@ started=$(docker inspect -f '{{.State.StartedAt}}' "$(dc ps -q hub)")
 printf 'id: demo-shop\nnaem: typo\n' >"$work/seed/demo-shop/contract.yaml"
 git_ -C "$work/seed" commit -qam "bad contract" && git -C "$work/seed" push -q "$work/origin.git" main
 good=$(git -C "$work/contracts" rev-parse HEAD)
-if (cd "$work" && AIOPS_CONTRACTS=./contracts ./update-contracts.sh) >/dev/null 2>&1; then
+if (cd "$work" && SQUERO_CONTRACTS=./contracts ./update-contracts.sh) >/dev/null 2>&1; then
   fail "a bad contracts update was applied"
 fi
 [[ $(git -C "$work/contracts" rev-parse HEAD) == "$good" ]] || fail "clone not rolled back"

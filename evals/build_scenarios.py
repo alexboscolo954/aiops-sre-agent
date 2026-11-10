@@ -1,5 +1,5 @@
 """Turn a recording from the kind demo (tests/test_integration.py with
-AIOPS_RECORD_DIR set) into eval scenarios: alerts to triage and Questions.
+SQUERO_RECORD_DIR set) into eval scenarios: alerts to triage and Questions.
 
     uv run python evals/build_scenarios.py recordings/recording.json
 """

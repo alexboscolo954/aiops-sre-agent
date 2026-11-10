@@ -19,10 +19,10 @@ from kubernetes import client as k
 from kubernetes.client.exceptions import ApiException
 from pydantic import SecretStr
 
-from aiops_agent import actuator, contracts
-from aiops_agent.api import create_app
-from aiops_agent.config import Settings
-from aiops_agent.store import Store, connect
+from squero import actuator, contracts
+from squero.api import create_app
+from squero.config import Settings
+from squero.store import Store, connect
 from tests.conftest import scripted
 
 A_TOKEN = "a" * 40
@@ -215,7 +215,7 @@ def test_an_actuator_token_is_no_other_token(settings: Settings, database_url: s
         hooked, actuated("bank", B_TOKEN)
     )
     with pytest.raises(ValueError, match="Actuator token is too short"):
-        from aiops_agent import relay
+        from squero import relay
 
         relay.tokens({"acme": actuated("acme", "x" * 31)}, "Actuator")
 
@@ -657,7 +657,7 @@ def desired(*runs: int, killed: bool = False) -> dict[str, Any]:
 def make(http: httpx.Client, core: Any, apps: Any, **kw: Any) -> actuator.Actuator:
     autoscaling, custom = scalers()
     return actuator.Actuator(
-        http, core, apps, "aiops-actuator", autoscaling=autoscaling, custom=custom, **kw
+        http, core, apps, "squero-actuator", autoscaling=autoscaling, custom=custom, **kw
     )
 
 
@@ -749,7 +749,7 @@ def test_what_it_applied_survives_a_restart() -> None:
     fresh.list_namespaced_limit_range = core.list_namespaced_limit_range
     fresh.list_namespaced_resource_quota = core.list_namespaced_resource_quota
     b.step()  # the first save creates the ConfigMap
-    assert fresh.create_namespaced_config_map.call_args.args[0] == "aiops-actuator"
+    assert fresh.create_namespaced_config_map.call_args.args[0] == "squero-actuator"
 
 
 @pytest.mark.parametrize(
@@ -794,7 +794,7 @@ def test_the_manifests_resize_pods_and_never_edit_a_deployment() -> None:
     assert (w["failurePolicy"], w["timeoutSeconds"], w["sideEffects"]) == ("Ignore", 2, "None")
     assert w["clientConfig"]["service"] == {
         "name": actuator.WEBHOOK,
-        "namespace": "aiops-actuator",
+        "namespace": "squero-actuator",
         "path": "/mutate",
     }
     assert w["rules"][0]["operations"] == ["CREATE"] and w["rules"][0]["resources"] == ["pods"]
@@ -847,7 +847,7 @@ def new_pod(
 
 
 def patched(review: Any, held: Any = HELD, killed: bool = False) -> list[Any] | None:
-    answer = actuator.admit(review, held, killed, "aiops-actuator")
+    answer = actuator.admit(review, held, killed, "squero-actuator")
     response = answer["response"]
     assert response["allowed"] is True and response["uid"] == (
         review.get("request", {}).get("uid", "") if isinstance(review, dict) else ""
@@ -897,7 +897,7 @@ def test_a_new_pod_keeps_its_own_requests_when_the_hold_does_not_apply() -> None
     pinned = {"cpu": "1", "memory": "64Mi"}  # Guaranteed would turn Burstable
     guaranteed = new_pod(requests=pinned, limits=pinned, sidecar={"resources": {"limits": pinned}})
     assert patched(guaranteed, held=untemplated(**pinned)) is None
-    for ns in ("aiops-actuator", "kube-system"):
+    for ns in ("squero-actuator", "kube-system"):
         assert (
             patched(new_pod(ns=ns), held={k.replace("shop", ns): v for k, v in HELD.items()})
             is None
@@ -922,7 +922,7 @@ def test_a_new_pod_keeps_its_own_requests_when_the_hold_does_not_apply() -> None
 
 def test_the_webhook_answers_over_tls_with_its_own_certificate() -> None:
     cert, key = actuator.certificate("localhost")
-    a = actuator.Actuator(MagicMock(), MagicMock(), MagicMock(), "aiops-actuator", held=HELD)
+    a = actuator.Actuator(MagicMock(), MagicMock(), MagicMock(), "squero-actuator", held=HELD)
     server = actuator.serve(a, cert, key, port=0)
     try:
         url = f"https://localhost:{server.server_address[1]}"
@@ -946,7 +946,7 @@ def test_it_puts_its_certificate_in_its_own_webhooks_ca_bundle() -> None:
     admission = MagicMock()
     actuator.trust(admission, b"PEM")
     admission.patch_mutating_webhook_configuration.assert_called_once_with(
-        "aiops-actuator",
+        "squero-actuator",
         [{"op": "replace", "path": "/webhooks/0/clientConfig/caBundle", "value": "UEVN"}],
     )
 

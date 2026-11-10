@@ -4,9 +4,9 @@ import math
 
 import pytest
 
-from aiops_agent import sizing
-from aiops_agent.sizing import Risk, weighted_percentile
-from aiops_agent.usage import ContainerUsage, Workload
+from squero import sizing
+from squero.sizing import Risk, weighted_percentile
+from squero.usage import ContainerUsage, Workload
 
 H = 3600
 DAY = 24 * H

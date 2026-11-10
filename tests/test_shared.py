@@ -11,8 +11,8 @@ from fastmcp import Client
 from fastmcp.exceptions import ToolError
 from pydantic import SecretStr
 
-from aiops_agent import agent, contracts
-from aiops_agent.config import Settings
+from squero import agent, contracts
+from squero.config import Settings
 from tests.test_contracts import BASE, problems, write
 
 ROOT = Path(__file__).parent.parent
@@ -196,7 +196,7 @@ def test_the_hub_mounts_the_contracts_repo_read_only() -> None:
     compose = yaml.safe_load((ROOT / "deploy" / "hub" / "compose.yaml").read_text())
     hub = compose["services"]["hub"]
     assert hub["read_only"] is True
-    assert "${AIOPS_CONTRACTS:-./contracts}:/contracts:ro" in hub["volumes"]
+    assert "${SQUERO_CONTRACTS:-./contracts}:/contracts:ro" in hub["volumes"]
     docs = list(yaml.safe_load_all((ROOT / "deploy" / "base" / "deployment.yaml").read_text()))
     pod = next(d for d in docs if d["kind"] == "Deployment")["spec"]["template"]["spec"]
     (agent_container,) = pod["containers"]

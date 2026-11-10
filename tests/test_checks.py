@@ -12,10 +12,10 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr, ValidationError
 
-from aiops_agent import agent, checks
-from aiops_agent.config import Settings
-from aiops_agent.models import CheckResult, Evidence, Investigation
-from aiops_agent.store import Store, connect, now
+from squero import agent, checks
+from squero.config import Settings
+from squero.models import CheckResult, Evidence, Investigation
+from squero.store import Store, connect, now
 from tests import test_api
 from tests.conftest import REPORT, call, make_contract, make_fake_cluster
 from tests.test_api import AUTH, bank, client
@@ -501,7 +501,7 @@ def test_check_results_are_valid_json_schema() -> None:
 def test_the_scheduler_runs_a_check_missed_while_the_hub_was_down(
     settings: Settings, fake_cluster: Any, database_url: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from aiops_agent import api
+    from squero import api
     from tests.test_teachings import migrated
 
     monkeypatch.setattr(api, "CHECK_TICK", 0.05)

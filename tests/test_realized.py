@@ -10,8 +10,8 @@ from typing import Any
 
 import pytest
 
-from aiops_agent import contracts, sizing
-from aiops_agent.store import Store, connect
+from squero import contracts, sizing
+from squero.store import Store, connect
 from tests.test_prices import GI, priced
 from tests.test_sizing_store import NOW, H, row
 
@@ -301,7 +301,7 @@ def test_sizing_savings_prints_each_drop(
 ) -> None:
     import asyncio
 
-    from aiops_agent import cli
+    from squero import cli
 
     c = priced(PRICES)
 
@@ -312,7 +312,7 @@ def test_sizing_savings_prints_each_drop(
             await hourly(s, c, NOW, sized(1.0, 0.115))
             await hourly(s, c, NOW + H, sized(0.115, 0.115))
 
-    monkeypatch.setenv("AIOPS_DATABASE_URL", database_url)
+    monkeypatch.setenv("SQUERO_DATABASE_URL", database_url)
     monkeypatch.setattr(cli, "contract", lambda settings, cid: c)
     monkeypatch.setattr("time.time", lambda: NOW + 11 * H)
     assert cli.main(["sizing", "savings", "--contract", "acme"]) == 0

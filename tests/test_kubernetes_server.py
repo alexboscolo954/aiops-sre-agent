@@ -11,9 +11,9 @@ from fastmcp.exceptions import ToolError
 from kubernetes import client as k
 from pydantic import SecretStr
 
-from aiops_agent import agent, contracts, evals
-from aiops_agent.config import Settings
-from aiops_agent.servers import kubernetes
+from squero import agent, contracts, evals
+from squero.config import Settings
+from squero.servers import kubernetes
 from tests.conftest import EXEC_USER, NOW, kubeconfig, make_contract
 
 

@@ -4,13 +4,13 @@ A Linux App Service web app that worked until its startup command was changed to
 `node missing.js`, then served 5xx under traffic. Run it in the image, where the
 pinned azmcp is, with the Contract's service principal only:
 
-    AZURE_CLIENT_SECRET=... AIOPS_SCRUB='{"real": "fake", ...}' docker run --rm \\
+    AZURE_CLIENT_SECRET=... SQUERO_SCRUB='{"real": "fake", ...}' docker run --rm \\
       -e AZURE_TENANT_ID -e AZURE_CLIENT_ID -e AZURE_SUBSCRIPTION_ID \\
-      -e AZURE_CLIENT_SECRET -e AIOPS_SCRUB -v "$PWD/evals:/evals" \\
-      --entrypoint /app/.venv/bin/python aiops-sre-agent:ci /evals/record_azure.py <rg> <app>
+      -e AZURE_CLIENT_SECRET -e SQUERO_SCRUB -v "$PWD/evals:/evals" \\
+      --entrypoint /app/.venv/bin/python squero:ci /evals/record_azure.py <rg> <app>
 
 This repo is public: every result is scrubbed before it is written. The ids, the
-resource group and app names map to fixed fakes, AIOPS_SCRUB adds the rest (the
+resource group and app names map to fixed fakes, SQUERO_SCRUB adds the rest (the
 caller's email, object id, tenant domain, IP), and `claims` and `httpRequest`
 (who called, from where) are dropped. Nothing is written if a real value survives.
 Each tool keeps one result, matched on the resource's name only.
@@ -30,8 +30,8 @@ from fastmcp import Client
 from pydantic import SecretStr
 from scrub import refuse_leaks, scrubber  # evals/scrub.py, next to this file
 
-from aiops_agent import agent, contracts
-from aiops_agent.config import Settings
+from squero import agent, contracts
+from squero.config import Settings
 
 OUT = Path(__file__).parent / "scenarios"
 SUBSCRIPTION, TENANT, CLIENT = (f"00000000-0000-0000-0000-00000000a00{i}" for i in (1, 2, 3))
@@ -71,7 +71,7 @@ def fakes_and_scrub(rg: str, app: str) -> tuple[dict[str, str], Any]:
         os.environ["AZURE_CLIENT_ID"]: CLIENT,
         rg: RG,
         app: APP,
-        **json.loads(os.environ.get("AIOPS_SCRUB", "{}")),
+        **json.loads(os.environ.get("SQUERO_SCRUB", "{}")),
     }
     return fakes, scrubber(fakes, DROPPED)
 

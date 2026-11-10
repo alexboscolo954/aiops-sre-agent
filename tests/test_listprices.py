@@ -11,9 +11,9 @@ import httpx
 import pytest
 from pydantic import SecretStr, ValidationError
 
-from aiops_agent import cli, contracts, listprices, sizing, usage
-from aiops_agent.config import Settings
-from aiops_agent.store import Store, connect
+from squero import cli, contracts, listprices, sizing, usage
+from squero.config import Settings
+from squero.store import Store, connect
 from tests.conftest import make_contract
 from tests.fake_prometheus import FakePrometheus
 from tests.test_api import client
@@ -130,7 +130,7 @@ def test_the_provider_is_read_from_the_node_or_declared() -> None:
     node(fake, "b", "n2-standard-2", "us-central1", provider_id="gce://proj/zone/vm")
     assert [n["provider"] for n in read(fake)["nodes"]] == ["azure", "gcp"]
     kind = FakePrometheus()
-    node(kind, "k", "m5.large", provider_id="kind://docker/aiops/aiops-control-plane")
+    node(kind, "k", "m5.large", provider_id="kind://docker/squero/squero-control-plane")
     assert "lack" in read(kind)["problem"]  # kind says nothing of a cloud
     assert read(kind, provider="aws")["problem"] is None
     assert read(kind, provider="aws")["nodes"][0]["provider"] == "aws"
@@ -693,7 +693,7 @@ def test_the_cli_shows_where_a_price_comes_from(
     monkeypatch.setattr(usage, "Prom", lambda t: _prom(fake, t))
     c = listed()
     monkeypatch.setattr(cli, "contract", lambda settings, cid: c)
-    monkeypatch.setenv("AIOPS_DATABASE_URL", database_url)
+    monkeypatch.setenv("SQUERO_DATABASE_URL", database_url)
     monkeypatch.setattr(listprices, "client", lambda: http_of(Lists()))
     assert cli.main(["sizing", "prices", "--contract", "acme"]) == 1
     assert cli.main(["sizing", "refresh", "--contract", "acme"]) == 0

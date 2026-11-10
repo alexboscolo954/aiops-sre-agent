@@ -6,7 +6,7 @@ resources:
   - ../base
   - rbac-actions.yaml
 configMapGenerator:
-  - name: aiops-contract       # the same Contract with enable_actions: true
-    namespace: aiops
+  - name: squero-contract       # the same Contract with enable_actions: true
+    namespace: squero
     behavior: replace
     files: [contract.yaml]

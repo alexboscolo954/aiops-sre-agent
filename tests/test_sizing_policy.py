@@ -1,5 +1,5 @@
 """Sizing policies (slice 9.3): built-ins, your own on a base, the rules that pick one,
-validation, and `aiops sizing show` under them."""
+validation, and `squero sizing show` under them."""
 
 import json
 from typing import Any
@@ -8,10 +8,10 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from aiops_agent import cli, contracts, sizing, usage
-from aiops_agent.contracts import BUILTIN, Policy, SizingConfig
-from aiops_agent.sizing import Risk
-from aiops_agent.usage import ContainerUsage, Workload
+from squero import cli, contracts, sizing, usage
+from squero.contracts import BUILTIN, Policy, SizingConfig
+from squero.sizing import Risk
+from squero.usage import ContainerUsage, Workload
 from tests.conftest import make_contract
 from tests.fake_prometheus import FakePrometheus
 from tests.test_usage import _prom, cpu, deployment, mem, owner
@@ -355,7 +355,7 @@ def test_the_limit_still_wins_below_the_max() -> None:
     assert Risk("limit_below_need", "cpu limit 1500m is below the 2000m it needs") in s.risks
 
 
-# --- aiops sizing show ---------------------------------------------------------------
+# --- squero sizing show ---------------------------------------------------------------
 
 
 def requests(fake: FakePrometheus, pod: str, cpu_cores: float, memory: float) -> None:

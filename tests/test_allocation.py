@@ -6,8 +6,8 @@ from typing import Any
 
 import pytest
 
-from aiops_agent import sizing
-from aiops_agent.usage import Workload
+from squero import sizing
+from squero.usage import Workload
 from tests.test_prices import CLUSTER, GI, priced, three
 from tests.test_sizing_store import MI, container, rows_of
 
@@ -75,11 +75,11 @@ def test_unpriced_groups_are_in_cores_and_gib_and_rank_a_core_like_4_gib() -> No
 def test_sizing_cost_prints_each_namespace(
     database_url: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from aiops_agent import cli
+    from squero import cli
     from tests.test_sizing_store import lab_fake
 
     lab_fake(monkeypatch)
-    monkeypatch.setenv("AIOPS_DATABASE_URL", database_url)
+    monkeypatch.setenv("SQUERO_DATABASE_URL", database_url)
     c = priced({"cpu": 0.04, "memory": 0.005})
     monkeypatch.setattr(cli, "contract", lambda settings, cid: c)
     assert cli.main(["sizing", "refresh", "--contract", "acme"]) == 0

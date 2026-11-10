@@ -9,10 +9,10 @@ from typing import Any
 import pytest
 from fastmcp import Client, FastMCP
 
-from aiops_agent import agent, contracts
-from aiops_agent.config import Settings
-from aiops_agent.models import AlertGroup
-from aiops_agent.servers import kubernetes
+from squero import agent, contracts
+from squero.config import Settings
+from squero.models import AlertGroup
+from squero.servers import kubernetes
 from tests.conftest import call, scripted
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
@@ -181,7 +181,7 @@ async def test_the_actuator_resizes_a_deployment_in_place_without_a_restart(
     import anyio
     from kubernetes import client
 
-    from aiops_agent import actuator
+    from squero import actuator
 
     api = kubernetes.api_client(live.clusters[0], live)
     core, apps = client.CoreV1Api(api), client.AppsV1Api(api)
@@ -231,10 +231,10 @@ async def test_the_actuator_resizes_a_deployment_in_place_without_a_restart(
 
 
 async def test_record_eval_fixtures(live: contracts.Contract) -> None:
-    """With AIOPS_RECORD_DIR set, save real tool outputs for the eval scenarios."""
-    out = os.environ.get("AIOPS_RECORD_DIR")
+    """With SQUERO_RECORD_DIR set, save real tool outputs for the eval scenarios."""
+    out = os.environ.get("SQUERO_RECORD_DIR")
     if not out:
-        pytest.skip("AIOPS_RECORD_DIR not set")
+        pytest.skip("SQUERO_RECORD_DIR not set")
     import json
     from pathlib import Path
 

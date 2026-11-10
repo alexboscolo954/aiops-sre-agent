@@ -6,7 +6,7 @@ repeating them.
 
 ## 1. What this is
 
-`aiops-sre-agent` is the **Hub**: a Python 3.12 service (FastAPI, LangChain 1.x with MCP
+`squero` is the **Hub**: a Python 3.12 service (FastAPI, LangChain 1.x with MCP
 tools, Postgres) that does two jobs for several clients at once.
 
 - **Triage.** Alertmanager or Grafana sends an alert group. The agent investigates with
@@ -26,7 +26,7 @@ Read next, in this order when you need depth:
 |---|---|
 | [`CONTEXT.md`](CONTEXT.md) | The vocabulary. Every domain term is defined here. |
 | [`README.md`](README.md) | The overview: what the Hub, Relay and Actuator are, the quick start, and a map of the docs below. |
-| [`docs/running-the-hub.md`](docs/running-the-hub.md) | Running the Hub: compose stack, Slack, console, Hub MCP server, models and cost, the `AIOPS_*` configuration table. |
+| [`docs/running-the-hub.md`](docs/running-the-hub.md) | Running the Hub: compose stack, Slack, console, Hub MCP server, models and cost, the `SQUERO_*` configuration table. |
 | [`docs/contracts.md`](docs/contracts.md) | The Contract YAML reference (triage side: Masking, GitOps, Jira, Checks, Teachings, vendors, clouds). |
 | [`docs/optimizer.md`](docs/optimizer.md) | The optimizer: Sizings, policies, prices, Bill check, cost allocation, Savings, the digest. |
 | [`docs/client-cluster.md`](docs/client-cluster.md) | The Relay and the Actuator in a client's cluster, and their settings. |
@@ -64,16 +64,16 @@ The full unit suite takes about two minutes. The default `pytest` run excludes
 `-m integration`. `faulthandler_timeout = 120` prints every thread's stack if a test hangs;
 CI has a 20-minute job timeout.
 
-Run the real-LLM evals only when asked (`uv run aiops eval`, see section 9). The CLI entry
-point is `aiops` (`src/aiops_agent/cli.py`); `aiops --help` lists commands such as
+Run the real-LLM evals only when asked (`uv run squero eval`, see section 9). The CLI entry
+point is `squero` (`src/squero/cli.py`); `squero --help` lists commands such as
 `serve`, `triage`, `mcp`, `contracts validate`, `sizing ...`, `eval`.
 
 ## 3. Repository map
 
 ```
-src/aiops_agent/
+src/squero/
   contracts.py     The Contract model (pydantic, strict), validators, SOPS secrets. The config schema.
-  config.py        Hub settings: AIOPS_* environment variables.
+  config.py        Hub settings: SQUERO_* environment variables.
   api.py           FastAPI app: webhooks, approval, the hourly tick (lifespan), metrics.
   webapp.py        JSON API /api/v1/ and the React app at /app/ (OpenAPI is generated from it).
   console.py       The console's doors (identity, approver cookie, same-origin), shared helpers,
@@ -95,7 +95,7 @@ src/aiops_agent/
   billing.py       Cloud bills (AWS Cost Explorer, Azure Cost Management, GCP's BigQuery
                    billing export) vs the estimate.
   evals.py         Scenario replay and scoring.
-  cli.py           The `aiops` command.
+  cli.py           The `squero` command.
   servers/         One MCP server per integration: kubernetes, prometheus, runbooks, jira,
                    aws, incidents, sizing, and vendors.py (the registry of vendor servers,
                    with snapshots/ of their tool schemas).
@@ -116,7 +116,7 @@ examples/          Example inputs.
 - **Contract** is the unit of a client: one directory with `contract.yaml` (clusters,
   integrations, prices, billing, sizing policy, Slack channel...) and `secrets.sops.yaml`
   (SOPS, one age key per Contract). Contracts come from a *private* contracts repo
-  (`AIOPS_CONTRACTS_DIR`). `contracts.build()` validates one; `aiops contracts validate DIR`
+  (`SQUERO_CONTRACTS_DIR`). `contracts.build()` validates one; `squero contracts validate DIR`
   validates a directory. The Hub refuses to start on an invalid Contract.
 - **Isolation.** Every tool checks its `cluster` and `namespace` against its own Contract
   server-side, on top of Kubernetes RBAC. Each Contract's alerts arrive on their own URL with
@@ -207,7 +207,7 @@ afterwards and record the outcome in the roadmap.
   to build a Contract; `FakePrometheus` for Prometheus; `httpx.MockTransport` for every
   outbound HTTP call; each DB test gets its own database. **Unit tests use no network and no
   LLM** (the agent tests script `GenericFakeChatModel`).
-- Migrations: a new `src/aiops_agent/migrations/NNNN_name.sql` with a header comment naming
+- Migrations: a new `src/squero/migrations/NNNN_name.sql` with a header comment naming
   the slice. Never edit an applied migration. Rename and re-key tables with care: existing
   rows must survive (default values for new `not null` columns).
 
@@ -233,14 +233,14 @@ afterwards and record the outcome in the roadmap.
   configured on the machine; pass the subscription or context explicitly on every command.
 - **Ask before spending.** Creating cloud resources, running real-LLM evals and long live
   checks cost money. Give an estimate, wait for a yes, and keep tests on a cheap model
-  (`AIOPS_MODEL` overrides the default).
+  (`SQUERO_MODEL` overrides the default).
 - **Generated files are not hand-edited**: `uv.lock`, `console/openapi.json`,
-  `console/src/api-types.ts`, `src/aiops_agent/servers/snapshots/*.json`, and recorded runs in
+  `console/src/api-types.ts`, `src/squero/servers/snapshots/*.json`, and recorded runs in
   `evals/results/`.
 
 ## 9. Evals
 
-`uv run aiops eval` replays recorded Scenarios (`evals/scenarios/*.yaml`) through the real
+`uv run squero eval` replays recorded Scenarios (`evals/scenarios/*.yaml`) through the real
 tool definitions with a real model and scores the root-cause Category, required facts, the
 tool-call budget and the allowed Proposed actions. It needs an API key and costs money, so run
 it only when the model-visible surface changed or when asked. New recordings come from
@@ -277,14 +277,14 @@ code, allowed environment variables, which are secrets), a snapshot of its tool 
 - Do not commit or push unless the owner asks. Work on `main` is pushed after CI is understood;
   watch it with `gh run watch <id> --exit-status`.
 - **Release** (the owner asks for it; versions are `0.N.0`, patches `0.N.P`):
-  1. Replace the old version in `pyproject.toml`, the `aiops-sre-agent` entry in `uv.lock`,
+  1. Replace the old version in `pyproject.toml`, the `squero` entry in `uv.lock`,
      `deploy/base/deployment.yaml`, `deploy/relay/deployment.yaml`,
      `deploy/actuator/deployment.yaml`, `deploy/hub/compose.yaml`,
      `deploy/hub/env.example` and `demo/deploy-smoke.sh` (`git grep -n 0.15.0` before and after to check).
   2. Commit `Version X.Y.Z: deploys and the Hub compose stack use the X.Y.Z image`.
   3. Push, tag `vX.Y.Z`, push the tag. The tag run builds and publishes the image
-     (`ghcr.io/alexboscolo954/aiops-sre-agent:X.Y.Z`); wait for its `publish` job.
-  4. Upgrade a running Hub by setting `AIOPS_IMAGE` in its `.env` and `docker compose up -d`.
+     (`ghcr.io/alexboscolo954/squero:X.Y.Z`); wait for its `publish` job.
+  4. Upgrade a running Hub by setting `SQUERO_IMAGE` in its `.env` and `docker compose up -d`.
      Migrations apply at startup.
 
 ## 12. Gotchas

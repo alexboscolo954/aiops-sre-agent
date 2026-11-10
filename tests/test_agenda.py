@@ -5,9 +5,9 @@ from typing import Any
 
 import pytest
 
-from aiops_agent import agenda
-from aiops_agent.models import CheckResult, Evidence, Investigation
-from aiops_agent.store import Store
+from squero import agenda
+from squero.models import CheckResult, Evidence, Investigation
+from squero.store import Store
 from tests.conftest import REPORT, make_contract
 from tests.test_sizing_store import NOW, row, stored
 from tests.test_sizing_store import store as store
@@ -59,7 +59,7 @@ async def no_bill(*_: Any, **__: Any) -> list[dict[str, Any]]:
 @pytest.fixture(autouse=True)
 def _no_prometheus(monkeypatch: pytest.MonkeyPatch) -> None:
     """billing.report reads node-hours from Prometheus: its rows are given instead."""
-    monkeypatch.setattr("aiops_agent.billing.report", no_bill)
+    monkeypatch.setattr("squero.billing.report", no_bill)
 
 
 @pytest.mark.anyio
@@ -98,7 +98,7 @@ async def test_every_kind_comes_in_its_order_of_urgency(
             {"cluster": "none", "within": None, "gap": None, **span},
         ]
 
-    monkeypatch.setattr("aiops_agent.billing.report", bills)
+    monkeypatch.setattr("squero.billing.report", bills)
     a = await agenda.of(store, c, NOW + 2 * H)
     got = [(i.kind, i.id or i.workload or i.cluster) for i in a.items]
     assert got == [
@@ -169,7 +169,7 @@ async def test_another_contracts_items_never_appear(store: Store) -> None:
 
 @pytest.mark.anyio
 async def test_an_offline_relay_is_data_the_hub_cant_read(store: Store) -> None:
-    from aiops_agent import relay
+    from squero import relay
     from tests.test_relay import A_TOKEN, B_TOKEN, relayed
 
     async def close() -> None:

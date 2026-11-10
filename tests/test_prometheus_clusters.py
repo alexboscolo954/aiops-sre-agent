@@ -11,9 +11,9 @@ from fastmcp import Client
 from fastmcp.exceptions import ToolError
 from pydantic import SecretStr
 
-from aiops_agent import agent, contracts
-from aiops_agent.config import Settings
-from aiops_agent.servers import prometheus
+from squero import agent, contracts
+from squero.config import Settings
+from squero.servers import prometheus
 from tests.conftest import make_contract
 
 OK = {"status": "success", "data": {"resultType": "vector", "result": []}}

@@ -10,8 +10,8 @@ from typing import Any
 import httpx
 import pytest
 
-from aiops_agent.models import Evidence, TriageReport
-from aiops_agent.servers import jira
+from squero.models import Evidence, TriageReport
+from squero.servers import jira
 from tests.conftest import REPORT, call, make_contract, make_fake_cluster
 from tests.test_api import ALERT, HOOK, URL, client
 from tests.test_console import SAME, VIEW
@@ -122,11 +122,11 @@ def test_the_operator_files_the_report_once_from_slack(
     assert create.headers["authorization"] == BASIC and TOKEN not in str(create.headers)
     f = fields(create)
     assert f["project"] == {"key": "OPS"} and f["issuetype"] == {"name": "Incident"}
-    assert f["summary"] == REPORT["summary"] and f["labels"] == ["aiops"]
+    assert f["summary"] == REPORT["summary"] and f["labels"] == ["squero"]
     body = texts(f["description"])
     assert REPORT["probable_root_cause"] in " ".join(body)
     assert "kubernetes_pod_logs: java.lang.OutOfMemoryError: Java heap space" in body
-    assert f"Filed by aiops from Investigation {tid}." in body
+    assert f"Filed by squero from Investigation {tid}." in body
     assert ephemerals(slack)[0][1] == "Already filed (or being filed), or nothing to file."
     assert page["jira"]["url"] == "https://acme.atlassian.net/browse/OPS-1"
     assert page["jira"]["issue"] == "OPS-1" and page["jira"]["by"] == "slack:U0OPERATOR1"
@@ -185,8 +185,8 @@ def test_the_console_files_it_and_the_slack_thread_shows_it(
 def paused_with_report(database_url: str) -> None:
     import asyncio
 
-    from aiops_agent.models import Investigation
-    from aiops_agent.store import Store, connect
+    from squero.models import Investigation
+    from squero.store import Store, connect
 
     async def go() -> None:
         async with connect(database_url) as pool:

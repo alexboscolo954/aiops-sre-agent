@@ -13,12 +13,12 @@
 
 The Hub runs every Contract from one machine you own, a VM or your laptop: [`deploy/hub`](../deploy/hub) is a compose stack with the Hub, Postgres, Caddy and nightly backups. `make hub-smoke` runs it on Linux and macOS.
 
-1. **Host:** Docker with compose. Copy `deploy/hub` there. For client alerts, a DNS name pointing at it and ports 80 and 443 open. Without them (a laptop behind NAT), set `AIOPS_DOMAIN=localhost` and other ports in `.env`: only senders that reach the machine can alert, such as a local kind cluster or `curl -k`.
+1. **Host:** Docker with compose. Copy `deploy/hub` there. For client alerts, a DNS name pointing at it and ports 80 and 443 open. Without them (a laptop behind NAT), set `SQUERO_DOMAIN=localhost` and other ports in `.env`: only senders that reach the machine can alert, such as a local kind cluster or `curl -k`.
 2. **Contracts:** clone your private contracts repo into `deploy/hub/contracts` with a read-only deploy key:
    ```bash
-   ssh-keygen -t ed25519 -N '' -f ~/.ssh/aiops-contracts      # add the .pub as a read-only deploy key
-   GIT_SSH_COMMAND='ssh -i ~/.ssh/aiops-contracts' git clone git@github.com:<you>/contracts.git contracts
-   git -C contracts config core.sshCommand 'ssh -i ~/.ssh/aiops-contracts'
+   ssh-keygen -t ed25519 -N '' -f ~/.ssh/squero-contracts      # add the .pub as a read-only deploy key
+   GIT_SSH_COMMAND='ssh -i ~/.ssh/squero-contracts' git clone git@github.com:<you>/contracts.git contracts
+   git -C contracts config core.sshCommand 'ssh -i ~/.ssh/squero-contracts'
    ```
 3. **Age keys:** put every Contract's age key in one file that only the Hub's user (uid 10001) can read:
    ```bash
@@ -42,38 +42,38 @@ The Hub runs every Contract from one machine you own, a VM or your laptop: [`dep
 
 Each Investigation is one thread in its Contract's channel. The parent message shows the status (investigating, waiting for your approval, done, failed), and replies carry the Proposed actions, each Approval decision, the Report or the error.
 
-1. Create the app from [`deploy/slack-app.yaml`](../deploy/slack-app.yaml) (api.slack.com/apps > From a manifest), install it, and set its bot token as `AIOPS_SLACK_BOT_TOKEN`.
-2. For the buttons: Basic Information > App-Level Tokens > generate a token with `connections:write`, set it as `AIOPS_SLACK_APP_TOKEN`, and set your own member ID (your profile > ⋮ > Copy member ID) as `AIOPS_SLACK_OPERATOR_ID`.
-3. Make one channel per Contract and invite the bot: `/invite @aiops`. The bot can't post where it isn't a member.
+1. Create the app from [`deploy/slack-app.yaml`](../deploy/slack-app.yaml) (api.slack.com/apps > From a manifest), install it, and set its bot token as `SQUERO_SLACK_BOT_TOKEN`.
+2. For the buttons: Basic Information > App-Level Tokens > generate a token with `connections:write`, set it as `SQUERO_SLACK_APP_TOKEN`, and set your own member ID (your profile > ⋮ > Copy member ID) as `SQUERO_SLACK_OPERATOR_ID`.
+3. Make one channel per Contract and invite the bot: `/invite @squero`. The bot can't post where it isn't a member.
 4. Put the channel's ID (channel details > the `C...` at the bottom) in the Contract: `slack: {operator_channel: C0123ABCD}`. Two Contracts can't share a channel.
 
 While Proposed actions wait, the parent message has **Approve** (with a confirm step) and **Reject** (a modal asks for a reason, which the agent reads). Clicks arrive over Socket Mode, so the Hub opens no Slack endpoint. They take the same decision path as `POST /investigations/{id}/decision`:
-- only `AIOPS_SLACK_OPERATOR_ID`'s clicks count, and only in the Investigation's own Contract channel; anyone else gets a private "Only the Operator can decide";
+- only `SQUERO_SLACK_OPERATOR_ID`'s clicks count, and only in the Investigation's own Contract channel; anyone else gets a private "Only the Operator can decide";
 - each button names its pause, so a second click, or a click left over from an earlier pause, decides nothing;
 - once the actions are decided (in Slack or through the API) or go Stale, the buttons disappear and the thread says who decided, or why it went Stale.
 
 **Client reports (optional, per Contract).** Add `client_channel: C...` next to `operator_channel`: a Slack Connect channel shared with the client, with the bot invited. A finished Report then gets a **Send to client** button in your thread. Nothing reaches the client until you click it, and it goes once. The client gets plain text with the summary, root cause, severity, what is affected and the Recommendations. Evidence, Executed actions, the Runbook and the Investigation id stay with you, and the client message never has buttons. Only the Evidence list is held back, though: the summary and root cause are the model's own words and can still name a pod or quote a log line, so read before you send. A channel belongs to one Contract, as operator or client channel, never both.
 
-**Questions.** Mention the bot in a Contract's operator channel: `@aiops what changed in checkout today?`. It answers in that thread with an Answer backed by Evidence, using only that Contract's read tools: a Question never proposes an action. Mention it again in the same thread to follow up on the same Question. Only `AIOPS_SLACK_OPERATOR_ID` can ask. A mention in a client channel, in a channel no Contract owns, in a Triage thread, or while the last Answer is still coming gets a private refusal. The bot receives only messages that mention it, never other channel traffic.
+**Questions.** Mention the bot in a Contract's operator channel: `@squero what changed in checkout today?`. It answers in that thread with an Answer backed by Evidence, using only that Contract's read tools: a Question never proposes an action. Mention it again in the same thread to follow up on the same Question. Only `SQUERO_SLACK_OPERATOR_ID` can ask. A mention in a client channel, in a channel no Contract owns, in a Triage thread, or while the last Answer is still coming gets a private refusal. The bot receives only messages that mention it, never other channel traffic.
 
-Without `AIOPS_SLACK_APP_TOKEN` there are no buttons and no Questions: you decide through the API, and Client reports can't be sent. Everything posted is escaped (a label like `<!channel>` arrives as text, never as a ping), redacted and capped. A Slack failure, including a dropped socket (it reconnects), is logged and never fails an Investigation.
+Without `SQUERO_SLACK_APP_TOKEN` there are no buttons and no Questions: you decide through the API, and Client reports can't be sent. Everything posted is escaped (a label like `<!channel>` arrives as text, never as a ping), redacted and capped. A Slack failure, including a dropped socket (it reconnects), is logged and never fails an Investigation.
 
 ## Web console
 
 The console is the Operator's view of every Contract, a React single-page app the Hub serves at `/app/` (the only console: the older Jinja pages are gone, and their addresses under `/console` redirect into the app, an Investigation's to its page). It has no passwords: `tailscale serve` adds your Tailscale identity to every request it proxies, as `Tailscale-User-Login`, and strips any copy a client sends.
 
-1. Set `AIOPS_CONSOLE_OPERATORS='["you@example.com"]'` in `hub.env`: the Tailscale logins that may sign in.
+1. Set `SQUERO_CONSOLE_OPERATORS='["you@example.com"]'` in `hub.env`: the Tailscale logins that may sign in.
 2. Open `https://<vm>.<tailnet>.ts.net/app/` from a device on your tailnet (the `tailscale serve` of step 6 above).
 
 Anything else gets a 403, including a tagged device, which has no user.
 
 **The look.** One stylesheet and the app's own scripts, served by the Hub behind the same identity: no script, font or file from anywhere else, so the page's `default-src 'self'` policy stays strict. Light and dark follow the device. Reports, Answers and Check verdicts are fields shown as text: a Report is written by a model that read tool output, so nothing in it can become markup or a script.
 
-**The approver token, once per browser.** Your identity alone opens only the **approver token** page: paste `AIOPS_APPROVER_TOKEN` there (`/app/?view=token`) once per browser, and every other page, approving, rejecting and asking opens up. The browser keeps a cookie that proves the token without holding it (an HMAC; Secure, HttpOnly, SameSite=Strict, 30 days). The identity header alone shows nothing, because other things on the VM could send it. A decision must also come from the console's own page (`Sec-Fetch-Site` or `Origin`), so another site can't make your browser post one. It takes the same path as Slack: the thread says who decided, and the page names its pause, so a page left open from an earlier pause decides nothing.
+**The approver token, once per browser.** Your identity alone opens only the **approver token** page: paste `SQUERO_APPROVER_TOKEN` there (`/app/?view=token`) once per browser, and every other page, approving, rejecting and asking opens up. The browser keeps a cookie that proves the token without holding it (an HMAC; Secure, HttpOnly, SameSite=Strict, 30 days). The identity header alone shows nothing, because other things on the VM could send it. A decision must also come from the console's own page (`Sec-Fetch-Site` or `Origin`), so another site can't make your browser post one. It takes the same path as Slack: the thread says who decided, and the page names its pause, so a page left open from an earlier pause decides nothing.
 
 ### Workloads
 
-**Workloads** (`/app/`) is the console app's first page. It shows each Contract's Workloads from the Hub's latest stored Sizings, ranked by waste, with their pods, risk kinds and each cluster's freshness; pick one for its containers' requests and Sizings, their risks, and charts of request, Sizing and usage basis over 14 days (hourly) or 400 (daily). It reads only stored runs, never a client's Prometheus. The page needs the Operator's Tailscale identity; its JSON API (`/api/v1/`) also needs the approver token's cookie, and links the token page without it (the cookie is set for the whole Hub). Its CSP allows only the Hub's own origin, and everything from the API is rendered as text: ESLint refuses raw HTML, a test scans the app's source for it, and a component test renders a risk holding markup as text. The app is built in the image's Docker build (`console/`: Vite, React, TypeScript, uPlot; Node 22 pinned by digest, `npm ci` from the lockfile with install scripts off), and only its static files ship. `make console-check` runs what CI runs (types in sync with the API, typecheck, lint, tests, build); `make console-dev` serves it on 127.0.0.1:5173 against a local Hub (`AIOPS_DEV_HUB`, default `http://127.0.0.1:18100`), adding `AIOPS_DEV_LOGIN` as the Tailscale identity in development only. After changing the API, `make console-types` and commit `console/openapi.json` and `console/src/api-types.ts`.
+**Workloads** (`/app/`) is the console app's first page. It shows each Contract's Workloads from the Hub's latest stored Sizings, ranked by waste, with their pods, risk kinds and each cluster's freshness; pick one for its containers' requests and Sizings, their risks, and charts of request, Sizing and usage basis over 14 days (hourly) or 400 (daily). It reads only stored runs, never a client's Prometheus. The page needs the Operator's Tailscale identity; its JSON API (`/api/v1/`) also needs the approver token's cookie, and links the token page without it (the cookie is set for the whole Hub). Its CSP allows only the Hub's own origin, and everything from the API is rendered as text: ESLint refuses raw HTML, a test scans the app's source for it, and a component test renders a risk holding markup as text. The app is built in the image's Docker build (`console/`: Vite, React, TypeScript, uPlot; Node 22 pinned by digest, `npm ci` from the lockfile with install scripts off), and only its static files ship. `make console-check` runs what CI runs (types in sync with the API, typecheck, lint, tests, build); `make console-dev` serves it on 127.0.0.1:5173 against a local Hub (`SQUERO_DEV_HUB`, default `http://127.0.0.1:18100`), adding `SQUERO_DEV_LOGIN` as the Tailscale identity in development only. After changing the API, `make console-types` and commit `console/openapi.json` and `console/src/api-types.ts`.
 
 ### Investigations
 
@@ -107,17 +107,17 @@ A follow-up on a Question that started in Slack also answers in its thread. With
 
 Your own MCP endpoint on the Hub, for Claude Code (or any MCP client) on your devices: ask it what needs you now, or for a Contract's top Sizings, cost, Savings, bill, Investigations and Checks while you work, ask the Hub's agent a Question, decide a pause, approve a Sizing, propose a change to a Contract's Sizing policy as a pull request, or turn a Contract's Kill switch on. The Investigation agent never gets these tools.
 
-1. Set `AIOPS_MCP_TOKEN` in `hub.env` (`openssl rand -hex 32`) beside `AIOPS_CONSOLE_OPERATORS`, and restart the Hub.
+1. Set `SQUERO_MCP_TOKEN` in `hub.env` (`openssl rand -hex 32`) beside `SQUERO_CONSOLE_OPERATORS`, and restart the Hub.
 2. On a device on your tailnet, add the server to Claude Code with the `tailscale serve` URL and the token:
    ```bash
-   claude mcp add --transport http aiops-hub https://<vm>.<tailnet>.ts.net/mcp/ \
-     --header "Authorization: Bearer <AIOPS_MCP_TOKEN>"
+   claude mcp add --transport http squero-hub https://<vm>.<tailnet>.ts.net/mcp/ \
+     --header "Authorization: Bearer <SQUERO_MCP_TOKEN>"
    ```
    The URL ends in `/mcp/`. `127.0.0.1` won't do: the Hub needs the identity `tailscale serve` adds.
 
 ### Two doors
 
-A call needs the token *and* a listed Operator's `Tailscale-User-Login`: the token alone could come from anything that read the Hub's settings, the identity header alone from anything else that reaches the port. Startup refuses a token shorter than 32 characters, one equal to the approver token or a Contract's webhook token, and a token without `AIOPS_CONSOLE_OPERATORS`. Caddy's public port answers 404 for `/mcp/`. Stateless HTTP: a Hub restart leaves no session to lose.
+A call needs the token *and* a listed Operator's `Tailscale-User-Login`: the token alone could come from anything that read the Hub's settings, the identity header alone from anything else that reaches the port. Startup refuses a token shorter than 32 characters, one equal to the approver token or a Contract's webhook token, and a token without `SQUERO_CONSOLE_OPERATORS`. Caddy's public port answers 404 for `/mcp/`. Stateless HTTP: a Hub restart leaves no session to lose.
 
 ### Tools
 
@@ -133,9 +133,9 @@ A call needs the token *and* a listed Operator's `Tailscale-User-Login`: the tok
 
 ### Proposing a change
 
-`propose_change(contract, edits, title, why)` opens a pull request on the contracts repo (`AIOPS_CONTRACTS_REPO`, with `AIOPS_CONTRACTS_TOKEN`) that edits that Contract's Sizing policy and nothing else, for you to review and merge. `edits`, applied in order: `set_rule` (any of `cluster`, `namespace`, `kind`, `name`, `container`, and a `policy`: the rule with exactly that match gets it, else a new rule goes first, since the first match wins), `remove_rule` (the rule with exactly that match), `set_default` (a policy), `set_policy` (one of the Contract's own: `name`, `base` and the settings to change, written as in `contract.yaml`). Before it writes anything, the Hub checks that GitHub's `main` is the commit it loaded and `<id>/contract.yaml` there is the file it loaded (pull and restart the Hub after a merge, or it refuses), makes the edit with comments and layout kept, and refuses if anything but `sizing` changed, if nothing did, or if the Contract would not load. Then it creates a branch `aiops/<id>-<UTC time>`, commits there and opens the pull request; it never writes `main`. Nothing changes until you merge it and restart the Hub on it. A placeholder the Hub never handed out is refused, and the Kill switch does not stop a proposal. GitHub Free enforces no branch protection on a private repo, so the token *could* write `main`: the Hub's code doesn't, and the Hub runs only what you pull. Marked not read-only.
+`propose_change(contract, edits, title, why)` opens a pull request on the contracts repo (`SQUERO_CONTRACTS_REPO`, with `SQUERO_CONTRACTS_TOKEN`) that edits that Contract's Sizing policy and nothing else, for you to review and merge. `edits`, applied in order: `set_rule` (any of `cluster`, `namespace`, `kind`, `name`, `container`, and a `policy`: the rule with exactly that match gets it, else a new rule goes first, since the first match wins), `remove_rule` (the rule with exactly that match), `set_default` (a policy), `set_policy` (one of the Contract's own: `name`, `base` and the settings to change, written as in `contract.yaml`). Before it writes anything, the Hub checks that GitHub's `main` is the commit it loaded and `<id>/contract.yaml` there is the file it loaded (pull and restart the Hub after a merge, or it refuses), makes the edit with comments and layout kept, and refuses if anything but `sizing` changed, if nothing did, or if the Contract would not load. Then it creates a branch `squero/<id>-<UTC time>`, commits there and opens the pull request; it never writes `main`. Nothing changes until you merge it and restart the Hub on it. A placeholder the Hub never handed out is refused, and the Kill switch does not stop a proposal. GitHub Free enforces no branch protection on a private repo, so the token *could* write `main`: the Hub's code doesn't, and the Hub runs only what you pull. Marked not read-only.
 
-To set it up: a private repo holding the contracts, cloned at `AIOPS_CONTRACTS_DIR` (its root, so a Contract's file is `<id>/contract.yaml`), and a fine-grained token for that repo alone with Contents and Pull requests read and write.
+To set it up: a private repo holding the contracts, cloned at `SQUERO_CONTRACTS_DIR` (its root, so a Contract's file is `<id>/contract.yaml`), and a fine-grained token for that repo alone with Contents and Pull requests read and write.
 
 ### One Contract per call, under its Data policy
 
@@ -143,23 +143,23 @@ Every tool except `list_contracts` takes `contract`, and answers only within it.
 
 ### Audit
 
-Every call is an `aiops.audit` line on the Hub's stderr (`docker compose logs hub`) with `"channel": "mcp"`, your login, the Contract and the arguments as the client wrote them.
+Every call is an `squero.audit` line on the Hub's stderr (`docker compose logs hub`) with `"channel": "mcp"`, your login, the Contract and the arguments as the client wrote them.
 
 ## Running as a service in one cluster
 
 ```bash
-uv run aiops contracts new-token    # give the token to Alertmanager; the hash goes in
+uv run squero contracts new-token    # give the token to Alertmanager; the hash goes in
                                     # deploy/base/contract.yaml (webhook_token_sha256)
-kubectl -n aiops create secret generic aiops-secrets \
-  --from-literal=AIOPS_APPROVER_TOKEN=... --from-literal=AIOPS_MODEL_API_KEY=... \
-  --from-literal=AIOPS_DATABASE_URL=postgresql://user:pass@host:5432/aiops   # a Postgres you run
+kubectl -n squero create secret generic squero-secrets \
+  --from-literal=SQUERO_APPROVER_TOKEN=... --from-literal=SQUERO_MODEL_API_KEY=... \
+  --from-literal=SQUERO_DATABASE_URL=postgresql://user:pass@host:5432/squero   # a Postgres you run
 kubectl apply -k deploy/base        # read-only
 kubectl apply -k deploy/actions     # optional: evict / scale, still behind approval
 kubectl apply -f deploy/gitops/rbac-gitops.yaml   # optional: ArgoCD / Flux objects for
                                     # recent_changes; also set the cluster's gitops_namespaces
 ```
 
-The image is published to GHCR on version tags. To use your own build, `cd deploy/base && kustomize edit set image ghcr.io/alexboscolo954/aiops-sre-agent=<your-image>`.
+The image is published to GHCR on version tags. To use your own build, `cd deploy/base && kustomize edit set image ghcr.io/alexboscolo954/squero=<your-image>`.
 
 This in-cluster deploy serves one Contract, `in-cluster` ([`deploy/base/contract.yaml`](../deploy/base/contract.yaml)), mounted from a ConfigMap. For several Contracts, run the Hub on a VM instead ([Running the Hub](running-the-hub.md)).
 Point Alertmanager at it with [`deploy/alertmanager-receiver.yaml`](../deploy/alertmanager-receiver.yaml).
@@ -172,49 +172,49 @@ Point Alertmanager at it with [`deploy/alertmanager-receiver.yaml`](../deploy/al
 | `POST /contracts/{id}/grafana` | that Contract's webhook token | Grafana Alerting's webhook contact point, normalized into the same Alert group, then exactly as above |
 | `GET /investigations`, `GET /investigations/{id}` | approver | Status, kind (`triage` for now), Contract, report, proposed and executed actions |
 | `POST /investigations/{id}/decision` | approver | `{"approve": true}` or `{"approve": false, "message": "..."}` |
-| `GET /metrics`, `GET /healthz` | none | `aiops_triages_total`, `aiops_triage_seconds`, `aiops_tool_calls_total`, `aiops_pending_approvals` |
+| `GET /metrics`, `GET /healthz` | none | `squero_triages_total`, `squero_triage_seconds`, `squero_tool_calls_total`, `squero_pending_approvals` |
 
 The container runs as non-root on a read-only root filesystem, with all capabilities dropped and the RuntimeDefault seccomp profile.
 CI deploys the real image with these manifests on kind and checks health, auth and metrics ([`demo/deploy-smoke.sh`](../demo/deploy-smoke.sh)).
 
-State lives in Postgres: Investigations, the duplicate memory, every Approval decision (who, what, when), every tool call with its raw result (redacted, before the size cap, kept for turning an Investigation into an eval Scenario) and the LangGraph checkpoints. A pending approval survives a restart. After a restart, a deadline that passed while the Hub was down goes Stale, and a Run that was cut off becomes a Failed investigation. It is never replayed, so an approved write can't run twice. The in-cluster deploy needs a Postgres you provide, version 12 or later with the [pgvector](https://github.com/pgvector/pgvector) extension (the Report search is a generated column; migration 0013 runs `create extension vector`, which needs a role allowed to create it) (the smoke test brings a throwaway one, [`demo/postgres.yaml`](../demo/postgres.yaml)); the Hub's compose stack ships one. Timers and the concurrency limit are per process, so run one replica. `AIOPS_MAX_CONCURRENT_TRIAGES` is shared by every Contract, so one Contract's alert storm can hold every slot.
+State lives in Postgres: Investigations, the duplicate memory, every Approval decision (who, what, when), every tool call with its raw result (redacted, before the size cap, kept for turning an Investigation into an eval Scenario) and the LangGraph checkpoints. A pending approval survives a restart. After a restart, a deadline that passed while the Hub was down goes Stale, and a Run that was cut off becomes a Failed investigation. It is never replayed, so an approved write can't run twice. The in-cluster deploy needs a Postgres you provide, version 12 or later with the [pgvector](https://github.com/pgvector/pgvector) extension (the Report search is a generated column; migration 0013 runs `create extension vector`, which needs a role allowed to create it) (the smoke test brings a throwaway one, [`demo/postgres.yaml`](../demo/postgres.yaml)); the Hub's compose stack ships one. Timers and the concurrency limit are per process, so run one replica. `SQUERO_MAX_CONCURRENT_TRIAGES` is shared by every Contract, so one Contract's alert storm can hold every slot.
 
 ## Other models
 
 Any `init_chat_model` string works. For an OpenAI-compatible gateway (LiteLLM, vLLM; see [llm-serving-k8s](https://github.com/alexboscolo954/llm-serving-k8s)):
 
 ```bash
-AIOPS_MODEL=openai:<model-name> AIOPS_MODEL_BASE_URL=http://litellm:4000/v1 AIOPS_MODEL_API_KEY=...
+SQUERO_MODEL=openai:<model-name> SQUERO_MODEL_BASE_URL=http://litellm:4000/v1 SQUERO_MODEL_API_KEY=...
 ```
 
 ## Model and cost
 
-A Contract runs on the Hub's `AIOPS_MODEL` unless it sets `model:` (for example a cheaper one), through the Hub's gateway and key, so its prefix must match (`openai:` behind OpenRouter). Every model call's tokens are recorded, and priced from `AIOPS_MODEL_PRICES` when the model has a price: the console shows each Investigation's tokens and cost, and each Contract's spend this month. `monthly_budget_usd:` sets a Contract's monthly budget (UTC calendar month); a Contract with a budget needs its model priced, or the Hub won't start. At 80% and at 100% of it, the Contract's operator channel gets a notice, once each per month. At 100%, a new alert, Question or follow-up is refused without calling the model: it becomes a Failed investigation that names the spend and the budget, and Slack still tells you, so no alert is silently dropped. A Run that resumes after your approval always runs, so an approved action is always reported. Several Runs that start together can overshoot the budget a little.
+A Contract runs on the Hub's `SQUERO_MODEL` unless it sets `model:` (for example a cheaper one), through the Hub's gateway and key, so its prefix must match (`openai:` behind OpenRouter). Every model call's tokens are recorded, and priced from `SQUERO_MODEL_PRICES` when the model has a price: the console shows each Investigation's tokens and cost, and each Contract's spend this month. `monthly_budget_usd:` sets a Contract's monthly budget (UTC calendar month); a Contract with a budget needs its model priced, or the Hub won't start. At 80% and at 100% of it, the Contract's operator channel gets a notice, once each per month. At 100%, a new alert, Question or follow-up is refused without calling the model: it becomes a Failed investigation that names the spend and the budget, and Slack still tells you, so no alert is silently dropped. A Run that resumes after your approval always runs, so an approved action is always reported. Several Runs that start together can overshoot the budget a little.
 
 ## Configuration
 
-Hub settings are `AIOPS_*` environment variables (or `.env`). See [`config.py`](../src/aiops_agent/config.py). Everything about a cluster, an integration or a webhook token lives in the Contract. `serve`, `triage` and `mcp` refuse to start if one of the old variables (`AIOPS_KUBE_CONTEXT`, `AIOPS_NAMESPACES`, ...) is still set, and say where it moved.
+Hub settings are `SQUERO_*` environment variables (or `.env`). See [`config.py`](../src/squero/config.py). Everything about a cluster, an integration or a webhook token lives in the Contract. `serve`, `triage` and `mcp` refuse to start if one of the old variables (`SQUERO_KUBE_CONTEXT`, `SQUERO_NAMESPACES`, ...) is still set, and say where it moved.
 
 | Variable | Default | |
 |---|---|---|
-| `AIOPS_MODEL` | `anthropic:claude-sonnet-5-5` | Any `init_chat_model` id |
-| `AIOPS_MODEL_BASE_URL` / `_API_KEY` | | OpenAI-compatible gateways |
-| `AIOPS_CONTRACTS_DIR` | | One directory per Contract (required for `serve`, `triage`, `mcp`) |
-| `AIOPS_APPROVER_TOKEN` | | The Operator's token, required for `serve` |
-| `AIOPS_DATABASE_URL` | | Postgres, required for `serve`. Migrations run at startup |
-| `AIOPS_SLACK_BOT_TOKEN` | | The Hub's Slack bot (`xoxb-...`). Each Contract names its own channel |
-| `AIOPS_SLACK_APP_TOKEN` / `_OPERATOR_ID` | | Approve and reject buttons: an app-level token (`xapp-...`, `connections:write`) and the Operator's Slack member ID (`U...`). The app token needs both others |
-| `AIOPS_CONSOLE_OPERATORS` | | Web console: JSON list of the Tailscale logins that may sign in. Empty means off. Only behind `tailscale serve` |
-| `AIOPS_CONSOLE_URL` | | The console's address (the `tailscale serve` URL). The weekly Sizing digest links its Workloads page; unset, no link |
-| `AIOPS_MCP_TOKEN` | | The Hub MCP server at `/mcp/`: its bearer token, 32 characters or more, its own (refused if it is the approver or a webhook token). Needs `AIOPS_CONSOLE_OPERATORS`. Unset means off |
-| `AIOPS_CONTRACTS_REPO` | | The contracts repo on GitHub (`owner/name`), cloned at `AIOPS_CONTRACTS_DIR`: where `propose_change` opens its pull requests. Unset means the Hub proposes nothing |
-| `AIOPS_CONTRACTS_TOKEN` | | A fine-grained token for that repo alone: Contents and Pull requests, read and write. Sent only to `api.github.com`, and never shown in an error |
-| `AIOPS_MODEL_PRICES` | | JSON: USD per million tokens per model string, e.g. `{"openai:anthropic/claude-haiku-5.5": {"input": 0.10, "output": 0.50, "long": {"over": 100000, "input": 0.50, "output": 2.50}}}`. Priced per model call, as providers bill: a call whose prompt is over `long.over` pays the `long` prices. Cache discounts are ignored, so costs read a little high |
-| `AIOPS_MAX_TOOL_CALLS` / `AIOPS_MAX_MODEL_CALLS` | 25 / 30 | Per run; each `read_more` counts as a tool call |
-| `AIOPS_RELATED_WINDOW_MINUTES` | 30 | How long after a Triage starts a new Alert group can still join it (a Contract's `related.window_minutes` overrides it) |
-| `AIOPS_EMBEDDING_MODEL` | | Similar incidents by meaning: an embedding model on the gateway (`AIOPS_MODEL_BASE_URL`, needed), e.g. `openai/text-embedding-3-small` on OpenRouter. Price it in `AIOPS_MODEL_PRICES` (`{"input": 0.02, "output": 0}`) to count it in budgets. Unset: words only |
-| `AIOPS_EMBEDDING_MAX_DISTANCE` | 0.6 | Cosine distance under which a past Report counts as similar |
-| `AIOPS_TOOL_OUTPUT_LIMIT` | 8000 | Characters of one tool result the model sees at once; the rest stays readable through `read_more` |
-| `AIOPS_RELAY_CALL_SECONDS` | 30 | How long one tool call through a Relay may take; a Relay that hasn't answered by then is offline and the Run fails |
-| `AIOPS_MAX_CONCURRENT_TRIAGES` | 3 | Alert storms queue instead of fanning out |
-| `AIOPS_DECISION_TIMEOUT_SECONDS` | 1800 | Proposed actions with no decision by then are rejected as stale. So are those whose alert group resolves, which needs `send_resolved: true` ([`deploy/alertmanager-receiver.yaml`](../deploy/alertmanager-receiver.yaml)) |
+| `SQUERO_MODEL` | `anthropic:claude-sonnet-5-5` | Any `init_chat_model` id |
+| `SQUERO_MODEL_BASE_URL` / `_API_KEY` | | OpenAI-compatible gateways |
+| `SQUERO_CONTRACTS_DIR` | | One directory per Contract (required for `serve`, `triage`, `mcp`) |
+| `SQUERO_APPROVER_TOKEN` | | The Operator's token, required for `serve` |
+| `SQUERO_DATABASE_URL` | | Postgres, required for `serve`. Migrations run at startup |
+| `SQUERO_SLACK_BOT_TOKEN` | | The Hub's Slack bot (`xoxb-...`). Each Contract names its own channel |
+| `SQUERO_SLACK_APP_TOKEN` / `_OPERATOR_ID` | | Approve and reject buttons: an app-level token (`xapp-...`, `connections:write`) and the Operator's Slack member ID (`U...`). The app token needs both others |
+| `SQUERO_CONSOLE_OPERATORS` | | Web console: JSON list of the Tailscale logins that may sign in. Empty means off. Only behind `tailscale serve` |
+| `SQUERO_CONSOLE_URL` | | The console's address (the `tailscale serve` URL). The weekly Sizing digest links its Workloads page; unset, no link |
+| `SQUERO_MCP_TOKEN` | | The Hub MCP server at `/mcp/`: its bearer token, 32 characters or more, its own (refused if it is the approver or a webhook token). Needs `SQUERO_CONSOLE_OPERATORS`. Unset means off |
+| `SQUERO_CONTRACTS_REPO` | | The contracts repo on GitHub (`owner/name`), cloned at `SQUERO_CONTRACTS_DIR`: where `propose_change` opens its pull requests. Unset means the Hub proposes nothing |
+| `SQUERO_CONTRACTS_TOKEN` | | A fine-grained token for that repo alone: Contents and Pull requests, read and write. Sent only to `api.github.com`, and never shown in an error |
+| `SQUERO_MODEL_PRICES` | | JSON: USD per million tokens per model string, e.g. `{"openai:anthropic/claude-haiku-5.5": {"input": 0.10, "output": 0.50, "long": {"over": 100000, "input": 0.50, "output": 2.50}}}`. Priced per model call, as providers bill: a call whose prompt is over `long.over` pays the `long` prices. Cache discounts are ignored, so costs read a little high |
+| `SQUERO_MAX_TOOL_CALLS` / `SQUERO_MAX_MODEL_CALLS` | 25 / 30 | Per run; each `read_more` counts as a tool call |
+| `SQUERO_RELATED_WINDOW_MINUTES` | 30 | How long after a Triage starts a new Alert group can still join it (a Contract's `related.window_minutes` overrides it) |
+| `SQUERO_EMBEDDING_MODEL` | | Similar incidents by meaning: an embedding model on the gateway (`SQUERO_MODEL_BASE_URL`, needed), e.g. `openai/text-embedding-3-small` on OpenRouter. Price it in `SQUERO_MODEL_PRICES` (`{"input": 0.02, "output": 0}`) to count it in budgets. Unset: words only |
+| `SQUERO_EMBEDDING_MAX_DISTANCE` | 0.6 | Cosine distance under which a past Report counts as similar |
+| `SQUERO_TOOL_OUTPUT_LIMIT` | 8000 | Characters of one tool result the model sees at once; the rest stays readable through `read_more` |
+| `SQUERO_RELAY_CALL_SECONDS` | 30 | How long one tool call through a Relay may take; a Relay that hasn't answered by then is offline and the Run fails |
+| `SQUERO_MAX_CONCURRENT_TRIAGES` | 3 | Alert storms queue instead of fanning out |
+| `SQUERO_DECISION_TIMEOUT_SECONDS` | 1800 | Proposed actions with no decision by then are rejected as stale. So are those whose alert group resolves, which needs `send_resolved: true` ([`deploy/alertmanager-receiver.yaml`](../deploy/alertmanager-receiver.yaml)) |

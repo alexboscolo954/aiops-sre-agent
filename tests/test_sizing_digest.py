@@ -12,10 +12,10 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr, ValidationError
 
-from aiops_agent import cli, contracts, sizing
-from aiops_agent.config import Settings
-from aiops_agent.store import Store, connect
-from aiops_agent.usage import ContainerUsage, Workload
+from squero import cli, contracts, sizing
+from squero.config import Settings
+from squero.store import Store, connect
+from squero.usage import ContainerUsage, Workload
 from tests.conftest import make_contract, make_fake_cluster
 from tests.test_api import client
 from tests.test_sizing_store import MI, NOW, container, prometheus_contract, rows_of
@@ -321,9 +321,9 @@ def test_cli_prints_and_posts_now_without_moving_the_schedule(
     database_url: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     seed(database_url)
-    monkeypatch.setenv("AIOPS_DATABASE_URL", database_url)
-    monkeypatch.setenv("AIOPS_SLACK_BOT_TOKEN", TOKEN)
-    monkeypatch.setenv("AIOPS_CONSOLE_URL", "https://hub.example.ts.net")
+    monkeypatch.setenv("SQUERO_DATABASE_URL", database_url)
+    monkeypatch.setenv("SQUERO_SLACK_BOT_TOKEN", TOKEN)
+    monkeypatch.setenv("SQUERO_CONSOLE_URL", "https://hub.example.ts.net")
     data = prometheus_contract().model_dump()
     data["slack"] = {"operator_channel": ACME, "client_channel": ACME_CLIENT}
     monkeypatch.setattr(cli, "contract", lambda settings, cid: contracts.build(data))

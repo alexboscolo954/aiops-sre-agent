@@ -9,9 +9,9 @@ import psycopg
 import pytest
 from pydantic import SecretStr
 
-from aiops_agent.api import KILLED
-from aiops_agent.config import Settings
-from aiops_agent.store import Store, connect
+from squero.api import KILLED
+from squero.config import Settings
+from squero.store import Store, connect
 from tests.test_api import (
     ALERT,
     AUTH,
@@ -183,7 +183,7 @@ def test_the_console_turns_it_on_and_off_only_from_its_own_pages(
     settings.console_operators = {OPERATOR}
     path = "/api/v1/contracts/acme/kill-switch"
     same = {**VIEW, "Sec-Fetch-Site": "same-origin"}
-    with client(settings, fake_cluster) as c, caplog.at_level("INFO", logger="aiops.webapp"):
+    with client(settings, fake_cluster) as c, caplog.at_level("INFO", logger="squero.webapp"):
         off = c.get(path, headers=VIEW).json()
         refused = [
             c.post(path, headers={**VIEW, "Sec-Fetch-Site": "cross-site"}).status_code,
@@ -199,7 +199,7 @@ def test_the_console_turns_it_on_and_off_only_from_its_own_pages(
     assert refused == [403, 401, 403, 403]
     assert on["on"] and on["by"] == f"console:{OPERATOR}" and again == on
     assert cleared == {"on": False, "by": None, "since": None} and unknown == 404
-    logged = [r.message for r in caplog.records if r.name == "aiops.webapp"]
+    logged = [r.message for r in caplog.records if r.name == "squero.webapp"]
     assert logged == [
         f"kill switch acme on by console:{OPERATOR}",
         f"kill switch acme off by console:{OPERATOR}",

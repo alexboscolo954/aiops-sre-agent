@@ -3,7 +3,7 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: aiops-actions
+  name: squero-actions
   namespace: demo
 rules:
   - apiGroups: [""]
@@ -16,13 +16,13 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: aiops-actions
+  name: squero-actions
   namespace: demo
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: aiops-actions
+  name: squero-actions
 subjects:
   - kind: ServiceAccount
-    name: aiops-agent
-    namespace: aiops
+    name: squero
+    namespace: squero

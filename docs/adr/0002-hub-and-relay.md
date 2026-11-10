@@ -10,7 +10,7 @@ The Hub, not the tool server, decides whether a tool reads or writes. Every vend
 
 ## Consequences
 
-A kubeconfig credential plugin (`exec`, or an `auth-provider` such as gcp's `cmd-path`) runs as a command on the Hub, in the same process as every other Contract's secrets. A tampered client kubeconfig could read them all. So the Hub refuses such a kubeconfig, both in `aiops contracts validate` and before the Kubernetes client loads it, unless the cluster sets `allow_exec: true` in the contracts repo. An allowed plugin is still trusted with every Contract's secrets: for a Contract that needs a plugin and isn't fully trusted, use a Relay, which runs it inside that client's network.
+A kubeconfig credential plugin (`exec`, or an `auth-provider` such as gcp's `cmd-path`) runs as a command on the Hub, in the same process as every other Contract's secrets. A tampered client kubeconfig could read them all. So the Hub refuses such a kubeconfig, both in `squero contracts validate` and before the Kubernetes client loads it, unless the cluster sets `allow_exec: true` in the contracts repo. An allowed plugin is still trusted with every Contract's secrets: for a Contract that needs a plugin and isn't fully trusted, use a Relay, which runs it inside that client's network.
 
 The same holds for vendor MCP servers (slice 4.1): a Contract names a vendor from the Hub's registry, and the command the Hub starts lives in the Hub's code, never in the contracts repo, so a push there can't run a program next to every Contract's secrets. The vendor process gets only MCP's safe default environment and the variables its registry entry allows, set from its own Contract's config and secrets: a free choice of variables (`LD_PRELOAD`, `PATH`, ...) would run code all the same.
 

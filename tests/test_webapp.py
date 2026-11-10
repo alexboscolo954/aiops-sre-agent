@@ -11,9 +11,9 @@ from typing import Any
 import pytest
 from pydantic import SecretStr
 
-from aiops_agent import webapp
-from aiops_agent.config import Settings
-from aiops_agent.store import Store, connect
+from squero import webapp
+from squero.config import Settings
+from squero.store import Store, connect
 from tests.conftest import make_contract
 from tests.test_api import client
 from tests.test_console import ACT, AS_OPERATOR, OPERATOR, VIEW
@@ -28,7 +28,7 @@ CSP = "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors '
 @pytest.fixture(autouse=True)
 def _clock(monkeypatch: pytest.MonkeyPatch) -> None:
     """The stored runs are at NOW: history's 14 and 400 days count back from it."""
-    monkeypatch.setattr("aiops_agent.api.now", lambda: NOW)
+    monkeypatch.setattr("squero.api.now", lambda: NOW)
 
 
 @pytest.fixture
@@ -356,7 +356,7 @@ def test_the_cost_api_carries_only_the_contracts_own_realized_savings(
     settings: Settings, fake_cluster: Any, database_url: str, app_dir: Path
 ) -> None:
     """acme lowered api to its Sizing; bank, with the same names, sees none (10.3b)."""
-    from aiops_agent import sizing
+    from squero import sizing
     from tests.test_realized import sized
 
     async def go() -> None:

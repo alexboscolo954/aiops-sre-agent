@@ -8,10 +8,10 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
-from aiops_agent import agent
-from aiops_agent.api import create_app
-from aiops_agent.config import Settings
-from aiops_agent.contracts import Contract
+from squero import agent
+from squero.api import create_app
+from squero.config import Settings
+from squero.contracts import Contract
 from tests.conftest import REPORT, call, make_contract, make_fake_cluster, scripted
 
 URL = "/contracts/acme/alertmanager"
@@ -99,13 +99,13 @@ def wait_for(c: TestClient, investigation_id: str, status: str) -> dict[str, Any
 
 
 def test_refuses_to_start_without_token_contracts_or_database(settings: Settings) -> None:
-    with pytest.raises(RuntimeError, match="AIOPS_APPROVER_TOKEN"):
+    with pytest.raises(RuntimeError, match="SQUERO_APPROVER_TOKEN"):
         create_app(settings, scripted(), by_id={})
     settings.approver_token = SecretStr("approver-token")
-    with pytest.raises(RuntimeError, match="AIOPS_CONTRACTS_DIR"):
+    with pytest.raises(RuntimeError, match="SQUERO_CONTRACTS_DIR"):
         create_app(settings, scripted())
     settings.database_url = None
-    with pytest.raises(RuntimeError, match="AIOPS_DATABASE_URL"):
+    with pytest.raises(RuntimeError, match="SQUERO_DATABASE_URL"):
         create_app(settings, scripted(), by_id={})
 
 
@@ -133,7 +133,7 @@ def test_alert_to_report_and_dedup(settings: Settings, fake_cluster: Any) -> Non
         assert t["report"]["category"] == "resource_limits"
         again = c.post(URL, json=ALERT, headers=HOOK).json()
         assert again == {"status": "duplicate", "investigation": r["investigation"]}
-        assert "aiops_tool_calls_total" in c.get("/metrics").text
+        assert "squero_tool_calls_total" in c.get("/metrics").text
 
 
 def test_only_a_new_firing_alert_starts_a_new_triage(settings: Settings, fake_cluster: Any) -> None:

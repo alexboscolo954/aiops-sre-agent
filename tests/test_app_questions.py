@@ -7,9 +7,9 @@ from typing import Any
 
 from pydantic import SecretStr
 
-from aiops_agent.config import Settings
-from aiops_agent.models import Investigation
-from aiops_agent.store import Store, connect
+from squero.config import Settings
+from squero.models import Investigation
+from squero.store import Store, connect
 from tests.conftest import REPORT, call, make_contract
 from tests.test_api import ALERT, AUTH, HOOK, URL, client
 from tests.test_app_investigations import SAME

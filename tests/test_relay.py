@@ -16,10 +16,10 @@ import websockets
 from fastmcp import Client, FastMCP
 from pydantic import SecretStr, ValidationError
 
-from aiops_agent import contracts, relay, usage
-from aiops_agent.api import create_app
-from aiops_agent.config import Settings
-from aiops_agent.servers import kubernetes
+from squero import contracts, relay, usage
+from squero.api import create_app
+from squero.config import Settings
+from squero.servers import kubernetes
 from tests.conftest import make_contract, scripted
 
 A_TOKEN = "a" * 40
@@ -98,7 +98,7 @@ def test_the_hub_never_reaches_a_relay_cluster_direct_nor_its_prometheus() -> No
     edge = next(cl for cl in c.clusters if cl.name == "edge")
     with pytest.raises(RuntimeError, match="via its Relay"):
         kubernetes.api_client(edge, c)  # it has no context: the default would be the Hub's
-    probes = [label for label, _, _ in __import__("aiops_agent.agent").agent.probes(c)]
+    probes = [label for label, _, _ in __import__("squero.agent").agent.probes(c)]
     assert {"kubernetes test", "kubernetes edge", "prometheus edge"} <= set(probes)  # 3.3b
     without = relayed("acme", A_TOKEN)  # no Prometheus: no Sizings, as no PromQL tools
     assert usage.targets(without) == []
@@ -383,7 +383,7 @@ def test_the_relay_manifests_read_only_and_writes_only_in_the_overlay() -> None:
     (container,) = pod["containers"]
     assert container["args"] == ["relay"]
     assert container["securityContext"]["readOnlyRootFilesystem"] is True
-    assert "AIOPS_RELAY_WRITES" not in {e["name"] for e in container["env"]}
+    assert "SQUERO_RELAY_WRITES" not in {e["name"] for e in container["env"]}
     service = docs[1]  # the cluster's Alertmanager posts to its receiver (slice 3.4)
     assert service["spec"]["selector"] == docs[0]["spec"]["selector"]["matchLabels"]
     assert [p["targetPort"] for p in service["spec"]["ports"]] == ["alerts"]
@@ -391,7 +391,7 @@ def test_the_relay_manifests_read_only_and_writes_only_in_the_overlay() -> None:
     hub = next(yaml.safe_load_all((ROOT / "deploy/base/deployment.yaml").read_text()))
     assert container["image"] == hub["spec"]["template"]["spec"]["containers"][0]["image"]
     overlay = (ROOT / "deploy/relay-actions/kustomization.yaml").read_text()
-    assert "AIOPS_RELAY_WRITES" in overlay
+    assert "SQUERO_RELAY_WRITES" in overlay
     rbac = (ROOT / "deploy/relay/rbac.yaml").read_text()
     assert "secrets" not in rbac and "patch" not in rbac
 
@@ -478,7 +478,7 @@ async def test_a_relay_clusters_calls_go_through_its_relay_after_the_hubs_own_ch
 ) -> None:
     import httpx
 
-    from aiops_agent import agent
+    from squero import agent
     from tests.conftest import make_fake_cluster
 
     caplog.set_level(logging.INFO)
@@ -547,7 +547,7 @@ def hanging(entered: anyio.Event) -> FastMCP:
 
 @pytest.mark.anyio
 async def test_a_relay_offline_slow_or_gone_mid_call_is_offline(settings: Settings) -> None:
-    from aiops_agent import agent
+    from squero import agent
 
     relays = relay.Relays()
     settings.relay_call_seconds = 0.3
@@ -589,7 +589,7 @@ async def test_a_relay_offline_slow_or_gone_mid_call_is_offline(settings: Settin
 async def test_a_run_that_calls_an_offline_relay_fails_after_recording_the_call(
     settings: Settings,
 ) -> None:
-    from aiops_agent import agent
+    from squero import agent
     from tests.conftest import REPORT, call
     from tests.test_agent import ALERT
 
@@ -615,7 +615,7 @@ async def test_a_run_that_calls_an_offline_relay_fails_after_recording_the_call(
 async def test_one_contracts_relay_never_answers_anothers_cluster_of_the_same_name(
     settings: Settings,
 ) -> None:
-    from aiops_agent import agent
+    from squero import agent
     from tests.conftest import make_fake_cluster
 
     relays, edge = relay.Relays(), make_fake_cluster()
@@ -637,7 +637,7 @@ async def test_one_contracts_relay_never_answers_anothers_cluster_of_the_same_na
 
 @pytest.mark.anyio
 async def test_a_write_needs_the_relays_own_switch_too(settings: Settings) -> None:
-    from aiops_agent import agent
+    from squero import agent
     from tests.conftest import make_fake_cluster
 
     relays, edge = relay.Relays(), make_fake_cluster()
@@ -685,7 +685,7 @@ def changes(rows: list[dict[str, Any]] | None) -> FastMCP:
 async def test_a_relays_recent_changes_keep_to_the_contracts_namespaces(
     settings: Settings,
 ) -> None:
-    from aiops_agent import agent
+    from squero import agent
 
     clusters = [
         {"name": "test", "context": "test", "namespaces": ["shop"]},
@@ -835,7 +835,7 @@ async def test_a_relays_state_says_since_when_and_its_version() -> None:
         await until(lambda: relays.get("acme", "edge") is None)
         tg.cancel_scope.cancel()
     off = relays.state("acme", "edge")
-    version = importlib.metadata.version("aiops-sre-agent")
+    version = importlib.metadata.version("squero")
     assert never == (
         False,
         1700000000.0,
@@ -851,7 +851,7 @@ def test_health_shows_each_relay_and_probes_through_it(
 ) -> None:
     from fastapi.testclient import TestClient
 
-    from aiops_agent import agent
+    from squero import agent
     from tests.test_console import OPERATOR, VIEW
 
     settings.database_url = SecretStr(database_url)
@@ -890,8 +890,8 @@ def test_health_shows_each_relay_and_probes_through_it(
 @pytest.mark.parametrize(
     ("path", "account"),
     [
-        ("deploy/gitops/rbac-gitops.yaml", ("aiops-agent", "aiops")),
-        ("deploy/relay/rbac-gitops.yaml", ("aiops-relay", "aiops-relay")),
+        ("deploy/gitops/rbac-gitops.yaml", ("squero", "squero")),
+        ("deploy/relay/rbac-gitops.yaml", ("squero-relay", "squero-relay")),
     ],
 )
 def test_gitops_rbac_grants_every_kind_recent_changes_reads_in_each_namespace(
@@ -972,7 +972,7 @@ async def test_an_alert_rides_the_relays_socket_and_the_hubs_answer_comes_back()
     async with anyio.create_task_group() as tg:
         relays, uplink, _, (raw, _) = await with_alerts(alerts, tg)
         assert await uplink.forward("hook", GROUP) == (202, {"status": "accepted"})
-        await raw('{"jsonrpc": "2.0", "id": 7, "method": "aiops/other", "params": {}}')
+        await raw('{"jsonrpc": "2.0", "id": 7, "method": "squero/other", "params": {}}')
         r = await relays.get("acme", "edge").call_tool(  # type: ignore[union-attr]
             "list_pods", {"namespace": "shop"}
         )
@@ -1039,7 +1039,7 @@ async def test_an_alert_the_hub_doesnt_take_is_a_5xx_alertmanager_sends_again(
 async def test_the_relays_receiver_wants_a_bearer_and_an_alert_group(monkeypatch: Any) -> None:
     import httpx
 
-    from aiops_agent.models import AlertGroup
+    from squero.models import AlertGroup
 
     uplink = relay.Uplink()
     sent: list[Any] = []
@@ -1112,8 +1112,8 @@ async def test_a_relays_alert_is_its_own_contracts_with_that_contracts_webhook_t
 
 def test_the_relays_settings_survive_its_own_services_links(monkeypatch: Any) -> None:
     """Kubernetes gives each pod environment variables for every Service in its
-    namespace: for the Relay's own Service (`aiops-relay`) they share its prefix, and
-    v0.32.0 read AIOPS_RELAY_PORT=tcp://... as its port and failed to start."""
+    namespace: for the Relay's own Service (`squero-relay`) they share its prefix, and
+    v0.32.0 read SQUERO_RELAY_PORT=tcp://... as its port and failed to start."""
     import yaml
 
     from tests.test_shared import ROOT

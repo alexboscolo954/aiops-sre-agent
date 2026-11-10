@@ -1,6 +1,6 @@
 """Record the Grafana Scenarios from the kind demo's LGTM stack (`make lgtm`).
 
-    kubectl --context kind-aiops -n observability port-forward svc/lgtm 13000:3000 &
+    kubectl --context kind-squero -n observability port-forward svc/lgtm 13000:3000 &
     uv run python evals/record_grafana.py /path/to/mcp-grafana [http://localhost:13000]
 
 The binary must be the version the Dockerfile pins, built for this machine; it
@@ -21,9 +21,9 @@ from typing import Any
 import yaml
 from fastmcp import Client
 
-from aiops_agent import agent, contracts
-from aiops_agent.config import Settings
-from aiops_agent.servers import vendors
+from squero import agent, contracts
+from squero.config import Settings
+from squero.servers import vendors
 
 OUT = Path(__file__).parent / "scenarios"
 PINNED = re.search(

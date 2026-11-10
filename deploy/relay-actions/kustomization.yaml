@@ -7,8 +7,8 @@ resources:
   - ../relay
   - rbac-actions.yaml
 patches:
-  - target: {kind: Deployment, name: aiops-relay}
+  - target: {kind: Deployment, name: squero-relay}
     patch: |-
       - op: add
         path: /spec/template/spec/containers/0/env/-
-        value: {name: AIOPS_RELAY_WRITES, value: "true"}
+        value: {name: SQUERO_RELAY_WRITES, value: "true"}

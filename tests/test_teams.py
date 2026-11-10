@@ -7,10 +7,10 @@ from typing import Any
 
 import pytest
 
-from aiops_agent import contracts, sizing, usage
-from aiops_agent.contracts import Contract
-from aiops_agent.store import Store, connect
-from aiops_agent.usage import Target
+from squero import contracts, sizing, usage
+from squero.contracts import Contract
+from squero.store import Store, connect
+from squero.usage import Target
 from tests.conftest import make_contract
 from tests.fake_prometheus import FakePrometheus
 from tests.test_sizing_store import MI, NOW, PROM, container, row, rows_of
@@ -293,7 +293,7 @@ def test_unpriced_teams_rank_a_core_like_4_gib() -> None:
 def test_sizing_cost_refuses_a_grouping_the_contract_lacks(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from aiops_agent import cli
+    from squero import cli
 
     monkeypatch.setattr(cli, "contract", lambda settings, cid: allocated())
     assert cli.main(["sizing", "cost", "--contract", "acme", "--by", "label:owner"]) == 2

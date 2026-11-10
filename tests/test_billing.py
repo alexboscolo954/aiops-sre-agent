@@ -10,9 +10,9 @@ import httpx
 import pytest
 from pydantic import SecretStr, ValidationError
 
-from aiops_agent import billing, contracts, usage
-from aiops_agent.config import Settings
-from aiops_agent.store import Store, connect
+from squero import billing, contracts, usage
+from squero.config import Settings
+from squero.store import Store, connect
 from tests.conftest import make_contract
 from tests.fake_prometheus import FakePrometheus
 from tests.test_api import client
@@ -20,7 +20,7 @@ from tests.test_sizing_store import NOW, H
 from tests.test_usage import _prom
 
 GI = 2**30
-TAG = "aiops-cluster=kind"
+TAG = "squero-cluster=kind"
 DAYS = [
     "1972-09-19",
     "1972-09-20",
@@ -110,7 +110,7 @@ def test_the_request_asks_for_the_tags_ec2_compute_usage_before_credits() -> Non
     assert sent["TimePeriod"] == {"Start": "1972-09-01", "End": "1972-09-26"}
     assert sent["Granularity"] == "DAILY" and sent["Metrics"] == ["UnblendedCost"]
     assert sent["Filter"]["And"] == [
-        {"Tags": {"Key": "aiops-cluster", "Values": ["kind"], "MatchOptions": ["EQUALS"]}},
+        {"Tags": {"Key": "squero-cluster", "Values": ["kind"], "MatchOptions": ["EQUALS"]}},
         {"Dimensions": {"Key": "SERVICE", "Values": ["Amazon Elastic Compute Cloud - Compute"]}},
         {"Dimensions": {"Key": "RECORD_TYPE", "Values": ["Usage"]}},
     ]
@@ -479,7 +479,7 @@ def test_the_azure_request_asks_for_the_tags_vm_usage_before_credits() -> None:
     assert data["granularity"] == "Daily"
     assert data["aggregation"] == {"totalCost": {"name": "PreTaxCost", "function": "Sum"}}
     assert data["filter"]["and"] == [
-        {"tags": {"name": "aiops-cluster", "operator": "In", "values": ["kind"]}},
+        {"tags": {"name": "squero-cluster", "operator": "In", "values": ["kind"]}},
         {"dimensions": {"name": "ServiceName", "operator": "In", "values": ["Virtual Machines"]}},
         {"dimensions": {"name": "ChargeType", "operator": "In", "values": ["Usage"]}},
     ]
@@ -627,7 +627,7 @@ def test_the_cli_prints_a_bill_of_nothing_beside_an_estimate(
     import asyncio
     import time
 
-    from aiops_agent import cli
+    from squero import cli
 
     c, fake = billed(), FakePrometheus()
     nodes(fake)
@@ -646,7 +646,7 @@ def test_the_cli_prints_a_bill_of_nothing_beside_an_estimate(
 
     monkeypatch.setattr(billing, "report", reported)
     monkeypatch.setattr(cli, "contract", lambda settings, cid: c)
-    monkeypatch.setenv("AIOPS_DATABASE_URL", database_url)
+    monkeypatch.setenv("SQUERO_DATABASE_URL", database_url)
     monkeypatch.setattr(time, "time", lambda: NOW)
     assert cli.main(["sizing", "bill", "--contract", c.id]) == 1
     assert "no gap (nothing billed)" in capsys.readouterr().out
@@ -703,7 +703,7 @@ def test_the_cli_does_not_fail_a_row_for_missing_samples_alone(
     import asyncio
     import time
 
-    from aiops_agent import cli
+    from squero import cli
 
     c, fake = billed(), FakePrometheus()
     nodes(fake, hours=100)
@@ -722,7 +722,7 @@ def test_the_cli_does_not_fail_a_row_for_missing_samples_alone(
 
     monkeypatch.setattr(billing, "report", reported)
     monkeypatch.setattr(cli, "contract", lambda settings, cid: c)
-    monkeypatch.setenv("AIOPS_DATABASE_URL", database_url)
+    monkeypatch.setenv("SQUERO_DATABASE_URL", database_url)
     monkeypatch.setattr(time, "time", lambda: NOW)
     assert cli.main(["sizing", "bill", "--contract", c.id]) == 0
     out = capsys.readouterr().out
@@ -738,7 +738,7 @@ from tests.test_gcp import KEY as GCP_KEY  # noqa: E402
 from tests.test_gcp import PRIVATE, unpad  # noqa: E402
 
 TABLE = "acme-prod.billing.gcp_billing_export_v1_ABC123"
-GCP_TAG = "aiops-cluster=kind"
+GCP_TAG = "squero-cluster=kind"
 GCP = {
     "name": "gcp",
     "vendor": "gcp",
@@ -794,12 +794,12 @@ def test_the_gcp_query_asks_for_the_labels_core_and_ram_usage_on_demand() -> Non
     assert "service.description = 'Compute Engine'" in sql and "cost_type = 'regular'" in sql
     assert "'% Instance Core running%'" in sql and "'% Instance Ram running%'" in sql
     assert "NOT LIKE 'Spot Preemptible%'" in sql and "SUM(cost)" in sql
-    assert "tag" not in sql and "aiops-cluster" not in sql and "kind" not in sql  # parameters
+    assert "tag" not in sql and "squero-cluster" not in sql and "kind" not in sql  # parameters
     params = {p["name"]: p["parameterValue"]["value"] for p in sent["queryParameters"]}
     assert params == {
         "start": "1972-09-01 00:00:00+00",
         "end": "1972-09-26 00:00:00+00",
-        "key": "aiops-cluster",
+        "key": "squero-cluster",
         "value": "kind",
     }
     assert sent["parameterMode"] == "NAMED"
@@ -915,7 +915,7 @@ def test_billing_across_clouds_needs_a_provider_when_the_contract_has_several() 
     [
         ({"tag": GCP_TAG}, "set billing.table"),
         ({"tag": "Aiops-Cluster=kind", "table": TABLE}, "lowercase"),
-        ({"tag": "aiops cluster=kind", "table": TABLE}, "lowercase"),
+        ({"tag": "squero cluster=kind", "table": TABLE}, "lowercase"),
         ({"tag": "1x=kind", "table": TABLE}, "lowercase"),
         ({"tag": "k=" + "v" * 64, "table": TABLE}, "lowercase"),
     ],

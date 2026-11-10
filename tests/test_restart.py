@@ -13,11 +13,11 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
-from aiops_agent import agent
-from aiops_agent.api import create_app
-from aiops_agent.config import Settings
-from aiops_agent.models import Investigation
-from aiops_agent.store import Store, connect, now
+from squero import agent
+from squero.api import create_app
+from squero.config import Settings
+from squero.models import Investigation
+from squero.store import Store, connect, now
 from tests.conftest import REPORT, call, make_contract, scripted
 from tests.test_api import ALERT, AUTH, HOOK, URL, client
 

@@ -15,15 +15,15 @@ from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from fastmcp import Client, FastMCP
 from langchain.mcp import MCPAdapter
 
-from aiops_agent import agent, contracts, evals
-from aiops_agent.config import Settings
-from aiops_agent.servers import vendors
+from squero import agent, contracts, evals
+from squero.config import Settings
+from squero.servers import vendors
 
 PRIVATE = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 KEY = json.dumps(
     {
         "type": "service_account",
-        "client_email": "aiops@acme-prod.iam.gserviceaccount.com",
+        "client_email": "squero@acme-prod.iam.gserviceaccount.com",
         "private_key_id": "k1",
         "private_key": PRIVATE.private_bytes(
             serialization.Encoding.PEM,
@@ -150,7 +150,7 @@ async def test_the_hub_mints_read_only_tokens_from_the_key_at_googles_endpoint(
         unpad(signature), f"{header}.{claims}".encode(), padding.PKCS1v15(), hashes.SHA256()
     )
     body = json.loads(unpad(claims))
-    assert body["iss"] == "aiops@acme-prod.iam.gserviceaccount.com"
+    assert body["iss"] == "squero@acme-prod.iam.gserviceaccount.com"
     assert body["aud"] == "https://oauth2.googleapis.com/token"
     assert body["scope"] == vendors.GOOGLE_SCOPES
     assert json.loads(unpad(header))["kid"] == "k1"

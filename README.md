@@ -1,8 +1,13 @@
-<!-- logo -->
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo-dark.svg">
+    <img src="docs/assets/logo-light.svg" alt="squero" width="360">
+  </picture>
+</p>
 
-# aiops-sre-agent
+# squero
 
-[![ci](https://github.com/alexboscolo954/aiops-sre-agent/actions/workflows/ci.yaml/badge.svg)](https://github.com/alexboscolo954/aiops-sre-agent/actions/workflows/ci.yaml)
+[![ci](https://github.com/alexboscolo954/squero/actions/workflows/ci.yaml/badge.svg)](https://github.com/alexboscolo954/squero/actions/workflows/ci.yaml)
 
 An SRE Hub for Kubernetes that serves several clients at once. Each client is a **Contract**: its clusters, integrations, Slack channel and secrets, kept apart from every other client's.
 
@@ -68,9 +73,9 @@ Requirements: Python 3.12+, [uv](https://docs.astral.sh/uv/), Docker, kind.
 ```bash
 uv sync
 make cluster demo          # kind cluster + three broken workloads in namespace "demo"
-cp .env.example .env       # set AIOPS_MODEL_API_KEY; AIOPS_CONTRACTS_DIR=demo/contracts
+cp .env.example .env       # set SQUERO_MODEL_API_KEY; SQUERO_CONTRACTS_DIR=demo/contracts
 export SOPS_AGE_KEY="$(cat demo/contracts/test-keys/*.agekey)"   # the demo's public test keys
-uv run aiops triage examples/alert-crashloop.json --contract demo-shop
+uv run squero triage examples/alert-crashloop.json --contract demo-shop
 ```
 
 The demo breaks three workloads in three classic ways:
@@ -87,7 +92,7 @@ To run it for real, start with [Running the Hub](docs/running-the-hub.md).
 
 | Document | What it covers |
 |---|---|
-| [Running the Hub](docs/running-the-hub.md) | The compose stack, Slack, the web console, the Hub MCP server, one-cluster mode, models and cost, every `AIOPS_*` setting |
+| [Running the Hub](docs/running-the-hub.md) | The compose stack, Slack, the web console, the Hub MCP server, one-cluster mode, models and cost, every `SQUERO_*` setting |
 | [Contracts](docs/contracts.md) | The Contract file: layout and secrets, Masking, GitOps, Jira, Checks, Teachings, vendor integrations, Azure, Google Cloud, AWS |
 | [Resource optimizer](docs/optimizer.md) | Sizings, policies, prices, the Bill check, cost by team, Savings, the weekly digest, the lab |
 | [The client's cluster](docs/client-cluster.md) | The Relay and the Actuator: what each one may do and how to install it |

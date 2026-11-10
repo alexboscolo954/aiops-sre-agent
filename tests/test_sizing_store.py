@@ -9,11 +9,11 @@ from typing import Any
 import pytest
 from pydantic import SecretStr
 
-from aiops_agent import cli, contracts, sizing, usage
-from aiops_agent.config import Settings
-from aiops_agent.contracts import BUILTIN, Contract
-from aiops_agent.store import Store, connect
-from aiops_agent.usage import ContainerUsage, Workload, step_for
+from squero import cli, contracts, sizing, usage
+from squero.config import Settings
+from squero.contracts import BUILTIN, Contract
+from squero.store import Store, connect
+from squero.usage import ContainerUsage, Workload, step_for
 from tests.conftest import make_contract
 from tests.fake_prometheus import FakePrometheus
 from tests.test_api import client
@@ -413,7 +413,7 @@ def test_refresh_then_waste(
     database_url: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     lab_fake(monkeypatch)
-    monkeypatch.setenv("AIOPS_DATABASE_URL", database_url)
+    monkeypatch.setenv("SQUERO_DATABASE_URL", database_url)
     data = prometheus_contract().model_dump()
     data["sizing"] = {"rules": [{"name": "idle", "policy": "off"}]}
     monkeypatch.setattr(cli, "contract", lambda settings, cid: contracts.build(data))
@@ -444,7 +444,7 @@ def test_waste_ranks_a_core_like_4_gib() -> None:
 def test_waste_without_a_run_says_so(
     database_url: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setenv("AIOPS_DATABASE_URL", database_url)
+    monkeypatch.setenv("SQUERO_DATABASE_URL", database_url)
     monkeypatch.setattr(cli, "contract", lambda settings, cid: prometheus_contract())
     assert cli.main(["sizing", "waste", "--contract", "acme"]) == 1
     assert "no Sizings stored yet" in capsys.readouterr().out

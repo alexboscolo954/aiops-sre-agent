@@ -1,7 +1,7 @@
 # Opt-in, in the client's cluster: let the Relay's recent_changes read ArgoCD
 # Applications and Flux Kustomizations and HelmReleases, as deploy/gitops does for the
 # Hub. kubectl apply -f deploy/relay/rbac-gitops.yaml, then list the namespaces in
-# AIOPS_RELAY_GITOPS_NAMESPACES and under the cluster's gitops_namespaces in the
+# SQUERO_RELAY_GITOPS_NAMESPACES and under the cluster's gitops_namespaces in the
 # Contract.
 # Every kind in every GitOps namespace: recent_changes asks each one in each, and
 # reports a kind it may not read (a 403) as a missing grant; a kind whose controller
@@ -13,7 +13,7 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: aiops-relay-gitops
+  name: squero-relay-gitops
   namespace: argocd
 rules:
   - apiGroups: ["argoproj.io"]
@@ -29,21 +29,21 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: aiops-relay-gitops
+  name: squero-relay-gitops
   namespace: argocd
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: aiops-relay-gitops
+  name: squero-relay-gitops
 subjects:
   - kind: ServiceAccount
-    name: aiops-relay
-    namespace: aiops-relay
+    name: squero-relay
+    namespace: squero-relay
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: aiops-relay-gitops
+  name: squero-relay-gitops
   namespace: flux-system
 rules:
   - apiGroups: ["argoproj.io"]
@@ -59,13 +59,13 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: aiops-relay-gitops
+  name: squero-relay-gitops
   namespace: flux-system
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: aiops-relay-gitops
+  name: squero-relay-gitops
 subjects:
   - kind: ServiceAccount
-    name: aiops-relay
-    namespace: aiops-relay
+    name: squero-relay
+    namespace: squero-relay

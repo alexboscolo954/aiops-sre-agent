@@ -15,9 +15,9 @@ from fastapi.testclient import TestClient
 from langchain_core.messages import BaseMessage
 from pydantic import SecretStr
 
-from aiops_agent import teachings
-from aiops_agent.config import Settings
-from aiops_agent.store import Store, connect
+from squero import teachings
+from squero.config import Settings
+from squero.store import Store, connect
 from tests import test_api
 from tests.conftest import REPORT, ScriptedModel, call
 from tests.test_api import ALERT, AUTH, BANK_HOOK, BANK_URL, HOOK, URL, bank, client

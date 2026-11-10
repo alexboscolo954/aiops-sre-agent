@@ -6,9 +6,9 @@ import json
 from pathlib import Path
 from typing import Any
 
-from aiops_agent import agent
-from aiops_agent.config import Settings
-from aiops_agent.models import GrafanaAlertGroup
+from squero import agent
+from squero.config import Settings
+from squero.models import GrafanaAlertGroup
 from tests.conftest import REPORT, call
 from tests.test_api import (  # noqa: F401 - _database: every test here needs Postgres
     AUTH,

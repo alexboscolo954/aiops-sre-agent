@@ -22,10 +22,10 @@ from fastapi.testclient import TestClient
 from pydantic import SecretStr
 from websockets.sync.server import ServerConnection, serve
 
-from aiops_agent.api import create_app
-from aiops_agent.config import Settings
-from aiops_agent.models import Investigation, TriageReport
-from aiops_agent.slack import clean, client_text
+from squero.api import create_app
+from squero.config import Settings
+from squero.models import Investigation, TriageReport
+from squero.slack import clean, client_text
 from tests.conftest import REPORT, call, make_contract, make_fake_cluster, scripted
 from tests.test_api import ALERT, AUTH, BANK_HOOK, BANK_URL, HOOK, RESOLVED, URL, client
 from tests.test_restart import wait_for
@@ -135,7 +135,7 @@ def test_slack_failures_are_logged_never_fatal(
 ) -> None:
     slack = FakeSlack()
     slack.answers = [httpx.Response(200, json={"ok": False, "error": "not_in_channel"})] * 5
-    caplog.set_level(logging.WARNING, logger="aiops.slack")
+    caplog.set_level(logging.WARNING, logger="squero.slack")
     done_once(settings, fake_cluster, slack, calls=2)  # both parent attempts refused
     assert f"chat.postMessage to {ACME} failed: not_in_channel" in caplog.text
     assert TOKEN not in caplog.text
@@ -484,7 +484,7 @@ def test_buttons_need_the_bot_token_and_an_operator_id(settings: Settings) -> No
     for bot, operator in ((TOKEN, None), (TOKEN, "not-a-user"), (None, OPERATOR)):
         settings.slack_bot_token = SecretStr(bot) if bot else None
         settings.slack_operator_id = operator
-        with pytest.raises(RuntimeError, match="AIOPS_SLACK_OPERATOR_ID"):
+        with pytest.raises(RuntimeError, match="SQUERO_SLACK_OPERATOR_ID"):
             create_app(settings, scripted(), by_id={})
 
 
@@ -794,7 +794,7 @@ def test_a_thread_in_one_contracts_channel_never_continues_anothers(
 
 @pytest.mark.anyio
 async def test_one_run_per_question_and_each_mention_once(database_url: str) -> None:
-    from aiops_agent.store import Store, connect
+    from squero.store import Store, connect
 
     async with connect(database_url) as pool:
         st = Store(pool)
@@ -840,8 +840,8 @@ def test_no_post_unfurls_a_link_or_an_image(settings: Settings, fake_cluster: An
 def test_model_written_urls_reach_slack_as_text_never_as_links() -> None:
     """Slack links a bare URL by itself; a prompt injection could have the model write
     one carrying client data. Only an Evidence link a link tool returned stays one."""
-    from aiops_agent.models import Investigation, TriageReport
-    from aiops_agent.slack import client_text, reply_text, unlinked
+    from squero.models import Investigation, TriageReport
+    from squero.slack import client_text, reply_text, unlinked
 
     assert unlinked("go https://evil.example/?d=S.") == "go `https://evil.example/?d=S`."
     assert unlinked("evil.com/a?d=1 and www.evil.com") == "`evil.com/a?d=1` and `www.evil.com`"

@@ -7,10 +7,10 @@ import pytest
 from langchain_core.messages import AIMessage
 from pydantic import SecretStr
 
-from aiops_agent import agent
-from aiops_agent.api import create_app
-from aiops_agent.config import LongContext, Price, Settings
-from aiops_agent.store import Store, connect, month_start
+from squero import agent
+from squero.api import create_app
+from squero.config import LongContext, Price, Settings
+from squero.store import Store, connect, month_start
 from tests.conftest import REPORT, call, make_contract, scripted
 from tests.test_api import ALERT, AUTH, HOOK, URL, client
 from tests.test_restart import wait_for
@@ -81,7 +81,7 @@ def test_each_model_call_is_recorded_and_a_resume_counts_only_its_own(
 
 @pytest.mark.anyio
 async def test_spend_is_one_contracts_and_one_months(database_url: str) -> None:
-    from aiops_agent.models import Investigation
+    from squero.models import Investigation
 
     async with connect(database_url) as pool:
         st = Store(pool)
@@ -104,7 +104,7 @@ async def test_spend_is_one_contracts_and_one_months(database_url: str) -> None:
 
 
 def agent_now() -> float:
-    from aiops_agent.store import now
+    from squero.store import now
 
     return now()
 
@@ -143,7 +143,7 @@ def test_budgets_need_a_price_and_contract_models_the_hubs_gateway(
 def test_each_contract_runs_on_its_own_model(
     priced: Settings, fake_cluster: Any, monkeypatch: pytest.MonkeyPatch, database_url: str
 ) -> None:
-    from aiops_agent import api
+    from squero import api
 
     built: list[str] = []
 

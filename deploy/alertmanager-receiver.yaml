@@ -1,15 +1,15 @@
 # Alertmanager config snippet: send alerts to the agent.
 receivers:
-  - name: aiops-agent
+  - name: squero
     webhook_configs:
-      - url: http://aiops-agent.aiops:8080/contracts/in-cluster/alertmanager
+      - url: http://squero.squero:8080/contracts/in-cluster/alertmanager
         send_resolved: true   # a resolved group makes its proposed actions stale
         http_config:
           authorization:
             type: Bearer
-            credentials_file: /etc/alertmanager/secrets/aiops-token   # this Contract's webhook token
+            credentials_file: /etc/alertmanager/secrets/squero-token   # this Contract's webhook token
 route:
   routes:
-    - receiver: aiops-agent
+    - receiver: squero
       matchers: ['severity=~"warning|critical"']
       continue: true          # keep paging humans as before

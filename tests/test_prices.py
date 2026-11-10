@@ -5,8 +5,8 @@ from typing import Any
 
 import pytest
 
-from aiops_agent import contracts, sizing
-from aiops_agent.usage import ContainerUsage, Workload
+from squero import contracts, sizing
+from squero.usage import ContainerUsage, Workload
 from tests.conftest import make_contract
 from tests.test_sizing_store import MI, container, rows_of
 
@@ -160,11 +160,11 @@ def test_an_unpriced_digest_keeps_cores_and_gib() -> None:
 def test_sizing_waste_prints_the_money(
     database_url: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from aiops_agent import cli
+    from squero import cli
     from tests.test_sizing_store import lab_fake
 
     lab_fake(monkeypatch)
-    monkeypatch.setenv("AIOPS_DATABASE_URL", database_url)
+    monkeypatch.setenv("SQUERO_DATABASE_URL", database_url)
     c = priced({"cpu": 0.04, "memory": 0.005})
     monkeypatch.setattr(cli, "contract", lambda settings, cid: c)
     assert cli.main(["sizing", "refresh", "--contract", "acme"]) == 0

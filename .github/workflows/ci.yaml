@@ -41,12 +41,12 @@ jobs:
       - run: .github/install-sops.sh
       - uses: helm/kind-action@v1
         with:
-          cluster_name: aiops
+          cluster_name: squero
           config: demo/kind.yaml
       - run: make demo
       - run: make integration
         env:
-          AIOPS_RECORD_DIR: recordings
+          SQUERO_RECORD_DIR: recordings
       - run: make deploy-smoke
       - uses: actions/upload-artifact@v7
         if: always()
@@ -57,7 +57,7 @@ jobs:
       - if: failure()
         run: |
           kubectl get pods -A -o wide
-          kubectl -n aiops logs deploy/aiops-agent --tail=100 || true
+          kubectl -n squero logs deploy/squero --tail=100 || true
 
   hub-smoke:
     # The Hub's compose stack (deploy/hub): health, the public boundary through
@@ -69,7 +69,7 @@ jobs:
       - run: make hub-smoke
 
   publish:
-    # Image for deploy/: ghcr.io/alexboscolo954/aiops-sre-agent:<version>, on tags only.
+    # Image for deploy/: ghcr.io/alexboscolo954/squero:<version>, on tags only.
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [lint-test, console, integration, hub-smoke]
     runs-on: ubuntu-latest

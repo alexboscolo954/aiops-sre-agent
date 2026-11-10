@@ -8,9 +8,9 @@ import pytest
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
 
-from aiops_agent.config import Settings
-from aiops_agent.safety import redact, truncate
-from aiops_agent.servers import prometheus, runbooks
+from squero.config import Settings
+from squero.safety import redact, truncate
+from squero.servers import prometheus, runbooks
 
 
 @pytest.mark.parametrize(
@@ -115,7 +115,7 @@ def test_shipped_runbooks_parse() -> None:
 
 
 def test_example_alert_parses() -> None:
-    from aiops_agent.models import AlertGroup
+    from squero.models import AlertGroup
 
     path = Path(__file__).parent.parent / "examples" / "alert-crashloop.json"
     group = AlertGroup.model_validate(json.loads(path.read_text()))
@@ -123,9 +123,9 @@ def test_example_alert_parses() -> None:
 
 
 def test_model_headers_reach_the_client(monkeypatch: pytest.MonkeyPatch) -> None:
-    from aiops_agent.agent import build_model
+    from squero.agent import build_model
 
-    monkeypatch.setenv("AIOPS_MODEL_HEADERS", '{"anthropic-workspace-id": "wrkspc_test"}')
+    monkeypatch.setenv("SQUERO_MODEL_HEADERS", '{"anthropic-workspace-id": "wrkspc_test"}')
     s = Settings(_env_file=None, model_api_key="sk-ant-test")  # type: ignore[arg-type]
     model = build_model(s)
     assert model.default_headers == {"anthropic-workspace-id": "wrkspc_test"}  # type: ignore[attr-defined]
@@ -134,28 +134,28 @@ def test_model_headers_reach_the_client(monkeypatch: pytest.MonkeyPatch) -> None
 def test_settings_that_moved_into_a_contract_refuse_to_start(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    from aiops_agent.config import refuse_moved
+    from squero.config import refuse_moved
 
     for name in list(os.environ):
-        if name.startswith("AIOPS_"):
+        if name.startswith("SQUERO_"):
             monkeypatch.delenv(name)
     refuse_moved(None)
     env = tmp_path / ".env"
-    env.write_text("AIOPS_MODEL=x\nAIOPS_NAMESPACES=demo\n")
-    monkeypatch.setenv("AIOPS_KUBE_CONTEXT", "kind-aiops")
+    env.write_text("SQUERO_MODEL=x\nSQUERO_NAMESPACES=demo\n")
+    monkeypatch.setenv("SQUERO_KUBE_CONTEXT", "kind-squero")
     with pytest.raises(RuntimeError) as e:
         refuse_moved(env)
-    assert "AIOPS_KUBE_CONTEXT -> clusters[].context" in str(e.value)
-    assert "AIOPS_NAMESPACES -> clusters[].namespaces" in str(e.value)
-    monkeypatch.delenv("AIOPS_KUBE_CONTEXT")
-    monkeypatch.setenv("AIOPS_SLACK_WEBHOOK_URL", "https://hooks.slack.com/x")
-    with pytest.raises(RuntimeError, match="AIOPS_SLACK_WEBHOOK_URL -> AIOPS_SLACK_BOT_TOKEN"):
+    assert "SQUERO_KUBE_CONTEXT -> clusters[].context" in str(e.value)
+    assert "SQUERO_NAMESPACES -> clusters[].namespaces" in str(e.value)
+    monkeypatch.delenv("SQUERO_KUBE_CONTEXT")
+    monkeypatch.setenv("SQUERO_SLACK_WEBHOOK_URL", "https://hooks.slack.com/x")
+    with pytest.raises(RuntimeError, match="SQUERO_SLACK_WEBHOOK_URL -> SQUERO_SLACK_BOT_TOKEN"):
         refuse_moved(None)
 
 
 @pytest.mark.parametrize("keep", ["head", "tail"])
 def test_a_secret_cut_at_the_limit_is_still_redacted(keep: str) -> None:
-    from aiops_agent.safety import redact_capped
+    from squero.safety import redact_capped
 
     # 90 chars, then the secret, then 90: a cut at 100 from either end splits it.
     text = "x" * 90 + "Authorization: Bearer abcdefghijklmnopqrstuvwxyz123456" + "y" * 90
@@ -164,7 +164,7 @@ def test_a_secret_cut_at_the_limit_is_still_redacted(keep: str) -> None:
 
 
 def test_redaction_reads_a_bounded_window(monkeypatch: pytest.MonkeyPatch) -> None:
-    from aiops_agent import safety
+    from squero import safety
 
     seen: list[int] = []
     real = safety.redact

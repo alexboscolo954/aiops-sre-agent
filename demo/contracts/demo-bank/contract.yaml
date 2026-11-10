@@ -4,7 +4,7 @@ id: demo-bank
 name: Demo bank
 clusters:
   - name: bank-kind
-    context: kind-aiops
+    context: kind-squero
     namespaces: [bank]
 integrations:
   - name: kubernetes

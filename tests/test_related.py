@@ -1,8 +1,8 @@
 from typing import Any
 
-from aiops_agent import related
-from aiops_agent.contracts import Related
-from aiops_agent.models import AlertGroup, Investigation
+from squero import related
+from squero.contracts import Related
+from squero.models import AlertGroup, Investigation
 
 
 def group(key: str, severity: str = "warning", **labels: str) -> AlertGroup:

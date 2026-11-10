@@ -22,7 +22,8 @@ def test_scrub(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AZURE_SUBSCRIPTION_ID", SUB)
     monkeypatch.setenv("AZURE_TENANT_ID", TENANT)
     monkeypatch.setenv("AZURE_CLIENT_ID", CLIENT)
-    monkeypatch.setenv("AIOPS_SCRUB", json.dumps({"jo@mail.test": "oncall@example.com", "jo": "x"}))
+    scrub = {"jo@mail.test": "oncall@example.com", "jo": "x"}
+    monkeypatch.setenv("SQUERO_SCRUB", json.dumps(scrub))
     fakes, scrub = record_azure.fakes_and_scrub("real-rg", "real-app-1")
     got = scrub(
         {

@@ -17,7 +17,7 @@ kubeProxy:
 prometheus:
   service:
     type: NodePort
-    nodePort: 30090        # the Hub reaches it on kind's network: http://aiops-control-plane:30090
+    nodePort: 30090        # the Hub reaches it on kind's network: http://squero-control-plane:30090
   prometheusSpec:
     retention: 30d
     resources:

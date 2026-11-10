@@ -18,11 +18,11 @@ from fastmcp import Client
 from langchain.mcp import MCPAdapter
 from pydantic import Field, SecretStr
 
-from aiops_agent import agent, cli, contracts, evals
-from aiops_agent.api import create_app
-from aiops_agent.config import Settings
-from aiops_agent.models import Investigation, TriageReport
-from aiops_agent.servers import kubernetes, vendors
+from squero import agent, cli, contracts, evals
+from squero.api import create_app
+from squero.config import Settings
+from squero.models import Investigation, TriageReport
+from squero.servers import kubernetes, vendors
 from tests.conftest import REPORT, ScriptedModel, call, scripted
 from tests.test_agent import ALERT, LIST, fixture_spec, vendor_contract
 from tests.test_console import OPERATOR, VIEW
@@ -89,13 +89,13 @@ def snapshots(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
 @pytest.mark.anyio
 async def test_the_committed_snapshot_matches_the_running_vendor(snapshots: Path) -> None:
     """The slice 4.2 check, here on the fixture; on a registry vendor it's
-    `aiops integrations snapshot <name> --check`, run where its pinned binary is."""
-    if os.environ.get("AIOPS_UPDATE_FIXTURE_SNAPSHOT"):
+    `squero integrations snapshot <name> --check`, run where its pinned binary is."""
+    if os.environ.get("SQUERO_UPDATE_FIXTURE_SNAPSHOT"):
         (SNAPSHOTS / "fixture.json").write_text(await vendors.capture(fixture_spec()))
         shutil.copy(SNAPSHOTS / "fixture.json", snapshots)
     assert await vendors.drift("fixture") == "", (
         "the fixture vendor's tools changed (a fastmcp upgrade?): review the diff, then "
-        "rerun with AIOPS_UPDATE_FIXTURE_SNAPSHOT=1"
+        "rerun with SQUERO_UPDATE_FIXTURE_SNAPSHOT=1"
     )
 
 
@@ -118,7 +118,7 @@ def test_check_fails_on_a_renamed_or_redescribed_tool(
     lines = out.out.splitlines()
     assert any(line.startswith("-") and saved in line for line in lines)
     assert any(line.startswith("+") and live in line for line in lines)
-    assert "`aiops integrations snapshot fixture`" in out.err
+    assert "`squero integrations snapshot fixture`" in out.err
 
 
 def test_snapshot_writes_what_check_accepts(snapshots: Path) -> None:
@@ -153,13 +153,13 @@ mcp.run(show_banner=False)
 async def test_a_snapshot_never_sees_the_hubs_variables(monkeypatch: pytest.MonkeyPatch) -> None:
     """Snapshots are committed to a public repo: a vendor that writes its config into
     a description must find none of the Hub's in its environment."""
-    monkeypatch.setenv("AIOPS_SLACK_BOT_TOKEN", "xoxb-sentinel-123")
+    monkeypatch.setenv("SQUERO_SLACK_BOT_TOKEN", "xoxb-sentinel-123")
     snap = json.loads(
         await vendors.capture(vendors.Spec((sys.executable, "-c", ECHO), frozenset()))
     )
     seen = json.loads(snap[0]["description"])
     assert "PATH" in seen  # the echo works: MCP's safe defaults are there
-    assert "AIOPS_SLACK_BOT_TOKEN" not in seen
+    assert "SQUERO_SLACK_BOT_TOKEN" not in seen
 
 
 EVERY = {**LIST, "lookup": "read", "environment": "read"}
@@ -466,7 +466,7 @@ def linking(deeplink_access: str = "read") -> agent.Toolbox:
     def annotation() -> str:  # client data that is only a URL, like a runbook_url label
         return PLANTED
 
-    root = FastMCP("aiops")
+    root = FastMCP("squero")
     root.mount(srv, namespace="x")
     access: dict[str, Any] = {
         "x_deeplink": deeplink_access,
@@ -542,7 +542,7 @@ def test_deeplinks_count_only_when_the_contract_lists_them(settings: Settings) -
 
 
 def test_a_scenario_can_require_a_link() -> None:
-    from aiops_agent.models import Evidence
+    from squero.models import Evidence
 
     report = TriageReport(**{**REPORT, "evidence": [Evidence(source="s", finding="f")]})
     outcome = agent.Outcome("t", report=report, tool_calls=["s"])
@@ -555,7 +555,7 @@ def test_a_scenario_can_require_a_link() -> None:
 def test_a_recorded_deeplink_reaches_slack_whole() -> None:
     """Explore links carry percent-encoded JSON: Slack's escaping and the redaction
     must leave every character (Slack shows &amp; as &)."""
-    from aiops_agent import slack
+    from squero import slack
 
     scenarios = Path(__file__).parent.parent / "evals" / "scenarios"
     links = [

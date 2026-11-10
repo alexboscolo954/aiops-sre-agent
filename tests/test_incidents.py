@@ -7,11 +7,11 @@ import pytest
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
 
-from aiops_agent import agent
-from aiops_agent.config import Settings
-from aiops_agent.models import Investigation
-from aiops_agent.servers import incidents
-from aiops_agent.store import Store, connect, now
+from squero import agent
+from squero.config import Settings
+from squero.models import Investigation
+from squero.servers import incidents
+from squero.store import Store, connect, now
 from tests.conftest import REPORT, make_contract
 
 pytestmark = pytest.mark.anyio

@@ -8,10 +8,10 @@ from typing import Any
 import yaml
 from pydantic import SecretStr
 
-from aiops_agent.config import Settings
-from aiops_agent.console import COOKIE, action_key
-from aiops_agent.models import AlertGroup, CheckResult, Evidence, Investigation, TriageReport
-from aiops_agent.store import Store, connect
+from squero.config import Settings
+from squero.console import COOKIE, action_key
+from squero.models import AlertGroup, CheckResult, Evidence, Investigation, TriageReport
+from squero.store import Store, connect
 from tests.conftest import REPORT, call, make_contract
 from tests.test_api import ALERT, HOOK, URL, client
 from tests.test_console import AS_OPERATOR, OPERATOR, VIEW
@@ -230,7 +230,7 @@ def test_approving_from_the_app_runs_the_pause_it_showed_once(
 def test_a_rejection_carries_its_reason_and_the_kill_switch_refuses_approving(
     settings: Settings, fake_cluster: Any, database_url: str
 ) -> None:
-    from aiops_agent.api import KILLED
+    from squero.api import KILLED
 
     with acting(settings, fake_cluster, database_url) as c:
         tid, deadline = paused(c)

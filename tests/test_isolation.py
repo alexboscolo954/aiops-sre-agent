@@ -12,8 +12,8 @@ import pytest
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
 
-from aiops_agent import agent, contracts, masking
-from aiops_agent.config import Settings
+from squero import agent, contracts, masking
+from squero.config import Settings
 
 Contracts = dict[str, contracts.Contract]
 
@@ -148,13 +148,13 @@ async def test_audit_lines_name_the_contract(
     fake_cluster: Any,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    caplog.set_level(logging.INFO, logger="aiops.audit")
+    caplog.set_level(logging.INFO, logger="squero.audit")
     bank = tools_for(two_contracts["demo-bank"], settings, fake_cluster)
     async with Client(bank.mcp) as client:
         await client.call_tool(
             "kubernetes_list_pods", {"cluster": "bank-kind", "namespace": "bank"}
         )
-    lines = [json.loads(r.message) for r in caplog.records if r.name == "aiops.audit"]
+    lines = [json.loads(r.message) for r in caplog.records if r.name == "squero.audit"]
     assert [(line["contract"], line["tool"]) for line in lines] == [
         ("demo-bank", "kubernetes_list_pods")
     ]
@@ -163,7 +163,7 @@ async def test_audit_lines_name_the_contract(
 def test_each_contract_uses_its_own_prometheus_credentials(
     two_contracts: Contracts, settings: Settings, fake_cluster: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from aiops_agent.servers import prometheus
+    from squero.servers import prometheus
 
     seen: list[tuple[str, str]] = []
 
@@ -216,8 +216,8 @@ async def test_a_vendor_process_sees_only_its_own_contracts_secrets(
     import sys
     from pathlib import Path
 
-    from aiops_agent.contracts import Vendor
-    from aiops_agent.servers import vendors
+    from squero.contracts import Vendor
+    from squero.servers import vendors
 
     fixture = Path(__file__).parent / "fixtures" / "vendor_server.py"
     monkeypatch.setitem(
@@ -225,7 +225,7 @@ async def test_a_vendor_process_sees_only_its_own_contracts_secrets(
         "fixture",
         vendors.Spec((sys.executable, str(fixture)), frozenset({"TOKEN"})),
     )
-    monkeypatch.setenv("AIOPS_MODEL_API_KEY", "hub-only-model-key")
+    monkeypatch.setenv("SQUERO_MODEL_API_KEY", "hub-only-model-key")
     seen = {}
     for cid, c in two_contracts.items():
         vendor = Vendor(
@@ -240,7 +240,7 @@ async def test_a_vendor_process_sees_only_its_own_contracts_secrets(
         seen[cid] = json.loads(result.content[0].text)
     for cid, env in seen.items():
         assert env["TOKEN"] == two_contracts[cid].secret("prometheus-token").get_secret_value()
-        assert not any(name.startswith("AIOPS_") for name in env), env
+        assert not any(name.startswith("SQUERO_") for name in env), env
         assert "hub-only-model-key" not in json.dumps(env)
     assert seen["demo-shop"]["TOKEN"] != seen["demo-bank"]["TOKEN"]
 
@@ -293,9 +293,9 @@ async def test_an_alert_group_never_joins_another_contracts_triage(
 ) -> None:
     """Identical labels on the same physical cluster: demo-bank's group finds no open
     Triage of demo-shop's to join."""
-    from aiops_agent import related
-    from aiops_agent.models import AlertGroup, Investigation
-    from aiops_agent.store import Store, connect, now
+    from squero import related
+    from squero.models import AlertGroup, Investigation
+    from squero.store import Store, connect, now
 
     labels = {"alertname": "Errors", "cluster": "kind", "service": "ledger"}
     group = {
@@ -329,8 +329,8 @@ async def test_a_related_group_is_separated_only_through_its_own_triage(
 ) -> None:
     """demo-bank's related group, named with demo-shop's Triage: not found, and the
     claim inserts nothing (no orphan Triage)."""
-    from aiops_agent.models import AlertGroup, Investigation
-    from aiops_agent.store import Store, connect, now
+    from squero.models import AlertGroup, Investigation
+    from squero.store import Store, connect, now
 
     labels = {"alertname": "Errors", "service": "ledger"}
     group = {
@@ -368,8 +368,8 @@ async def test_past_incidents_never_cross_contracts(
     two_contracts: Contracts, settings: Settings, fake_cluster: Any, database_url: str
 ) -> None:
     """The same words in both Contracts' past Reports: each finds and reads only its own."""
-    from aiops_agent.models import Investigation
-    from aiops_agent.store import Store, connect, now
+    from squero.models import Investigation
+    from squero.store import Store, connect, now
     from tests.conftest import REPORT
 
     async with connect(database_url) as pool:
@@ -400,9 +400,9 @@ async def test_past_incidents_by_meaning_never_cross_contracts(
 ) -> None:
     """The same vector in both Contracts' past Reports: a search by meaning finds only
     its own, and one Contract can't set another's embedding."""
-    from aiops_agent.models import Investigation
-    from aiops_agent.servers import incidents
-    from aiops_agent.store import Store, connect, now
+    from squero.models import Investigation
+    from squero.servers import incidents
+    from squero.store import Store, connect, now
     from tests.conftest import REPORT
     from tests.test_embeddings import MODEL, Fake, vec
 
@@ -430,8 +430,8 @@ async def test_past_incidents_by_meaning_never_cross_contracts(
 async def test_checks_never_cross_contracts(two_contracts: Contracts, database_url: str) -> None:
     """Two Contracts with a Check of the same name: each has its own schedule row, a
     claim fires only its own, and an Open failure is set only on its own."""
-    from aiops_agent.models import Investigation
-    from aiops_agent.store import Store, connect
+    from squero.models import Investigation
+    from squero.store import Store, connect
 
     async with connect(database_url) as pool:
         store = Store(pool)
@@ -459,8 +459,8 @@ async def test_deploy_verifications_never_cross_contracts(
 ) -> None:
     """The same cluster and namespace names in both Contracts: separate pending rows,
     and one Contract's Investigation can't claim the other's."""
-    from aiops_agent.models import Investigation
-    from aiops_agent.store import Store, connect
+    from squero.models import Investigation
+    from squero.store import Store, connect
 
     async with connect(database_url) as pool:
         store = Store(pool)
@@ -484,7 +484,7 @@ async def test_deploy_verifications_never_cross_contracts(
 async def test_teachings_never_cross_contracts(two_contracts: Contracts, database_url: str) -> None:
     """Each Contract's approved Teachings are its own, and one Contract's Teaching can't
     be decided or retired as another's."""
-    from aiops_agent.store import Store, connect
+    from squero.store import Store, connect
 
     async with connect(database_url) as pool:
         store = Store(pool)
@@ -521,8 +521,8 @@ async def test_a_digest_shows_only_its_own_contracts_workloads(
 ) -> None:
     """Both demo Contracts store Sizings for a Workload of the same name: each one's
     digest names only its own cluster's, and its schedule claim is its own."""
-    from aiops_agent import sizing
-    from aiops_agent.store import Store, connect
+    from squero import sizing
+    from squero.store import Store, connect
     from tests.test_sizing_store import NOW, container, rows_of
 
     async with connect(database_url) as pool:
@@ -554,8 +554,8 @@ async def test_sizing_for_workload_reads_only_its_own_contracts(
 ) -> None:
     """Both demo Contracts store a Sizing for a Workload named api: each one's tool
     finds only its own, and can't name the other's cluster."""
-    from aiops_agent.servers import sizing as tool
-    from aiops_agent.store import Store, connect
+    from squero.servers import sizing as tool
+    from squero.store import Store, connect
     from tests.test_sizing_store import NOW, container, rows_of
 
     where = {

@@ -4,13 +4,13 @@
 # (app_mentions:read), never other channel traffic. Clicks and mentions arrive over
 # Socket Mode, so the Hub needs no public Slack endpoint. After creating the app:
 # Basic Information > App-Level Tokens > generate one with connections:write, and set
-# it as AIOPS_SLACK_APP_TOKEN. After changing scopes or events, reinstall the app.
+# it as SQUERO_SLACK_APP_TOKEN. After changing scopes or events, reinstall the app.
 display_information:
-  name: aiops
+  name: squero
   description: Investigations and approvals for every Contract
 features:
   bot_user:
-    display_name: aiops
+    display_name: squero
     always_online: false
 oauth_config:
   scopes:

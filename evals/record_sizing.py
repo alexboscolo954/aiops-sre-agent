@@ -3,10 +3,10 @@ Workload, which is OOM-killed about hourly, through the Hub image: its real
 kubernetes tools and its real stored Sizings, refreshed first so they hold limits.
 
     make image
-    cd ~/aiops-hub && AIOPS_IMAGE=aiops-sre-agent:ci docker compose run --rm --no-deps \\
+    cd ~/squero-hub && SQUERO_IMAGE=squero:ci docker compose run --rm --no-deps \\
       -T --entrypoint python hub - --contract demo-shop \\
-      < ~/aiops-sre-agent/evals/record_sizing.py \\
-      > ~/aiops-sre-agent/evals/scenarios/oom-killed-sizing.yaml
+      < ~/squero/evals/record_sizing.py \\
+      > ~/squero/evals/scenarios/oom-killed-sizing.yaml
 
 Writes nothing (exit 1) unless leaky's last termination is an OOM kill and its
 Sizing suggests memory. Lab data is synthetic; the YAML is still checked for the
@@ -25,11 +25,11 @@ import yaml
 from fastmcp import Client
 from kubernetes.utils import parse_quantity
 
-from aiops_agent import agent, contracts, sizing
-from aiops_agent.config import Settings
-from aiops_agent.contracts import Kubernetes
-from aiops_agent.servers import sizing as sizing_tool
-from aiops_agent.store import Store, connect
+from squero import agent, contracts, sizing
+from squero.config import Settings
+from squero.contracts import Kubernetes
+from squero.servers import sizing as sizing_tool
+from squero.store import Store, connect
 
 CLUSTER, NAMESPACE, APP = "kind", "lab", "leaky"
 PRIVATE = re.compile(r"tail[0-9a-f]{6}|endwar|alex|/Users/|ts\.net", re.IGNORECASE)

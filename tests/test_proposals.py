@@ -12,8 +12,8 @@ import pytest
 import yaml
 from pydantic import TypeAdapter
 
-from aiops_agent import proposals
-from aiops_agent.proposals import Refused, apply, blob, check, head
+from squero import proposals
+from squero.proposals import Refused, apply, blob, check, head
 from tests.conftest import make_contract
 
 TEXT = """\
@@ -225,7 +225,7 @@ def opened(
     *raw: dict[str, Any],
     loaded: str | None = MAIN,
     text: str | None = TEXT,
-    branch: str = "aiops/acme-20260101-000000",
+    branch: str = "squero/acme-20260101-000000",
 ) -> str:
     with httpx.Client(transport=httpx.MockTransport(gh)) as http:
         return proposals.open_pull_request(
@@ -247,7 +247,7 @@ def test_a_pull_request_is_opened_from_its_own_branch_never_writing_main() -> No
     gh = GitHub({"acme/contract.yaml": TEXT, "bank/contract.yaml": "id: bank\n"})
     url = opened(gh)
     assert url == "https://github.com/me/contracts/pull/7"
-    branch = "aiops/acme-20260101-000000"
+    branch = "squero/acme-20260101-000000"
     (ref, put, pull) = gh.writes()
     assert ref == (
         "POST",
@@ -319,10 +319,10 @@ def test_nothing_is_written_for_an_edit_that_would_not_load() -> None:
     assert gh.writes() == []
 
 
-@pytest.mark.parametrize("branch", ["main", "aiops-main", "refs/heads/main"])
-def test_only_an_aiops_branch_is_ever_written(branch: str) -> None:
+@pytest.mark.parametrize("branch", ["main", "squero-main", "refs/heads/main"])
+def test_only_an_squero_branch_is_ever_written(branch: str) -> None:
     gh = GitHub({"acme/contract.yaml": TEXT})
-    with pytest.raises(Refused, match="only aiops/ branches"):
+    with pytest.raises(Refused, match="only squero/ branches"):
         opened(gh, branch=branch)
     assert gh.requests == []
 
@@ -341,6 +341,6 @@ async def test_an_http_failure_says_its_status_and_host_and_never_the_token() ->
             "t",
             "",
             "mcp:op",
-            "aiops/acme-x",
+            "squero/acme-x",
         )
     assert str(e.value) == "HTTP 401 from api.github.com"
