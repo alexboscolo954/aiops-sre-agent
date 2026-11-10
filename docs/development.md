@@ -139,6 +139,18 @@ The account id maps to a fixed fake, the region to us-east-1, the deployer to `d
 
 Twelve scenarios is a smoke test, not a benchmark. Add scenarios by recording new failures on kind (`SQUERO_RECORD_DIR=recordings make integration`).
 
+**Model comparison (2026-11-10).** All 22 Scenarios, three runs each, on Claude Haiku 5.5, Sonnet 5.5 and Opus 5.5 (effort low, medium and high), called directly on Anthropic (`anthropic:claude-*`), not through OpenRouter. Results are in [`evals/results/2026-11-10`](../evals/results/2026-11-10):
+
+| Model | Effort | Passed (3 runs) | Tool calls | Seconds |
+|---|---|---|---|---|
+| Haiku 5.5 | its default | 38 of 66 (10, 13, 15) | 9.5 | 20 |
+| Sonnet 5.5 | its default (high) | 58 of 66 (18, 21, 19) | 6.6 | 16 |
+| Opus 5.5 | low | 62 of 66 (20, 21, 21) | 3.3 | 13 |
+| Opus 5.5 | medium (its default) | **66 of 66** (22, 22, 22) | 5.4 | 19 |
+| Opus 5.5 | high | 64 of 66 (21, 22, 21) | 6.5 | 22 |
+
+Opus 5.5 at medium passed every Scenario in every run, with fewer calls than Sonnet; high effort did no better and took more calls. Sonnet's misses were `aws-lambda-timeout-cut` (all three), `gcp-who-deployed` and the two Questions; Opus at low effort missed `aws-lambda-timeout-cut` too. Haiku is not comparable with its earlier OpenRouter runs: LangChain doesn't know Claude Haiku 5.5 yet, so called directly it gets its answer as a tool (ToolStrategy) instead of native structured output, and did markedly worse. That path also found a bug: at the tool call limit, the answer tool got two results (its own and the limit's error) and Anthropic refused the conversation. The limit now never counts or blocks the answer (`ToolBudget`), with a test that replays it.
+
 ## What a triage looks like
 
 This is real output from `claude-sonnet-5-5` on the `checkout` scenario: a rollout dropped `DATABASE_URL`. It ran on tool outputs **recorded from the kind demo** and replayed.

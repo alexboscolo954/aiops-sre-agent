@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+from typing import Literal
 
 from dotenv import dotenv_values
 from pydantic import BaseModel, Field, SecretStr, model_validator
@@ -38,6 +39,9 @@ class Settings(BaseSettings):
     model_base_url: str | None = None
     model_api_key: SecretStr | None = None
     model_headers: dict[str, str] = {}  # JSON, e.g. {"anthropic-workspace-id": "..."}
+    # How much the model reasons (Anthropic's output_config.effort; reasoning_effort on an
+    # OpenAI-compatible gateway). Unset: the model's own default.
+    model_effort: Literal["low", "medium", "high", "xhigh", "max"] | None = None
     # $/MTok per model string (JSON), for costs and budgets. A Contract with a budget
     # needs its model priced; others just show tokens.
     model_prices: dict[str, Price] = {}
@@ -48,6 +52,10 @@ class Settings(BaseSettings):
     # Similar incidents by meaning (embeddings.py): an embedding model on the model
     # gateway, e.g. openai/text-embedding-3-small on OpenRouter. Unset: words only.
     embedding_model: str | None = None
+    # Its own gateway and key, for a model called directly (Anthropic has no embeddings
+    # API). Unset: the model's gateway, key and headers.
+    embedding_base_url: str | None = None
+    embedding_api_key: SecretStr | None = None
     # Cosine distance under which a past Report counts as similar. ponytail: set from
     # six short probes on text-embedding-3-small (2026-10-20); tune on real Reports.
     embedding_max_distance: float = Field(0.6, gt=0, le=2)
@@ -90,8 +98,11 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _embeddings_need_a_gateway(self) -> "Settings":
-        if self.embedding_model and not self.model_base_url:
-            raise ValueError("SQUERO_EMBEDDING_MODEL needs SQUERO_MODEL_BASE_URL (its gateway)")
+        if self.embedding_model and not (self.embedding_base_url or self.model_base_url):
+            raise ValueError(
+                "SQUERO_EMBEDDING_MODEL needs a gateway: SQUERO_EMBEDDING_BASE_URL, "
+                "or the model's SQUERO_MODEL_BASE_URL"
+            )
         return self
 
 

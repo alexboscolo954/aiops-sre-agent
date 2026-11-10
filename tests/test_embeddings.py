@@ -193,8 +193,34 @@ async def test_the_gateway_call(store: Store) -> None:
 
 
 def test_embeddings_need_the_gateway() -> None:
-    with pytest.raises(ValidationError, match="SQUERO_MODEL_BASE_URL"):
+    with pytest.raises(ValidationError, match="SQUERO_EMBEDDING_BASE_URL"):
         Settings(_env_file=None, embedding_model=MODEL)
+    Settings(_env_file=None, embedding_model=MODEL, embedding_base_url="http://gw/v1")
+
+
+async def test_embeddings_on_their_own_gateway_never_get_the_models_key(store: Store) -> None:
+    """A model called directly (Anthropic) beside embeddings on a gateway (OpenRouter)."""
+    seen: list[httpx.Request] = []
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        data = [{"embedding": [0.5] * embeddings.DIMENSIONS}]
+        return httpx.Response(200, json={"data": data})
+
+    settings = Settings(
+        _env_file=None,
+        model="anthropic:claude-sonnet-5-5",
+        model_api_key=SecretStr("model-key"),
+        model_headers={"anthropic-workspace-id": "w"},
+        embedding_model=MODEL,
+        embedding_base_url="http://emb/v1/",
+        embedding_api_key=SecretStr("emb-key"),
+    )
+    await embeddings.Embedder(settings, store, "acme", httpx.MockTransport(answer)).vector("hi")
+    r = seen[0]
+    assert str(r.url) == "http://emb/v1/embeddings"
+    assert r.headers["authorization"] == "Bearer emb-key"
+    assert "anthropic-workspace-id" not in r.headers and b"model-key" not in r.content
 
 
 def test_who_gets_an_embedder() -> None:

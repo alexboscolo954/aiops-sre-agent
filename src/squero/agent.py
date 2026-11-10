@@ -482,6 +482,8 @@ def build_model(settings: Settings) -> BaseChatModel:
         kwargs["api_key"] = settings.model_api_key.get_secret_value()
     if settings.model_headers:
         kwargs["default_headers"] = settings.model_headers
+    if settings.model_effort:
+        kwargs["reasoning_effort"] = settings.model_effort
     model: BaseChatModel = init_chat_model(settings.model, **kwargs)
     return model
 
@@ -669,6 +671,20 @@ def output_format(settings: Settings, kind: Kind) -> Any:
     return ProviderStrategy(schema) if settings.model_base_url else schema
 
 
+ANSWERS = {s.__name__ for s in (TriageReport, Answer, CheckResult)}
+
+
+class ToolBudget(ToolCallLimitMiddleware):
+    """The run's tool call limit, never counting or blocking a call of the answer itself:
+    when LangChain gives the model its answer as a tool (ToolStrategy, for a model it
+    doesn't know, such as Claude Haiku 5.5), that call already gets a result, and the
+    limit's error would be a second one, which Anthropic refuses outright (found
+    2026-11-10). ponytail: overrides LangChain's private filter; langchain is pinned."""
+
+    def _matches_tool_filter(self, tool_call: Any) -> bool:
+        return tool_call["name"] not in ANSWERS and super()._matches_tool_filter(tool_call)
+
+
 UsageSink = Callable[[int, int], Awaitable[None]]  # (input tokens, output tokens)
 
 
@@ -737,7 +753,7 @@ async def open_agent(
                     approval_policy(needs_approval), description_prefix="The agent wants to run"
                 ),
                 ModelCallLimitMiddleware(run_limit=settings.max_model_calls, exit_behavior="end"),
-                ToolCallLimitMiddleware(run_limit=settings.max_tool_calls),
+                ToolBudget(run_limit=settings.max_tool_calls),
                 # Outermost first: the recorders must wrap the cap, or the cap would
                 # see a recorder's Command instead of the ToolMessage and skip it.
                 record_links(toolbox.link_tools),

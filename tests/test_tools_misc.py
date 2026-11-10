@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+import pydantic
 import pytest
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
@@ -129,6 +130,18 @@ def test_model_headers_reach_the_client(monkeypatch: pytest.MonkeyPatch) -> None
     s = Settings(_env_file=None, model_api_key="sk-ant-test")  # type: ignore[arg-type]
     model = build_model(s)
     assert model.default_headers == {"anthropic-workspace-id": "wrkspc_test"}  # type: ignore[attr-defined]
+
+
+def test_the_model_effort_reaches_the_client() -> None:
+    from squero.agent import build_model
+
+    key = {"model_api_key": "sk-ant-test"}
+    s = Settings(_env_file=None, model="anthropic:claude-opus-5-5", model_effort="low", **key)  # type: ignore[arg-type]
+    assert build_model(s).reasoning_effort == "low"  # type: ignore[attr-defined]
+    unset = Settings(_env_file=None, model="anthropic:claude-opus-5-5", **key)  # type: ignore[arg-type]
+    assert build_model(unset).reasoning_effort is None  # type: ignore[attr-defined]
+    with pytest.raises(pydantic.ValidationError):
+        Settings(_env_file=None, model_effort="extreme")  # type: ignore[arg-type]
 
 
 def test_settings_that_moved_into_a_contract_refuse_to_start(

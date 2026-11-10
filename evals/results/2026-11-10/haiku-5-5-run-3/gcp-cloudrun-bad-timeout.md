@@ -1,0 +1,37 @@
+## Cloud Run service checkout is returning 5xx on its newest revision, checkout-00002-nt5. Every failing request traces to an inventory lookup that times out after 1 ms. The revision was deployed at 22:22 UTC with the inventory timeout set to 1 ms, down from 2000 ms on the prior revision. The 5xx rate is about 124 req/s, which is nearly all traffic.
+
+**Root cause** (high confidence, `bad_rollout`): Revision checkout-00002-nt5 was deployed at 22:22:37 UTC by oncall@example.com (Services.ReplaceService). checkout-00001-ldp logged "inventory timeout 2000 ms" at 22:17. Every error from checkout-00002-nt5 reports "timeout_ms": 1 and "inventory lookup failed after 1 ms: URLError: timed out", and those requests return HTTP 503 in about 25 ms. The timeout appears to have been lowered from 2000 ms to 1 ms, far below real inventory latency, so nearly all checkout requests fail.
+**Severity:** critical  ·  **Affected:** shop-prod-4f2a/Service/checkout (Cloud Run, us-central1), shop-prod-4f2a/Revision/checkout-00002-nt5
+
+**Evidence**
+- `gcp_list_log_entries`: checkout-00002-nt5 stdout ERRORs at 22:34: "inventory lookup failed after 1 ms: URLError: <urlopen error timed out>", timeout_ms=1, upstream=inventory. Matching requests return 503 with latency about 0.025s.
+- `gcp_list_log_entries`: checkout-00001-ldp startup at 22:17:15 logs "checkout listening, inventory timeout 2000 ms", timeout_ms=2000.
+- `gcp_list_log_entries`: Audit log: google.cloud.run.v1.Services.ReplaceService on namespaces/shop-prod-4f2a/services/checkout at 22:22:37.931973Z by oncall@example.com, followed by ReplaceService calls on checkout-00002-nt5 at 22:22:38, 22:24:16 and 22:24:18.
+- `gcp_query_range`: Cloud Run 5xx PromQL by revision: checkout-00002-nt5 5xx rate rose from 7.2 to 117 to 124 req/s (window 21:45 to 22:40). checkout-00001-ldp 2xx fell from 72 to 0 req/s.
+
+**Recommendations**
+1. Roll traffic back to checkout-00001-ldp, which ran with the 2000 ms inventory timeout. This needs human approval before it is run.
+2. Check the checkout-00002-nt5 config (env var or code default) against checkout-00001-ldp, and confirm whether 1 ms was a unit mistake (2000 ms or 1 s intended).
+3. After rollback, confirm the 5xx rate drops to near zero and that the inventory upstream is healthy.
+4. Before the next deploy, load-test with the corrected timeout and add a CI check for a minimum timeout value.
+
+**Tool calls**
+1. `gcp_list_log_entries` {"filter": "resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"checkout\" AND severity>=ERROR", "orderBy": "timestamp desc", "pageSize": 20, "resourceNames": ["projects/shop-prod-4f2a"]}
+2. `gcp_list_log_entries` {"filter": "logName=\"projects/shop-prod-4f2a/logs/cloudaudit.googleapis.com%2Factivity\" AND resource.labels.service_name=\"checkout\"", "orderBy": "timestamp desc", "pageSize": 10, "resourceNames": ["projects/shop-prod-4f2a"]}
+3. `read_more` {"result_id": "rbe192e", "grep": "cloudaudit|methodName|UpdateService|ReplaceService|timeout_ms", "fields": ["protoPayload.methodName", "protoPayload.resourceName", "protoPayload.authenticationInfo.principalEmail", "timestamp", "jsonPayload.timeout_ms", "logName"]}
+4. `read_more` {"result_id": "rb090fc", "grep": "timeout_ms", "fields": ["jsonPayload.timeout_ms", "timestamp"]}
+5. `gcp_list_log_entries` {"filter": "logName=\"projects/shop-prod-4f2a/logs/cloudaudit.googleapis.com%2Factivity\" AND timestamp>=\"2026-10-18T20:00:00Z\"", "orderBy": "timestamp desc", "pageSize": 15, "resourceNames": ["projects/shop-prod-4f2a"]}
+6. `gcp_query_range` {"name": "projects/shop-prod-4f2a", "query": "sum(rate(run_googleapis_com:request_count{monitored_resource=\"cloud_run_revision\",service_name=\"checkout\",response_code_class=\"5xx\"}[5m])) / sum(rate(run_googleapis_com:request_count{monitored_resource=\"cloud_run_revision\",service_name=\"checkout
+7. `read_more` {"result_id": "rb2c7a1", "grep": "methodName", "fields": ["protoPayload.methodName", "protoPayload.resourceName", "protoPayload.authenticationInfo.principalEmail", "timestamp"]}
+8. `read_more` {"result_id": "rb2c7a1", "grep": "2000|timeout|env|INVENTORY", "fields": ["protoPayload.request", "protoPayload.serviceData", "timestamp"]}
+9. `gcp_list_log_entries` {"filter": "resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"checkout\" AND timestamp>=\"2026-10-18T22:17:00Z\" AND timestamp<=\"2026-10-18T22:24:30Z\" AND jsonPayload.timeout_ms=2000", "orderBy": "timestamp desc", "pageSize": 5, "resourceNames": ["projects/shop-prod-4f2a"]}
+10. `read_more` {"result_id": "r047312", "grep": "timeout_ms\": 2000", "fields": ["jsonPayload", "timestamp"]}
+11. `TriageReport` {"summary": "Cloud Run service checkout is returning 5xx on its newest revision, checkout-00002-nt5. Every failing request traces to an inventory lookup that times out after 1 ms. The revision was deployed at 22:22 UTC with the inventory timeout set to 1 ms, down from 2000 ms on the prior revision. 
+12. `TriageReport` {"summary": "Cloud Run service checkout is returning 5xx on its newest revision, checkout-00002-nt5. Every failing request traces to an inventory lookup that times out after 1 ms. The revision was deployed at 22:22 UTC with the inventory timeout set to 1 ms, down from 2000 ms on the prior revision. 
+13. `TriageReport` {"summary": "Cloud Run service checkout is returning 5xx on its newest revision, checkout-00002-nt5. Every failing request traces to an inventory lookup that times out after 1 ms. The revision was deployed at 22:22 UTC with the inventory timeout set to 1 ms, down from 2000 ms on the prior revision. 
+14. `TriageReport` {"summary": "Cloud Run service checkout is returning 5xx on its newest revision, checkout-00002-nt5. Every failing request traces to an inventory lookup that times out after 1 ms. The revision was deployed at 22:22 UTC with the inventory timeout set to 1 ms, down from 2000 ms on the prior revision. 
+15. `TriageReport` {"summary": "Cloud Run service checkout is returning 5xx on its newest revision, checkout-00002-nt5. Every failing request traces to an inventory lookup that times out after 1 ms. The revision was deployed at 22:22 UTC with the inventory timeout set to 1 ms, down from 2000 ms on the prior revision. 
+16. `TriageReport` {"summary": "Cloud Run service checkout is returning 5xx on its newest revision, checkout-00002-nt5. Every failing request traces to an inventory lookup that times out after 1 ms. The revision was deployed at 22:22 UTC with the inventory timeout set to 1 ms, down from 2000 ms on the prior revision. 
+17. `TriageReport` {"summary": "Cloud Run service checkout is returning 5xx on its newest revision, checkout-00002-nt5. Every failing request traces to an inventory lookup that times out after 1 ms. The revision was deployed at 22:22 UTC with the inventory timeout set to 1 ms, down from 2000 ms on the prior revision. 
+18. `TriageReport` {"summary": "Cloud Run service checkout is returning 5xx on its newest revision, checkout-00002-nt5. Every failing request traces to an inventory lookup that times out after 1 ms. The revision was deployed at 22:22 UTC with the inventory timeout set to 1 ms, down from 2000 ms on the prior revision. 
+19. `TriageReport` {"summary": "Cloud Run service checkout is returning 5xx on its newest revision, checkout-00002-nt5. Every failing request traces to an inventory lookup that times out after 1 ms. The revision was deployed at 22:22 UTC with the inventory timeout set to 1 ms, down from 2000 ms on the prior revision. 

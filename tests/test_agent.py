@@ -668,3 +668,39 @@ def test_only_the_newest_stored_results_are_kept() -> None:
     for i in range(agent.MAX_SPILLED + 2):
         kept = agent.keep_newest(kept, {f"r{i}": "x"})
     assert list(kept) == [f"r{i}" for i in range(2, agent.MAX_SPILLED + 2)]
+
+
+@pytest.mark.anyio
+async def test_the_answer_beside_a_blocked_call_gets_one_result(
+    settings: Settings, fake_cluster: Any
+) -> None:
+    """At the tool call limit the model answers and asks for one more read in the same
+    turn: the read is blocked, the answer is never counted, and every call has exactly
+    one result, or Anthropic refuses the conversation (found live, 2026-11-10)."""
+    from collections import Counter
+
+    from langchain.messages import ToolMessage
+
+    from tests.conftest import ScriptedModel
+
+    seen: list[list[Any]] = []
+
+    class Recording(ScriptedModel):
+        def _generate(self, messages: Any, *args: Any, **kwargs: Any) -> Any:
+            seen.append(list(messages))
+            return super()._generate(messages, *args, **kwargs)
+
+    settings.max_tool_calls = 1
+    both = call("TriageReport", "r", **REPORT)
+    both.tool_calls.append(
+        {"name": "kubernetes_list_pods", "args": {"cluster": "test", "namespace": "shop"},
+         "id": "x", "type": "tool_call"}
+    )  # fmt: skip
+    model = Recording(messages=iter([LIST_PODS, both, call("TriageReport", "r2", **REPORT)]))
+    async with agent.open_agent(settings, mcp_root(settings, fake_cluster), model) as a:
+        outcome = await agent.start(a, ALERT, "limit")
+        kept = (await a.aget_state({"configurable": {"thread_id": "limit"}})).values["messages"]
+    assert outcome.report is not None
+    for messages in [*seen, kept]:  # what the model saw, and what a follow-up would send
+        results = Counter(m.tool_call_id for m in messages if isinstance(m, ToolMessage))
+        assert all(n == 1 for n in results.values()), results

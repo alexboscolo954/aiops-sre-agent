@@ -54,11 +54,15 @@ class Embedder:
         redacted, and masked by the Contract's Data policy (slice 6.4)."""
         text = masking.outgoing(self.masker, text)
         s = self.settings
-        key = s.model_api_key.get_secret_value() if s.model_api_key else ""
+        if s.embedding_base_url:  # its own gateway: the model's key and headers stay home
+            base, secret, headers = s.embedding_base_url, s.embedding_api_key, {}
+        else:
+            base, secret, headers = s.model_base_url or "", s.model_api_key, s.model_headers
+        key = secret.get_secret_value() if secret else ""
         async with httpx.AsyncClient(transport=self.transport, timeout=15) as http:
             r = await http.post(
-                f"{(s.model_base_url or '').rstrip('/')}/embeddings",
-                headers={"Authorization": f"Bearer {key}", **s.model_headers},
+                f"{base.rstrip('/')}/embeddings",
+                headers={"Authorization": f"Bearer {key}", **headers},
                 json={"model": self.model, "input": text, "dimensions": DIMENSIONS},
             )
             r.raise_for_status()
