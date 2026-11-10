@@ -55,10 +55,12 @@ class _Match(_Edit):
 
 class SetRule(_Match):
     """The rule with exactly this match gets `policy`; without one, a new rule goes
-    first (the first match wins)."""
+    first (the first match wins). automate (slice 12.6a): true turns Automation on for
+    it, false off, None keeps what the rule has."""
 
     edit: Literal["set_rule"]
     policy: str
+    automate: bool | None = None
 
 
 class RemoveRule(_Match):
@@ -162,8 +164,13 @@ def apply(text: str, edits: list[Edit]) -> str:
                 del rules[same[0]]
             elif same:
                 rules[same[0]]["policy"] = e.policy
+                if e.automate:
+                    rules[same[0]]["automate"] = True
+                elif e.automate is False:
+                    rules[same[0]].pop("automate", None)
             else:
-                rules.insert(0, _flow({**e.match(), "policy": e.policy}))
+                on = {"automate": True} if e.automate else {}
+                rules.insert(0, _flow({**e.match(), "policy": e.policy, **on}))
     out = StringIO()
     rt.dump(doc, out)
     return out.getvalue()
@@ -207,7 +214,10 @@ def _describe(e: Edit) -> str:
     if isinstance(e, SetPolicy):
         return f"policy {e.name}: {e.model_dump(exclude={'edit', 'name'}, exclude_none=True)}"
     match = ", ".join(f"{k} {v}" for k, v in e.match().items())
-    return f"rule {match}: " + (e.policy if isinstance(e, SetRule) else "removed")
+    if not isinstance(e, SetRule):
+        return f"rule {match}: removed"
+    turned = {True: ", Automation on", False: ", Automation off", None: ""}[e.automate]
+    return f"rule {match}: {e.policy}{turned}"
 
 
 def open_pull_request(

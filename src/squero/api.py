@@ -1626,6 +1626,7 @@ def create_app(
         rows, status = await store().latest_sizings(cid, {cluster.name})
         run = (status.get(cluster.name) or {}).get("run")
         ended = {w for w, ts in (await rollbacks(cid, cluster.name)).items() if len(ts) >= ENDING}
+        reverted = await store().reverted(cid, cluster.name)  # until its next approval
         out = []
         for r in rows:
             where = (r["namespace"], r["kind"], r["name"])
@@ -1634,6 +1635,7 @@ def create_app(
                 or r["kind"] != "Deployment"  # other kinds in slice 12.8
                 or r["namespace"] not in cluster.namespaces
                 or where in ended
+                or (*where, r["container"]) in reverted
                 or not c.sizing.automated(cluster.name, *where, r["container"])
             ):
                 continue
@@ -1650,17 +1652,20 @@ def create_app(
         creds: HTTPAuthorizationCredentials = Depends(bearer),  # noqa: B008
     ) -> actuator.Desired:
         """What an Actuator should apply now: its cluster's current Approved Sizings of
-        Deployments in the cluster's namespaces, and Automation's for the containers no
-        approval covers; nothing while the Kill switch is on."""
+        Deployments in the cluster's namespaces, Automation's for the containers no
+        approval covers, and the Reverts it hasn't done; nothing while the Kill switch
+        is on."""
         cid, cluster = actuator_of(creds)
         if await store().kill_switch(cid) is not None:
             return actuator.Desired(kill_switch=True, sizings=[])
+        reverted = await store().reverted(cid, cluster.name)  # an approval before it is undone
         approved = [
             actuator.Wanted.model_validate(a)
             for a in await store().approved_sizings(cid)
             if a["cluster"] == cluster.name
             and a["namespace"] in cluster.namespaces
             and a["kind"] == "Deployment"  # other kinds in slice 12.8
+            and (a["namespace"], a["kind"], a["name"], a["container"]) not in reverted
         ]
         mine = {(w.namespace, w.kind, w.name, w.container) for w in approved}
         return actuator.Desired(
@@ -1670,6 +1675,11 @@ def create_app(
                 w
                 for w in await automation(cid, cluster)
                 if (w.namespace, w.kind, w.name, w.container) not in mine
+            ],
+            reverts=[
+                actuator.Undo.model_validate(r)
+                for r in await store().pending_reverts(cid, cluster.name)
+                if r["namespace"] in cluster.namespaces
             ],
         )
 

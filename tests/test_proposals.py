@@ -344,3 +344,25 @@ async def test_an_http_failure_says_its_status_and_host_and_never_the_token() ->
             "squero/acme-x",
         )
     assert str(e.value) == "HTTP 401 from api.github.com"
+
+
+def test_a_rule_turns_automation_on_or_off_or_keeps_it() -> None:
+    """slice 12.6a: automate true sets it, false removes it, left out keeps it."""
+    rule = {"edit": "set_rule", "namespace": "shop", "name": "db", "policy": "lean"}
+    on = apply(TEXT, edits({**rule, "automate": True}))
+    assert sizing(on)["rules"][0] == {
+        "namespace": "shop", "name": "db", "policy": "lean", "automate": True
+    }  # fmt: skip
+    kept = apply(on, edits({**rule, "policy": "batch"}))
+    assert sizing(kept)["rules"][0]["automate"] is True
+    off = apply(on, edits({**rule, "automate": False}))
+    assert "automate" not in sizing(off)["rules"][0]
+    new = apply(TEXT, edits({**rule, "name": "api", "automate": True}))
+    assert sizing(new)["rules"][0] == {
+        "namespace": "shop", "name": "api", "policy": "lean", "automate": True
+    }  # fmt: skip
+    assert "automate" not in sizing(apply(TEXT, edits({**rule, "name": "web"})))["rules"][0]
+    assert proposals._describe(edits({**rule, "automate": True})[0]) == (
+        "rule namespace shop, name db: lean, Automation on"
+    )
+    assert proposals._describe(edits({**rule, "automate": False})[0]).endswith("Automation off")

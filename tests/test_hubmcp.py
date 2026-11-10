@@ -49,6 +49,7 @@ TOOLS = {
     "decide",
     "turn_on_kill_switch",
     "approve_sizing",
+    "revert_sizing",
     "propose_change",
     "now",
 }
@@ -575,7 +576,10 @@ def test_ask_is_the_one_tool_not_marked_read_only(
             t["name"]: t["annotations"] for t in rpc(c, "tools/list", {}).json()["result"]["tools"]
         }
     writes = {n for n, a in tools.items() if not a["readOnlyHint"]}
-    assert writes == {"ask", "decide", "turn_on_kill_switch", "approve_sizing", "propose_change"}
+    assert writes == {
+        "ask", "decide", "turn_on_kill_switch", "approve_sizing", "revert_sizing",
+        "propose_change",
+    }  # fmt: skip
 
 
 def test_a_grouping_named_after_the_client_comes_back_from_its_placeholder(
@@ -1005,3 +1009,57 @@ def test_now_ranks_one_contracts_agenda_and_counts_every_contracts(
     ]
     assert tools["now"]["annotations"]["readOnlyHint"] is True
     assert "contract" not in tools["now"]["inputSchema"].get("required", [])
+
+
+# --- Reverts (slice 12.6a) ---------------------------------------------------------------
+
+
+def test_a_revert_is_asked_only_of_what_its_own_contracts_actuator_reported(
+    settings: Settings, fake_cluster: Any, database_url: str
+) -> None:
+    import psycopg
+
+    from tests.test_actuator import A_TOKEN, B_TOKEN, actuated, rolled_back
+
+    settings.database_url = SecretStr(database_url)
+    settings.console_operators = {OPERATOR}
+    settings.mcp_token = SecretStr(TOKEN)
+    masked = contracts.build(
+        {**actuated("dino", "d" * 40).model_dump(mode="json", exclude_none=True),
+         "data_policy": {"mask": {"terms": ["shop"]}}},
+        secrets={"act": SecretStr("d" * 40), contracts.MASK_KEY: SecretStr("k-dino")},
+    )  # fmt: skip
+    more = {"bank": (actuated("bank", A_TOKEN), fake_cluster),
+            "corp": (actuated("corp", B_TOKEN), fake_cluster),
+            "dino": (masked, fake_cluster)}  # fmt: skip
+    at = {"cluster": "test", "namespace": "shop", "name": "api", "container": "app"}
+    with client(settings, fake_cluster, acme=ACME, more=more) as c:
+        with psycopg.connect(database_url) as conn:
+            conn.execute(*rolled_back("bank", 1.0))  # an Actuation of bank's api
+            conn.execute(*rolled_back("dino", 1.0))
+        ok = call(c, "revert_sizing", contract="bank", **at)
+        shown = call(c, "revert_sizing", contract="dino", **at)  # hands out shop's placeholder
+        shop = shown["workload"].split("/")[1]
+        again = call(c, "revert_sizing", contract="dino", **{**at, "namespace": shop})
+        web = call(c, "revert_sizing", contract="bank", **{**at, "name": "web"})
+        edge = call(c, "revert_sizing", contract="bank", **{**at, "cluster": "edge"})
+        kube = call(c, "revert_sizing", contract="bank", **{**at, "namespace": "kube"})
+        theirs = call(c, "revert_sizing", contract="corp", **at)  # bank's Actuation, not corp's
+        call(c, "turn_on_kill_switch", contract="bank")
+        killed = call(c, "revert_sizing", contract="bank", **at)
+        with psycopg.connect(database_url) as conn:
+            rows = conn.execute(
+                "select contract_id, cluster, namespace, kind, name, container, asked_by "
+                "from reverts"
+            ).fetchall()
+    assert ok == {"workload": "test/shop/Deployment/api/app", "revert": "asked"}
+    nothing = {"error": "the Actuator has reported nothing of that container: nothing to revert"}
+    assert web == nothing and theirs == nothing
+    assert edge == {"error": "cluster 'edge' runs no Actuator: one of ['test']"}
+    assert kube == {"error": "namespace 'kube' is not one of ['shop']"}
+    assert killed["error"].startswith("The Contract's Kill switch is on: a Revert is a change")
+    assert shop != "shop" and again == {"workload": f"test/{shop}/Deployment/api/app",
+                                        "revert": "asked"}  # fmt: skip
+    assert [r[0] for r in rows] == ["bank", "dino", "dino"]
+    assert rows[0] == ("bank", "test", "shop", "Deployment", "api", "app", f"mcp:{OPERATOR}")
+    assert rows[2][2] == "shop"  # the placeholder put back

@@ -97,6 +97,10 @@ A Sizing rule with `automate: true` ([Sizing policies](optimizer.md#sizing-polic
 
 Three Rollbacks of one Workload in 7 days end its Automation: the Hub lists none of its Sizings until the oldest of them is 7 days old, and the operator channel hears it once, with that date. To end it for good, remove `automate` from its rule. An Actuator of 0.40.0 or older never reads Automation's list, so it applies only approvals.
 
+## Revert
+
+The Operator's `revert_sizing` on the Hub MCP server ([Reverting a Sizing](running-the-hub.md#reverting-a-sizing)) reaches the Actuator in `/actuator/desired`'s `reverts` until it reports it done. It puts every pod with the requests it holds for that container back to the template's, in place and at once (a request the template doesn't set stays), as a rollback does but with no backoff, and holds that container no more: its webhook leaves new pods alone and nothing catches up. A `SizingReverted` Event and a `reverted` Actuation say what went back to what; with nothing held, the Actuation says so. A paused Deployment's Revert waits for the pause to lift. An approval applied before stays reverted; a later approval applies, and resumes Automation of that container.
+
 ## Stopping it: pause, Hub down
 
 A person in the client's cluster stops the Actuator on one Deployment with an annotation:

@@ -23,6 +23,9 @@ the Contract automates: a change under 10% ignored, an increase at once, a decre
 once a day. A Deployment a person annotated `squero-actuator/pause: "true"` is left alone,
 as under the Kill switch. While the Hub is unreachable it changes nothing new, and says so
 in an Event after 15 minutes.
+
+A Revert (slice 12.6a), the Operator's undo, puts a container's pods back to its template's
+requests in place, as a rollback does, and the Actuator stops holding it.
 """
 
 import base64
@@ -76,7 +79,8 @@ UNREACHABLE_SECONDS = 900  # the Hub unanswered this long: an Event says so
 PAUSE = "squero-actuator/pause"  # a Deployment annotated "true" is left alone
 ROLLOUT = ("pod", "since", "canary_until", "resized", "notes")  # held while rolling
 WATCHED = ("pods", "watch_until")  # held while watched
-Outcome = Literal["applied", "skipped", "failed", "handed_back", "rolled_back"]  # also "rolling"
+Outcome = Literal["applied", "skipped", "failed", "handed_back", "rolled_back", "reverted"]
+# held, never reported: "rolling"
 
 
 class ActuatorSettings(BaseSettings):
@@ -105,12 +109,25 @@ class Wanted(BaseModel):
     memory: float | None
 
 
+class Undo(BaseModel):
+    """A Revert the Operator asked of one container (slice 12.6a)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    id: int
+    namespace: str
+    kind: str
+    name: str
+    container: str
+
+
 class Desired(BaseModel):
     kill_switch: bool
     sizings: list[Wanted]  # Approved Sizings
     # Automation's (slice 12.5): a list of their own, so an older Actuator never applies them
     # as if approved, without the churn rule or the pause annotation
     automated: list[Wanted] = []
+    reverts: list[Undo] = []  # slice 12.6a
 
 
 class Actuation(BaseModel):
@@ -566,6 +583,20 @@ def trouble(core: Any, apps: Any, key: str, h: dict[str, Any], now: float) -> st
 def rollback(core: Any, apps: Any, key: str, h: dict[str, Any], why_: str, now: float) -> Actuation:
     """Every pod with the Actuator's requests back to its template's, in place and at once;
     then no new Sizing of that container for 24 hours, doubling with each rollback in 7 days."""
+    rollbacks = [t for t in h.get("rollbacks") or [] if now - t < ROLLBACKS_FOR] + [now]
+    until = now + BACKOFF_SECONDS * 2 ** (len(rollbacks) - 1)
+    a = put_back(core, apps, key, h, "rolled_back", why_, now)
+    h.update(rollbacks=rollbacks, backoff_until=until)
+    when = datetime.fromtimestamp(until, UTC)
+    a.reason = f"{a.reason}; no new Sizing of it until {when:%Y-%m-%d %H:%M} UTC"[:1000]
+    return a
+
+
+def put_back(
+    core: Any, apps: Any, key: str, h: dict[str, Any], outcome: Outcome, why_: str, now: float
+) -> Actuation:
+    """Every pod with the requests held as `h` back to its template's, in place and at once
+    (a request the template doesn't set left as it is); `h` is no longer held."""
     ns, kind, name, container = key.split("/")
     had = h.get("template") or {}
     back = {r: had[r] for r in h["requests"] if had.get(r) is not None}
@@ -582,11 +613,9 @@ def rollback(core: Any, apps: Any, key: str, h: dict[str, Any], why_: str, now: 
                 done += 1
             except ApiException as e:
                 refused.append(f"{p.metadata.name}: {why(e)}")
-    rollbacks = [t for t in h.get("rollbacks") or [] if now - t < ROLLBACKS_FOR] + [now]
-    until = now + BACKOFF_SECONDS * 2 ** (len(rollbacks) - 1)
     for k in ROLLOUT + WATCHED:
         h.pop(k, None)
-    h.update(outcome="rolled_back", rollbacks=rollbacks, backoff_until=until)
+    h["outcome"] = outcome
     reason = f"{why_}: {done} pods back from {texts(h['requests'])}"
     if back:
         reason += f" to their template's {texts(back)}"
@@ -594,14 +623,13 @@ def rollback(core: Any, apps: Any, key: str, h: dict[str, Any], why_: str, now: 
         reason += f" ({unset} left: the template sets none)"
     if refused:
         reason += f"; {len(refused)} refused, first {refused[0]}"
-    reason += f"; no new Sizing of it until {datetime.fromtimestamp(until, UTC):%Y-%m-%d %H:%M} UTC"
     return Actuation(
         namespace=ns,
         kind=kind,
         name=name,
         container=container,
         run_id=h["run_id"],
-        outcome="rolled_back",
+        outcome=outcome,
         pods=done,
         reason=reason[:1000],
         at=now,
@@ -615,10 +643,11 @@ EVENTS = {
     "failed": "SizingFailed",
     "handed_back": "HandedBack",
     "rolled_back": "SizingRolledBack",
+    "reverted": "SizingReverted",
 }
 
 
-GONE = {"handed_back": "back to its template", "rolled_back": "back to its template"}
+GONE = dict.fromkeys(("handed_back", "rolled_back", "reverted"), "back to its template")
 
 
 def event(core: Any, a: Actuation, h: dict[str, Any] | None = None) -> None:
@@ -908,7 +937,8 @@ class Actuator:
         if not self.killed:  # the Actuator undoes its own harm, the Hub reachable or not
             done += self.watch()
         if desired is not None and not self.killed:  # the Hub's word: rollouts go on
-            done += self.advance() + self.act(desired.sizings, desired.automated)
+            done += self.revert(desired.reverts) + self.advance()
+            done += self.act(desired.sizings, desired.automated)
             done += self.catch_up()
         rolling = any(h.get("outcome") == "rolling" or "pods" in h for h in self.held.values())
         if done or rolling:
@@ -977,6 +1007,34 @@ class Actuator:
                 out.append(a)
         return out
 
+    def revert(self, undos: list[Undo]) -> list[Actuation]:
+        """Each Revert newer than the last it did of that container (slice 12.6a): its pods
+        back to their template's requests, held no more; reported even with nothing held,
+        so the Hub knows it is done. A paused Deployment's waits."""
+        out = []
+        for u in undos:
+            key = "/".join((u.namespace, u.kind, u.name, u.container))
+            h = self.held.setdefault(key, {})
+            if h.get("revert", -1) >= u.id or self.is_paused(key):
+                continue
+            h["revert"] = u.id
+            why_ = f"reverted by the Operator ({u.id})"
+            if h.get("outcome") in ("applied", "rolling", "failed") and h.get("requests"):
+                a = put_back(self.core, self.apps, key, h, "reverted", why_, time.time())
+            else:
+                a = Actuation(
+                    **u.model_dump(exclude={"id"}),
+                    run_id=h.get("run_id", 0),
+                    outcome="reverted",
+                    pods=0,
+                    reason=f"{why_}: nothing held",
+                    at=time.time(),
+                )
+            log.info("reverted %s: %s", key, a.reason)
+            event(self.core, a, h)
+            out.append(a)
+        return out
+
     def advance(self) -> list[Actuation]:
         out = []
         for key, h in self.held.items():
@@ -1012,7 +1070,10 @@ class Actuator:
                 cpu=values.get("cpu"), memory=values.get("memory"),
             )  # fmt: skip
             a, new = apply(self.core, self.apps, w, time.time(), self.autoscaling, self.custom)
-            carried = ("rollbacks", "backoff_until", "watch_until", "lowered_at", "automated")
+            carried = (
+                *("rollbacks", "backoff_until", "watch_until", "lowered_at", "automated"),
+                "revert",
+            )
             kept = {k: h[k] for k in carried if k in h}
             watched = (h.get("pods") or {}) | (new.get("pods") or {})
             if watched:
@@ -1100,13 +1161,14 @@ class Actuator:
                 old.get("run_id") == w.run_id and not old.get("automated")
             ):
                 continue
-            elif old.get("run_id") == w.run_id:  # the run Automation applied, now approved
+            elif old.get("run_id") == w.run_id and old.get("outcome") in ("applied", "rolling"):
+                # the run Automation holds, now approved
                 if not old.get("deferred"):  # the same requests: approved as they are held
                     old.pop("automated")
                     continue
                 if old.get("outcome") == "rolling":
                     continue  # what the churn rule left out goes once this rollout ends
-            carried = ("rollbacks", "backoff_until", "lowered_at")
+            carried = ("rollbacks", "backoff_until", "lowered_at", "revert")
             carry: dict[str, Any] = {k: old[k] for k in carried if k in old}
             a: Actuation | None
             if now < old.get("backoff_until", 0):

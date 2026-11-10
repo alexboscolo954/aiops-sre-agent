@@ -193,7 +193,7 @@ The Actuator's own undo of a Sizing that made pods unhealthy within an hour of i
 _Avoid_: Revert (that is the Operator's undo)
 
 **Revert**:
-The Operator's undo of what the Actuator holds for a container: its pods go back to their template's requests, in place, and the Actuator stops holding it.
+The Operator's undo of what the Actuator holds for a container, asked from the Hub MCP server (`revert_sizing`): its pods go back to their template's requests, in place, and the Actuator stops holding it. Automation of that container stops until the Operator approves one of its Sizings. Refused while the Kill switch is on.
 _Avoid_: Rollback (that is the Actuator's own undo of a Sizing that made pods unhealthy)
 
 **Reflex**:

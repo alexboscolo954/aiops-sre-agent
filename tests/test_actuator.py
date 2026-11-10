@@ -108,6 +108,7 @@ def test_an_actuator_gets_only_its_own_clusters_current_approved_deployments(
         "kill_switch": False,
         "sizings": [{**wanted, "name": "api", "cpu": 0.115, "memory": None}],
         "automated": [],
+        "reverts": [],
     }
     assert theirs.json()["sizings"] == [{**wanted, "name": "ledger", "cpu": 0.115, "memory": None}]
     assert wrong.status_code == 401 and none.status_code in (401, 403)
@@ -124,8 +125,8 @@ def test_the_kill_switch_and_a_later_run_leave_nothing_to_apply(
         # bank's run 2 read its cluster test: run 1's approval was never applied, and won't be
         sql(database_url, run("bank", '{"edge": null}'), run("bank", '{"test": null}'))
         superseded = c.get("/actuator/desired", headers=as_actuator(B_TOKEN)).json()
-    assert killed == {"kill_switch": True, "sizings": [], "automated": []}
-    assert superseded == {"kill_switch": False, "sizings": [], "automated": []}
+    assert killed == {"kill_switch": True, "sizings": [], "automated": [], "reverts": []}
+    assert superseded == {"kill_switch": False, "sizings": [], "automated": [], "reverts": []}
 
 
 def report(**more: Any) -> dict[str, Any]:
@@ -1360,7 +1361,7 @@ def test_an_actuator_gets_the_newest_sizings_of_what_its_contract_automates(
     ]
     assert theirs["automated"] == [{**one, "run_id": 3, "name": "ledger", "cpu": 0.115,
                                     "memory": None}]  # fmt: skip
-    assert killed == {"kill_switch": True, "sizings": [], "automated": []}
+    assert killed == {"kill_switch": True, "sizings": [], "automated": [], "reverts": []}
 
 
 def test_the_rollback_that_ends_automation_reaches_the_operator_once(
@@ -1651,3 +1652,135 @@ def test_a_reason_is_the_same_whatever_its_numbers() -> None:
     quota = "3 pods at cpu 500m would pass ResourceQuota q's requests.cpu 2"
     assert actuator.gist(quota) == actuator.gist(quota.replace("500m", "600m").replace("3", "4"))
     assert actuator.gist(quota) != actuator.gist("a VPA in mode Auto sizes it")
+
+
+# --- Revert (slice 12.6a) -----------------------------------------------------------------
+
+
+def revert(cid: str, at: float, name: str = "api", ns: str = "shop") -> Any:
+    return (
+        "insert into reverts (contract_id, cluster, namespace, kind, name, container, "
+        "asked_by, asked_at) values (%s, 'test', %s, 'Deployment', %s, 'app', 'mcp:x', %s)",
+        (cid, ns, name, at),
+    )
+
+
+def test_an_actuator_gets_its_own_pending_reverts_and_automation_stops_until_an_approval(
+    settings: Settings, database_url: str
+) -> None:
+    import time
+
+    now = time.time()
+    app = hub(settings, database_url, automating("acme", A_TOKEN, AUTO), actuated("bank", B_TOKEN))
+    with TestClient(app) as c:
+        sql(
+            database_url,
+            run("acme", '{"test": null}'),
+            sized("acme", 1),
+            sized("acme", 1, "web"),
+            revert("acme", now - 60),
+            revert("acme", now - 60, "web"),
+            revert("acme", now - 60, ns="old"),  # no longer one of the cluster's namespaces
+            revert("bank", now - 60, "ledger"),
+            # none of these closes api's Revert or resumes its Automation: from before it
+            rolled_back("acme", now - 120, outcome="reverted"),
+            (
+                "insert into approved_sizings values ('acme', 0, 'test', 'shop', 'Deployment', "
+                "'api', 'app', 1, null, 't', %s)",
+                (now - 120,),
+            ),
+            approve("acme", 1),  # current, but older than api's Revert: never applied now
+        )
+        applied = report(name="api", reason="applied", at=now)  # nor an Actuation not a Revert
+        c.post("/actuator/reports", json=[applied], headers=as_actuator(A_TOKEN))
+        first = c.get("/actuator/desired", headers=as_actuator(A_TOKEN)).json()
+        done = report(outcome="reverted", name="web", reason="reverted", at=now)
+        c.post("/actuator/reports", json=[done], headers=as_actuator(A_TOKEN))
+        # web is approved since its Revert: Automation of it goes on
+        sql(database_url, ("insert into approved_sizings values ('acme', 0, 'test', 'shop', "
+                           "'Deployment', 'web', 'app', 1, null, 't', %s)", (now,)))  # fmt: skip
+        after = c.get("/actuator/desired", headers=as_actuator(A_TOKEN)).json()
+        sql(database_url, ("insert into kill_switches values ('acme', 't', 1)", ()))
+        killed = c.get("/actuator/desired", headers=as_actuator(A_TOKEN)).json()
+    undo = {"namespace": "shop", "kind": "Deployment", "container": "app"}
+    assert [{k: r[k] for k in ("namespace", "kind", "name", "container")} for r in
+            first["reverts"]] == [{**undo, "name": "api"}, {**undo, "name": "web"}]  # fmt: skip
+    assert first["automated"] == [] and first["sizings"] == []  # reverted, unapproved since
+    assert [r["name"] for r in after["reverts"]] == ["api"]  # web's is done
+    assert [w["name"] for w in after["automated"]] == ["web"]
+    assert killed["reverts"] == []
+
+
+def test_a_revert_puts_the_pods_back_and_holds_them_no_more(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(actuator, "CANARY_SECONDS", 0)
+    core, apps = cluster()
+    undo = {"id": 7, "namespace": "shop", "kind": "Deployment", "name": "api", "container": "app"}
+
+    def undoing(*ids: int, **more: Any) -> dict[str, Any]:
+        return {**desired(1), "reverts": [{**undo, "id": i, **more} for i in ids]}
+
+    seen: list[httpx.Request] = []
+    answers = [desired(1), desired(1), desired(1), undoing(7), undoing(7),
+               undoing(8, name="web"), undoing(9)]  # fmt: skip
+    a = make(hub_of(answers, seen), core, apps)
+    for _ in range(3):
+        a.step()  # run 1 applied on both pods
+    assert a.held[KEY]["outcome"] == "applied"
+    core.patch_namespaced_pod_resize.reset_mock()
+    a.step()  # Revert 7
+    assert resized(core) == [("api-1-a", body(cpu="1")), ("api-1-b", body(cpu="1"))]
+    assert a.held[KEY]["outcome"] == "reverted" and a.held[KEY]["revert"] == 7
+    assert actuator.mutation(new_pod()["request"], a.held, "x") == []  # held no more
+    a.step()  # Revert 7 again, and run 1 again: nothing
+    a.step()  # a Revert of what it never held: said so
+    paused(apps, "api")
+    a.step()  # paused: Revert 9 waits
+    assert len(resized(core)) == 2 and a.held[KEY]["revert"] == 7
+    posted = [x for r in seen if r.method == "POST" for x in json.loads(r.content)]
+    assert [(x["name"], x["outcome"], x["pods"], x["reason"]) for x in posted[1:]] == [
+        ("api", "reverted", 2,
+         "reverted by the Operator (7): 2 pods back from cpu 115m, memory 96Mi to their "
+         "template's cpu 1 (['memory'] left: the template sets none)"),
+        ("web", "reverted", 0, "reverted by the Operator (8): nothing held"),
+    ]  # fmt: skip
+    events = [c.args[1] for c in core.create_namespaced_event.call_args_list]
+    assert (events[1].reason, events[1].type) == ("SizingReverted", "Normal")
+    assert events[1].message.startswith("app: back to its template (Approved Sizing, run 1)")
+
+
+def test_approving_after_a_revert_applies_and_a_revert_seen_again_changes_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(actuator, "CANARY_SECONDS", 0)
+    core, apps = cluster()
+    undo = {"id": 7, "namespace": "shop", "kind": "Deployment", "name": "api", "container": "app"}
+    answers = [
+        *[wants(wanted(2))] * 3,  # Automation applies run 2
+        {**wants(), "reverts": [undo]},  # the Operator reverts it
+        wants(approved=(wanted(2),)),  # then approves that same run: it applies again
+        {**wants(approved=(wanted(2),)), "reverts": [undo]},  # its report not taken yet
+    ]
+    a = make(hub_of(answers, []), core, apps)
+    for _ in range(4):
+        a.step()
+    assert a.held[KEY]["outcome"] == "reverted"
+    count = len(resized(core))
+    a.step()
+    assert len(resized(core)) == count + 1 and a.held[KEY]["outcome"] == "rolling"
+    assert a.held[KEY]["revert"] == 7  # kept across the new hold
+    a.step()  # Revert 7 again: done already
+    assert a.held[KEY]["outcome"] == "rolling"
+
+
+def test_a_catch_up_keeps_the_last_revert_it_did() -> None:
+    core, apps = cluster()
+    h = applied(core, apps, wanted(memory=None))
+    late = pod("api-1-c", "api-1")  # from its template: behind
+    late.metadata.namespace = "shop"
+    core.list_namespaced_pod.return_value.items.append(late)
+    a = make(hub_of([], []), core, apps)
+    a.held = {KEY: {**h, "revert": 7}}
+    a.catch_up()
+    assert a.held[KEY]["outcome"] == "rolling" and a.held[KEY]["revert"] == 7

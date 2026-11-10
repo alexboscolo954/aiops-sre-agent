@@ -713,6 +713,44 @@ class Store:
             (contract_id,),
         )
 
+    async def ask_revert(
+        self, contract_id: str, keys: tuple[str, ...], by: str, at: float
+    ) -> Literal["asked", "killed"]:
+        """Store a Revert of the container `keys` names (cluster, namespace, kind, name,
+        container), unless the Contract's Kill switch is on (slice 12.6a)."""
+        stored = await self._one(
+            "insert into reverts (contract_id, cluster, namespace, kind, name, container, "
+            "asked_by, asked_at) select %s, %s, %s, %s, %s, %s, %s, %s where not exists "
+            "(select 1 from kill_switches where contract_id = %s) returning id",
+            (contract_id, *keys, by, at, contract_id),
+        )
+        return "asked" if stored else "killed"
+
+    async def pending_reverts(self, contract_id: str, cluster: str) -> list[dict[str, Any]]:
+        """The cluster's Reverts the Actuator hasn't reported done: no `reverted` Actuation
+        of that container received since it was asked."""
+        return await self._all(
+            "select * from reverts r where contract_id = %s and cluster = %s and not exists ("
+            "select 1 from actuations a where a.contract_id = r.contract_id "
+            "and a.cluster = r.cluster and a.namespace = r.namespace and a.kind = r.kind "
+            "and a.name = r.name and a.container = r.container and a.outcome = 'reverted' "
+            "and a.received_at >= r.asked_at) order by id",
+            (contract_id, cluster),
+        )
+
+    async def reverted(self, contract_id: str, cluster: str) -> set[tuple[str, ...]]:
+        """(namespace, kind, name, container) of each container of the cluster Reverted
+        since its last approval: Automation leaves it alone (slice 12.6a)."""
+        rows = await self._all(
+            "select distinct namespace, kind, name, container from reverts r "
+            "where contract_id = %s and cluster = %s and not exists ("
+            "select 1 from approved_sizings a where a.contract_id = r.contract_id "
+            "and a.cluster = r.cluster and a.namespace = r.namespace and a.kind = r.kind "
+            "and a.name = r.name and a.container = r.container and a.approved_at > r.asked_at)",
+            (contract_id, cluster),
+        )
+        return {(r["namespace"], r["kind"], r["name"], r["container"]) for r in rows}
+
     async def record_actuations(
         self, contract_id: str, cluster: str, rows: list[dict[str, Any]], at: float
     ) -> list[dict[str, Any]]:

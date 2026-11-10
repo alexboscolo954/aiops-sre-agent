@@ -317,6 +317,45 @@ def build(
         result: dict[str, Any] = await answer(c, work())
         return result
 
+    @mcp.tool(annotations=DECIDE)
+    async def revert_sizing(
+        contract: Annotated[str, CONTRACT],
+        cluster: str,
+        namespace: str,
+        name: str,
+        container: str,
+        kind: str = "Deployment",
+    ) -> dict[str, Any]:
+        """Revert what the Actuator holds for one container (Phase 12): within a minute
+        its pods go back to their template's requests, in place, and the Actuator stops
+        holding it. Automation of that container stops until you approve one of its
+        Sizings. Refused for a container the Actuator never reported on, and while the
+        Contract's Kill switch is on."""
+        c = resolve(contract)
+
+        async def work() -> dict[str, Any]:
+            keys = tuple(arg(c, v) for v in (cluster, namespace, kind, name, container))
+            cl = next((x for x in c.clusters if x.name == keys[0]), None)
+            if cl is None or not cl.actuator_token_secret:
+                runs = [x.name for x in c.clusters if x.actuator_token_secret]
+                raise ToolError(f"cluster {keys[0]!r} runs no Actuator: one of {runs}")
+            if keys[1] not in cl.namespaces:
+                raise ToolError(f"namespace {keys[1]!r} is not one of {sorted(cl.namespaces)}")
+            seen = await store().actuations(c.id, 0.0)
+            if not any(tuple(a[k] for k in KEYS) == keys for a in seen):
+                raise ToolError(
+                    "the Actuator has reported nothing of that container: nothing to revert"
+                )
+            if await store().ask_revert(c.id, keys, f"mcp:{_operator()}", now()) == "killed":
+                raise ToolError(
+                    "The Contract's Kill switch is on: a Revert is a change, refused. "
+                    "Turn it off in the console first."
+                )
+            return {"workload": "/".join(keys), "revert": "asked"}
+
+        result: dict[str, Any] = await answer(c, work())
+        return result
+
     async def allocation(c: Contract, by: str, compare: int | None) -> webapp.Allocation:
         try:
             return await webapp.allocation_of(store(), c, by, now(), compare)
@@ -567,11 +606,13 @@ def build(
         merged and the Hub restarts on it. edits, in order: set_rule (cluster,
         namespace, kind, name, container, any of them, and a policy: the rule with
         exactly that match gets it, else a new rule goes first, as the first match
-        wins), remove_rule (the rule with exactly that match), set_default (a policy),
-        set_policy (one of the Contract's own: name, base and the settings to change,
-        as contract.yaml writes them: window 7d, cpu {headroom: 0.15}, memory {max:
-        256Mi}). Refused when GitHub's main is not what the Hub loaded, or when the
-        Contract would not load after it. why: the pull request's description."""
+        wins; automate true or false turns Automation on or off for it, the Actuator
+        then applying its Sizings unasked), remove_rule (the rule with exactly that
+        match), set_default (a policy), set_policy (one of the Contract's own: name,
+        base and the settings to change, as contract.yaml writes them: window 7d, cpu
+        {headroom: 0.15}, memory {max: 256Mi}). Refused when GitHub's main is not what
+        the Hub loaded, or when the Contract would not load after it. why: the pull
+        request's description."""
         c = resolve(contract)
 
         async def work() -> dict[str, Any]:
