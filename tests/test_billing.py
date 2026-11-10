@@ -914,7 +914,7 @@ def test_billing_across_clouds_needs_a_provider_when_the_contract_has_several() 
     ("billing_field", "message"),
     [
         ({"tag": GCP_TAG}, "set billing.table"),
-        ({"tag": "Aiops-Cluster=kind", "table": TABLE}, "lowercase"),
+        ({"tag": "Squero-Cluster=kind", "table": TABLE}, "lowercase"),
         ({"tag": "squero cluster=kind", "table": TABLE}, "lowercase"),
         ({"tag": "1x=kind", "table": TABLE}, "lowercase"),
         ({"tag": "k=" + "v" * 64, "table": TABLE}, "lowercase"),

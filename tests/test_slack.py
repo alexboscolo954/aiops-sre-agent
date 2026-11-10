@@ -677,7 +677,7 @@ def test_the_client_report_is_escaped() -> None:
 
 # Questions: an @mention in a Contract's operator channel; follow-ups in its thread.
 
-BOT = "<@U0AIOPSBOT1>"
+BOT = "<@U0SQUEROBT1>"
 ROOT = "1800000000.000001"
 ANSWER_1 = {
     "answer": "checkout is crash looping.",
