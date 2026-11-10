@@ -17,6 +17,12 @@ VPA, an HPA on a resource's utilization, the namespace's LimitRange and Resource
 it resizes one canary pod, watches it 10 minutes, and the others one at a time, each until
 the kubelet allocated it and the pod is Ready; an Infeasible resize, or one not done in 10
 minutes, stops it there. Deployments only.
+
+Under Automation (slice 12.5) it also applies, unasked, the newest Sizing of each container
+the Contract automates: a change under 10% ignored, an increase at once, a decrease at most
+once a day. A Deployment a person annotated `squero-actuator/pause: "true"` is left alone,
+as under the Kill switch. While the Hub is unreachable it changes nothing new, and says so
+in an Event after 15 minutes.
 """
 
 import base64
@@ -64,6 +70,10 @@ WATCH_SECONDS = 3600  # resized pods are watched this long for a rollback (slice
 NOT_READY_SECONDS = 120  # a resized pod NotReady this long is a reason to roll back
 BACKOFF_SECONDS = 86400  # after a rollback, no new Sizing of that container this long, doubling
 ROLLBACKS_FOR = 7 * 86400  # how far back rollbacks count for the doubling
+CHURN = Decimal("0.10")  # under Automation, a change smaller than this is ignored (slice 12.5)
+LOWER_EVERY = 86400  # under Automation, a container's requests go down at most this often
+UNREACHABLE_SECONDS = 900  # the Hub unanswered this long: an Event says so
+PAUSE = "squero-actuator/pause"  # a Deployment annotated "true" is left alone
 ROLLOUT = ("pod", "since", "canary_until", "resized", "notes")  # held while rolling
 WATCHED = ("pods", "watch_until")  # held while watched
 Outcome = Literal["applied", "skipped", "failed", "handed_back", "rolled_back"]  # also "rolling"
@@ -97,7 +107,10 @@ class Wanted(BaseModel):
 
 class Desired(BaseModel):
     kill_switch: bool
-    sizings: list[Wanted]
+    sizings: list[Wanted]  # Approved Sizings
+    # Automation's (slice 12.5): a list of their own, so an older Actuator never applies them
+    # as if approved, without the churn rule or the pause annotation
+    automated: list[Wanted] = []
 
 
 class Actuation(BaseModel):
@@ -304,11 +317,19 @@ def needs(pod: Any, container: str, set_to: dict[str, str]) -> bool:
 
 
 def apply(
-    core: Any, apps: Any, w: Wanted, at: float, autoscaling: Any, custom: Any
+    core: Any,
+    apps: Any,
+    w: Wanted,
+    at: float,
+    autoscaling: Any,
+    custom: Any,
+    old: dict[str, Any] | None = None,
+    automated: bool = False,
 ) -> tuple[Actuation | None, dict[str, Any]]:
     """Start resizing `w`'s container in place on its Deployment's pods (slice 12.3): the
     pre-checks, then one canary pod. An Actuation when it ends here (skipped or failed),
-    None while it rolls; and what to remember of it."""
+    None while it rolls; and what to remember of it, empty when Automation's churn rule
+    leaves nothing to change. `old`: the hold a new Sizing replaces (None: catching up)."""
     set_to: dict[str, str] = {}
     template_had: dict[str, str | None] = {}  # its template's requests then: a change hands back
     notes: list[str] = []
@@ -349,6 +370,29 @@ def apply(
         template_had[res] = asked.get(res)
     if capped:
         notes.append(f"; capped at its limit: {capped}")
+    kept = old if old and old.get("outcome") in ("applied", "rolling") else {}
+    holds = kept.get("requests") or {}
+    was = {r: holds.get(r) or asked.get(r) for r in set_to}  # what its pods ask now
+
+    def lower(r: str) -> bool:
+        return bool(was[r]) and qty(set_to[r]) < qty(was[r] or "0")
+
+    deferred = []
+    if automated:  # the churn rule (slice 12.5)
+        since = at - (old or {}).get("lowered_at", -LOWER_EVERY)
+        for r in list(set_to):
+            if was[r] and qty(was[r] or "0") > 0:
+                change = abs(qty(set_to[r]) / qty(was[r] or "0") - 1)
+                if change < CHURN or (lower(r) and since < LOWER_EVERY):
+                    del set_to[r], template_had[r]
+                    deferred.append(r)
+        if not set_to:
+            return None, {}
+    lowered = old is not None and any(lower(r) for r in set_to)
+    for r, q in holds.items():  # a resource this Sizing leaves alone keeps what it holds
+        if r not in set_to:
+            set_to[r] = q
+            template_had[r] = (kept.get("template") or {}).get(r)
     restarts = sorted(
         p.resource_name
         for p in template.resize_policy or []
@@ -396,6 +440,10 @@ def apply(
         "resized": 1,
         "notes": "".join(notes),
     }
+    if lowered:
+        held["lowered_at"] = at
+    if deferred:  # an approval of this run still applies them
+        held["deferred"] = deferred
     return None, held
 
 
@@ -454,6 +502,11 @@ def advance(core: Any, apps: Any, key: str, h: dict[str, Any], now: float) -> Ac
     h.update(pod=todo[0].metadata.name, since=now, resized=resized + 1)
     h.setdefault("pods", {})[todo[0].metadata.name] = baseline(todo[0], container, now)
     return None
+
+
+def gist(reason: str) -> str:
+    """A reason without its numbers: a skip for a quota is the same skip at next hour's values."""
+    return re.sub(r"\d[\w.]*", "N", reason)
 
 
 def texts(requests: dict[str, str]) -> str:
@@ -568,24 +621,37 @@ EVENTS = {
 GONE = {"handed_back": "back to its template", "rolled_back": "back to its template"}
 
 
-def event(core: Any, a: Actuation) -> None:
-    """A Kubernetes Event on the Deployment, so `kubectl describe` shows what was done."""
-    now = datetime.now(UTC)
+def event(core: Any, a: Actuation, h: dict[str, Any] | None = None) -> None:
+    """A Kubernetes Event on the Deployment, so `kubectl describe` shows what was done;
+    `h`, its hold, tells Automation's from an approval's."""
     values = ", ".join(
         f"{r} {text(v)}"
         for r, v, text in (("cpu", a.cpu, cpu_text), ("memory", a.memory, memory_text))
         if v is not None
     )
+    by = "Automation" if (h or {}).get("automated") else "Approved Sizing"
+    message = (
+        f"{a.container}: {GONE.get(a.outcome) or values or 'no change'} "
+        f"({by}, run {a.run_id}): {a.reason}"
+    )
+    warning = a.outcome in ("failed", "rolled_back")
+    post(core, a.namespace, ("apps/v1", a.kind, a.name), EVENTS[a.outcome], message, warning)
+
+
+def post(
+    core: Any, ns: str, what: tuple[str, str, str], reason: str, message: str, warning: bool
+) -> None:
+    """An Event on `what` (api version, kind, name) in `ns`; a refused one is only logged."""
+    now = datetime.now(UTC)
+    api_version, kind, name = what
     body = client.CoreV1Event(
-        metadata=client.V1ObjectMeta(name=f"{a.name}.{uuid.uuid4().hex[:16]}"),
+        metadata=client.V1ObjectMeta(name=f"{name}.{uuid.uuid4().hex[:16]}"),
         involved_object=client.V1ObjectReference(
-            api_version="apps/v1", kind=a.kind, name=a.name, namespace=a.namespace
+            api_version=api_version, kind=kind, name=name, namespace=ns
         ),
-        reason=EVENTS[a.outcome],
-        message=f"{a.container}: {GONE.get(a.outcome) or values or 'no change'} "
-        f"(Approved Sizing, run {a.run_id}): "
-        f"{a.reason}"[:1024],
-        type="Warning" if a.outcome in ("failed", "rolled_back") else "Normal",
+        reason=reason,
+        message=message[:1024],
+        type="Warning" if warning else "Normal",
         source=client.V1EventSource(component="squero-actuator"),
         reporting_component="squero-actuator",
         first_timestamp=now,
@@ -593,9 +659,9 @@ def event(core: Any, a: Actuation) -> None:
         count=1,
     )
     try:
-        core.create_namespaced_event(a.namespace, body)
+        core.create_namespaced_event(ns, body)
     except ApiException as e:
-        log.warning("event on %s/%s: %s", a.namespace, a.name, why(e))
+        log.warning("event on %s/%s: %s", ns, name, why(e))
 
 
 def check_version(version: Any) -> None:
@@ -609,10 +675,13 @@ def check_version(version: Any) -> None:
 # --- the pod-creation webhook (slice 12.2) ------------------------------------------------
 
 
-def mutation(req: dict[str, Any], held: dict[str, dict[str, Any]], own: str) -> list[Any]:
+def mutation(
+    req: dict[str, Any], held: dict[str, dict[str, Any]], own: str, paused: Any = frozenset()
+) -> list[Any]:
     """The JSON Patch giving a new pod of a Deployment the requests applied to it: only
     where its container still asks what the template asked then (a person's change wins),
-    never above its limit, never in kube-* or the Actuator's own namespace."""
+    never above its limit, never in kube-* or the Actuator's own namespace, never for a
+    paused Deployment (`ns/name` in `paused`)."""
     ns = req.get("namespace") or ""
     if req.get("operation") != "CREATE" or ns == own or ns.startswith("kube-"):
         return []
@@ -630,6 +699,8 @@ def mutation(req: dict[str, Any], held: dict[str, dict[str, Any]], own: str) -> 
     if not hashed or not rs.endswith(f"-{hashed}"):
         return []  # not a Deployment's pod
     deployment = rs.removesuffix(f"-{hashed}")
+    if f"{ns}/{deployment}" in paused:
+        return []
     ops: list[Any] = []
     for i, c in enumerate((pod.get("spec") or {}).get("containers") or []):
         h = held.get(f"{ns}/Deployment/{deployment}/{c.get('name')}")
@@ -667,13 +738,15 @@ def mutation(req: dict[str, Any], held: dict[str, dict[str, Any]], own: str) -> 
     return ops
 
 
-def admit(review: Any, held: dict[str, dict[str, Any]], killed: bool, own: str) -> dict[str, Any]:
+def admit(
+    review: Any, held: dict[str, dict[str, Any]], killed: bool, own: str, paused: Any = frozenset()
+) -> dict[str, Any]:
     """The AdmissionReview answer: always allowed; a patch unless the Kill switch is on."""
     req = review.get("request") if isinstance(review, dict) else None
     req = req if isinstance(req, dict) else {}
     answer: dict[str, Any] = {"uid": req.get("uid", ""), "allowed": True}
     try:
-        ops = [] if killed else mutation(req, held, own)
+        ops = [] if killed else mutation(req, held, own, paused)
     except Exception:  # fail open, as the webhook's failurePolicy does
         log.exception("webhook: pod left as it is")
         ops = []
@@ -731,7 +804,8 @@ def serve(a: "Actuator", cert: bytes, key: bytes, port: int = WEBHOOK_PORT) -> T
             except ValueError:
                 self.send_error(400)
                 return
-            body = json.dumps(admit(review, a.held, a.killed, a.namespace)).encode()
+            answer = admit(review, a.held, a.killed, a.namespace, a.paused)
+            body = json.dumps(answer).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
@@ -765,6 +839,9 @@ class Actuator:
     killed: bool = False
     autoscaling: Any = None  # AutoscalingV2Api: HPAs (slice 12.3)
     custom: Any = None  # CustomObjectsApi: VPAs
+    paused: frozenset[str] = frozenset()  # `ns/name` of the Deployments a person paused
+    unanswered: float | None = None  # since when the Hub hasn't answered
+    told: bool = False  # the Event that it hasn't is out
 
     def load(self) -> None:
         try:
@@ -821,19 +898,66 @@ class Actuator:
 
     def step(self) -> None:
         desired = self.pull()
+        self.answered(desired is not None, time.time())
         if desired is not None and desired.kill_switch != self.killed:
             self.killed = desired.kill_switch
             log.warning("the Kill switch is %s", "on" if self.killed else "off")
+        wanted = (desired.sizings + desired.automated) if desired else []
+        self.pauses({*self.held, *(f"{w.namespace}/{w.kind}/{w.name}" for w in wanted)})
         done = self.hand_back()
         if not self.killed:  # the Actuator undoes its own harm, the Hub reachable or not
             done += self.watch()
         if desired is not None and not self.killed:  # the Hub's word: rollouts go on
-            done += self.advance() + self.act(desired.sizings) + self.catch_up()
+            done += self.advance() + self.act(desired.sizings, desired.automated)
+            done += self.catch_up()
         rolling = any(h.get("outcome") == "rolling" or "pods" in h for h in self.held.values())
         if done or rolling:
             self.save()
         self.unsent += done
         self.report()
+
+    def answered(self, ok: bool, now: float) -> None:
+        """Count how long the Hub hasn't answered; at 15 minutes, one Event on its ConfigMap."""
+        if ok:
+            if self.told:
+                log.warning("the Hub answers again")
+            self.unanswered, self.told = None, False
+            return
+        if self.unanswered is None:
+            self.unanswered = now
+        if not self.told and now - self.unanswered >= UNREACHABLE_SECONDS:
+            self.told = True
+            message = (
+                f"the Hub has not answered for {UNREACHABLE_SECONDS // 60} minutes: "
+                "holding what it applied, changing nothing new"
+            )
+            log.warning(message)
+            post(self.core, self.namespace, ("v1", "ConfigMap", CONFIGMAP), "HubUnreachable",
+                 message, warning=True)  # fmt: skip
+
+    def pauses(self, keys: set[str]) -> None:
+        """Which Deployments a person paused, read again in each namespace it has keys in;
+        a namespace it can't list keeps what it knew."""
+        paused: set[str] = set()
+        for ns in sorted({k.split("/")[0] for k in keys}):
+            try:
+                found = self.apps.list_namespaced_deployment(ns).items
+            except ApiException as e:
+                log.warning("reading %s's Deployments: %s", ns, why(e))
+                paused |= {p for p in self.paused if p.startswith(f"{ns}/")}
+                continue
+            paused |= {
+                f"{ns}/{d.metadata.name}"
+                for d in found
+                if (d.metadata.annotations or {}).get(PAUSE) == "true"
+            }
+        for p in sorted(paused ^ self.paused):
+            log.warning("%s is %s", p, "paused" if p in paused else "no longer paused")
+        self.paused = frozenset(paused)
+
+    def is_paused(self, key: str) -> bool:
+        ns, _, name, *_ = key.split("/")
+        return f"{ns}/{name}" in self.paused
 
     def watch(self) -> list[Actuation]:
         """Roll back each Sizing that made its pods unhealthy within its hour (slice 12.4)."""
@@ -849,18 +973,18 @@ class Actuator:
             if reason:
                 a = rollback(self.core, self.apps, key, h, reason, now)
                 log.warning("rolled back %s: %s", key, a.reason)
-                event(self.core, a)
+                event(self.core, a, h)
                 out.append(a)
         return out
 
     def advance(self) -> list[Actuation]:
         out = []
         for key, h in self.held.items():
-            if h.get("outcome") == "rolling":
+            if h.get("outcome") == "rolling" and not self.is_paused(key):
                 a = advance(self.core, self.apps, key, h, time.time())
                 if a:
                     log.info("%s %s: %s", a.outcome, key, a.reason)
-                    event(self.core, a)
+                    event(self.core, a, h)
                     out.append(a)
         return out
 
@@ -871,7 +995,7 @@ class Actuator:
         is still watching stay watched."""
         out = []
         for key, h in self.held.items():
-            if h.get("outcome") != "applied":
+            if h.get("outcome") != "applied" or self.is_paused(key):
                 continue
             ns, kind, name, container = key.split("/")
             try:
@@ -888,16 +1012,17 @@ class Actuator:
                 cpu=values.get("cpu"), memory=values.get("memory"),
             )  # fmt: skip
             a, new = apply(self.core, self.apps, w, time.time(), self.autoscaling, self.custom)
-            kept = {k: h[k] for k in ("rollbacks", "backoff_until", "watch_until") if k in h}
+            carried = ("rollbacks", "backoff_until", "watch_until", "lowered_at", "automated")
+            kept = {k: h[k] for k in carried if k in h}
             watched = (h.get("pods") or {}) | (new.get("pods") or {})
             if watched:
                 new["pods"] = watched
-            self.held[key] = new | kept
+            self.held[key] = kept | new
             if a is None:
                 log.info("catching up %s: %s from its template", key, ", ".join(behind))
                 continue
             log.info("%s %s: %s", a.outcome, key, a.reason)
-            event(self.core, a)
+            event(self.core, a, h)
             out.append(a)
         return out
 
@@ -926,7 +1051,7 @@ class Actuator:
                     at=time.time(),
                 )
                 log.info("handed back %s: %s", key, reason)
-                event(self.core, a)
+                event(self.core, a, h)
                 out.append(a)
         return out
 
@@ -954,17 +1079,35 @@ class Actuator:
             f"{r} {had.get(r) or 'unset'} to {now.get(r) or 'unset'}" for r in moved
         )
 
-    def act(self, sizings: list[Wanted]) -> list[Actuation]:
+    def act(self, sizings: list[Wanted], automated: list[Wanted] | None = None) -> list[Actuation]:
         """Each Approved Sizing newer than what it applied to that container: applied once,
-        whatever its outcome (a refused one waits for the next approval)."""
+        whatever its outcome (a refused one waits for the next approval). Then each
+        Automation Sizing newer than the last it saw (slice 12.5): under the churn rule, never
+        while the container rolls or backs off, and a skip said once while its reason holds."""
         out = []
-        for w in sizings:
+        for w, auto in [*((w, False) for w in sizings), *((w, True) for w in automated or [])]:
             key = "/".join((w.namespace, w.kind, w.name, w.container))
+            if self.is_paused(key):
+                continue  # waits: applied once the person lifts the pause, if still current
             old = self.held.get(key, {})
-            if old.get("run_id", -1) >= w.run_id:
-                continue
-            carry: dict[str, Any] = {k: old[k] for k in ("rollbacks", "backoff_until") if k in old}
             now = time.time()
+            if auto:
+                if max(old.get("run_id", -1), old.get("seen", -1)) >= w.run_id:
+                    continue
+                if old.get("outcome") == "rolling" or now < old.get("backoff_until", 0):
+                    continue  # waits, unsaid: a new Sizing comes every hour
+            elif old.get("run_id", -1) > w.run_id or (
+                old.get("run_id") == w.run_id and not old.get("automated")
+            ):
+                continue
+            elif old.get("run_id") == w.run_id:  # the run Automation applied, now approved
+                if not old.get("deferred"):  # the same requests: approved as they are held
+                    old.pop("automated")
+                    continue
+                if old.get("outcome") == "rolling":
+                    continue  # what the churn rule left out goes once this rollout ends
+            carried = ("rollbacks", "backoff_until", "lowered_at")
+            carry: dict[str, Any] = {k: old[k] for k in carried if k in old}
             a: Actuation | None
             if now < old.get("backoff_until", 0):
                 until = datetime.fromtimestamp(old["backoff_until"], UTC)
@@ -985,13 +1128,25 @@ class Actuator:
                     **carry,
                 }
             else:
-                a, new = apply(self.core, self.apps, w, now, self.autoscaling, self.custom)
-                self.held[key] = new | carry
+                args = (self.core, self.apps, w, now, self.autoscaling, self.custom, old, auto)
+                a, new = apply(*args)
+                if not new:  # nothing moves enough: the churn rule
+                    self.held[key] = {**old, "seen": w.run_id}
+                    continue
+                if auto and a is not None and a.outcome in ("skipped", "failed"):
+                    # what it holds stays held; the same reason again goes unsaid
+                    kept = old if old.get("outcome") == "applied" else carry | new
+                    said = gist(old.get("unapplied") or "") == gist(a.reason)
+                    self.held[key] = {**kept, "seen": w.run_id, "unapplied": a.reason}
+                    if said:
+                        continue
+                else:
+                    self.held[key] = carry | new | ({"automated": True} if auto else {})
             if a is None:
                 log.info("rolling %s: canary %s", key, self.held[key]["pod"])
                 continue
             log.info("%s %s: %s", a.outcome, key, a.reason)
-            event(self.core, a)
+            event(self.core, a, {"automated": auto})
             out.append(a)
         return out
 

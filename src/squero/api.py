@@ -25,6 +25,7 @@ import secrets
 import time
 import uuid
 from contextlib import AsyncExitStack, asynccontextmanager
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -95,6 +96,7 @@ TEACHING_ACTIONS = {
     "teaching_reject",
 }
 DEDUP_SECONDS = 30 * 60
+ENDING = 3  # Rollbacks of a Workload in 7 days that end its Automation (slice 12.5)
 PROBE_SECONDS = 10  # each health check
 
 
@@ -1606,23 +1608,68 @@ def create_app(
         cid, name = named
         return cid, next(cl for cl in by_id[cid].clusters if cl.name == name)
 
+    async def rollbacks(cid: str, cluster: str) -> dict[tuple[str, ...], list[float]]:
+        """Each Workload's Rollbacks on this cluster in the last 7 days, oldest first."""
+        out: dict[tuple[str, ...], list[float]] = {}
+        since = time.time() - actuator.ROLLBACKS_FOR
+        for r in sorted(await store().actuations(cid, since), key=lambda r: r["at"]):
+            if r["cluster"] == cluster and r["outcome"] == "rolled_back":
+                out.setdefault((r["namespace"], r["kind"], r["name"]), []).append(r["at"])
+        return out
+
+    async def automation(cid: str, cluster: contracts.Cluster) -> list[actuator.Wanted]:
+        """The newest Sizings of the containers the Contract automates on this cluster
+        (slice 12.5): ready, changing something, of a Workload without 3 Rollbacks in 7 days."""
+        c = by_id[cid]
+        if not any(r.automate for r in c.sizing.rules):
+            return []
+        rows, status = await store().latest_sizings(cid, {cluster.name})
+        run = (status.get(cluster.name) or {}).get("run")
+        ended = {w for w, ts in (await rollbacks(cid, cluster.name)).items() if len(ts) >= ENDING}
+        out = []
+        for r in rows:
+            where = (r["namespace"], r["kind"], r["name"])
+            if (
+                r.get("state") != "ready"
+                or r["kind"] != "Deployment"  # other kinds in slice 12.8
+                or r["namespace"] not in cluster.namespaces
+                or where in ended
+                or not c.sizing.automated(cluster.name, *where, r["container"])
+            ):
+                continue
+            values = {
+                res: r[res]["target"] if r.get(res) and r[res]["action"] != "keep" else None
+                for res in ("cpu", "memory")
+            }
+            if any(v is not None for v in values.values()):
+                out.append(actuator.Wanted(run_id=run, **{**r, **values}))
+        return out
+
     @app.get("/actuator/desired")
     async def actuator_desired(
         creds: HTTPAuthorizationCredentials = Depends(bearer),  # noqa: B008
     ) -> actuator.Desired:
         """What an Actuator should apply now: its cluster's current Approved Sizings of
-        Deployments in the cluster's namespaces, none while the Kill switch is on."""
+        Deployments in the cluster's namespaces, and Automation's for the containers no
+        approval covers; nothing while the Kill switch is on."""
         cid, cluster = actuator_of(creds)
-        killed = await store().kill_switch(cid) is not None
-        approved = [] if killed else await store().approved_sizings(cid)
+        if await store().kill_switch(cid) is not None:
+            return actuator.Desired(kill_switch=True, sizings=[])
+        approved = [
+            actuator.Wanted.model_validate(a)
+            for a in await store().approved_sizings(cid)
+            if a["cluster"] == cluster.name
+            and a["namespace"] in cluster.namespaces
+            and a["kind"] == "Deployment"  # other kinds in slice 12.8
+        ]
+        mine = {(w.namespace, w.kind, w.name, w.container) for w in approved}
         return actuator.Desired(
-            kill_switch=killed,
-            sizings=[
-                actuator.Wanted.model_validate(a)
-                for a in approved
-                if a["cluster"] == cluster.name
-                and a["namespace"] in cluster.namespaces
-                and a["kind"] == "Deployment"  # other kinds in slice 12.8
+            kill_switch=False,
+            sizings=approved,
+            automated=[
+                w
+                for w in await automation(cid, cluster)
+                if (w.namespace, w.kind, w.name, w.container) not in mine
             ],
         )
 
@@ -1642,15 +1689,38 @@ def create_app(
         new = await store().record_actuations(
             cid, cluster.name, [r.model_dump() for r in reports], time.time()
         )
-        slack = by_id[cid].slack
+        slack = by_id[cid].slack if settings.slack_bot_token else None
         for n in new:  # a rollback reaches the Operator at once (slice 12.4); once
-            if n["outcome"] == "rolled_back" and slack and settings.slack_bot_token:
+            if n["outcome"] == "rolled_back" and slack:
                 where = f"{cluster.name}/{n['namespace']}/{n['kind']}/{n['name']}"
                 text = (
                     f":rewind: {cid}: the Actuator rolled back {where} container "
                     f"{n['container']}: {redact(n['reason'])}"
                 )
                 await db["slack"].post(slack.operator_channel, text)
+        back = [n for n in new if n["outcome"] == "rolled_back"]
+        if back and slack:  # the one that ends a Workload's Automation (slice 12.5)
+            counted = await rollbacks(cid, cluster.name)
+            rows, _ = await store().latest_sizings(cid, {cluster.name})
+            automated = {
+                (r["namespace"], r["kind"], r["name"])
+                for r in rows
+                if by_id[cid].sizing.automated(
+                    cluster.name, r["namespace"], r["kind"], r["name"], r["container"]
+                )
+            }
+            for w in sorted({(n["namespace"], n["kind"], n["name"]) for n in back} & automated):
+                these = [n for n in back if (n["namespace"], n["kind"], n["name"]) == w]
+                ts = counted.get(w, [])
+                if len(ts) - len(these) < ENDING <= len(ts):
+                    until = datetime.fromtimestamp(ts[-ENDING] + actuator.ROLLBACKS_FOR, UTC)
+                    await db["slack"].post(
+                        slack.operator_channel,
+                        f":octagonal_sign: {cid}: Automation of {cluster.name}/{'/'.join(w)} "
+                        f"ended: {len(ts)} rollbacks in 7 days. It resumes on "
+                        f"{until:%Y-%m-%d %H:%M} UTC unless more follow; remove `automate` "
+                        "from its rule to end it for good.",
+                    )
         for r in reports:
             log.info(
                 "actuation %s/%s %s %s/%s/%s/%s: %s",

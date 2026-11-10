@@ -107,6 +107,7 @@ def test_an_actuator_gets_only_its_own_clusters_current_approved_deployments(
     assert mine.json() == {
         "kill_switch": False,
         "sizings": [{**wanted, "name": "api", "cpu": 0.115, "memory": None}],
+        "automated": [],
     }
     assert theirs.json()["sizings"] == [{**wanted, "name": "ledger", "cpu": 0.115, "memory": None}]
     assert wrong.status_code == 401 and none.status_code in (401, 403)
@@ -123,8 +124,8 @@ def test_the_kill_switch_and_a_later_run_leave_nothing_to_apply(
         # bank's run 2 read its cluster test: run 1's approval was never applied, and won't be
         sql(database_url, run("bank", '{"edge": null}'), run("bank", '{"test": null}'))
         superseded = c.get("/actuator/desired", headers=as_actuator(B_TOKEN)).json()
-    assert killed == {"kill_switch": True, "sizings": []}
-    assert superseded == {"kill_switch": False, "sizings": []}
+    assert killed == {"kill_switch": True, "sizings": [], "automated": []}
+    assert superseded == {"kill_switch": False, "sizings": [], "automated": []}
 
 
 def report(**more: Any) -> dict[str, Any]:
@@ -1245,3 +1246,408 @@ def test_pods_that_missed_the_held_requests_get_them_again(monkeypatch: pytest.M
     a.held[KEY]["outcome"] = "rolled_back"
     a.step()  # rolled back: never caught up either
     assert len(resized(core)) == 1
+
+
+# --- Automation (slice 12.5) --------------------------------------------------------------
+
+
+def automating(cid: str, token: str, *rules: dict[str, Any], **more: Any) -> contracts.Contract:
+    """actuated(), with these Sizing rules."""
+    data = actuated(cid, token).model_dump(mode="json", exclude_none=True)
+    return contracts.build(
+        {**data, "sizing": {"rules": list(rules)}, **more},
+        secrets={"act": SecretStr(token), "r": SecretStr("r" * 40)},
+    )
+
+
+AUTO = {"namespace": "shop", "container": "app", "policy": "production", "automate": True}
+
+
+def test_automate_needs_an_actuator_and_a_policy_and_the_first_matching_rule_decides() -> None:
+    with pytest.raises(ValueError, match="policy off has no Sizings to apply"):
+        automating("acme", A_TOKEN, {**AUTO, "policy": "off"})
+    with pytest.raises(ValueError, match="rule 1 automates: cluster 'edge' has no actuator"):
+        automating("acme", A_TOKEN, {**AUTO, "cluster": "edge"})
+    plain = actuated("acme", A_TOKEN).model_dump(mode="json", exclude_none=True)
+    plain["clusters"][0].pop("actuator_token_secret")
+    with pytest.raises(ValueError, match="rule 1 automates: no cluster has no actuator"):
+        contracts.build({**plain, "sizing": {"rules": [AUTO]}}, secrets={})
+    c = automating(
+        "acme",
+        A_TOKEN,
+        {"namespace": "shop", "name": "db", "policy": "production"},  # first: not automated
+        {**AUTO, "cluster": "test"},
+    )
+    assert c.sizing.automated("test", "shop", "Deployment", "api", "app")
+    assert not c.sizing.automated("test", "shop", "Deployment", "db", "app")
+    assert not c.sizing.automated("test", "shop", "Deployment", "api", "sidecar")
+    assert not c.sizing.automated("edge", "shop", "Deployment", "api", "app")
+    assert not actuated("acme", A_TOKEN).sizing.automated(
+        "test", "shop", "Deployment", "api", "app"
+    )
+
+
+def sized(cid: str, run_id: int, name: str = "api", **row: Any) -> Any:
+    """A stored Sizing of test/shop/<kind>/<name>/<container> in run `run_id`."""
+    r = {
+        "cluster": "test",
+        "namespace": "shop",
+        "kind": "Deployment",
+        "name": name,
+        "container": "app",
+        "state": "ready",
+        "cpu": {"action": "lower", "current": 1.0, "target": 0.115},
+        "memory": {"action": "keep", "current": 1.0, "target": 1.0},
+    } | row
+    keys = [r[k] for k in ("cluster", "namespace", "kind", "name", "container")]
+    return ("insert into sizings values (%s, %s, %s, %s, %s, %s, %s, %s)",
+            (run_id, cid, *keys, json.dumps(r)))  # fmt: skip
+
+
+def rolled_back(
+    cid: str, at: float, cluster: str = "test", name: str = "api", outcome: str = "rolled_back"
+) -> Any:
+    return (
+        "insert into actuations values (%s, %s, 'shop', 'Deployment', %s, 'app', 1, "
+        "%s, null, null, 1, 'x', %s, %s)",
+        (cid, cluster, name, outcome, at, at),
+    )
+
+
+def test_an_actuator_gets_the_newest_sizings_of_what_its_contract_automates(
+    settings: Settings, database_url: str
+) -> None:
+    import time
+
+    now = time.time()
+    gone = {**AUTO, "namespace": "old"}  # a namespace the cluster no longer has
+    acme = automating("acme", A_TOKEN, AUTO, gone)
+    bank = automating("bank", B_TOKEN, {**AUTO, "name": "ledger"})
+    app = hub(settings, database_url, acme, bank)
+    with TestClient(app) as c:
+        sql(
+            database_url,
+            run("acme", '{"test": null}'),  # run 1
+            run("acme", '{"test": null}'),  # run 2: the newest
+            sized("acme", 1, cpu={"action": "raise", "current": 0.1, "target": 0.5}),
+            sized("acme", 2),
+            sized("acme", 2, "learning", state="learning"),
+            sized("acme", 2, "steady", cpu={"action": "keep", "current": 1.0, "target": 1.0}),
+            sized("acme", 2, "db", kind="StatefulSet"),  # other kinds: slice 12.8
+            sized("acme", 2, "side", container="sidecar"),  # no rule automates it
+            sized("acme", 2, "approved"),
+            approve("acme", 2, name="approved"),  # the approval goes as approved, once
+            sized("acme", 2, "broken"),
+            sized("acme", 2, "twice"),
+            sized("acme", 2, "elsewhere"),
+            sized("acme", 2, "moved", namespace="old"),
+            *(rolled_back("acme", now - d * 86400, name="broken") for d in (1, 2, 3)),  # ended
+            *(rolled_back("acme", now - d * 86400, name="twice") for d in (1, 2, 7.5)),  # 7.5: old
+            *(rolled_back("acme", now - d * 86400, "edge", "elsewhere") for d in (1, 2, 3)),
+            *(rolled_back("bank", now - d * 86400) for d in (1, 2, 3)),  # bank's api, not acme's
+            *(rolled_back("acme", now - d, outcome="applied") for d in (1, 2, 3)),  # no rollback
+            run("bank", '{"test": null}'),  # run 3, bank's
+            sized("bank", 3, "ledger"),
+        )
+        mine = c.get("/actuator/desired", headers=as_actuator(A_TOKEN)).json()
+        theirs = c.get("/actuator/desired", headers=as_actuator(B_TOKEN)).json()
+        sql(database_url, ("insert into kill_switches values ('acme', 't', 1)", ()))
+        killed = c.get("/actuator/desired", headers=as_actuator(A_TOKEN)).json()
+    one = {"run_id": 2, "namespace": "shop", "kind": "Deployment", "container": "app"}
+    assert [w["name"] for w in mine["sizings"]] == ["approved"]
+    assert mine["automated"] == [
+        {**one, "name": n, "cpu": 0.115, "memory": None} for n in ("api", "elsewhere", "twice")
+    ]
+    assert theirs["automated"] == [{**one, "run_id": 3, "name": "ledger", "cpu": 0.115,
+                                    "memory": None}]  # fmt: skip
+    assert killed == {"kill_switch": True, "sizings": [], "automated": []}
+
+
+def test_the_rollback_that_ends_automation_reaches_the_operator_once(
+    settings: Settings, database_url: str
+) -> None:
+    from tests.test_slack import TOKEN, FakeSlack
+
+    settings.slack_bot_token = SecretStr(TOKEN)
+    slack = FakeSlack()
+    channel = {"slack": {"operator_channel": "C0123456789"}}
+    acme = automating("acme", A_TOKEN, AUTO, **channel)
+    settings.database_url = SecretStr(database_url)
+    settings.approver_token = SecretStr("approver-token")
+    app = create_app(
+        settings,
+        scripted(),
+        lambda c: None,
+        {"acme": acme, "bank": automating("bank", B_TOKEN, AUTO)},
+        slack_http=httpx.AsyncClient(transport=slack.transport()),
+    )
+    day = 86400.0
+    import time
+
+    now = time.time()
+
+    def back(at: float, **more: Any) -> dict[str, Any]:
+        return report(outcome="rolled_back", reason="r", at=at, **more)
+
+    with TestClient(app) as c:
+        sql(
+            database_url,
+            run("acme", '{"test": null}'),
+            *(sized("acme", 1, n) for n in ("api", "web")),
+            sized("acme", 1, "db", container="sidecar"),  # no container of db is automated
+        )
+        post = lambda *rs: c.post(  # noqa: E731
+            "/actuator/reports", json=list(rs), headers=as_actuator(A_TOKEN)
+        )
+        post(back(now - 3 * day), back(now - 2 * day))  # two: Automation goes on
+        post(back(now - day, container="sidecar"))  # the third, of api's other container
+        post(back(now - day + 1))  # the fourth in 7 days: it was already over
+        post(back(now - 4 * day, name="web"))
+        post(back(now - 2 * day, name="web"), back(now - day, name="web"), back(now, name="web"))
+        post(back(now, name="web"))  # sent again: nothing new
+        post(*(back(now - d * day, name="db", container="sidecar") for d in (1, 2, 3)))
+        c.post("/actuator/reports", json=[back(now - d * day) for d in (1, 2, 3)],
+               headers=as_actuator(B_TOKEN))  # bank: no channel  # fmt: skip
+    ended = [
+        p["text"] for m, p, _ in slack.calls if m == "chat.postMessage" and "ended" in p["text"]
+    ]
+    until = datetime.fromtimestamp(now - 3 * day + 7 * day, UTC)
+    web = datetime.fromtimestamp(now - 2 * day + 7 * day, UTC)
+    assert ended == [
+        f":octagonal_sign: acme: Automation of test/shop/Deployment/api ended: 3 rollbacks in "
+        f"7 days. It resumes on {until:%Y-%m-%d %H:%M} UTC unless more follow; remove "
+        "`automate` from its rule to end it for good.",
+        f":octagonal_sign: acme: Automation of test/shop/Deployment/web ended: 4 rollbacks in "
+        f"7 days. It resumes on {web:%Y-%m-%d %H:%M} UTC unless more follow; remove "
+        "`automate` from its rule to end it for good.",
+    ]
+
+
+def applied(core: Any, apps: Any, w: Any) -> dict[str, Any]:
+    """`w` applied on both of api's pods; its hold."""
+    _, h = start(core, apps, w)
+    actuator.advance(core, apps, KEY, h, 600.0)
+    actuator.advance(core, apps, KEY, h, 660.0)
+    assert h["outcome"] == "applied"
+    return h
+
+
+def test_a_sizing_that_leaves_a_resource_alone_keeps_what_is_held_of_it() -> None:
+    core, apps = cluster()  # the template asks cpu 1, no memory
+    h = applied(core, apps, wanted())  # cpu 115m, memory 96Mi
+    _, new = actuator.apply(core, apps, wanted(2, cpu=None, memory=64 * MI), 700.0, *scalers(), h)
+    assert new["requests"] == {"cpu": "115m", "memory": "64Mi"}
+    assert new["template"] == {"cpu": "1", "memory": None}
+    assert new["lowered_at"] == 700.0  # memory went down
+    _, up = actuator.apply(core, apps, wanted(3, cpu=0.2, memory=None), 700.0, *scalers(), h)
+    assert up["requests"] == {"cpu": "200m", "memory": "96Mi"} and "lowered_at" not in up
+    core, apps = cluster()
+    _, caught = start(core, apps, wanted())  # catching up (no hold replaced): not a decrease
+    assert "lowered_at" not in caught
+
+
+def test_automation_ignores_small_changes_and_lowers_at_most_once_a_day() -> None:
+    core, apps = cluster()
+    h = applied(core, apps, wanted(memory=100 * MI))  # cpu 115m, memory 100Mi
+
+    def auto(at: float = 10**6, old: Any = h, **values: float | None) -> Any:
+        w = wanted(2, **({"cpu": None, "memory": None} | values))
+        return actuator.apply(core, apps, w, at, *scalers(), old, True)
+
+    assert auto(cpu=0.120) == (None, {})  # 4% up
+    assert auto(memory=91 * MI) == (None, {})  # 9% down
+    _, ten = auto(memory=110 * MI)  # 10% exactly: applied
+    assert ten["requests"] == {"cpu": "115m", "memory": "110Mi"}
+    _, first = auto(memory=64 * MI)  # the first decrease
+    assert first["requests"]["memory"] == "64Mi" and first["lowered_at"] == 10**6
+    recent = {**h, "lowered_at": 10**6 - 86399}
+    assert auto(old=recent, memory=64 * MI) == (None, {})  # lowered under a day ago
+    _, mixed = auto(old=recent, cpu=0.2, memory=64 * MI)  # the increase goes, memory waits
+    assert mixed["requests"] == {"cpu": "200m", "memory": "100Mi"} and "lowered_at" not in mixed
+    assert mixed["deferred"] == ["memory"] and "deferred" not in ten  # for an approval of it
+    _, day = auto(old={**h, "lowered_at": 10**6 - 86400}, memory=64 * MI)
+    assert day["requests"]["memory"] == "64Mi"
+    core, apps = cluster()  # nothing held: from the template's cpu 1, no memory
+    assert auto(old={}, cpu=0.95) == (None, {})
+    _, unset = auto(old={}, memory=50 * MI)  # no request now: set
+    assert unset["requests"] == {"memory": "50Mi"}
+    _, approved = actuator.apply(core, apps, wanted(cpu=0.95, memory=None), 0.0, *scalers(), {})
+    assert approved["requests"] == {"cpu": "950m"}  # an approval is never under the rule
+
+
+def wants(*runs: Any, approved: tuple[Any, ...] = (), killed: bool = False) -> dict[str, Any]:
+    """The Hub's answer: these Automation Sizings, and these approved."""
+    return {
+        "kill_switch": killed,
+        "sizings": [w.model_dump() for w in approved],
+        "automated": [w.model_dump() for w in runs],
+    }
+
+
+def test_automation_applies_unasked_and_waits_while_its_container_rolls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(actuator, "CANARY_SECONDS", 0)
+    core, apps = cluster()
+    seen: list[httpx.Request] = []
+    up = wanted(3, cpu=0.5)
+    a = make(hub_of([wants(wanted(2)), wants(up), wants(up)], seen), core, apps)
+    a.step()  # run 2: the canary
+    assert a.held[KEY]["automated"] is True
+    a.step()  # the next pod; run 3 waits for the rollout
+    assert a.held[KEY]["run_id"] == 2
+    a.step()  # run 2 applied, then run 3's canary
+    assert [(n, b["spec"]["containers"][0]["resources"]["requests"]["cpu"])
+            for n, b in resized(core)] == [("api-1-a", "115m"), ("api-1-b", "115m"),
+                                           ("api-1-a", "500m")]  # fmt: skip
+    events = [c.args[1] for c in core.create_namespaced_event.call_args_list]
+    assert events[0].message.startswith("app: cpu 115m, memory 96Mi (Automation, run 2)")
+    posted = [x for r in seen if r.method == "POST" for x in json.loads(r.content)]
+    assert [(x["run_id"], x["outcome"]) for x in posted] == [(2, "applied")]
+
+
+def test_automation_says_a_skip_once_keeps_its_hold_and_backs_off_unsaid() -> None:
+    core, apps = cluster()
+    h = applied(core, apps, wanted())
+    h["automated"] = True
+    vpa = {"spec": {"targetRef": {"kind": "Deployment", "name": "api"}}}
+    seen: list[httpx.Request] = []
+    answers = [
+        wants(wanted(4, cpu=0.5)),  # a VPA since: skipped, said
+        wants(wanted(5, cpu=0.6)),  # the same reason: unsaid
+        wants(wanted(6, cpu=0.12)),  # under 10%: ignored, unsaid
+        wants(wanted(6, cpu=0.12)),  # the same run: not even looked at again
+        wants(wanted(7, cpu=0.6)),  # backing off: unsaid
+        wants(approved=(wanted(8, cpu=0.6),)),  # an approval backing off: said
+    ]
+    a = make(hub_of(answers, seen), core, apps)
+    a.custom = scalers(vpas=[vpa])[1]
+    a.held = {KEY: h}
+    a.step()
+    a.step()
+    assert a.held[KEY]["outcome"] == "applied" and a.held[KEY]["requests"]["cpu"] == "115m"
+    assert a.held[KEY]["seen"] == 5 and a.held[KEY]["run_id"] == 1  # still holding run 1
+    a.custom = scalers()[1]
+    a.step()
+    assert a.held[KEY]["seen"] == 6 and not resized(core)[2:]
+    reads = apps.read_namespaced_deployment.call_count
+    a.step()
+    assert apps.read_namespaced_deployment.call_count == reads + 2  # hand_back, catch_up
+    a.held[KEY]["backoff_until"] = 4e9  # 2096
+    a.step()
+    a.step()
+    posted = [x for r in seen if r.method == "POST" for x in json.loads(r.content)]
+    assert [(x["run_id"], x["outcome"], x["reason"][:20]) for x in posted] == [
+        (4, "skipped", "a VPA in mode Auto s"),
+        (8, "skipped", "rolled back 0 times "),
+    ]
+    assert len(resized(core)) == 2  # api's two pods, before
+
+
+def test_an_approval_of_the_run_automation_applied_is_applied_as_approved() -> None:
+    core, apps = cluster()
+    h = applied(core, apps, wanted(2))
+    a = make(hub_of([wants(approved=(wanted(2, cpu=0.12),)), wants(approved=(wanted(2),))], []),
+             core, apps)  # fmt: skip
+    a.held = {KEY: {**h, "automated": True, "deferred": ["cpu"]}}  # cpu: under the churn rule
+    a.step()  # what the churn rule left out still applies once approved
+    assert resized(core)[-1] == ("api-1-a", body(cpu="120m", memory="96Mi"))
+    assert "automated" not in a.held[KEY]
+    a.step()  # the same approval again: once
+    assert len(resized(core)) == 3
+
+
+def paused(apps: Any, *names: str) -> None:
+    deployments = [
+        MagicMock(metadata=k.V1ObjectMeta(name=n, annotations={actuator.PAUSE: "true"}))
+        for n in names
+    ]
+    apps.list_namespaced_deployment.return_value = MagicMock(items=deployments)
+
+
+def test_a_paused_deployment_is_left_alone_as_under_the_kill_switch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(actuator, "CANARY_SECONDS", 0)
+    core, apps = cluster()
+    paused(apps, "api")
+    apps.list_namespaced_deployment.return_value.items.append(
+        MagicMock(metadata=k.V1ObjectMeta(name="web", annotations={actuator.PAUSE: "false"}))
+    )
+    a = make(hub_of([desired(1)] * 7, []), core, apps)
+    a.step()  # paused: not applied, not used up
+    assert not resized(core) and KEY not in a.held and a.paused == {"shop/api"}
+    assert actuator.mutation(new_pod()["request"], HELD, "x", a.paused) == []
+    assert actuator.mutation(new_pod()["request"], HELD, "x", frozenset({"shop/web"}))
+    paused(apps)
+    a.step()  # lifted: the approval applies
+    assert [n for n, _ in resized(core)] == ["api-1-a"]
+    paused(apps, "api")
+    a.step()  # paused mid-rollout: it stops there
+    assert [n for n, _ in resized(core)] == ["api-1-a"]
+    apps.list_namespaced_deployment.side_effect = ApiException(status=500)
+    a.step()  # its Deployments unreadable: still paused
+    assert a.paused == {"shop/api"} and len(resized(core)) == 1
+    apps.list_namespaced_deployment.side_effect = None
+    paused(apps)
+    a.step()
+    assert [n for n, _ in resized(core)] == ["api-1-a", "api-1-b"]
+    a.step()  # applied
+    late = pod("api-1-c", "api-1")  # from its template
+    late.metadata.namespace = "shop"
+    core.list_namespaced_pod.return_value.items.append(late)
+    paused(apps, "api")
+    a.step()  # paused: no catching up either
+    assert a.held[KEY]["outcome"] == "applied" and len(resized(core)) == 2
+
+
+def test_the_hub_unanswered_15_minutes_is_said_once_in_an_event() -> None:
+    core = MagicMock()
+    a = make(hub_of([], []), core, MagicMock())
+    for at in (0.0, 899.0):
+        a.answered(False, at)
+    assert not core.create_namespaced_event.called
+    for at in (900.0, 2000.0):
+        a.answered(False, at)
+    a.answered(True, 2001.0)
+    for at in (2002.0, 2901.0, 2902.0):  # once more, after it answered in between
+        a.answered(False, at)
+    events = [c.args for c in core.create_namespaced_event.call_args_list]
+    assert [(ns, e.reason, e.type, e.involved_object.kind, e.involved_object.name)
+            for ns, e in events] == [
+        ("squero-actuator", "HubUnreachable", "Warning", "ConfigMap", "squero-actuator")
+    ] * 2  # fmt: skip
+    assert events[0][1].message == (
+        "the Hub has not answered for 15 minutes: holding what it applied, changing nothing new"
+    )
+
+
+def test_approving_what_automation_already_applied_changes_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(actuator, "CANARY_SECONDS", 0)
+    for rolling, deferred in ((False, False), (True, False), (True, True)):
+        core, apps = cluster()
+        steps = 1 if rolling else 3  # Automation's canary; then the next pod; then applied
+        answers = [wants(wanted(2))] * steps + [wants(approved=(wanted(2),))]
+        a = make(hub_of(answers, []), core, apps)
+        for _ in range(steps):
+            a.step()
+        assert a.held[KEY]["outcome"] == ("rolling" if rolling else "applied")
+        if deferred:  # the churn rule left one out: it waits for this rollout to end
+            a.held[KEY]["deferred"] = ["memory"]
+        moving = ("automated", "since", "resized", "pod")  # a rollout moves on by itself
+        before = {k: v for k, v in a.held[KEY].items() if k not in moving}
+        count = len(resized(core))
+        a.step()  # the Operator approves the same run
+        assert {k: v for k, v in a.held[KEY].items() if k not in moving} == before
+        assert ("automated" in a.held[KEY]) == deferred
+        assert len(resized(core)) == count + rolling
+        if not rolling:
+            assert actuator.mutation(new_pod()["request"], a.held, "x")  # still held
+
+
+def test_a_reason_is_the_same_whatever_its_numbers() -> None:
+    quota = "3 pods at cpu 500m would pass ResourceQuota q's requests.cpu 2"
+    assert actuator.gist(quota) == actuator.gist(quota.replace("500m", "600m").replace("3", "4"))
+    assert actuator.gist(quota) != actuator.gist("a VPA in mode Auto sizes it")

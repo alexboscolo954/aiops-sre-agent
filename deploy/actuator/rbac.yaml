@@ -88,6 +88,9 @@ rules:
   - apiGroups: [""]
     resources: [configmaps]
     verbs: [create]   # RBAC can't limit create by name
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [create]   # on its ConfigMap: the Hub unreachable for 15 minutes (slice 12.5)
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

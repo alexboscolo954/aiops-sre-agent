@@ -90,3 +90,21 @@ Before a resize it skips, with the reason in its Event and Actuation, a change t
 ## Rollback
 
 From its first resize until an hour after the rollout ends, the Actuator watches the pods with its requests: a container that restarts (an OOM kill named as one) since it got them, or a pod it resized that stays NotReady for 2 minutes, rolls the Sizing back. Every pod with its requests goes back to the template's, in place and at once (a request the template doesn't set stays), with a `SizingRolledBack` Event and an Actuation `rolled_back` that say what went back to what ("2 pods back from cpu 115m, memory 91Mi to their template's cpu 1, memory 1Gi"), and a message in the Contract's operator channel (once, however often the report is resent). Then it applies no new Sizing of that container for 24 hours, 48 after a second rollback within 7 days, 96 after a third: an approval meanwhile is skipped with the date. CPU throttling is no reason (it is already a Sizing's risk). It rolls back with the Hub unreachable too, never while the Kill switch is on.
+
+## Automation
+
+A Sizing rule with `automate: true` ([Sizing policies](optimizer.md#sizing-policies)) is the Operator's standing approval for the containers it picks (ADR 0004): `/actuator/desired` then also lists, apart from the Approved Sizings, the newest Sizing of each such container on the token's cluster that is ready and changes something, and the Actuator applies it unasked, through the same pre-checks, canary and rollback. An Approved Sizing of the same container goes first. The churn rule: a change under 10% of what its pods ask now is ignored, an increase applies at once, and a decrease at most once a day per container (an increase beside a waiting decrease goes alone). A new one waits while that container's rollout is under way or it backs off after a Rollback, without a word; one the pre-checks skip (a VPA, a quota) is said once, in its Event and Actuation, until its reason changes, and what the Actuator holds stays held. Its Events say `(Automation, run N)`. A Sizing that leaves one resource alone, approved or not, keeps the value held for it.
+
+Three Rollbacks of one Workload in 7 days end its Automation: the Hub lists none of its Sizings until the oldest of them is 7 days old, and the operator channel hears it once, with that date. To end it for good, remove `automate` from its rule. An Actuator of 0.40.0 or older never reads Automation's list, so it applies only approvals.
+
+## Stopping it: pause, Hub down
+
+A person in the client's cluster stops the Actuator on one Deployment with an annotation:
+
+```bash
+kubectl -n shop annotate deployment api squero-actuator/pause=true   # --overwrite ... =false, or remove it, to lift it
+```
+
+The Actuator reads it each minute: nothing is resized on that Deployment (no approval, no Automation, no catch-up, a rollout stops where it is), and its webhook lets its new pods start from their template, as under the Kill switch. A rollback still happens, and nothing is reverted at once. An approval meanwhile waits, and applies once the pause is lifted if it is still current. To stop it everywhere, scale the Actuator to zero (the webhook fails open).
+
+While the Hub doesn't answer, the Actuator keeps what it holds and changes nothing new (rollbacks and hand-backs go on). After 15 minutes it says so once, a `HubUnreachable` Warning Event on its ConfigMap in its own namespace (`kubectl -n squero-actuator get events`).

@@ -62,8 +62,9 @@ sizing:
     - {namespace: payments, policy: high-availability}
     - {namespace: "team-*", name: "checkout-*", policy: lean-agent}   # globs: namespace, name
     - {container: istio-proxy, policy: off}                          # also cluster, kind
+    - {namespace: shop, policy: production, automate: true}          # Automation (Phase 12)
 ```
-After the rules, a Job or CronJob gets `batch`, everything else the default. Built-in names mean the same in every Contract (a standing approval names a policy, ADR 0004), so they and `off` can't be reused. `off` lists the container as excluded. The output names each container's policy, and `history 3.0d of 14d` when Prometheus holds less than the policy's window. Each window a Contract's policies use is read in full, so a policy's OOM kills and throttling are from its own window.
+After the rules, a Job or CronJob gets `batch`, everything else the default. `automate: true` on a rule is Automation: the Actuator applies its containers' Sizings without an approval ([Automation](client-cluster.md#automation)); it needs a policy other than `off` and a cluster with an `actuator_token_secret` (the one the rule names, if it names one). Built-in names mean the same in every Contract (a standing approval names a policy, ADR 0004), so they and `off` can't be reused. `off` lists the container as excluded. The output names each container's policy, and `history 3.0d of 14d` when Prometheus holds less than the policy's window. Each window a Contract's policies use is read in full, so a policy's OOM kills and throttling are from its own window.
 
 ## Waste and risk, stored
 

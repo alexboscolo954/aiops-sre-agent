@@ -446,11 +446,15 @@ class SizingRule(Strict):
     name: str | None = None
     container: str | None = None
     policy: PolicyName
+    # Automation (slice 12.5, ADR 0004): the Actuator applies this rule's Sizings unasked
+    automate: bool = False
 
     @model_validator(mode="after")
     def _matches_something(self) -> "SizingRule":
         if not {"cluster", "namespace", "kind", "name", "container"} & self.model_fields_set:
             raise ValueError("a rule needs cluster, namespace, kind, name or container")
+        if self.automate and self.policy == OFF:
+            raise ValueError("automate: a rule with policy off has no Sizings to apply")
         return self
 
     def matches(self, cluster: str, namespace: str, kind: str, name: str, container: str) -> bool:
@@ -526,6 +530,13 @@ class SizingConfig(Strict):
             if r.matches(cluster, namespace, kind, name, container):
                 return r.policy
         return "batch" if kind in BATCH_KINDS else self.default
+
+    def automated(self, cluster: str, namespace: str, kind: str, name: str, container: str) -> bool:
+        """Whether the rule that picks this container's policy automates it (slice 12.5)."""
+        rule = next(
+            (r for r in self.rules if r.matches(cluster, namespace, kind, name, container)), None
+        )
+        return rule is not None and rule.automate
 
     def policy(self, name: str) -> Policy | None:
         """The settings for a policy name; None for `off`."""
@@ -681,9 +692,13 @@ class Contract(Strict):
             spaces = {n for c in self.clusters for n in c.namespaces}
             if outside := sorted(set(self.deploy_checks.namespaces) - spaces):
                 raise ValueError(f"deploy_checks namespaces not in any cluster: {outside}")
+        actuated = {c.name for c in self.clusters if c.actuator_token_secret}
         for i, r in enumerate(self.sizing.rules):
             if r.cluster is not None and r.cluster not in groups["cluster"]:
                 raise ValueError(f"sizing rule {i + 1}: no cluster {r.cluster!r}")
+            if r.automate and not (actuated if r.cluster is None else actuated & {r.cluster}):
+                where = f"cluster {r.cluster!r} has" if r.cluster else "no cluster has"
+                raise ValueError(f"sizing rule {i + 1} automates: {where} no actuator_token_secret")
         for i, t in enumerate(self.allocation.teams):
             if t.cluster is not None and t.cluster not in groups["cluster"]:
                 raise ValueError(f"team rule {i + 1}: no cluster {t.cluster!r}")

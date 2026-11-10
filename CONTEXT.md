@@ -166,7 +166,7 @@ The CPU and memory requests the Hub computes for one container of a Workload fro
 _Avoid_: Recommendation (that is advice for a human), rightsizing recommendation
 
 **Approved Sizing**:
-One container's Sizing that the Operator approved from the Hub MCP server, kept with the exact requests approved, for the Actuator to apply. It is current, waiting to be applied, until a later Sizing of that container is stored, which supersedes it whatever its values: one superseded before the Actuator applied it never is. Once applied, the Actuator holds its requests until a later Approved Sizing of that container or a Revert. Refused for a container that is learning or has no change, and while the Contract's Kill switch is on. Approving changes nothing in a cluster until the Actuator applies it.
+One container's Sizing that the Operator approved from the Hub MCP server, kept with the exact requests approved, for the Actuator to apply. It is current, waiting to be applied, until a later Sizing of that container is stored, which supersedes it whatever its values: one superseded before the Actuator applied it never is. Once applied, the Actuator holds its requests until a later Approved Sizing of that container, Automation or a Revert; a later one that changes only one resource keeps the other's held value. Refused for a container that is learning or has no change, and while the Contract's Kill switch is on. Approving changes nothing in a cluster until the Actuator applies it.
 _Avoid_: Applied Sizing, Executed action (nothing ran)
 
 **Sizing policy**:
@@ -177,11 +177,11 @@ The requests above a Workload's Sizings, times its average pods: what the Sizing
 _Avoid_: Savings (that is waste priced, Phase 10), over-provisioning (for the number)
 
 **Automation**:
-The standing approval for one Workload: the Operator approves its Sizing policy once, in the contracts repo, and the Actuator then applies its Sizings without asking. Off by default.
+The standing approval for one Workload: the Operator approves its Sizing policy once, in the contracts repo (`automate: true` on the rule that picks the policy, in a Contract whose cluster runs an Actuator), and the Actuator then applies its Sizings without asking: each run's newest, a change under 10% ignored, an increase at once, a decrease at most once a day per container. Three Rollbacks of the Workload in 7 days end it until the oldest of them is 7 days old; the Operator hears of it in Slack. A person stops it on one Workload with the pause annotation. Off by default.
 _Avoid_: Auto mode, Proposed action (a Sizing under Automation never pauses)
 
 **Actuator**:
-The process in a client cluster that applies approved Sizings, in place first, and reports what it did. It runs only what the Hub approved: every minute it pulls its cluster's desired state from the Hub with its own token, bound to one Contract's cluster, and nothing while the Kill switch is on. What it applied it holds: new pods of that Workload get the same requests until a person changes them in its template. Pods start unchanged when it is down.
+The process in a client cluster that applies approved Sizings, in place first, and reports what it did. It runs only what the Hub approved: every minute it pulls its cluster's desired state from the Hub with its own token, bound to one Contract's cluster, and nothing while the Kill switch is on. What it applied it holds: new pods of that Workload get the same requests until a person changes them in its template. Pods start unchanged when it is down. While the Hub is unreachable it keeps what it holds and changes nothing new. A Deployment annotated `squero-actuator/pause: "true"` is left alone, as under the Kill switch.
 _Avoid_: Agent, controller (alone)
 
 **Actuation**:
