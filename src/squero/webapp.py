@@ -25,7 +25,7 @@ from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel
 
-from squero import agenda, billing, listprices, sizing, usage
+from squero import actuator, agenda, billing, listprices, sizing, usage
 from squero.console import (
     COOKIE,
     CORRECTION_LIMIT,
@@ -493,6 +493,96 @@ class KillSwitch(BaseModel):
     since: float | None = None
 
 
+class Held(BaseModel):
+    """One container the Actuator reported on (slices 12.5, 12.6b): its last Actuation,
+    whether the Contract automates it, and what stops that."""
+
+    namespace: str
+    kind: str
+    name: str
+    container: str
+    automated: bool  # a Sizing rule automates it
+    resumes: float | None  # its Workload's Automation ended by Rollbacks, until then
+    stopped: bool  # Reverted since its last approval: Automation leaves it alone
+    reverting: bool  # a Revert asked, not yet done
+    outcome: str
+    cpu: float | None
+    memory: float | None
+    pods: int
+    reason: str
+    at: float
+
+
+class HeldCluster(BaseModel):
+    cluster: str
+    containers: list[Held]
+
+
+class AutomationPage(BaseModel):
+    kill_switch: bool
+    clusters: list[HeldCluster]  # each with an Actuator
+
+
+class RevertIn(BaseModel):
+    cluster: str
+    namespace: str
+    kind: str = "Deployment"
+    name: str
+    container: str
+
+
+async def revert(st: Store, c: Contract, keys: tuple[str, ...], by: str, at: float) -> None:
+    """Ask a Revert of the container `keys` names (cluster, namespace, kind, name,
+    container), from the console or the Hub MCP server (slice 12.6a); ValueError with
+    the reason when it is refused."""
+    cl = next((x for x in c.clusters if x.name == keys[0]), None)
+    if cl is None or not cl.actuator_token_secret:
+        runs = [x.name for x in c.clusters if x.actuator_token_secret]
+        raise ValueError(f"cluster {keys[0]!r} runs no Actuator: one of {runs}")
+    if keys[1] not in cl.namespaces:
+        raise ValueError(f"namespace {keys[1]!r} is not one of {sorted(cl.namespaces)}")
+    seen = await st.actuations(c.id, 0.0)
+    fields = ("cluster", "namespace", "kind", "name", "container")
+    if not any(tuple(a[k] for k in fields) == keys for a in seen):
+        raise ValueError("the Actuator has reported nothing of that container: nothing to revert")
+    if await st.ask_revert(c.id, keys, by, at) == "killed":
+        raise ValueError(
+            "The Contract's Kill switch is on: a Revert is a change, refused. "
+            "Turn it off in the console first."
+        )
+
+
+async def automation_of(st: Store, c: Contract, now: float) -> AutomationPage:
+    """What each Actuator of the Contract last did with each container (90 days)."""
+    seen = await st.actuations(c.id, 0.0)  # newest first
+    out = []
+    for cl in c.clusters:
+        if not cl.actuator_token_secret:
+            continue
+        ended = actuator.resumes(actuator.rollbacks_of(seen, cl.name, now))
+        stopped = await st.reverted(c.id, cl.name)
+        reverting = {
+            (r["namespace"], r["kind"], r["name"], r["container"])
+            for r in await st.pending_reverts(c.id, cl.name)
+        }
+        last: dict[tuple[str, ...], dict[str, Any]] = {}
+        for a in seen:
+            if a["cluster"] == cl.name and a["namespace"] in cl.namespaces:
+                last.setdefault((a["namespace"], a["kind"], a["name"], a["container"]), a)
+        containers = [
+            Held(
+                **{k: a[k] for k in Held.model_fields if k in a},
+                automated=c.sizing.automated(cl.name, *key),
+                resumes=ended.get(key[:3]),
+                stopped=key in stopped,
+                reverting=key in reverting,
+            )
+            for key, a in sorted(last.items())
+        ]
+        out.append(HeldCluster(cluster=cl.name, containers=containers))
+    return AutomationPage(kill_switch=await st.kill_switch(c.id) is not None, clusters=out)
+
+
 def daily(points: list[Point]) -> list[Point]:
     """The last point of each UTC day."""
     last: dict[int, Point] = {}
@@ -923,6 +1013,24 @@ def router(
         if await store().turn_off_kill_switch(c.id):
             log.info("kill switch %s off by console:%s", c.id, login)
         return await switch(c)
+
+    @api.get("/contracts/{contract_id}/automation")
+    async def automation(contract_id: str) -> AutomationPage:
+        return await automation_of(store(), contract(contract_id), now())
+
+    @api.post("/contracts/{contract_id}/automation/revert")
+    async def revert_(
+        contract_id: str, given: RevertIn, login: str = Depends(changing)
+    ) -> AutomationPage:
+        """The Operator's Revert of one container (slice 12.6b), as `revert_sizing`."""
+        c = contract(contract_id)
+        keys = (given.cluster, given.namespace, given.kind, given.name, given.container)
+        try:
+            await revert(store(), c, keys, f"console:{login}", now())
+        except ValueError as e:
+            raise HTTPException(409, str(e)) from None
+        log.info("revert %s %s by console:%s", c.id, "/".join(keys), login)
+        return await automation_of(store(), c, now())
 
     r.include_router(api)
     return r

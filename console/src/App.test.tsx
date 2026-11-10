@@ -851,3 +851,78 @@ test("the Contracts page lists every Contract with its spend against its budget"
   expect(screen.getByText("bank").closest("a")?.getAttribute("href")).toBe("/app/?contract=bank");
   expect(screen.queryByText("Turn on the Kill switch")).toBeNull(); // no one Contract here
 });
+
+const HELD = {
+  namespace: "shop", kind: "Deployment", container: "app", automated: true, resumes: null, stopped: false,
+  reverting: false, outcome: "applied", cpu: 0.115, memory: 96 * 2 ** 20, pods: 3, reason: "3 of 3 pods resized", at: 1_700_000_000,
+};
+const AUTOMATION = {
+  kill_switch: false,
+  clusters: [
+    {
+      cluster: "kind",
+      containers: [
+        { ...HELD, name: "api", reason: '<img src=x onerror="alert(1)">' },
+        { ...HELD, name: "db", stopped: true, reverting: true, outcome: "reverted" },
+        { ...HELD, name: "web", automated: false, outcome: "rolled_back", resumes: 1_700_604_800 },
+        { ...HELD, name: "cache", resumes: 1_700_604_800, outcome: "failed" },
+      ],
+    },
+  ],
+};
+
+function automating(answers: Record<string, [number, unknown]>, sent: [string, unknown][]) {
+  history.replaceState(null, "", "/app/?view=automation");
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url: string, init?: RequestInit) => {
+      const path = url.split("?")[0];
+      if (init?.method === "POST") {
+        sent.push([path, init.body ? JSON.parse(String(init.body)) : null]);
+        const [status, body] = answers[path] ?? [404, {}];
+        return new Response(JSON.stringify(body), { status });
+      }
+      const routes: Record<string, unknown> = {
+        "/api/v1/contracts": [{ id: "demo-shop", name: "demo-shop" }],
+        "/api/v1/contracts/demo-shop/automation": AUTOMATION,
+      };
+      return new Response(JSON.stringify(routes[path] ?? {}), { status: path in routes ? 200 : 404 });
+    }),
+  );
+}
+
+test("Automation lists each container's last Actuation as text, and Revert posts that container", async () => {
+  const sent: [string, unknown][] = [];
+  const after = { ...AUTOMATION, clusters: [{ ...AUTOMATION.clusters[0], containers: [{ ...AUTOMATION.clusters[0].containers[0], reverting: true }] }] };
+  automating({ "/api/v1/contracts/demo-shop/automation/revert": [200, after] }, sent);
+  const { container: page } = render(<App />);
+  expect(await screen.findByText('<img src=x onerror="alert(1)">')).toBeTruthy(); // text, never markup
+  expect(page.querySelector("img")).toBeNull();
+  expect(screen.getByText("stopped by a Revert, until you approve one of its Sizings")).toBeTruthy();
+  expect(screen.getByText("ended by 3 rollbacks, resumes 2023-11-21 22:13 UTC")).toBeTruthy();
+  expect(screen.getByText("off")).toBeTruthy(); // web: not automated, whatever its rollbacks
+  expect(screen.getByText("reverting")).toBeTruthy(); // db: no second Revert
+  expect(screen.queryByLabelText("Revert shop/Deployment/db/app")).toBeNull();
+  expect(screen.queryByLabelText("Revert shop/Deployment/web/app")).toBeNull(); // rolled back: nothing held
+  expect(screen.getByLabelText("Revert shop/Deployment/cache/app")).toBeTruthy(); // failed: pods may hold it
+  expect(screen.getAllByText(/cpu 115m memory 96Mi/).length).toBe(4);
+  fireEvent.click(screen.getByLabelText("Revert shop/Deployment/api/app"));
+  await waitFor(() => expect(screen.queryByLabelText("Revert shop/Deployment/api/app")).toBeNull());
+  expect(sent).toEqual([
+    ["/api/v1/contracts/demo-shop/automation/revert", { cluster: "kind", namespace: "shop", kind: "Deployment", name: "api", container: "app" }],
+  ]);
+});
+
+test("a refused Revert shows the Hub's words, and the Kill switch says Reverts are refused", async () => {
+  const sent: [string, unknown][] = [];
+  automating({ "/api/v1/contracts/demo-shop/automation/revert": [409, { detail: "The Contract's Kill switch is on" }] }, sent);
+  AUTOMATION.kill_switch = true;
+  try {
+    render(<App />);
+    expect(await screen.findByText("The Kill switch is on: a Revert is refused.")).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("Revert shop/Deployment/api/app"));
+    expect(await screen.findByText("Couldn't: The Contract's Kill switch is on")).toBeTruthy();
+  } finally {
+    AUTOMATION.kill_switch = false;
+  }
+});

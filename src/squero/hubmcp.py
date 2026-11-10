@@ -335,22 +335,10 @@ def build(
 
         async def work() -> dict[str, Any]:
             keys = tuple(arg(c, v) for v in (cluster, namespace, kind, name, container))
-            cl = next((x for x in c.clusters if x.name == keys[0]), None)
-            if cl is None or not cl.actuator_token_secret:
-                runs = [x.name for x in c.clusters if x.actuator_token_secret]
-                raise ToolError(f"cluster {keys[0]!r} runs no Actuator: one of {runs}")
-            if keys[1] not in cl.namespaces:
-                raise ToolError(f"namespace {keys[1]!r} is not one of {sorted(cl.namespaces)}")
-            seen = await store().actuations(c.id, 0.0)
-            if not any(tuple(a[k] for k in KEYS) == keys for a in seen):
-                raise ToolError(
-                    "the Actuator has reported nothing of that container: nothing to revert"
-                )
-            if await store().ask_revert(c.id, keys, f"mcp:{_operator()}", now()) == "killed":
-                raise ToolError(
-                    "The Contract's Kill switch is on: a Revert is a change, refused. "
-                    "Turn it off in the console first."
-                )
+            try:
+                await webapp.revert(store(), c, keys, f"mcp:{_operator()}", now())
+            except ValueError as e:
+                raise ToolError(str(e)) from None
             return {"workload": "/".join(keys), "revert": "asked"}
 
         result: dict[str, Any] = await answer(c, work())

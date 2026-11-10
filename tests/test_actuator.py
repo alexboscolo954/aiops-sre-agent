@@ -1784,3 +1784,73 @@ def test_a_catch_up_keeps_the_last_revert_it_did() -> None:
     a.held = {KEY: {**h, "revert": 7}}
     a.catch_up()
     assert a.held[KEY]["outcome"] == "rolling" and a.held[KEY]["revert"] == 7
+
+
+# --- the console's Automation view (slice 12.6b) ------------------------------------------
+
+
+def test_the_automation_view_shows_the_contracts_own_containers_and_reverts_one(
+    settings: Settings, database_url: str
+) -> None:
+    import time
+
+    from tests.test_console import AS_OPERATOR, OPERATOR, VIEW
+
+    settings.console_operators = {OPERATOR}
+    now = time.time()
+    app = hub(settings, database_url, automating("acme", A_TOKEN, AUTO), actuated("bank", B_TOKEN))
+    path, same = "/api/v1/contracts/acme/automation", {**VIEW, "Sec-Fetch-Site": "same-origin"}
+    with TestClient(app) as c:
+        sql(
+            database_url,
+            rolled_back("acme", now - 3000, name="api", outcome="skipped"),
+            rolled_back("acme", now - 2000, name="api", outcome="applied"),  # api's last
+            *(rolled_back("acme", now - d * 86400, name="web") for d in (1, 2, 3)),
+            rolled_back("acme", now - 100, name="db", outcome="applied"),
+            revert("acme", now - 50, "db"),  # pending, and stops db's Automation
+            rolled_back("acme", now - 100, "edge", "api", "skipped"),  # edge runs no Actuator
+            (
+                "insert into actuations values ('acme', 'test', 'old', 'Deployment', 'x', 'app', "
+                "1, 'applied', null, null, 1, 'x', 1, 1)",
+                (),
+            ),  # no longer one of its namespaces
+            rolled_back("bank", now - 100, name="ledger", outcome="applied"),
+            (
+                "insert into actuations values ('acme', 'test', 'shop', 'Deployment', 'side', "
+                "'sidecar', 1, 'applied', null, null, 1, 'x', 1, 1)",
+                (),
+            ),  # no rule automates it
+        )
+        page = c.get(path, headers=VIEW).json()
+        what = {"cluster": "test", "namespace": "shop", "name": "api", "container": "app"}
+        cross, no_token = {**VIEW, "Sec-Fetch-Site": "cross-site"}, {**AS_OPERATOR, **same}
+        no_token.pop("Cookie")
+        refused = [
+            c.post(f"{path}/revert", json=what, headers=h).status_code for h in (cross, no_token)
+        ]
+        done = c.post(f"{path}/revert", json=what, headers=same)
+        never = c.post(f"{path}/revert", json={**what, "name": "ledger"}, headers=same)
+        sql(database_url, ("insert into kill_switches values ('acme', 't', 1)", ()))
+        killed = c.post(f"{path}/revert", json=what, headers=same)
+        shows_killed = c.get(path, headers=VIEW).json()["kill_switch"]
+        theirs = c.get("/api/v1/contracts/bank/automation", headers=VIEW).json()
+        no_cookie = c.get(path, headers=AS_OPERATOR).status_code
+    assert refused == [403, 401] and no_cookie == 401
+    (cluster,) = page["clusters"]
+    assert cluster["cluster"] == "test" and not page["kill_switch"]
+    shown = {h["name"]: h for h in cluster["containers"]}
+    assert list(shown) == ["api", "db", "side", "web"] and shows_killed
+    assert not shown["side"]["automated"]
+    assert shown["api"]["outcome"] == "applied" and shown["api"]["automated"]
+    assert shown["api"]["resumes"] is None and not shown["api"]["stopped"]
+    assert shown["db"]["stopped"] and shown["db"]["reverting"]
+    assert shown["web"]["resumes"] == pytest.approx(now - 3 * 86400 + 7 * 86400)
+    assert done.status_code == 200
+    assert next(h for h in done.json()["clusters"][0]["containers"] if h["name"] == "api")[
+        "reverting"
+    ]
+    assert never.status_code == 409 and "reported nothing" in never.json()["detail"]
+    assert killed.status_code == 409 and "Kill switch is on" in killed.json()["detail"]
+    assert [h["name"] for h in theirs["clusters"][0]["containers"]] == ["ledger"]
+    rows = sql(database_url, ("select name, asked_by from reverts order by id", ()))
+    assert rows == [("db", "mcp:x"), ("api", f"console:{OPERATOR}")]

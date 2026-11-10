@@ -41,6 +41,43 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/contracts/{contract_id}/automation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Automation */
+        get: operations["automation_api_v1_contracts__contract_id__automation_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/contracts/{contract_id}/automation/revert": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Revert
+         * @description The Operator's Revert of one container (slice 12.6b), as `revert_sizing`.
+         */
+        post: operations["revert__api_v1_contracts__contract_id__automation_revert_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/contracts/{contract_id}/billing": {
         parameters: {
             query?: never;
@@ -471,6 +508,13 @@ export interface components {
             /** Evidence */
             evidence: components["schemas"]["Evidence"][];
         };
+        /** AutomationPage */
+        AutomationPage: {
+            /** Clusters */
+            clusters: components["schemas"]["HeldCluster"][];
+            /** Kill Switch */
+            kill_switch: boolean;
+        };
         /**
          * Bill
          * @description A billed cluster's cloud bill beside its estimate; `note` says why there is none.
@@ -834,6 +878,48 @@ export interface components {
             /** Spent Usd */
             spent_usd: number;
         };
+        /**
+         * Held
+         * @description One container the Actuator reported on (slices 12.5, 12.6b): its last Actuation,
+         *     whether the Contract automates it, and what stops that.
+         */
+        Held: {
+            /** At */
+            at: number;
+            /** Automated */
+            automated: boolean;
+            /** Container */
+            container: string;
+            /** Cpu */
+            cpu: number | null;
+            /** Kind */
+            kind: string;
+            /** Memory */
+            memory: number | null;
+            /** Name */
+            name: string;
+            /** Namespace */
+            namespace: string;
+            /** Outcome */
+            outcome: string;
+            /** Pods */
+            pods: number;
+            /** Reason */
+            reason: string;
+            /** Resumes */
+            resumes: number | null;
+            /** Reverting */
+            reverting: boolean;
+            /** Stopped */
+            stopped: boolean;
+        };
+        /** HeldCluster */
+        HeldCluster: {
+            /** Cluster */
+            cluster: string;
+            /** Containers */
+            containers: components["schemas"]["Held"][];
+        };
         /** History */
         History: {
             /** Points */
@@ -1014,6 +1100,22 @@ export interface components {
             current: number | null;
             /** Target */
             target: number;
+        };
+        /** RevertIn */
+        RevertIn: {
+            /** Cluster */
+            cluster: string;
+            /** Container */
+            container: string;
+            /**
+             * Kind
+             * @default Deployment
+             */
+            kind: string;
+            /** Name */
+            name: string;
+            /** Namespace */
+            namespace: string;
         };
         /** Risk */
         Risk: {
@@ -1323,6 +1425,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Agenda"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    automation_api_v1_contracts__contract_id__automation_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                contract_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutomationPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    revert__api_v1_contracts__contract_id__automation_revert_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                contract_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RevertIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutomationPage"];
                 };
             };
             /** @description Validation Error */

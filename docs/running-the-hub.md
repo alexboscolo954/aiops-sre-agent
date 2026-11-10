@@ -95,6 +95,10 @@ Anything else gets a 403, including a tagged device, which has no user.
 
 **Now** (above the Workloads): the Contract's Agenda, what to look at now, ranked by the Hub without a model in a fixed order of urgency: the Kill switch while it is on, pauses waiting for an Approval decision (soonest to go Stale first), failing Checks (newest first), data the Hub can't read (Sizing or bill reads failing, oldest first), Bills outside their tolerance (biggest gap first), running Investigations (oldest first), and the three Workloads whose waste costs most. Each links where to act: its Investigation, its Workload, or the Cost page. `GET /api/v1/contracts/{id}/agenda`, and `now` on the Hub MCP server.
 
+### Automation
+
+**Automation** (`/app/?view=automation`): for each cluster of the Contract that runs an Actuator, each container it reported on in the last 90 days, with its last Actuation (outcome, pods, when, the requests it set, and the Actuator's reason, shown as text) and its Automation: off, on, ended by 3 Rollbacks until a date, or stopped by a Revert until you approve one of its Sizings. **Revert** on a container whose last Actuation is applied or failed asks a Revert as `revert_sizing` does, refused the same way (with the Hub's words); it shows "reverting" until the Actuator reports it done. Stored as `console:<login>`, and from the console's own page only. The page says when the Kill switch is on, since a Revert is then refused.
+
 ### Kill switch
 
 **Kill switch** (every console app page): turn a Contract's Kill switch on, or off. While it is on, approving a Proposed action is refused on every path (Slack, the console, the API, the Hub MCP server) and the pause is kept, so you can still reject it, or approve it once the switch is off; a change approved just before it went on is refused where it would run, recorded as a FAILED Executed action. Reads, Questions and Reports go on as usual. Only this page turns it off (same-origin, your identity and the approver cookie, like approving); the Hub's log names who turned it on or off.

@@ -5,6 +5,7 @@
 // and the realized Savings, requests lowered to their Sizings (10.3b).
 // The Agenda (slice 11.4): what to look at now, most urgent first, above the Workloads.
 // Investigations and the approver token page (slice 11.5a): Investigations.tsx.
+// Automation and Revert (slice 12.6b): Automation.tsx.
 // Everything from the API is rendered as text.
 import { useEffect, useMemo, useState } from "react";
 import * as api from "./api";
@@ -12,6 +13,7 @@ import type { Allocation, Bills, Container, Point, Workload, Workloads } from ".
 import Chart from "./Chart";
 import { InvestigationList, InvestigationPage, TokenPage, page } from "./Investigations";
 import { TeachingsPage } from "./Teachings";
+import { AutomationPage } from "./Automation";
 import { ChecksPage, HealthPage } from "./Checks";
 import { ContractsPage } from "./Contracts";
 import { amount, change, cores, cpu, gib, memory, money, rank, when } from "./format";
@@ -143,6 +145,7 @@ export default function App() {
         {data && workloadsView && <Page contract={shown} data={data} />}
         {shown && view === "investigations" && <InvestigationList contract={shown} />}
         {shown && view === "teachings" && <TeachingsPage contract={shown} />}
+        {shown && view === "automation" && <AutomationPage contract={shown} />}
         {shown && view === "checks" && <ChecksPage contract={shown} />}
         {shown && view === "health" && <HealthPage contract={shown} />}
         {allocation && costView && <CostPage data={allocation} bills={bills} setBy={setBy} compare={compare} setCompare={setCompare} />}
@@ -165,6 +168,7 @@ function Header({ here, current }: { here: string; current: (v: string) => "page
         <a href={`/app/?${here}&view=health`} aria-current={current("health")}>Health</a>
         <a href={`/app/?${here}`} aria-current={current("")}>Workloads</a>
         <a href={`/app/?${here}&view=cost`} aria-current={current("cost")}>Cost</a>
+        <a href={`/app/?${here}&view=automation`} aria-current={current("automation")}>Automation</a>
         <a href="/app/?view=token" aria-current={current("token")}>Approver token</a>
       </nav>
     </header>

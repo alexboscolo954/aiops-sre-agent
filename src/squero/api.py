@@ -96,7 +96,6 @@ TEACHING_ACTIONS = {
     "teaching_reject",
 }
 DEDUP_SECONDS = 30 * 60
-ENDING = 3  # Rollbacks of a Workload in 7 days that end its Automation (slice 12.5)
 PROBE_SECONDS = 10  # each health check
 
 
@@ -1610,12 +1609,9 @@ def create_app(
 
     async def rollbacks(cid: str, cluster: str) -> dict[tuple[str, ...], list[float]]:
         """Each Workload's Rollbacks on this cluster in the last 7 days, oldest first."""
-        out: dict[tuple[str, ...], list[float]] = {}
-        since = time.time() - actuator.ROLLBACKS_FOR
-        for r in sorted(await store().actuations(cid, since), key=lambda r: r["at"]):
-            if r["cluster"] == cluster and r["outcome"] == "rolled_back":
-                out.setdefault((r["namespace"], r["kind"], r["name"]), []).append(r["at"])
-        return out
+        at = time.time()
+        rows = await store().actuations(cid, at - actuator.ROLLBACKS_FOR)
+        return actuator.rollbacks_of(rows, cluster, at)
 
     async def automation(cid: str, cluster: contracts.Cluster) -> list[actuator.Wanted]:
         """The newest Sizings of the containers the Contract automates on this cluster
@@ -1625,7 +1621,7 @@ def create_app(
             return []
         rows, status = await store().latest_sizings(cid, {cluster.name})
         run = (status.get(cluster.name) or {}).get("run")
-        ended = {w for w, ts in (await rollbacks(cid, cluster.name)).items() if len(ts) >= ENDING}
+        ended = actuator.resumes(await rollbacks(cid, cluster.name))
         reverted = await store().reverted(cid, cluster.name)  # until its next approval
         out = []
         for r in rows:
@@ -1722,8 +1718,8 @@ def create_app(
             for w in sorted({(n["namespace"], n["kind"], n["name"]) for n in back} & automated):
                 these = [n for n in back if (n["namespace"], n["kind"], n["name"]) == w]
                 ts = counted.get(w, [])
-                if len(ts) - len(these) < ENDING <= len(ts):
-                    until = datetime.fromtimestamp(ts[-ENDING] + actuator.ROLLBACKS_FOR, UTC)
+                if len(ts) - len(these) < actuator.ENDING <= len(ts):
+                    until = datetime.fromtimestamp(actuator.resumes({w: ts})[w], UTC)
                     await db["slack"].post(
                         slack.operator_channel,
                         f":octagonal_sign: {cid}: Automation of {cluster.name}/{'/'.join(w)} "

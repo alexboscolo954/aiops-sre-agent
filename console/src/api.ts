@@ -135,6 +135,15 @@ export function history(contract: string, c: Container, days: 14 | 400) {
   return get<Schemas["History"]>(`/contracts/${encodeURIComponent(contract)}/history?${q}`);
 }
 
+export type AutomationPage = Schemas["AutomationPage"];
+export type Held = Schemas["Held"];
+const automated = (contract: string) => `/contracts/${encodeURIComponent(contract)}/automation`;
+/** What each Actuator last did with each container (slice 12.6b). */
+export const automation = (contract: string) => get<AutomationPage>(automated(contract));
+/** The Operator's Revert of one container; refused under the Kill switch. */
+export const revert = (contract: string, what: Schemas["RevertIn"]) =>
+  send<AutomationPage>(`${automated(contract)}/revert`, what);
+
 const switchPath = (contract: string) => `/contracts/${encodeURIComponent(contract)}/kill-switch`;
 export const killSwitch = (contract: string) => get<KillSwitch>(switchPath(contract));
 export const turnOnKillSwitch = (contract: string) => get<KillSwitch>(switchPath(contract), "POST");

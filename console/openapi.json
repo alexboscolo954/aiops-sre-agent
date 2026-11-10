@@ -125,6 +125,27 @@
         "title": "Answer",
         "type": "object"
       },
+      "AutomationPage": {
+        "properties": {
+          "clusters": {
+            "items": {
+              "$ref": "#/components/schemas/HeldCluster"
+            },
+            "title": "Clusters",
+            "type": "array"
+          },
+          "kill_switch": {
+            "title": "Kill Switch",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kill_switch",
+          "clusters"
+        ],
+        "title": "AutomationPage",
+        "type": "object"
+      },
       "Bill": {
         "description": "A billed cluster's cloud bill beside its estimate; `note` says why there is none.",
         "properties": {
@@ -1247,6 +1268,127 @@
         "title": "HealthPage",
         "type": "object"
       },
+      "Held": {
+        "description": "One container the Actuator reported on (slices 12.5, 12.6b): its last Actuation,\nwhether the Contract automates it, and what stops that.",
+        "properties": {
+          "at": {
+            "title": "At",
+            "type": "number"
+          },
+          "automated": {
+            "title": "Automated",
+            "type": "boolean"
+          },
+          "container": {
+            "title": "Container",
+            "type": "string"
+          },
+          "cpu": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cpu"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "memory": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Memory"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "namespace": {
+            "title": "Namespace",
+            "type": "string"
+          },
+          "outcome": {
+            "title": "Outcome",
+            "type": "string"
+          },
+          "pods": {
+            "title": "Pods",
+            "type": "integer"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "resumes": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resumes"
+          },
+          "reverting": {
+            "title": "Reverting",
+            "type": "boolean"
+          },
+          "stopped": {
+            "title": "Stopped",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "namespace",
+          "kind",
+          "name",
+          "container",
+          "automated",
+          "resumes",
+          "stopped",
+          "reverting",
+          "outcome",
+          "cpu",
+          "memory",
+          "pods",
+          "reason",
+          "at"
+        ],
+        "title": "Held",
+        "type": "object"
+      },
+      "HeldCluster": {
+        "properties": {
+          "cluster": {
+            "title": "Cluster",
+            "type": "string"
+          },
+          "containers": {
+            "items": {
+              "$ref": "#/components/schemas/Held"
+            },
+            "title": "Containers",
+            "type": "array"
+          }
+        },
+        "required": [
+          "cluster",
+          "containers"
+        ],
+        "title": "HeldCluster",
+        "type": "object"
+      },
       "History": {
         "properties": {
           "points": {
@@ -1880,6 +2022,39 @@
           "basis"
         ],
         "title": "Resource",
+        "type": "object"
+      },
+      "RevertIn": {
+        "properties": {
+          "cluster": {
+            "title": "Cluster",
+            "type": "string"
+          },
+          "container": {
+            "title": "Container",
+            "type": "string"
+          },
+          "kind": {
+            "default": "Deployment",
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "namespace": {
+            "title": "Namespace",
+            "type": "string"
+          }
+        },
+        "required": [
+          "cluster",
+          "namespace",
+          "name",
+          "container"
+        ],
+        "title": "RevertIn",
         "type": "object"
       },
       "Risk": {
@@ -2654,6 +2829,95 @@
           }
         },
         "summary": "Now "
+      }
+    },
+    "/api/v1/contracts/{contract_id}/automation": {
+      "get": {
+        "operationId": "automation_api_v1_contracts__contract_id__automation_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "contract_id",
+            "required": true,
+            "schema": {
+              "title": "Contract Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AutomationPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Automation"
+      }
+    },
+    "/api/v1/contracts/{contract_id}/automation/revert": {
+      "post": {
+        "description": "The Operator's Revert of one container (slice 12.6b), as `revert_sizing`.",
+        "operationId": "revert__api_v1_contracts__contract_id__automation_revert_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "contract_id",
+            "required": true,
+            "schema": {
+              "title": "Contract Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RevertIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AutomationPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Revert "
       }
     },
     "/api/v1/contracts/{contract_id}/billing": {

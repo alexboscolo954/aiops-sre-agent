@@ -73,6 +73,7 @@ WATCH_SECONDS = 3600  # resized pods are watched this long for a rollback (slice
 NOT_READY_SECONDS = 120  # a resized pod NotReady this long is a reason to roll back
 BACKOFF_SECONDS = 86400  # after a rollback, no new Sizing of that container this long, doubling
 ROLLBACKS_FOR = 7 * 86400  # how far back rollbacks count for the doubling
+ENDING = 3  # Rollbacks of a Workload in 7 days that end its Automation (slice 12.5)
 CHURN = Decimal("0.10")  # under Automation, a change smaller than this is ignored (slice 12.5)
 LOWER_EVERY = 86400  # under Automation, a container's requests go down at most this often
 UNREACHABLE_SECONDS = 900  # the Hub unanswered this long: an Event says so
@@ -146,6 +147,28 @@ class Actuation(BaseModel):
     pods: int = Field(ge=0)
     reason: str = Field(max_length=1000)
     at: float
+
+
+def rollbacks_of(
+    actuations: list[dict[str, Any]], cluster: str, now: float
+) -> dict[tuple[str, ...], list[float]]:
+    """The Hub's side: each Workload's Rollbacks on `cluster` in the 7 days to `now`,
+    oldest first, from its stored Actuations."""
+    out: dict[tuple[str, ...], list[float]] = {}
+    for r in sorted(actuations, key=lambda r: r["at"]):
+        if (
+            r["cluster"] == cluster
+            and r["outcome"] == "rolled_back"
+            and r["at"] >= now - ROLLBACKS_FOR
+        ):
+            out.setdefault((r["namespace"], r["kind"], r["name"]), []).append(r["at"])
+    return out
+
+
+def resumes(rollbacks: dict[tuple[str, ...], list[float]]) -> dict[tuple[str, ...], float]:
+    """Each Workload whose Automation the Rollbacks ended, and when it resumes: once the
+    oldest of the last three is 7 days old."""
+    return {w: ts[-ENDING] + ROLLBACKS_FOR for w, ts in rollbacks.items() if len(ts) >= ENDING}
 
 
 def qty(q: str) -> Decimal:
