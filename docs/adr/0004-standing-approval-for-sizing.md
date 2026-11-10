@@ -24,7 +24,7 @@ The brain stays in the Hub: metrics aggregates, the recommender and the Sizing p
 
 ## Consequences
 
-A client running the Actuator grants it write RBAC on its workloads and, with the eviction flag, a mutating webhook. Each client must agree to that; a Contract that doesn't keeps read-only Sizings. The Actuator needs only an outbound HTTPS connection to the Hub, like a Relay. The README's safety model changes when Phase 12 ships, not before.
+A client running the Actuator grants it write RBAC on its workloads and, with the eviction flag, a mutating webhook. Each client must agree to that; a Contract that doesn't keeps read-only Sizings. The Actuator needs only an outbound HTTPS connection to the Hub, like a Relay. The safety model (now `docs/safety.md`) changes when Phase 12 ships, not before.
 
 ## Considered Options
 

@@ -14,11 +14,11 @@ integrations:
     token_secret: prometheus-token
   - name: runbooks
   - name: incidents
-# Masked for the LLM (README: Masking): placeholders keyed with its mask-key secret
+# Masked for the LLM (docs/contracts.md: Masking): placeholders keyed with its mask-key secret
 data_policy:
   mask:
     terms: [shop.example]
-# Unit prices (README: Unit prices): Sizings show what their waste and requests cost
+# Unit prices (docs/optimizer.md: Unit prices): Sizings show what their waste and requests cost
 prices: {currency: USD, cpu: 0.0316, memory: 0.0042}  # per vCPU-hour, per GiB-hour
 # Sizing policies (aiops sizing show). Built-ins: production (the default),
 # high-availability, batch (every Job and CronJob unless a rule says otherwise), off.

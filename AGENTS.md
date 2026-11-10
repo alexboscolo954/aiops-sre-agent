@@ -25,7 +25,13 @@ Read next, in this order when you need depth:
 | File | Use it for |
 |---|---|
 | [`CONTEXT.md`](CONTEXT.md) | The vocabulary. Every domain term is defined here. |
-| [`README.md`](README.md) | Operator-facing: safety model, running the Hub, Contract YAML reference, configuration table. |
+| [`README.md`](README.md) | The overview: what the Hub, Relay and Actuator are, the quick start, and a map of the docs below. |
+| [`docs/running-the-hub.md`](docs/running-the-hub.md) | Running the Hub: compose stack, Slack, console, Hub MCP server, models and cost, the `AIOPS_*` configuration table. |
+| [`docs/contracts.md`](docs/contracts.md) | The Contract YAML reference (triage side: Masking, GitOps, Jira, Checks, Teachings, vendors, clouds). |
+| [`docs/optimizer.md`](docs/optimizer.md) | The optimizer: Sizings, policies, prices, Bill check, cost allocation, Savings, the digest. |
+| [`docs/client-cluster.md`](docs/client-cluster.md) | The Relay and the Actuator in a client's cluster, and their settings. |
+| [`docs/safety.md`](docs/safety.md) | The full safety model. |
+| [`docs/development.md`](docs/development.md) | Testing, evals and their results, MCP servers on their own, design notes. |
 | [`docs/roadmap.md`](docs/roadmap.md) | What is built, what is next ("## Next"), every decision, and "How every slice ships". It is the source of truth for project state. |
 | [`docs/adr/`](docs/adr) | Four decisions that are hard to reverse (0001 Category is a root-cause class, 0002 Hub and Relay with the Hub's own read/write list, 0003 Contract data in private git, 0004 standing approval for Sizings). |
 
@@ -99,7 +105,8 @@ deploy/            base/ (kustomize), actions/ and gitops/ (RBAC overlays), hub/
                    relay/ and actuator/ (applied in a client's cluster).
 demo/              kind demo workloads, the lab (demo/lab), smoke scripts.
 console/           React app (Vite, TypeScript). Types are generated, not hand-written.
-docs/              roadmap.md, adr/.
+docs/              roadmap.md, adr/, and the user guide (running-the-hub, contracts,
+                   optimizer, client-cluster, safety, development).
 runbooks/          Shared Runbooks (markdown) the agent can search.
 examples/          Example inputs.
 ```
@@ -164,7 +171,9 @@ by phase and number (for example 10.5b). A slice that changes behaviour follows
    No Scenario may regress.
 6. **Keep `make lint` and the full suite green**, and `make console-check` when the API or
    console changed (commit the regenerated `console/openapi.json` and `api-types.ts`).
-7. **Update the docs**: the README (Contract reference and configuration table), `CONTEXT.md`,
+7. **Update the docs**: the page in `docs/` the feature belongs to (Contract fields in
+   `contracts.md`, `optimizer.md` or `client-cluster.md`; settings in `running-the-hub.md`'s
+   configuration table), `CONTEXT.md`,
    and the slice's lines in `docs/roadmap.md` (grilled, built, checked live).
 8. **One-line commit subject.** CI must be green before the next slice.
 
@@ -242,7 +251,7 @@ it only when the model-visible surface changed or when asked. New recordings com
 **Add a Contract field.** Add it to the right model in `contracts.py` (default so existing
 Contracts stay valid), add cross-field rules to `Contract._consistent`, test valid and invalid
 cases in `tests/test_contracts.py` (or the feature's test file), then document it in the
-README's Contracts section and `CONTEXT.md` if it introduces a term.
+right page in `docs/` (`contracts.md`, `optimizer.md` or `client-cluster.md`) and `CONTEXT.md` if it introduces a term.
 
 **Add a table or column.** New numbered migration; `store.py` method(s); a test that stores and
 reads it, including that two Contracts stay apart; keep old rows valid.

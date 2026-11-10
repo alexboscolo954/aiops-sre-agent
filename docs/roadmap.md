@@ -23,7 +23,7 @@ A slice is one commit-sized change, about one working session (1 to 3 hours).
 2. **Tests for every branch of new logic.** Mutation-check each new test: remove the logic, and the test must fail.
 3. **An isolation test** for anything that stores, reads or sends Contract data. It uses the two demo Contracts and proves Contract A's data never reaches Contract B, whether in prompts, tools, storage or notifications.
 4. **Rerun the real eval suite** when anything the model sees changes: the prompt, tool names, descriptions or schemas, or the Report schema. Commit the results under `evals/results/`. No Scenario may regress.
-5. **Keep lint and the full suite green.** Update the README and config table.
+5. **Keep lint and the full suite green.** Update the docs (`docs/*.md`) and the config table.
 6. **Write a one-line commit subject.** CI must be green before moving on.
 
 **Where checks run.**
@@ -167,7 +167,7 @@ Phases 0 to 8 were about 36 slices; Phases 9 to 19 add about 64. Phase 3 (Relay)
 - *Done when:* delivery is off by default, and the client message never contains buttons.
 
 **1.4 Questions.** Done.
-- **Part a, done:** the agent answers a Question with an Answer (read tools only; write tools are hidden, not gated), a follow-up is a new message on the same thread, and the eval runner takes Question Scenarios. Two pass, with budgets set from the runs (see the README's Evals).
+- **Part a, done:** the agent answers a Question with an Answer (read tools only; write tools are hidden, not gated), a follow-up is a new message on the same thread, and the eval runner takes Question Scenarios. Two pass, with budgets set from the runs (see `docs/development.md`, Evals).
 - **Part b, done:** an @mention in a Contract's operator channel starts a Question, and the Answer goes in the thread. A mention in the thread continues the same Investigation. Decided: only messages that @mention the bot (it never reads other channel traffic), Questions only read, and a Question always ends with an Answer.
 - One Investigation per Slack thread (a unique index), so a redelivered mention can't start two. A follow-up claims a finished Question only with a newer mention, so two never run at once. Mentions from anyone but the Operator, in a client channel, or in a Triage thread are refused privately. A Question's thread root is the Operator's message, so the Hub only replies there.
 - Widen Scenario and Expectation in the glossary and in the eval runner. A Scenario can start from a Question, and its Expectation checks the Answer's keywords and Evidence instead of a Category.

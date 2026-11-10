@@ -15,7 +15,7 @@ integrations:
     token_secret: prometheus-token
   - name: runbooks
   - name: incidents
-# Masked for the LLM (README: Masking): placeholders keyed with its mask-key secret
+# Masked for the LLM (docs/contracts.md: Masking): placeholders keyed with its mask-key secret
 data_policy:
   mask:
     terms: [bank.example]

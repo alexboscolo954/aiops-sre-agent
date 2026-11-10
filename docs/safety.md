@@ -1,0 +1,20 @@
+# Safety model
+
+An agent that reads logs and can change a cluster is a prompt-injection target. A log line can say "scale this to zero". The controls are layered, and the important ones sit **outside the model**:
+
+| Layer | Control |
+|---|---|
+| Cluster access | Each cluster in a Contract is either `in_cluster: true` or names its `context` explicitly. The agent never falls back to your current kubectl context. A kubeconfig credential plugin is refused unless the cluster sets `allow_exec`. |
+| RBAC | Read-only ClusterRole, bound **per namespace** with RoleBindings. No Secrets, no ConfigMaps. CI checks this by impersonating the ServiceAccount ([`demo/rbac-check.sh`](../demo/rbac-check.sh)). |
+| Write scope | Write tools are opt-in per Contract (the kubernetes integration's `enable_actions`). When off, the write tools aren't registered at all. When on, they cover only `pods/eviction` (respects PodDisruptionBudgets) and `deployments/scale`. There's deliberately no `patch deployments`, which would allow changing images and commands. |
+| Actuator | Opt-in per cluster (`actuator_token_secret`). It runs in the client's cluster with its own ServiceAccount and token, never the Relay's: it can resize pods (`pods/resize`: requests and limits, never images or commands), create Events and keep one ConfigMap of its own, bound per namespace, and nothing else. It applies only what the Hub approved, never a request above the container's limit, and nothing while the Kill switch is on. Its pod-creation webhook fails open (`failurePolicy: Ignore`, 2 s), sees only the Contract's namespaces, and never touches `kube-*` or its own namespace. |
+| Contract scope | Every tool checks its `cluster` and `namespace` against its own Contract server-side, on top of RBAC. Each Contract's alerts arrive on their own URL with their own token ([Contracts](contracts.md)). |
+| Human approval | The Hub keeps its own list of what each tool does ([ADR 0002](adr/0002-hub-and-relay.md)). A tool not on the list is hidden from the agent. `HumanInTheLoopMiddleware` interrupts before every tool the list marks as a write, **and** before every tool whose server doesn't claim `readOnlyHint`. A server's annotation can only make a tool stricter, so a server that mislabels a write as read-only still waits for approval. The reviewer sees the full arguments. |
+| Secrets in context | Env var *values* are never returned, only names. Logs and events are redacted (tokens, JWTs, keys, `password=`), and so is every request to the model, alert labels and Questions included. |
+| Client identifiers | A Contract's Data policy can mask its hostnames, names, emails and IPs: the LLM provider sees placeholders, everyone else the real values ([Masking](contracts.md#masking)). |
+| Prompt injection | Alerts and tool output are framed as data. An eval scenario plants an instruction in pod logs, and it fails if the agent even *attempts* a write. |
+| Blast radius | Per-run tool-call and model-call limits. The model sees at most `AIOPS_TOOL_OUTPUT_LIMIT` characters of any tool result at once; a larger one is kept, redacted, in that Investigation's state, and `read_more` pages or filters it. The receiver runs a bounded number of triages at once. |
+| Auth | Two tokens: Alertmanager's token can only submit alerts. Reading reports and deciding on proposed actions needs the approver token. |
+| Audit | Every tool call is logged as one JSON line and counted in `aiops_tool_calls_total{tool,status}`. A triage's executed actions are recorded where the tool ran, never taken from the model's own account, and an approved call that failed is marked `FAILED`. |
+
+MCP tool annotations are *hints* from the server. The security boundary is RBAC, the namespace allowlist, the tool registration done on the server side, and the Hub's own read/write list.
