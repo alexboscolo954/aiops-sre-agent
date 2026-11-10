@@ -105,7 +105,7 @@ def test_the_api_also_needs_the_approver_cookie(
     with hub(settings, fake_cluster, database_url) as c:
         no_cookie = c.get("/api/v1/contracts", headers=AS_OPERATOR)
         bad_cookie = c.get(
-            "/api/v1/contracts", headers={**AS_OPERATOR, "Cookie": "aiops_actions=x"}
+            "/api/v1/contracts", headers={**AS_OPERATOR, "Cookie": "squero_actions=x"}
         )
         stranger = c.get("/api/v1/contracts", headers=ACT)
         ok = c.get("/api/v1/contracts", headers=VIEW)

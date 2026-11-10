@@ -32,7 +32,7 @@ HEADERS = {
     "Content-Security-Policy": "default-src 'self'; frame-ancestors 'none'",
     "X-Frame-Options": "DENY",
 }
-COOKIE = "aiops_actions"  # renaming it would make every browser paste the token again
+COOKIE = "squero_actions"  # renamed in 0.39.0: each browser pastes the approver token once more
 COOKIE_DAYS = 30
 # decide(investigation id, the pause's deadline, approve, reason, login) -> decided
 Decide = Callable[[str, float, bool, str, str], Awaitable[bool]]

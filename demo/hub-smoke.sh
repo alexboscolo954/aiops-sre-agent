@@ -152,7 +152,7 @@ echo "ok   investigation stored, failed as expected without a cluster"
 # image, behind the identity; its API also wants the token.
 # The cookie the token page sets: an HMAC of the approver token (console.py).
 key=$(python3 -c 'import hashlib,hmac; print(hmac.new(b"smoke-approver", b"squero-console", hashlib.sha256).hexdigest())')
-with_token=("${as_operator[@]}" -H "Cookie: aiops_actions=$key")
+with_token=("${as_operator[@]}" -H "Cookie: squero_actions=$key")
 page=$(curl -sf "${as_operator[@]}" "$local_api/app/") || fail "console app page"
 js=$(grep -o '/app/assets/[A-Za-z0-9._-]*\.js' <<<"$page" | head -1)
 [[ -n $js && $(code "${as_operator[@]}" "$local_api$js") == 200 ]] || fail "console app files"
