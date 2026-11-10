@@ -89,5 +89,6 @@ COPY --from=console /console/dist /opt/squero/app
 ENV PATH=/app/.venv/bin:$PATH PYTHONUNBUFFERED=1
 USER 10001
 EXPOSE 8080
+LABEL org.opencontainers.image.licenses="PolyForm-Noncommercial-1.0.0"
 ENTRYPOINT ["squero"]
 CMD ["serve"]

@@ -17,7 +17,8 @@ tools, Postgres) that does two jobs for several clients at once.
   them (typed unit prices or cloud list prices), allocates cost by namespace and team, reports
   waste and Savings, and checks its estimate against the cloud *Bill*.
 
-It is a personal tool, MIT licensed, and **the repository is public**. A client's data never
+It is a personal tool, source-available under PolyForm Noncommercial 1.0.0 (MIT up to v0.37.0;
+the name and logo are trademarks, see `TRADEMARKS.md`), and **the repository is public**. A client's data never
 lives here (see section 8).
 
 Read next, in this order when you need depth:

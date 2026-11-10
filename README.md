@@ -104,4 +104,6 @@ To run it for real, start with [Running the Hub](docs/running-the-hub.md).
 
 ## License
 
-MIT
+squero is source-available under the [PolyForm Noncommercial License 1.0.0](LICENSE): free for personal use, research, education and noncommercial organizations. Any commercial use needs written permission from the author. Releases up to v0.37.0 were published under MIT and stay under MIT.
+
+The name "squero" and the ferro logo are trademarks: a fork must use its own name and logo. See [TRADEMARKS.md](TRADEMARKS.md).
