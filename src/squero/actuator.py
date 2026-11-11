@@ -26,6 +26,13 @@ in an Event after 15 minutes.
 
 A Revert (slice 12.6a), the Operator's undo, puts a container's pods back to its template's
 requests in place, as a rollback does, and the Actuator stops holding it.
+
+With the Contract's eviction on (slice 12.7), a pod whose resize its node can never fit (the
+kubelet's Infeasible, or from Kubernetes 1.35 the API server's refusal) is evicted through
+the Eviction API (PodDisruptionBudgets hold) inside one of the Contract's windows, one at a
+time and at least 5 minutes apart; the webhook gives its
+replacement the requests. Outside a window the rollout waits on it; a replacement not Ready
+in 10 minutes is a rollback.
 """
 
 import base64
@@ -38,6 +45,7 @@ import tempfile
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -78,10 +86,13 @@ CHURN = Decimal("0.10")  # under Automation, a change smaller than this is ignor
 LOWER_EVERY = 86400  # under Automation, a container's requests go down at most this often
 UNREACHABLE_SECONDS = 900  # the Hub unanswered this long: an Event says so
 PAUSE = "squero-actuator/pause"  # a Deployment annotated "true" is left alone
-ROLLOUT = ("pod", "since", "canary_until", "resized", "notes")  # held while rolling
+EVICT_EVERY = 300  # at least this long between two evictions (slice 12.7)
+# held while rolling; "waiting": on an Infeasible pod, to evict it; "evicted": its replacement
+ROLLOUT = ("pod", "since", "canary_until", "resized", "notes", "waiting", "evicted", "no_room")
 WATCHED = ("pods", "watch_until")  # held while watched
 Outcome = Literal["applied", "skipped", "failed", "handed_back", "rolled_back", "reverted"]
 # held, never reported: "rolling"
+Ending = Callable[[Outcome, str], "Actuation"]  # how advance() ends a rollout
 
 
 class ActuatorSettings(BaseSettings):
@@ -129,6 +140,8 @@ class Desired(BaseModel):
     # as if approved, without the churn rule or the pause annotation
     automated: list[Wanted] = []
     reverts: list[Undo] = []  # slice 12.6a
+    # slice 12.7: the Contract's eviction off, or on and its window closed or open now
+    eviction: Literal["off", "closed", "open"] = "off"
 
 
 class Actuation(BaseModel):
@@ -186,6 +199,13 @@ def memory_text(b: float) -> str:
 def same(a: str | None, b: str | None) -> bool:
     """Two requests as quantities (`0.1` is `100m`); unset is only ever unset."""
     return a == b if a is None or b is None else qty(a) == qty(b)
+
+
+def no_room(e: ApiException) -> str | None:
+    """The API server's refusal of a resize its pod's node can never fit (Kubernetes 1.35+
+    says so at once, where 1.33 marks the pod's resize Infeasible), its message; else None."""
+    message = why(e).split(": ", 1)[-1]
+    return message if e.status == 403 and "enough allocatable" in message else None
 
 
 def why(e: ApiException) -> str:
@@ -365,6 +385,7 @@ def apply(
     custom: Any,
     old: dict[str, Any] | None = None,
     automated: bool = False,
+    eviction: str = "off",
 ) -> tuple[Actuation | None, dict[str, Any]]:
     """Start resizing `w`'s container in place on its Deployment's pods (slice 12.3): the
     pre-checks, then one canary pod. An Actuation when it ends here (skipped or failed),
@@ -466,10 +487,13 @@ def apply(
     todo = [p for p in pods if needs(p, w.container, set_to)]
     if not todo:
         return done("skipped", 0, f"all {len(pods)} pods already have these requests")
+    room = None
     try:
         resize(core, todo[0], w.container, set_to)
     except ApiException as e:
-        return done("failed", 0, f"{todo[0].metadata.name}: {why(e)}")
+        room = no_room(e)
+        if room is None or eviction == "off":  # off: failed at once, as before slice 12.7
+            return done("failed", 0, f"{todo[0].metadata.name}: {why(e)}")
     _, held = done("applied", 1, "")
     held |= {
         "outcome": "rolling",
@@ -480,6 +504,8 @@ def apply(
         "resized": 1,
         "notes": "".join(notes),
     }
+    if room:  # its node can never fit it: evicted in a window, as one Infeasible (slice 12.7)
+        held["no_room"] = room
     if lowered:
         held["lowered_at"] = at
     if deferred:  # an approval of this run still applies them
@@ -487,10 +513,14 @@ def apply(
     return None, held
 
 
-def advance(core: Any, apps: Any, key: str, h: dict[str, Any], now: float) -> Actuation | None:
+def advance(
+    core: Any, apps: Any, key: str, h: dict[str, Any], now: float, eviction: str = "off"
+) -> Actuation | None:
     """One minute of a rolling resize: wait for its current pod, then (after the canary's
     10 minutes) resize the next one. An Actuation once it ends: applied when every live pod
-    has the requests, failed when a pod's resize is Infeasible or not done in 10 minutes."""
+    has the requests, failed when a pod's resize is Infeasible or not done in 10 minutes.
+    With eviction on (slice 12.7) an Infeasible pod is evicted instead, when `eviction` is
+    open, its replacement getting the requests from the webhook; until then it waits."""
     ns, kind, name, container = key.split("/")
     set_to = h["requests"]
 
@@ -513,6 +543,8 @@ def advance(core: Any, apps: Any, key: str, h: dict[str, Any], now: float) -> Ac
         )
 
     resized, notes, pod = h["resized"], h.get("notes", ""), h["pod"]
+    if "evicted" in h:
+        return replaced(core, apps, key, h, now, end)
     try:
         p = core.read_namespaced_pod(pod, ns)
     except ApiException as e:
@@ -522,8 +554,17 @@ def advance(core: Any, apps: Any, key: str, h: dict[str, Any], now: float) -> Ac
         p = None  # gone: its replacement is one of the pods still to do
     if p is not None and not p.metadata.deletion_timestamp:
         state, message = resize_state(p, container, set_to)
+        if "no_room" in h:  # the API server refused its resize: no room on its node, ever
+            state, message = "infeasible", h["no_room"]
         if state == "infeasible":
-            return end("failed", f"{pod}: Infeasible: {message}; {resized - 1} other pods resized")
+            if eviction == "off":
+                why_ = f"{pod}: Infeasible: {message}; {resized - 1} other pods resized"
+                return end("failed", why_)
+            if eviction == "open":
+                return evict(core, apps, key, h, now, message, end)
+            wait(core, key, h, "window", f"{pod}: Infeasible: {message}; it waits to be "
+                 "evicted, in an eviction window and one pod at a time")  # fmt: skip
+            return None
         if state != "done":
             if now - h["since"] < WAIT_SECONDS:
                 return None
@@ -538,9 +579,104 @@ def advance(core: Any, apps: Any, key: str, h: dict[str, Any], now: float) -> Ac
             return end("applied", f"{resized} of {len(pods)} pods resized in place, one at a time")
         resize(core, todo[0], container, set_to)
     except ApiException as e:
-        return end("failed", f"resizing its next pod: {why(e)}")
+        room = no_room(e)
+        if room is None or eviction == "off":
+            return end("failed", f"resizing its next pod: {why(e)}")
+        h["no_room"] = room
     h.update(pod=todo[0].metadata.name, since=now, resized=resized + 1)
     h.setdefault("pods", {})[todo[0].metadata.name] = baseline(todo[0], container, now)
+    return None
+
+
+def is_ready(p: Any) -> bool:
+    return any(c.type == "Ready" and c.status == "True" for c in (p.status.conditions or []))
+
+
+def wait(core: Any, key: str, h: dict[str, Any], why_: str, message: str) -> None:
+    """The rollout waits to evict its Infeasible pod: said once in an Event per reason."""
+    if h.get("waiting") != why_:
+        h["waiting"] = why_
+        ns, kind, name, _ = key.split("/")
+        log.info("%s waits: %s", key, message)
+        post(core, ns, ("apps/v1", kind, name), "EvictionWaiting", message, False)
+
+
+def evict(
+    core: Any, apps: Any, key: str, h: dict[str, Any], now: float, message: str, end: Ending
+) -> Actuation | None:
+    """Evict the rollout's Infeasible pod through the Eviction API, so PodDisruptionBudgets
+    hold (slice 12.7): its ReplicaSet starts a replacement, which the webhook gives the
+    requests. A budget that allows no disruption now: it waits."""
+    ns, kind, name, _ = key.split("/")
+    pod = h["pod"]
+    try:
+        before = [
+            p.metadata.name for p in pods_of(core, apps, apps.read_namespaced_deployment(name, ns))
+        ]
+    except ApiException as e:
+        log.warning("listing %s's pods to evict %s: %s", key, pod, why(e))
+        return None
+    h["evicted"] = {"pod": pod, "at": now, "before": before}  # first: the webhook reads it
+    body = client.V1Eviction(metadata=client.V1ObjectMeta(name=pod, namespace=ns))
+    try:
+        core.create_namespaced_pod_eviction(pod, ns, body)
+    except ApiException as e:
+        del h["evicted"]
+        if e.status == 429:
+            wait(core, key, h, "budget", f"{pod}: Infeasible: {message}; a PodDisruptionBudget "
+                 "allows no eviction now")  # fmt: skip
+            return None
+        return end("failed", f"evicting {pod}: {why(e)}")
+    h.pop("waiting", None)
+    h["evicted_at"] = now
+    h["notes"] = h.get("notes", "") + f"; {pod} evicted, its resize Infeasible"
+    said = f"{pod} evicted: its resize was Infeasible ({message}); its replacement starts with "
+    log.info("%s: %s", key, said + texts(h["requests"]))
+    post(core, ns, ("apps/v1", kind, name), "PodEvicted", said + texts(h["requests"]), False)
+    return None
+
+
+def replacements(d: Any, pods: list[Any], ev: dict[str, Any]) -> list[Any] | None:
+    """The pods started since the eviction `ev`; None when none is owed: none started and
+    the Deployment already has as many live pods as it wants (an HPA scaled it down)."""
+    new = [p for p in pods if p.metadata.name not in ev["before"]]
+    wants = d.spec.replicas if d.spec.replicas is not None else 1
+    return None if not new and len(pods) >= wants else new
+
+
+def replaced(
+    core: Any, apps: Any, key: str, h: dict[str, Any], now: float, end: Ending
+) -> Actuation | None:
+    """Whether the evicted pod's replacement is up with the requests: then it stands for
+    the evicted pod in the rollout (a canary's 10 minutes start again). Not Ready in 10
+    minutes is trouble(): a rollback."""
+    ns, _, name, container = key.split("/")
+    ev = h["evicted"]
+    try:
+        d = apps.read_namespaced_deployment(name, ns)
+        pods = pods_of(core, apps, d)
+    except ApiException as e:
+        log.warning("watching %s's replacement: %s", key, why(e))
+        return None
+    new = replacements(d, pods, ev)
+    if new is None:  # none owed: the rollout goes on with the pods it has
+        del h["evicted"]
+        return None
+    up = [p for p in new if is_ready(p)]
+    if not up:
+        return None
+    p = up[0]
+    if needs(p, container, h["requests"]):
+        return end(
+            "failed",
+            f"{p.metadata.name}, replacing evicted {ev['pod']}, started from its template",
+        )
+    del h["evicted"]
+    h.pop("no_room", None)
+    h.setdefault("pods", {})[p.metadata.name] = baseline(p, container, now)
+    h.update(pod=p.metadata.name, since=now)
+    if h["resized"] == 1:
+        h["canary_until"] = now + CANARY_SECONDS
     return None
 
 
@@ -571,13 +707,19 @@ def container_status(pod: Any, container: str) -> Any:
 def trouble(core: Any, apps: Any, key: str, h: dict[str, Any], now: float) -> str | None:
     """Why the Sizing held as `h` made its pods unhealthy (slice 12.4), or None: a pod with
     its requests whose container restarted (an OOM kill named as one) since it got them, or
-    a pod it resized that has been NotReady for 2 minutes since. Throttling is not one."""
+    a pod it resized that has been NotReady for 2 minutes since, or an evicted pod's
+    replacement not Ready in 10 minutes (slice 12.7). Throttling is not one."""
     ns, _, name, container = key.split("/")
     try:
-        pods = pods_of(core, apps, apps.read_namespaced_deployment(name, ns))
+        d = apps.read_namespaced_deployment(name, ns)
+        pods = pods_of(core, apps, d)
     except ApiException as e:
         log.warning("watching %s: %s", key, why(e))
         return None
+    ev = h.get("evicted")
+    new = replacements(d, pods, ev) if ev else []
+    if ev and now - ev["at"] >= WAIT_SECONDS and new is not None and not any(map(is_ready, new)):
+        return f"{ev['pod']} evicted: no replacement Ready in {WAIT_SECONDS // 60} minutes"
     seen = h.get("pods") or {}
     for p in pods:
         if needs(p, container, h["requests"]):
@@ -624,12 +766,25 @@ def put_back(
     had = h.get("template") or {}
     back = {r: had[r] for r in h["requests"] if had.get(r) is not None}
     unset = sorted(r for r in h["requests"] if had.get(r) is None)
-    done, refused = 0, []
+    done, refused, stuck = 0, [], 0
     try:
         pods = pods_of(core, apps, apps.read_namespaced_deployment(name, ns))
     except ApiException as e:
         pods, refused = [], [f"listing its pods: {why(e)}"]
+    ev = h.pop("evicted", None)  # first: the webhook gives its next replacement nothing
     for p in pods:
+        if ev and p.metadata.name not in ev["before"] and p.status.phase == "Pending":
+            # an evicted pod's replacement, unscheduled at the held size: started again from
+            # its template, the hold gone (a Pending pod's eviction ignores budgets)
+            body = client.V1Eviction(
+                metadata=client.V1ObjectMeta(name=p.metadata.name, namespace=ns)
+            )
+            try:
+                core.create_namespaced_pod_eviction(p.metadata.name, ns, body)
+                stuck += 1
+            except ApiException as e:
+                refused.append(f"evicting {p.metadata.name}: {why(e)}")
+            continue
         if back and not needs(p, container, h["requests"]):
             try:
                 resize(core, p, container, back)
@@ -644,6 +799,8 @@ def put_back(
         reason += f" to their template's {texts(back)}"
     if unset:
         reason += f" ({unset} left: the template sets none)"
+    if stuck:
+        reason += f"; {stuck} Pending replacement evicted to start from its template"
     if refused:
         reason += f"; {len(refused)} refused, first {refused[0]}"
     return Actuation(
@@ -756,8 +913,8 @@ def mutation(
     ops: list[Any] = []
     for i, c in enumerate((pod.get("spec") or {}).get("containers") or []):
         h = held.get(f"{ns}/Deployment/{deployment}/{c.get('name')}")
-        if not h or h.get("outcome") != "applied":
-            continue
+        if not h or (h.get("outcome") != "applied" and "evicted" not in h):
+            continue  # applied, or rolling with a pod evicted for these requests (slice 12.7)
         resources = c.get("resources") or {}
         requests = resources.get("requests") or {}
         limits = resources.get("limits") or {}
@@ -894,6 +1051,7 @@ class Actuator:
     paused: frozenset[str] = frozenset()  # `ns/name` of the Deployments a person paused
     unanswered: float | None = None  # since when the Hub hasn't answered
     told: bool = False  # the Event that it hasn't is out
+    eviction: str = "off"  # the Hub's last word on eviction (slice 12.7)
 
     def load(self) -> None:
         try:
@@ -960,7 +1118,8 @@ class Actuator:
         if not self.killed:  # the Actuator undoes its own harm, the Hub reachable or not
             done += self.watch()
         if desired is not None and not self.killed:  # the Hub's word: rollouts go on
-            done += self.revert(desired.reverts) + self.advance()
+            self.eviction = desired.eviction
+            done += self.revert(desired.reverts) + self.advance(desired.eviction)
             done += self.act(desired.sizings, desired.automated)
             done += self.catch_up()
         rolling = any(h.get("outcome") == "rolling" or "pods" in h for h in self.held.values())
@@ -1058,11 +1217,18 @@ class Actuator:
             out.append(a)
         return out
 
-    def advance(self) -> list[Actuation]:
+    def advance(self, eviction: str = "off") -> list[Actuation]:
+        """Each rollout's minute. An eviction only when the window is open, no other evicted
+        pod awaits its replacement, and the last eviction is 5 minutes old (slice 12.7)."""
         out = []
         for key, h in self.held.items():
             if h.get("outcome") == "rolling" and not self.is_paused(key):
-                a = advance(self.core, self.apps, key, h, time.time())
+                now, may = time.time(), eviction
+                last = max((x.get("evicted_at", 0.0) for x in self.held.values()), default=0.0)
+                busy = any("evicted" in x for x in self.held.values())
+                if may == "open" and (busy or now - last < EVICT_EVERY):
+                    may = "closed"
+                a = advance(self.core, self.apps, key, h, now, may)
                 if a:
                     log.info("%s %s: %s", a.outcome, key, a.reason)
                     event(self.core, a, h)
@@ -1092,10 +1258,13 @@ class Actuator:
                 run_id=h["run_id"], namespace=ns, kind=kind, name=name, container=container,
                 cpu=values.get("cpu"), memory=values.get("memory"),
             )  # fmt: skip
-            a, new = apply(self.core, self.apps, w, time.time(), self.autoscaling, self.custom)
+            a, new = apply(
+                self.core, self.apps, w, time.time(), self.autoscaling, self.custom,
+                eviction=self.eviction,
+            )  # fmt: skip
             carried = (
                 *("rollbacks", "backoff_until", "watch_until", "lowered_at", "automated"),
-                "revert",
+                *("revert", "evicted_at"),
             )
             kept = {k: h[k] for k in carried if k in h}
             watched = (h.get("pods") or {}) | (new.get("pods") or {})
@@ -1175,10 +1344,13 @@ class Actuator:
                 continue  # waits: applied once the person lifts the pause, if still current
             old = self.held.get(key, {})
             now = time.time()
+            if "evicted" in old:
+                continue  # its evicted pod's replacement first: 10 minutes at most
             if auto:
                 if max(old.get("run_id", -1), old.get("seen", -1)) >= w.run_id:
                     continue
-                if old.get("outcome") == "rolling" or now < old.get("backoff_until", 0):
+                rolling = old.get("outcome") == "rolling" and not old.get("waiting")
+                if rolling or now < old.get("backoff_until", 0):
                     continue  # waits, unsaid: a new Sizing comes every hour
             elif old.get("run_id", -1) > w.run_id or (
                 old.get("run_id") == w.run_id and not old.get("automated")
@@ -1191,7 +1363,7 @@ class Actuator:
                     continue
                 if old.get("outcome") == "rolling":
                     continue  # what the churn rule left out goes once this rollout ends
-            carried = ("rollbacks", "backoff_until", "lowered_at", "revert")
+            carried = ("rollbacks", "backoff_until", "lowered_at", "revert", "evicted_at")
             carry: dict[str, Any] = {k: old[k] for k in carried if k in old}
             a: Actuation | None
             if now < old.get("backoff_until", 0):
@@ -1214,7 +1386,7 @@ class Actuator:
                 }
             else:
                 args = (self.core, self.apps, w, now, self.autoscaling, self.custom, old, auto)
-                a, new = apply(*args)
+                a, new = apply(*args, eviction=self.eviction)
                 if not new:  # nothing moves enough: the churn rule
                     self.held[key] = {**old, "seen": w.run_id}
                     continue

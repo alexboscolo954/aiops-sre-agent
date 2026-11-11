@@ -22,10 +22,12 @@ import shutil
 import subprocess
 from collections import defaultdict
 from collections.abc import Callable, Sequence
+from datetime import datetime
 from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 from pydantic import (
@@ -631,6 +633,67 @@ class Allocation(Strict):
         return next((r.team for r in self.teams if r.matches(cluster, namespace, labels)), NO_TEAM)
 
 
+DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+Day = Literal["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+Clock = Annotated[str, Field(pattern=r"^(([01]\d|2[0-3]):[0-5]\d|24:00)$")]
+
+
+def minutes(clock: str) -> int:
+    hours, mins = clock.split(":")
+    return int(hours) * 60 + int(mins)
+
+
+class Window(Strict):
+    """An Eviction window (slice 12.7): from `start` to `end` on each of `days`; an end at or
+    before its start runs past midnight, the night belonging to the day it starts."""
+
+    days: list[Day] = Field(min_length=1)
+    start: Clock
+    end: Clock
+
+    @model_validator(mode="after")
+    def _spans(self) -> "Window":
+        if self.start == "24:00" or self.start == self.end:
+            raise ValueError(f"a window from {self.start} to {self.end} is no window")
+        return self
+
+    def holds(self, day: int, minute: int) -> bool:
+        """Whether this window is open on weekday `day` (0 Monday) at `minute` past midnight."""
+        s, e = minutes(self.start), minutes(self.end)
+        if s < e:
+            return DAYS[day] in self.days and s <= minute < e
+        return (DAYS[day] in self.days and minute >= s) or (
+            DAYS[day - 1] in self.days and minute < e
+        )
+
+
+class ActuatorConfig(Strict):
+    """What the Contract's Actuators may do beyond resizing in place (slice 12.7): evict a
+    pod whose resize is Infeasible, only inside one of its windows, in its timezone."""
+
+    eviction: bool = False
+    timezone: str = "UTC"
+    windows: list[Window] = []
+
+    @model_validator(mode="after")
+    def _usable(self) -> "ActuatorConfig":
+        try:
+            ZoneInfo(self.timezone)
+        except (ZoneInfoNotFoundError, ValueError):
+            raise ValueError(f"actuator: no timezone {self.timezone!r}") from None
+        if self.eviction and not self.windows:
+            raise ValueError("actuator: eviction needs at least one window")
+        return self
+
+    def evicting(self, at: datetime) -> Literal["off", "closed", "open"]:
+        """Whether its Actuators may evict at `at`, as the Hub tells them."""
+        if not self.eviction:
+            return "off"
+        local = at.astimezone(ZoneInfo(self.timezone))
+        minute = local.hour * 60 + local.minute
+        return "open" if any(w.holds(local.weekday(), minute) for w in self.windows) else "closed"
+
+
 class ListPrices(Strict):
     """Cloud list prices (slice 10.4): a cluster with no typed prices gets its nodes'
     on-demand list price, in USD unless `currency` says otherwise (Azure's catalog only;
@@ -663,6 +726,7 @@ class Contract(Strict):
     prices: Prices | None = None  # none: Sizings in cores and GiB, no money
     list_prices: ListPrices | None = None  # else typed prices only
     allocation: Allocation = Allocation()
+    actuator: ActuatorConfig = ActuatorConfig()  # eviction (slice 12.7)
 
     _dir: Path = PrivateAttr(default=Path())
     _secrets: dict[str, SecretStr] = PrivateAttr(default_factory=dict)
@@ -699,6 +763,8 @@ class Contract(Strict):
             if r.automate and not (actuated if r.cluster is None else actuated & {r.cluster}):
                 where = f"cluster {r.cluster!r} has" if r.cluster else "no cluster has"
                 raise ValueError(f"sizing rule {i + 1} automates: {where} no actuator_token_secret")
+        if self.actuator.eviction and not actuated:
+            raise ValueError("actuator: eviction, but no cluster has an actuator_token_secret")
         for i, t in enumerate(self.allocation.teams):
             if t.cluster is not None and t.cluster not in groups["cluster"]:
                 raise ValueError(f"team rule {i + 1}: no cluster {t.cluster!r}")

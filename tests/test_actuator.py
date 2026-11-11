@@ -109,6 +109,7 @@ def test_an_actuator_gets_only_its_own_clusters_current_approved_deployments(
         "sizings": [{**wanted, "name": "api", "cpu": 0.115, "memory": None}],
         "automated": [],
         "reverts": [],
+        "eviction": "off",
     }
     assert theirs.json()["sizings"] == [{**wanted, "name": "ledger", "cpu": 0.115, "memory": None}]
     assert wrong.status_code == 401 and none.status_code in (401, 403)
@@ -125,8 +126,20 @@ def test_the_kill_switch_and_a_later_run_leave_nothing_to_apply(
         # bank's run 2 read its cluster test: run 1's approval was never applied, and won't be
         sql(database_url, run("bank", '{"edge": null}'), run("bank", '{"test": null}'))
         superseded = c.get("/actuator/desired", headers=as_actuator(B_TOKEN)).json()
-    assert killed == {"kill_switch": True, "sizings": [], "automated": [], "reverts": []}
-    assert superseded == {"kill_switch": False, "sizings": [], "automated": [], "reverts": []}
+    assert killed == {
+        "kill_switch": True,
+        "sizings": [],
+        "automated": [],
+        "reverts": [],
+        "eviction": "off",
+    }
+    assert superseded == {
+        "kill_switch": False,
+        "sizings": [],
+        "automated": [],
+        "reverts": [],
+        "eviction": "off",
+    }
 
 
 def report(**more: Any) -> dict[str, Any]:
@@ -264,6 +277,7 @@ def cluster(
     apps.read_namespaced_deployment.return_value = k.V1Deployment(
         metadata=k.V1ObjectMeta(name="api", namespace="shop", uid="u1"),
         spec=k.V1DeploymentSpec(
+            replicas=2,
             selector=k.V1LabelSelector(match_labels={"app": "api"}),
             template=k.V1PodTemplateSpec(spec=k.V1PodSpec(containers=[template])),
         ),
@@ -782,6 +796,7 @@ def test_the_manifests_resize_pods_and_never_edit_a_deployment() -> None:
     }
     assert writes == {
         ("pods/resize", "patch"),
+        ("pods/eviction", "create"),  # slice 12.7, the Eviction API: PDBs hold
         ("events", "create"),
         ("configmaps", "update"),
         ("configmaps", "create"),
@@ -1361,7 +1376,13 @@ def test_an_actuator_gets_the_newest_sizings_of_what_its_contract_automates(
     ]
     assert theirs["automated"] == [{**one, "run_id": 3, "name": "ledger", "cpu": 0.115,
                                     "memory": None}]  # fmt: skip
-    assert killed == {"kill_switch": True, "sizings": [], "automated": [], "reverts": []}
+    assert killed == {
+        "kill_switch": True,
+        "sizings": [],
+        "automated": [],
+        "reverts": [],
+        "eviction": "off",
+    }
 
 
 def test_the_rollback_that_ends_automation_reaches_the_operator_once(
@@ -1854,3 +1875,368 @@ def test_the_automation_view_shows_the_contracts_own_containers_and_reverts_one(
     assert [h["name"] for h in theirs["clusters"][0]["containers"]] == ["ledger"]
     rows = sql(database_url, ("select name, asked_by from reverts order by id", ()))
     assert rows == [("db", "mcp:x"), ("api", f"console:{OPERATOR}")]
+
+
+# --- eviction in windows (slice 12.7) --------------------------------------------------------
+
+
+def evicting(cid: str, token: str, block: dict[str, Any]) -> contracts.Contract:
+    data = actuated(cid, token).model_dump(mode="json", exclude_defaults=True)
+    data["actuator"] = block
+    return contracts.build(data, secrets={"act": SecretStr(token)})
+
+
+NIGHTS = {"days": ["fri", "sat"], "start": "22:00", "end": "02:00"}
+
+
+def test_a_window_opens_on_its_days_in_its_timezone_a_night_belonging_to_its_start() -> None:
+    rome = contracts.ActuatorConfig(eviction=True, timezone="Europe/Rome", windows=[NIGHTS])
+    at = lambda s: datetime.fromisoformat(s)  # noqa: E731
+    assert rome.evicting(at("2026-11-13T21:00:00+00:00")) == "open"  # Friday 22:00 in Rome
+    assert rome.evicting(at("2026-11-13T20:59:00+00:00")) == "closed"  # 21:59
+    assert rome.evicting(at("2026-11-14T00:59:00+00:00")) == "open"  # Saturday 01:59: Friday's
+    assert rome.evicting(at("2026-11-14T01:00:00+00:00")) == "closed"  # 02:00: ended
+    assert rome.evicting(at("2026-11-15T00:30:00+00:00")) == "open"  # Sunday 01:30: Saturday's
+    assert rome.evicting(at("2026-11-16T00:30:00+00:00")) == "closed"  # Monday 01:30: Sunday's
+    assert rome.evicting(at("2026-11-12T21:30:00+00:00")) == "closed"  # Thursday 22:30
+    day = contracts.Window(days=["sun"], start="00:00", end="24:00")
+    assert day.holds(6, 0) and day.holds(6, 1439) and not day.holds(0, 0) and not day.holds(5, 1439)
+    off = contracts.ActuatorConfig(windows=[NIGHTS])  # windows alone evict nothing
+    assert off.evicting(at("2026-11-13T21:00:00+00:00")) == "off"
+    utc = contracts.ActuatorConfig(
+        eviction=True, windows=[{"days": ["fri"], "start": "22:00", "end": "23:00"}]
+    )
+    assert utc.evicting(at("2026-11-13T22:00:00+00:00")) == "open"  # UTC unless it says
+    assert utc.evicting(at("2026-11-13T23:00:00+00:00")) == "closed"  # its end: closed
+
+
+@pytest.mark.parametrize(
+    ("block", "error"),
+    [
+        ({"eviction": True}, "eviction needs at least one window"),
+        ({"timezone": "Mars/Olympus"}, "no timezone 'Mars/Olympus'"),
+        ({"windows": [{**NIGHTS, "end": "22:00"}]}, "from 22:00 to 22:00 is no window"),
+        ({"windows": [{**NIGHTS, "start": "24:00"}]}, "from 24:00 to 02:00 is no window"),
+        ({"windows": [{**NIGHTS, "end": "25:00"}]}, "String should match pattern"),
+        ({"windows": [{**NIGHTS, "days": []}]}, "at least 1 item"),
+        ({"windows": [{**NIGHTS, "days": ["fry"]}]}, "Input should be 'mon'"),
+    ],
+)
+def test_an_actuator_block_that_cannot_work_is_refused(block: dict[str, Any], error: str) -> None:
+    with pytest.raises(ValueError, match=error):
+        evicting("acme", A_TOKEN, block)
+
+
+def test_eviction_needs_a_cluster_that_runs_an_actuator() -> None:
+    data = actuated("acme", A_TOKEN).model_dump(mode="json", exclude_defaults=True)
+    data["clusters"][0].pop("actuator_token_secret")
+    data["actuator"] = {"eviction": True, "windows": [NIGHTS]}
+    with pytest.raises(ValueError, match="eviction, but no cluster has an actuator_token_secret"):
+        contracts.build(data, secrets={})
+
+
+def test_an_actuator_hears_only_its_own_contracts_eviction_window(
+    settings: Settings, database_url: str
+) -> None:
+    today = datetime.now(UTC).weekday()
+    always = {"days": list(contracts.DAYS), "start": "00:00", "end": "24:00"}
+    never = {"days": [d for i, d in enumerate(contracts.DAYS) if (i - today) % 7 not in (0, 1, 6)]}
+    never |= {"start": "00:00", "end": "24:00"}  # not today, nor a day whose night runs into it
+    acme = evicting("acme", A_TOKEN, {"eviction": True, "windows": [always]})
+    bank = actuated("bank", B_TOKEN)
+    shut = evicting("shut", "c" * 40, {"eviction": True, "windows": [never]})
+    app = hub(settings, database_url, acme, bank, shut)
+    with TestClient(app) as c:
+        seen = [
+            c.get("/actuator/desired", headers=as_actuator(t)).json()["eviction"]
+            for t in (A_TOKEN, B_TOKEN, "c" * 40)
+        ]
+        sql(database_url, ("insert into kill_switches values ('acme', 't', 1)", ()))
+        killed = c.get("/actuator/desired", headers=as_actuator(A_TOKEN)).json()["eviction"]
+    assert seen == ["open", "off", "closed"] and killed == "off"
+
+
+def infeasible(core: Any) -> None:
+    """api-1-a's resize Infeasible from now on."""
+    core.read_namespaced_pod.side_effect = None
+    core.read_namespaced_pod.return_value = pending("Infeasible", "Node didn't have enough")
+
+
+def up(name: str, ready: bool = True, phase: str = "Running", **requests: str) -> Any:
+    """A new pod of api-1 (a replacement), Ready or not."""
+    p = pod(name, "api-1", phase=phase, **requests)
+    p.metadata.namespace = "shop"
+    p.status.conditions = [k.V1PodCondition(type="Ready", status="True" if ready else "False")]
+    allocated = k.V1ResourceRequirements(requests=p.spec.containers[0].resources.requests)
+    p.status.container_statuses = [status("app", allocated)]
+    return p
+
+
+def evicted(core: Any) -> list[tuple[str, str, str]]:
+    return [
+        (c.args[0], c.args[1], c.args[2].metadata.name)
+        for c in core.create_namespaced_pod_eviction.call_args_list
+    ]
+
+
+def reasons(core: Any) -> list[str]:
+    return [c.args[1].reason for c in core.create_namespaced_event.call_args_list]
+
+
+def test_an_infeasible_pod_waits_for_the_window_then_is_evicted_and_replaced() -> None:
+    core, apps = cluster()
+    _, held = start(core, apps, wanted())
+    infeasible(core)
+    for at in (60.0, 120.0, 5000.0):  # no 10 minutes' limit while it waits
+        assert actuator.advance(core, apps, KEY, held, at, "closed") is None
+    assert reasons(core) == ["EvictionWaiting"] and held["waiting"] == "window"
+    assert not core.create_namespaced_pod_eviction.called
+    message = core.create_namespaced_event.call_args.args[1].message
+    assert message.startswith("api-1-a: Infeasible: Node didn't have enough; it waits")
+    assert actuator.advance(core, apps, KEY, held, 6000.0, "open") is None
+    assert evicted(core) == [("api-1-a", "shop", "api-1-a")]
+    assert held["evicted"] == {"pod": "api-1-a", "at": 6000.0, "before": ["api-1-a", "api-1-b"]}
+    assert held["evicted_at"] == 6000.0 and "waiting" not in held
+    assert reasons(core) == ["EvictionWaiting", "PodEvicted"]
+    assert "its replacement starts with cpu 115m, memory 96Mi" in (
+        core.create_namespaced_event.call_args.args[1].message
+    )
+    pods = core.list_namespaced_pod.return_value.items
+    pods[0].metadata.deletion_timestamp = datetime.now(UTC)  # api-1-a goes
+    pods[1] = up("api-1-b")  # Ready, but no replacement: it was there before
+    pods.append(up("api-1-c", ready=False, cpu="115m", memory="96Mi"))
+    assert actuator.advance(core, apps, KEY, held, 6060.0, "open") is None  # not Ready yet
+    assert "evicted" in held and len(evicted(core)) == 1
+    pods[-1] = up("api-1-c", cpu="115m", memory="96Mi")  # the webhook gave it the requests
+    assert actuator.advance(core, apps, KEY, held, 6120.0, "open") is None
+    assert "evicted" not in held and (held["pod"], held["since"]) == ("api-1-c", 6120.0)
+    assert held["canary_until"] == 6120.0 + 600  # the canary's 10 minutes, again
+    assert held["pods"]["api-1-c"] == {"at": 6120.0, "restarts": 0}
+    core.read_namespaced_pod.side_effect = lambda name, ns: up(name, cpu="115m", memory="96Mi")
+    assert actuator.advance(core, apps, KEY, held, 6719.0, "open") is None
+    assert actuator.advance(core, apps, KEY, held, 6720.0, "open") is None  # the next: b
+    assert resized(core)[-1] == ("api-1-b", body(cpu="115m", memory="96Mi"))
+    done = actuator.advance(core, apps, KEY, held, 6780.0, "open")
+    assert done is not None and (done.outcome, done.pods) == ("applied", 2)
+    assert done.reason == (
+        "2 of 2 pods resized in place, one at a time; api-1-a evicted, its resize Infeasible"
+    )
+    assert held["evicted_at"] == 6000.0  # kept: the next eviction 5 minutes after
+
+
+def test_a_disruption_budget_holds_an_eviction_and_other_refusals_fail_the_rollout() -> None:
+    core, apps = cluster()
+    _, held = start(core, apps, wanted())
+    infeasible(core)
+    core.create_namespaced_pod_eviction.side_effect = refusal(429, "would violate the budget")
+    for at in (60.0, 120.0):
+        assert actuator.advance(core, apps, KEY, held, at, "open") is None
+        assert "evicted" not in held  # refused: nothing to wait for
+    assert held["waiting"] == "budget" and "evicted" not in held and "evicted_at" not in held
+    assert reasons(core) == ["EvictionWaiting"]
+    assert "a PodDisruptionBudget allows no eviction now" in (
+        core.create_namespaced_event.call_args.args[1].message
+    )
+    core.create_namespaced_pod_eviction.side_effect = refusal(403, "forbidden")
+    failed = actuator.advance(core, apps, KEY, held, 180.0, "open")
+    assert failed is not None and failed.outcome == "failed"
+    assert failed.reason == "evicting api-1-a: 403: forbidden"
+    assert "evicted" not in held and "waiting" not in held
+    off = start(core, apps, wanted())[1]
+    gone = actuator.advance(core, apps, KEY, off, 60.0, "off")  # as before slice 12.7
+    assert gone is not None and gone.outcome == "failed" and "Infeasible" in gone.reason
+
+
+def test_a_replacement_the_webhook_missed_ends_the_rollout() -> None:
+    core, apps = cluster()
+    _, held = start(core, apps, wanted())
+    infeasible(core)
+    actuator.advance(core, apps, KEY, held, 60.0, "open")
+    core.list_namespaced_pod.return_value.items.append(up("api-1-c"))  # its template's cpu 1
+    failed = actuator.advance(core, apps, KEY, held, 120.0, "open")
+    assert failed is not None and failed.outcome == "failed"
+    assert failed.reason == (
+        "api-1-c, replacing evicted api-1-a, started from its template; "
+        "api-1-a evicted, its resize Infeasible"
+    )
+    assert "evicted" not in held and len(evicted(core)) == 1  # never again, in a loop
+
+
+def test_a_replacement_not_ready_in_10_minutes_is_rolled_back_and_evicted_if_pending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(actuator.time, "time", lambda: 660.0)
+    core, apps = cluster()
+    _, held = start(core, apps, wanted())
+    infeasible(core)
+    actuator.advance(core, apps, KEY, held, 60.0, "open")
+    pods = core.list_namespaced_pod.return_value.items
+    pods[0].metadata.deletion_timestamp = datetime.now(UTC)
+    pods[1] = up("api-1-b", phase="Pending")  # Ready or not, there before: not a replacement
+    pods[1].status.conditions[0].status = "True"
+    stuck = up("api-1-c", ready=False, phase="Pending", cpu="115m", memory="96Mi")
+    pods.append(stuck)
+    assert actuator.trouble(core, apps, KEY, held, 659.0) is None  # 10 minutes not yet
+    assert actuator.trouble(core, apps, KEY, held, 660.0) == (
+        "api-1-a evicted: no replacement Ready in 10 minutes"
+    )
+    pods[-1] = up("api-1-c", cpu="115m", memory="96Mi")  # up, though advance() never saw it
+    assert actuator.trouble(core, apps, KEY, held, 660.0) is None
+    pods[-1] = stuck
+    pods.append(up("api-1-d", ready=False, cpu="115m", memory="96Mi"))  # running: in place
+    held_then: list[bool] = []
+    core.create_namespaced_pod_eviction.side_effect = lambda *_: held_then.append("evicted" in held)
+    a = actuator.Actuator(MagicMock(), core, apps, "x", held={KEY: held})
+    (back,) = a.watch()
+    assert held_then == [False]  # let go first: the webhook gives its replacement nothing
+    assert [n for n, _ in resized(core)][-1] == "api-1-d"
+    assert back.outcome == "rolled_back"
+    assert "; 1 Pending replacement evicted to start from its template" in back.reason
+    assert evicted(core)[1:] == [("api-1-c", "shop", "api-1-c")]  # nor api-1-b, Pending
+    assert all(n != "api-1-c" for n, _ in resized(core))  # evicted, never resized
+    assert "evicted" not in held and held["outcome"] == "rolled_back"
+
+
+def test_the_webhook_sizes_a_replacement_only_while_its_eviction_is_outstanding() -> None:
+    rolling = {k: {**v, "outcome": "rolling"} for k, v in HELD.items()}
+    assert patched(new_pod(), held=rolling) is None  # a rollout's new pods: from the template
+    out = {
+        k: {**v, "evicted": {"pod": "api-1-a", "at": 0.0, "before": []}} for k, v in rolling.items()
+    }
+    assert patched(new_pod(), held=out) == patched(new_pod())
+
+
+def test_one_eviction_at_a_time_and_five_minutes_apart(monkeypatch: pytest.MonkeyPatch) -> None:
+    clock = [1000.0]
+    monkeypatch.setattr(actuator.time, "time", lambda: clock[0])
+    core, apps = cluster()
+    _, first = start(core, apps, wanted())
+    other = {**first, "pod": "api-1-b"}
+    infeasible(core)
+    a = actuator.Actuator(
+        MagicMock(), core, apps, "x", held={KEY: first, "shop/Deployment/api/side": other}
+    )
+    a.advance("open")
+    assert evicted(core) == [("api-1-a", "shop", "api-1-a")]  # the second waits: one at a time
+    assert a.held["shop/Deployment/api/side"]["waiting"] == "window"
+    del first["evicted"]  # its replacement up
+    clock[0] = 1299.0
+    a.advance("open")
+    assert len(evicted(core)) == 1  # 5 minutes not yet
+    clock[0] = 1300.0
+    a.advance("open")
+    assert len(evicted(core)) == 2
+    a.advance("closed")
+    assert len(evicted(core)) == 2
+    first["evicted"] = {"pod": "api-1-a", "at": 0.0, "before": ["api-1-a", "api-1-b"]}
+    core.list_namespaced_pod.return_value.items[0].metadata.deletion_timestamp = datetime.now(UTC)
+    first["evicted_at"] = 0.0
+    a.held["shop/Deployment/api/side"].pop("evicted", None)
+    a.held["shop/Deployment/api/side"]["evicted_at"] = 0.0
+    clock[0] = 9000.0
+    a.advance("open")
+    assert len(evicted(core)) == 2  # one replacement still awaited: no other eviction
+
+
+def test_each_minute_passes_the_hubs_eviction_word_to_the_rollouts() -> None:
+    core, apps = cluster()
+    open_ = {**desired(1), "eviction": "open"}
+    a = make(hub_of([open_, open_], []), core, apps)
+    a.step()  # the canary
+    infeasible(core)
+    a.step()
+    assert evicted(core) == [("api-1-a", "shop", "api-1-a")]
+
+
+def test_a_newer_automation_sizing_replaces_a_rollout_waiting_to_evict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(actuator.time, "time", lambda: 100.0)
+    core, apps = cluster()
+    a = make(MagicMock(), core, apps)
+    a.act([], [wanted(1, memory=None)])
+    assert a.held[KEY]["outcome"] == "rolling"
+    a.act([], [wanted(2, cpu=0.5, memory=None)])
+    assert a.held[KEY]["run_id"] == 1  # rolling: waits, unsaid
+    a.held[KEY] |= {"waiting": "window", "evicted_at": 50.0}
+    a.act([], [wanted(3, cpu=0.5, memory=None)])
+    assert a.held[KEY]["run_id"] == 3 and a.held[KEY]["outcome"] == "rolling"
+    assert a.held[KEY]["evicted_at"] == 50.0 and "waiting" not in a.held[KEY]
+    a.held[KEY] = {**a.held[KEY], "outcome": "applied", "pods": {}}
+    core.list_namespaced_pod.return_value.items.append(up("api-1-c"))  # behind its hold
+    a.catch_up()
+    assert a.held[KEY]["evicted_at"] == 50.0  # kept through a catch-up too
+
+
+def test_a_deployment_scaled_down_after_an_eviction_owes_no_replacement() -> None:
+    core, apps = cluster()
+    _, held = start(core, apps, wanted())
+    infeasible(core)
+    actuator.advance(core, apps, KEY, held, 60.0, "open")
+    core.list_namespaced_pod.return_value.items[0].metadata.deletion_timestamp = datetime.now(UTC)
+    assert actuator.trouble(core, apps, KEY, held, 660.0) is not None  # 1 of 2: one owed
+    apps.read_namespaced_deployment.return_value.spec.replicas = 1  # its HPA scaled it down
+    assert actuator.trouble(core, apps, KEY, held, 660.0) is None  # no Rollback for that
+    assert actuator.advance(core, apps, KEY, held, 120.0, "open") is None
+    assert "evicted" not in held  # the rollout goes on with the pods it has
+
+
+def test_no_sizing_replaces_a_hold_while_its_evicted_pods_replacement_is_awaited(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(actuator.time, "time", lambda: 100.0)
+    core, apps = cluster()
+    a = make(MagicMock(), core, apps)
+    a.act([wanted(1)])
+    a.held[KEY]["evicted"] = {"pod": "api-1-a", "at": 90.0, "before": ["api-1-a", "api-1-b"]}
+    a.act([wanted(2, cpu=0.5)], [wanted(3, cpu=0.6)])
+    assert a.held[KEY]["run_id"] == 1 and "evicted" in a.held[KEY]  # both wait
+    del a.held[KEY]["evicted"]
+    a.act([wanted(2, cpu=0.5)])
+    assert a.held[KEY]["run_id"] == 2
+
+
+ROOMLESS = 'pods "api-1-a" is forbidden: node didn\'t have enough allocatable resources: cpu'
+
+
+def test_a_resize_the_api_server_refuses_for_want_of_room_is_evicted_as_infeasible() -> None:
+    """Kubernetes 1.35+ refuses at once a resize its node can never fit, where 1.33 marks
+    the pod's resize Infeasible (found in the live check on 1.37)."""
+    core, apps = cluster()
+    core.patch_namespaced_pod_resize.side_effect = refusal(403, ROOMLESS)
+    off, _ = actuator.apply(core, apps, wanted(), 0.0, *scalers())  # off: failed, as before
+    assert off is not None and off.outcome == "failed" and "enough allocatable" in off.reason
+    other = refusal(403, "forbidden: something else")
+    core.patch_namespaced_pod_resize.side_effect = other
+    a, _ = actuator.apply(core, apps, wanted(), 0.0, *scalers(), eviction="open")
+    assert a is not None and a.outcome == "failed"  # only want of room is evicted
+    core.patch_namespaced_pod_resize.side_effect = refusal(403, ROOMLESS)
+    a, held = actuator.apply(core, apps, wanted(), 0.0, *scalers(), eviction="closed")
+    assert a is None and held["outcome"] == "rolling" and held["no_room"] == ROOMLESS
+    assert actuator.advance(core, apps, KEY, held, 6000.0, "closed") is None  # no 10 minutes
+    assert reasons(core) == ["EvictionWaiting"]
+    assert actuator.advance(core, apps, KEY, held, 6060.0, "open") is None
+    assert evicted(core) == [("api-1-a", "shop", "api-1-a")]
+    pods = core.list_namespaced_pod.return_value.items
+    pods[0].metadata.deletion_timestamp = datetime.now(UTC)
+    pods.append(up("api-1-c", cpu="115m", memory="96Mi"))
+    assert actuator.advance(core, apps, KEY, held, 6120.0, "open") is None
+    assert "no_room" not in held and held["pod"] == "api-1-c"
+    core.patch_namespaced_pod_resize.side_effect = refusal(403, ROOMLESS)  # b: no room either
+    core.read_namespaced_pod.side_effect = lambda name, ns: up(name, cpu="115m", memory="96Mi")
+    off = json.loads(json.dumps(held))
+    assert actuator.advance(core, apps, KEY, held, 6720.0, "open") is None
+    assert (held["pod"], held["no_room"], held["resized"]) == ("api-1-b", ROOMLESS, 2)
+    ended = actuator.advance(core, apps, KEY, off, 6720.0, "off")  # off meanwhile: as before
+    assert ended is not None and ended.outcome == "failed"
+    assert ended.reason.startswith("resizing its next pod: 403: ")
+
+
+def test_the_actuator_keeps_the_hubs_eviction_word_for_new_rollouts() -> None:
+    core, apps = cluster()
+    core.patch_namespaced_pod_resize.side_effect = refusal(403, ROOMLESS)
+    closed = {**desired(1), "eviction": "closed"}
+    a = make(hub_of([closed], []), core, apps)
+    a.step()
+    assert a.eviction == "closed" and a.held[KEY]["no_room"] == ROOMLESS
+    assert a.held[KEY]["outcome"] == "rolling"  # waits for a window, not failed

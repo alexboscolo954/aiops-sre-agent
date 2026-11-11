@@ -1649,8 +1649,8 @@ def create_app(
     ) -> actuator.Desired:
         """What an Actuator should apply now: its cluster's current Approved Sizings of
         Deployments in the cluster's namespaces, Automation's for the containers no
-        approval covers, and the Reverts it hasn't done; nothing while the Kill switch
-        is on."""
+        approval covers, the Reverts it hasn't done, and whether it may evict now (slice
+        12.7); nothing while the Kill switch is on."""
         cid, cluster = actuator_of(creds)
         if await store().kill_switch(cid) is not None:
             return actuator.Desired(kill_switch=True, sizings=[])
@@ -1666,6 +1666,7 @@ def create_app(
         mine = {(w.namespace, w.kind, w.name, w.container) for w in approved}
         return actuator.Desired(
             kill_switch=False,
+            eviction=by_id[cid].actuator.evicting(datetime.now(UTC)),
             sizings=approved,
             automated=[
                 w

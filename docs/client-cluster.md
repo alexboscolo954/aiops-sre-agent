@@ -11,7 +11,7 @@ Two optional parts run inside a client's cluster, from the Hub's own image. Each
 |---|---|---|
 | Namespace | `squero-relay` | `squero-actuator` |
 | Reads | read-only ServiceAccount, bound per namespace, like the Hub's own | pods, Deployments, ReplicaSets, HPAs, VPAs, LimitRanges and ResourceQuotas in the Contract's namespaces |
-| Writes | none, unless the client also applies `deploy/relay-actions`: evict pods and scale deployments only | resize pods (`pods/resize`, a RoleBinding per namespace), create Events, read and replace its own ConfigMap, patch its own webhook's `caBundle` |
+| Writes | none, unless the client also applies `deploy/relay-actions`: evict pods and scale deployments only | resize pods (`pods/resize`, a RoleBinding per namespace), evict pods (`pods/eviction`, only with the Contract's eviction on), create Events, read and replace its own ConfigMap, patch its own webhook's `caBundle` |
 | Token | `relay_token_secret` | `actuator_token_secret`, never a Relay's |
 | Talks to | `wss://<the Hub's domain>/relay` | `GET /actuator/desired`, `POST /actuator/reports` |
 
@@ -85,11 +85,34 @@ What it applied it holds: its webhook gives a new pod of that Deployment (a roll
 
 ## Pre-checks and the rollout
 
-Before a resize it skips, with the reason in its Event and Actuation, a change that would change the pods' QoS class (a Guaranteed container's limits would have to change too), a Deployment a VPA sizes (any mode but `Off`), requests outside the namespace's LimitRange (minimum, maximum, limit-to-request ratio) and an increase that would pass a ResourceQuota; it never clamps. A resource an HPA of the Deployment scales on by utilization (cpu for an HPA without metrics) is left to it, the other one still sized. Then it resizes one canary pod and watches it 10 minutes, then the others one at a time, each once the kubelet allocated the last one and it is Ready (one per minute). A resize the kubelet calls `Infeasible`, or one not done in 10 minutes (`Deferred` included), stops it there as failed; it never evicts to make room. "Applied" is reported when every live pod has the new requests. The rollout goes on only while the Hub answers and the Kill switch is off. Only Deployments, for now.
+Before a resize it skips, with the reason in its Event and Actuation, a change that would change the pods' QoS class (a Guaranteed container's limits would have to change too), a Deployment a VPA sizes (any mode but `Off`), requests outside the namespace's LimitRange (minimum, maximum, limit-to-request ratio) and an increase that would pass a ResourceQuota; it never clamps. A resource an HPA of the Deployment scales on by utilization (cpu for an HPA without metrics) is left to it, the other one still sized. Then it resizes one canary pod and watches it 10 minutes, then the others one at a time, each once the kubelet allocated the last one and it is Ready (one per minute). A resize the kubelet calls `Infeasible`, or one not done in 10 minutes (`Deferred` included), stops it there as failed, unless the Contract turns eviction on ([Eviction](#eviction)); it never evicts another pod to make room. "Applied" is reported when every live pod has the new requests. The rollout goes on only while the Hub answers and the Kill switch is off. Only Deployments, for now.
 
 ## Rollback
 
 From its first resize until an hour after the rollout ends, the Actuator watches the pods with its requests: a container that restarts (an OOM kill named as one) since it got them, or a pod it resized that stays NotReady for 2 minutes, rolls the Sizing back. Every pod with its requests goes back to the template's, in place and at once (a request the template doesn't set stays), with a `SizingRolledBack` Event and an Actuation `rolled_back` that say what went back to what ("2 pods back from cpu 115m, memory 91Mi to their template's cpu 1, memory 1Gi"), and a message in the Contract's operator channel (once, however often the report is resent). Then it applies no new Sizing of that container for 24 hours, 48 after a second rollback within 7 days, 96 after a third: an approval meanwhile is skipped with the date. CPU throttling is no reason (it is already a Sizing's risk). It rolls back with the Hub unreachable too, never while the Kill switch is on.
+
+## Eviction
+
+A resize that can never fit its node, because the node's allocatable is smaller than the new requests, is `Infeasible`: the kubelet marks it so on Kubernetes 1.33 and 1.34, and from 1.35 the API server refuses the resize at once (403, "node didn't have enough allocatable resources"); the Actuator treats both alike (a node that is merely full now makes it `Deferred`, which waits up to 10 minutes and then fails, as before). With eviction on, the Actuator evicts that pod instead, so its ReplicaSet starts a replacement that the scheduler places on a node with room and the webhook gives the new requests. It is off unless the Contract says so, in its `actuator:` block:
+
+```yaml
+actuator:
+  eviction: true
+  timezone: Europe/Rome          # IANA name; UTC when left out
+  windows:                       # at least one when eviction is on
+    - {days: [sat, sun], start: "00:00", end: "24:00"}
+    - {days: [mon, tue, wed, thu, fri], start: "22:00", end: "02:00"}   # past midnight: the night is the day it starts
+```
+
+The Hub tells each of the Contract's Actuators, in `/actuator/desired`'s `eviction`, whether eviction is `off`, or on with its window `closed` or `open` now (`off` under the Kill switch). The windows gate eviction only: resizes in place go on at any time.
+
+- **Outside a window** the rollout waits on that pod, without a time limit, and says so once in an `EvictionWaiting` Event. A newer Sizing, approved or under Automation, still replaces it; the pause annotation and the Kill switch stop it as any rollout. A Revert needs an Actuation of the container first, so a first rollout waiting for a window can't be reverted until it ends (a newer approval, the pause or the Kill switch can stop it).
+- **Inside a window** it evicts through the Eviction API, so PodDisruptionBudgets hold: a budget that allows no disruption now keeps it waiting (one `EvictionWaiting` Event), any other refusal fails the rollout. A `PodEvicted` Event names the pod and the requests its replacement starts with.
+- **Its Actuation** says so: the rollout's reason ends with `<pod> evicted, its resize Infeasible`. While a replacement is awaited, no new Sizing replaces the rollout (10 minutes at most).
+- **One at a time**: never while another evicted pod's replacement is awaited, and at least 5 minutes after the last eviction, across the cluster. Only the pod whose resize is `Infeasible`, never another pod to make room.
+- **The replacement** (a pod of the Deployment that wasn't there before the eviction), once Ready with the requests, stands for the evicted pod: watched for a Rollback like any pod it resized (an evicted canary's 10 minutes start again), and the rollout goes on. One that starts from its template (the webhook missed it) fails the rollout instead of evicting again. None Ready within 10 minutes is a Rollback (unless none is owed: the Deployment scaled down meanwhile and already has the pods it wants, and the rollout goes on), and a replacement still `Pending` (no node has room) is evicted again, holding nothing, so it starts from its template; a Pending pod's eviction ignores budgets.
+
+Eviction needs a cluster with an `actuator_token_secret`, and the Actuator's RBAC in `deploy/actuator/rbac.yaml` grants `create pods/eviction` per namespace. An Actuator of 0.42.0 or older never reads `eviction` and fails an `Infeasible` resize, as before.
 
 ## Automation
 

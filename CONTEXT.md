@@ -196,6 +196,10 @@ _Avoid_: Revert (that is the Operator's undo)
 The Operator's undo of what the Actuator holds for a container, asked from the console's Automation page or the Hub MCP server (`revert_sizing`): its pods go back to their template's requests, in place, and the Actuator stops holding it. Automation of that container stops until the Operator approves one of its Sizings. Refused while the Kill switch is on.
 _Avoid_: Rollback (that is the Actuator's own undo of a Sizing that made pods unhealthy)
 
+**Eviction window**:
+The days and hours, in the Contract's own timezone (its `actuator:` block), when the Actuator may evict a pod whose in-place resize is Infeasible: its node can never fit the new requests (the kubelet says so on Kubernetes 1.33 and 1.34; from 1.35 the API server refuses the resize at once), so that it starts again elsewhere with them. Eviction is off unless the Contract turns it on, and then needs at least one window. It goes through the Eviction API, so PodDisruptionBudgets hold; one pod at a time, at least 5 minutes apart, never another pod to make room. Outside a window the rollout waits on that pod. A replacement not Ready within 10 minutes is a Rollback.
+_Avoid_: Maintenance window (it gates eviction only; resizes in place go on at any time)
+
 **Reflex**:
 A bounded, expiring change the Actuator makes on its own under Automation: memory step-up after an OOM kill, burst CPU headroom, startup CPU boost, rollback of a Sizing that made pods unhealthy.
 
