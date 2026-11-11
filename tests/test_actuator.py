@@ -94,23 +94,32 @@ def test_an_actuator_gets_only_its_own_clusters_current_approved_deployments(
             database_url,
             run("acme"),  # run 1, still going: supersedes nothing
             approve("acme", 1),
-            approve("acme", 1, name="db", kind="StatefulSet"),  # other kinds: slice 12.8
+            approve("acme", 1, name="db", kind="StatefulSet"),  # slice 12.8a
+            approve("acme", 1, name="agent", kind="DaemonSet"),
+            approve("acme", 1, name="web", kind="Rollout"),  # Argo Rollouts: slice 12.8b
             approve("acme", 1, cluster="edge"),  # another cluster of acme's
             approve("acme", 1, ns="old"),  # no longer one of its namespaces
             approve("bank", 1, name="ledger"),
         )
-        mine = c.get("/actuator/desired", headers=as_actuator(A_TOKEN))
+        kinds = {"kinds": "Deployment,StatefulSet,DaemonSet,Rollout"}  # Rollout: not yet
+        mine = c.get("/actuator/desired", headers=as_actuator(A_TOKEN), params=kinds)
+        old = c.get("/actuator/desired", headers=as_actuator(A_TOKEN))  # 0.43.0: names none
         theirs = c.get("/actuator/desired", headers=as_actuator(B_TOKEN))
         wrong = c.get("/actuator/desired", headers=as_actuator(A_TOKEN + "x"))
         none = c.get("/actuator/desired")
     wanted = {"run_id": 1, "namespace": "shop", "kind": "Deployment", "container": "app"}
     assert mine.json() == {
         "kill_switch": False,
-        "sizings": [{**wanted, "name": "api", "cpu": 0.115, "memory": None}],
+        "sizings": [
+            {**wanted, "kind": "DaemonSet", "name": "agent", "cpu": 0.115, "memory": None},
+            {**wanted, "name": "api", "cpu": 0.115, "memory": None},
+            {**wanted, "kind": "StatefulSet", "name": "db", "cpu": 0.115, "memory": None},
+        ],
         "automated": [],
         "reverts": [],
         "eviction": "off",
     }
+    assert old.json()["sizings"] == [{**wanted, "name": "api", "cpu": 0.115, "memory": None}]
     assert theirs.json()["sizings"] == [{**wanted, "name": "ledger", "cpu": 0.115, "memory": None}]
     assert wrong.status_code == 401 and none.status_code in (401, 403)
 
@@ -721,6 +730,8 @@ def test_a_rollout_goes_on_only_while_the_hub_answers_and_the_kill_switch_is_off
         [(1, "applied", 2)]
     ]
     assert all(r.headers["authorization"] == f"Bearer {A_TOKEN}" for r in seen)
+    pulls = [r.url.params.get("kinds") for r in seen if r.method == "GET"]
+    assert set(pulls) == {"Deployment,StatefulSet,DaemonSet"}  # what it resizes (slice 12.8a)
     held = json.loads(core.replace_namespaced_config_map.call_args.args[2].data[actuator.KEY])
     assert held[KEY]["outcome"] == "applied"
     assert core.replace_namespaced_config_map.call_count == 7  # each step while rolling or watched
@@ -822,6 +833,8 @@ def test_the_manifests_resize_pods_and_never_edit_a_deployment() -> None:
         ("mutatingwebhookconfigurations", "patch"),
     }
     assert "secrets" not in str(rules)
+    apps_reads = ["deployments", "replicasets", "statefulsets", "daemonsets"]  # slice 12.8a
+    assert {"apiGroups": ["apps"], "resources": apps_reads, "verbs": ["get", "list"]} in rules
     assert {
         "apiGroups": ["policy"],
         "resources": ["poddisruptionbudgets"],
@@ -1373,7 +1386,8 @@ def test_an_actuator_gets_the_newest_sizings_of_what_its_contract_automates(
             sized("acme", 2),
             sized("acme", 2, "learning", state="learning"),
             sized("acme", 2, "steady", cpu={"action": "keep", "current": 1.0, "target": 1.0}),
-            sized("acme", 2, "db", kind="StatefulSet"),  # other kinds: slice 12.8
+            sized("acme", 2, "db", kind="StatefulSet"),  # slice 12.8a
+            sized("acme", 2, "web", kind="Rollout"),  # Argo Rollouts: slice 12.8b
             sized("acme", 2, "side", container="sidecar"),  # no rule automates it
             sized("acme", 2, "approved"),
             approve("acme", 2, name="approved"),  # the approval goes as approved, once
@@ -1389,7 +1403,9 @@ def test_an_actuator_gets_the_newest_sizings_of_what_its_contract_automates(
             run("bank", '{"test": null}'),  # run 3, bank's
             sized("bank", 3, "ledger"),
         )
-        mine = c.get("/actuator/desired", headers=as_actuator(A_TOKEN)).json()
+        kinds = {"kinds": ",".join(actuator.KINDS)}
+        mine = c.get("/actuator/desired", headers=as_actuator(A_TOKEN), params=kinds).json()
+        old = c.get("/actuator/desired", headers=as_actuator(A_TOKEN)).json()
         theirs = c.get("/actuator/desired", headers=as_actuator(B_TOKEN)).json()
         sql(database_url, ("insert into kill_switches values ('acme', 't', 1)", ()))
         killed = c.get("/actuator/desired", headers=as_actuator(A_TOKEN)).json()
@@ -1397,7 +1413,8 @@ def test_an_actuator_gets_the_newest_sizings_of_what_its_contract_automates(
     assert [w["name"] for w in mine["sizings"]] == ["approved"]
     assert mine["automated"] == [
         {**one, "name": n, "cpu": 0.115, "memory": None} for n in ("api", "elsewhere", "twice")
-    ]
+    ] + [{**one, "kind": "StatefulSet", "name": "db", "cpu": 0.115, "memory": None}]
+    assert old["automated"] == mine["automated"][:-1]  # an Actuator naming no kinds: no db
     assert theirs["automated"] == [{**one, "run_id": 3, "name": "ledger", "cpu": 0.115,
                                     "memory": None}]  # fmt: skip
     assert killed == {
@@ -1622,9 +1639,10 @@ def test_a_paused_deployment_is_left_alone_as_under_the_kill_switch(
     )
     a = make(hub_of([desired(1)] * 7, []), core, apps)
     a.step()  # paused: not applied, not used up
-    assert not resized(core) and KEY not in a.held and a.paused == {"shop/api"}
+    assert not resized(core) and KEY not in a.held and a.paused == {"shop/Deployment/api"}
     assert actuator.mutation(new_pod()["request"], HELD, "x", a.paused) == []
-    assert actuator.mutation(new_pod()["request"], HELD, "x", frozenset({"shop/web"}))
+    assert actuator.mutation(new_pod()["request"], HELD, "x", frozenset({"shop/Deployment/web"}))
+    assert actuator.mutation(new_pod()["request"], HELD, "x", frozenset({"shop/StatefulSet/api"}))
     paused(apps)
     a.step()  # lifted: the approval applies
     assert [n for n, _ in resized(core)] == ["api-1-a"]
@@ -1633,7 +1651,7 @@ def test_a_paused_deployment_is_left_alone_as_under_the_kill_switch(
     assert [n for n, _ in resized(core)] == ["api-1-a"]
     apps.list_namespaced_deployment.side_effect = ApiException(status=500)
     a.step()  # its Deployments unreadable: still paused
-    assert a.paused == {"shop/api"} and len(resized(core)) == 1
+    assert a.paused == {"shop/Deployment/api"} and len(resized(core)) == 1
     apps.list_namespaced_deployment.side_effect = None
     paused(apps)
     a.step()
@@ -1702,11 +1720,13 @@ def test_a_reason_is_the_same_whatever_its_numbers() -> None:
 # --- Revert (slice 12.6a) -----------------------------------------------------------------
 
 
-def revert(cid: str, at: float, name: str = "api", ns: str = "shop") -> Any:
+def revert(
+    cid: str, at: float, name: str = "api", ns: str = "shop", kind: str = "Deployment"
+) -> Any:
     return (
         "insert into reverts (contract_id, cluster, namespace, kind, name, container, "
-        "asked_by, asked_at) values (%s, 'test', %s, 'Deployment', %s, 'app', 'mcp:x', %s)",
-        (cid, ns, name, at),
+        "asked_by, asked_at) values (%s, 'test', %s, %s, %s, 'app', 'mcp:x', %s)",
+        (cid, ns, kind, name, at),
     )
 
 
@@ -1726,6 +1746,7 @@ def test_an_actuator_gets_its_own_pending_reverts_and_automation_stops_until_an_
             revert("acme", now - 60),
             revert("acme", now - 60, "web"),
             revert("acme", now - 60, ns="old"),  # no longer one of the cluster's namespaces
+            revert("acme", now - 60, "db", kind="StatefulSet"),  # to an Actuator that names it
             revert("bank", now - 60, "ledger"),
             # none of these closes api's Revert or resumes its Automation: from before it
             rolled_back("acme", now - 120, outcome="reverted"),
@@ -1739,6 +1760,8 @@ def test_an_actuator_gets_its_own_pending_reverts_and_automation_stops_until_an_
         applied = report(name="api", reason="applied", at=now)  # nor an Actuation not a Revert
         c.post("/actuator/reports", json=[applied], headers=as_actuator(A_TOKEN))
         first = c.get("/actuator/desired", headers=as_actuator(A_TOKEN)).json()
+        kinds = {"kinds": "Deployment,StatefulSet"}
+        named = c.get("/actuator/desired", headers=as_actuator(A_TOKEN), params=kinds).json()
         done = report(outcome="reverted", name="web", reason="reverted", at=now)
         c.post("/actuator/reports", json=[done], headers=as_actuator(A_TOKEN))
         # web is approved since its Revert: Automation of it goes on
@@ -1750,6 +1773,7 @@ def test_an_actuator_gets_its_own_pending_reverts_and_automation_stops_until_an_
     undo = {"namespace": "shop", "kind": "Deployment", "container": "app"}
     assert [{k: r[k] for k in ("namespace", "kind", "name", "container")} for r in
             first["reverts"]] == [{**undo, "name": "api"}, {**undo, "name": "web"}]  # fmt: skip
+    assert [r["name"] for r in named["reverts"]] == ["api", "web", "db"]
     assert first["automated"] == [] and first["sizings"] == []  # reverted, unapproved since
     assert [r["name"] for r in after["reverts"]] == ["api"]  # web's is done
     assert [w["name"] for w in after["automated"]] == ["web"]
@@ -2333,3 +2357,276 @@ def test_a_disruption_budgets_selector_matches_as_kubernetes_does(
     selector: Any, matches: bool
 ) -> None:
     assert actuator.selects(selector, {"app": "api"}) is matches
+
+
+# --- StatefulSets and DaemonSets (slice 12.8a) ---------------------------------------------
+
+
+def kinded(kind: str, **kw: Any) -> tuple[Any, Any]:
+    """cluster(), api a `kind` (uid u1) owning api-1's pods itself; api-x-a another's."""
+    core, apps = cluster(**kw)
+    d = apps.read_namespaced_deployment.return_value
+    on = {"selector": d.spec.selector, "template": d.spec.template}
+    getattr(apps, f"read_namespaced_{actuator.KINDS[kind]}").return_value = (
+        k.V1StatefulSet(metadata=d.metadata, spec=k.V1StatefulSetSpec(**on, replicas=2))
+        if kind == "StatefulSet"
+        else k.V1DaemonSet(metadata=d.metadata, spec=k.V1DaemonSetSpec(**on))  # no replicas
+    )
+    apps.read_namespaced_deployment.side_effect = ApiException(status=404)
+    for p in core.list_namespaced_pod.return_value.items:
+        mine = p.metadata.owner_references[0].name == "api-1"
+        p.metadata.owner_references = [
+            owner(kind, "api" if mine else "api-old", "u1" if mine else "u2")
+        ]
+    return core, apps
+
+
+def of(kind: str, **more: Any) -> Any:
+    return wanted(**more).model_copy(update={"kind": kind})
+
+
+@pytest.mark.parametrize("kind", ["StatefulSet", "DaemonSet"])
+def test_a_statefulset_or_daemonset_is_resized_on_its_own_pods(kind: str) -> None:
+    core, apps = kinded(kind)
+    a, held = start(core, apps, of(kind))
+    assert a is None and resized(core) == [("api-1-a", body(cpu="115m", memory="96Mi"))]
+    key = f"shop/{kind}/api/app"
+    assert actuator.advance(core, apps, key, held, 600.0) is None  # the next: b
+    done = actuator.advance(core, apps, key, held, 660.0)
+    assert done is not None and (done.outcome, done.kind, done.pods) == ("applied", kind, 2)
+    assert [n for n, _ in resized(core)] == ["api-1-a", "api-1-b"]  # not api-x-a, another's
+    assert not apps.list_namespaced_replica_set.called
+
+
+def test_an_hpa_or_a_vpa_counts_only_for_its_own_kind() -> None:
+    core, apps = kinded("StatefulSet")
+    deployments = {"spec": {"targetRef": {"kind": "Deployment", "name": "api"}}}
+    a, held = start(core, apps, of("StatefulSet"), vpas=[deployments], hpas=[hpa()])
+    assert a is None and held["requests"] == {"cpu": "115m", "memory": "96Mi"}
+    own = {"spec": {"targetRef": {"kind": "StatefulSet", "name": "api"}}}
+    vpa, _ = start(core, apps, of("StatefulSet"), vpas=[own])
+    assert vpa.reason == "a VPA in mode Auto sizes it"
+    scaler = hpa()
+    scaler.spec.scale_target_ref.kind = "StatefulSet"
+    core, apps = kinded("StatefulSet")
+    _, held = start(core, apps, of("StatefulSet"), hpas=[scaler])
+    assert held["requests"] == {"memory": "96Mi"}
+
+
+@pytest.mark.parametrize("kind", ["StatefulSet"])  # a DaemonSet's is left as it runs
+def test_a_statefulsets_or_daemonsets_pod_is_never_evicted(kind: str) -> None:
+    core, apps = kinded(kind)
+    _, held = start(core, apps, of(kind))
+    infeasible(core)
+    failed = actuator.advance(core, apps, f"shop/{kind}/api/app", held, 60.0, "open", PDB)
+    assert failed is not None and failed.outcome == "failed"
+    assert failed.reason.endswith(f"; a {kind}'s pod is never evicted")
+    assert not core.create_namespaced_pod_eviction.called
+
+
+def owned_by(kind: str, name: str, **resources: Any) -> dict[str, Any]:
+    review = new_pod(**resources)
+    meta = review["request"]["object"]["metadata"]
+    meta["labels"] = {"app": name}
+    meta["ownerReferences"] = [{"kind": kind, "name": name, "controller": True}]
+    return review
+
+
+def test_the_webhook_sizes_statefulset_pods_and_only_lowers_daemonset_pods() -> None:
+    def hold(kind: str, **requests: str) -> Any:
+        return {f"shop/{kind}/db/app": {**HELD["shop/Deployment/api/app"], "requests": requests}}
+
+    cpu = "/spec/containers/1/resources/requests/cpu"
+    memory = "/spec/containers/1/resources/requests/memory"
+    lower = {"cpu": "115m", "memory": "64Mi"}  # cpu under the template's 1, memory unset there
+    assert patched(owned_by("StatefulSet", "db"), hold("StatefulSet", **lower)) == [
+        {"op": "add", "path": cpu, "value": "115m"},
+        {"op": "add", "path": memory, "value": "48Mi"},  # its limit
+    ]
+    assert patched(owned_by("DaemonSet", "db"), hold("DaemonSet", **lower)) == [
+        {"op": "add", "path": cpu, "value": "115m"}  # memory: a raise from none
+    ]
+    assert patched(owned_by("DaemonSet", "db"), hold("DaemonSet", cpu="2")) is None  # a raise
+    assert patched(owned_by("DaemonSet", "db"), hold("DaemonSet", cpu="1")) is None  # the same
+    assert patched(owned_by("StatefulSet", "db"), hold("DaemonSet", **lower)) is None
+    assert patched(owned_by("StatefulSet", "db"), hold("Deployment", **lower)) is None
+    held = hold("StatefulSet", **lower)
+    req = owned_by("StatefulSet", "db")["request"]
+    assert actuator.mutation(req, held, "x", frozenset({"shop/StatefulSet/db"})) == []
+    assert actuator.mutation(req, held, "x", frozenset({"shop/Deployment/db"}))
+    lone = owned_by("ReplicaSet", "db-5d8f")  # a ReplicaSet of no Deployment: no hash label
+    assert patched(lone, {"shop/Deployment/db/app": HELD["shop/Deployment/api/app"]}) is None
+
+
+def test_pauses_are_read_for_each_kind_it_holds() -> None:
+    apps = MagicMock()
+    note = {actuator.PAUSE: "true"}
+    apps.list_namespaced_deployment.return_value = MagicMock(
+        items=[MagicMock(metadata=k.V1ObjectMeta(name="db", annotations=note))]
+    )
+    apps.list_namespaced_stateful_set.return_value = MagicMock(
+        items=[MagicMock(metadata=k.V1ObjectMeta(name="api", annotations=note))]
+    )
+    a = make(hub_of([], []), MagicMock(), apps)
+    keys = {"shop/StatefulSet/api/app", "shop/Deployment/api/app", "shop/Rollout/web/app"}
+    a.pauses(keys)
+    assert a.paused == {"shop/Deployment/db", "shop/StatefulSet/api"}
+    assert a.is_paused("shop/StatefulSet/api/app") and not a.is_paused("shop/Deployment/api/app")
+    assert not apps.list_namespaced_daemon_set.called
+    apps.list_namespaced_stateful_set.side_effect = ApiException(status=500)
+    apps.list_namespaced_deployment.return_value = MagicMock(items=[])
+    a.pauses(keys)  # its StatefulSets unreadable: they keep what it knew
+    assert a.paused == {"shop/StatefulSet/api"}
+
+
+def test_a_statefulset_is_read_as_one_for_its_hand_back_catch_up_and_a_kind_it_skips() -> None:
+    core, apps = kinded("DaemonSet")
+    a, held = start(core, apps, of("DaemonSet"))
+    for at in (600.0, 660.0):
+        a = actuator.advance(core, apps, "shop/DaemonSet/api/app", held, at)
+    assert a is not None and a.outcome == "applied"
+    act = make(hub_of([], []), core, apps, held={"shop/DaemonSet/api/app": held})
+    late = pod("api-1-c", "api-1")  # a new node's pod, from its template
+    late.metadata.namespace = "shop"
+    late.metadata.owner_references = [owner("DaemonSet", "api", "u1")]
+    core.list_namespaced_pod.return_value.items.append(late)
+    act.catch_up()
+    assert resized(core)[-1] == ("api-1-c", body(cpu="115m", memory="96Mi"))  # in place
+    assert act.changed("shop/DaemonSet/api/app", held) is None
+    apps.read_namespaced_daemon_set.side_effect = ApiException(status=404)
+    assert act.changed("shop/DaemonSet/api/app", held) == "no such DaemonSet"
+    gone, _ = start(core, apps, of("DaemonSet"))
+    assert (gone.outcome, gone.reason) == ("skipped", "no such DaemonSet")
+    apps.read_namespaced_daemon_set.side_effect = ApiException(status=500, reason="boom")
+    broken, _ = start(core, apps, of("DaemonSet"))
+    assert (broken.outcome, broken.reason) == ("failed", "reading the DaemonSet: 500: boom")
+    rollout, _ = start(core, apps, of("Rollout"))
+    assert (rollout.outcome, rollout.reason) == ("skipped", "a Rollout is not resized")
+
+
+def stuck(core: Any, *names: str, reason: str = "Infeasible") -> None:
+    """These pods' resizes held back by the kubelet: allocated as they started."""
+    normal = core.read_namespaced_pod.side_effect
+
+    def read(name: str, ns: str) -> Any:
+        p = normal(name, ns)
+        if name in names:
+            p.status.conditions = [
+                k.V1PodCondition(type="PodResizePending", status="True", reason=reason,
+                                 message="Node didn't have enough")
+            ]  # fmt: skip
+            was = k.V1ResourceRequirements(requests={"cpu": "1", "memory": "512Mi"})
+            p.status.container_statuses = [status("app", was)]
+        return p
+
+    core.read_namespaced_pod.side_effect = read
+
+
+DS = "shop/DaemonSet/api/app"
+NONE = "left without its raise: its node has no room"
+FULL = body(cpu="4000m", memory="96Mi")  # a raise of cpu (from 1), memory lowered (512Mi)
+TEMPLATE = {"cpu": "1", "memory": "512Mi"}
+
+
+def raised() -> Any:
+    return of("DaemonSet", cpu=4.0)
+
+
+def test_a_daemonsets_pod_its_node_has_no_room_for_is_left_and_the_canary_moves_on() -> None:
+    core, apps = kinded("DaemonSet")
+    _, held = start(core, apps, raised())  # the canary: api-1-a
+    stuck(core, "api-1-a")
+    assert actuator.advance(core, apps, DS, held, 60.0, "open", PDB) is None  # never evicted
+    assert not core.create_namespaced_pod_eviction.called
+    assert held["left"] == ["api-1-a"] and "api-1-a" not in held["pods"]
+    assert (held["pod"], held["resized"], held["canary_until"]) == ("api-1-b", 1, 660.0)
+    assert resized(core) == [
+        ("api-1-a", FULL),
+        ("api-1-a", body(cpu="1", memory="96Mi")),  # its raise undone, its lowering kept
+        ("api-1-b", FULL),  # the canary now
+    ]
+    event = core.create_namespaced_event.call_args.args[1]
+    assert (event.reason, event.type) == ("PodLeft", "Normal")
+    assert event.message == (
+        f"api-1-a {NONE} for cpu 4000m, memory 96Mi (Node didn't have enough); "
+        "lowered in place to memory 96Mi"
+    )
+    assert actuator.advance(core, apps, DS, held, 659.0) is None  # its 10 minutes
+    done = actuator.advance(core, apps, DS, held, 660.0)
+    assert done is not None and (done.outcome, done.pods) == ("applied", 1)
+    assert done.reason == f"1 of 2 pods resized in place, one at a time; api-1-a {NONE}"
+    assert held["left"] == ["api-1-a"]  # kept: never caught up
+
+
+def test_a_daemonset_whose_nodes_all_lack_room_fails_and_deferred_or_refused_pods_are_left(
+) -> None:  # fmt: skip
+    core, apps = kinded("DaemonSet")
+    _, held = start(core, apps, raised())
+    stuck(core, "api-1-a", "api-1-b")
+    assert actuator.advance(core, apps, DS, held, 60.0) is None  # a left, b resized
+    failed = actuator.advance(core, apps, DS, held, 120.0)
+    assert failed is not None and (failed.outcome, failed.pods) == ("failed", 0)
+    assert failed.reason == (
+        f"no node of its 2 pods has room for them; api-1-a {NONE}; api-1-b {NONE}"
+    )
+    core, apps = kinded("DaemonSet")
+    _, held = start(core, apps, raised())
+    stuck(core, "api-1-a", reason="Deferred")  # full now: 10 minutes, then left
+    assert actuator.advance(core, apps, DS, held, 599.0) is None and "left" not in held
+    assert actuator.advance(core, apps, DS, held, 600.0) is None and held["left"] == ["api-1-a"]
+    core, apps = kinded("DaemonSet")
+    patch = core.patch_namespaced_pod_resize.side_effect
+    core.patch_namespaced_pod_resize.side_effect = refusal(403, ROOMLESS)  # Kubernetes 1.35+
+    a, held = start(core, apps, raised())  # eviction off: left all the same
+    core.patch_namespaced_pod_resize.side_effect = patch  # b's node has room
+    assert actuator.advance(core, apps, DS, held, 60.0) is None
+    assert held["left"] == ["api-1-a"] and "no_room" not in held  # b's resize is its own
+    assert resized(core) == [
+        ("api-1-a", FULL),  # refused: nothing pending to undo
+        ("api-1-a", body(memory="96Mi")),  # its lowering alone, which fits
+        ("api-1-b", FULL),
+    ]
+    done = actuator.advance(core, apps, DS, held, 660.0)
+    assert done is not None and (done.outcome, done.pods) == ("applied", 1)
+    core, apps = kinded("DaemonSet")
+    core.patch_namespaced_pod_resize.side_effect = refusal(403, ROOMLESS)
+    a, held = start(core, apps, raised())
+    assert a is None and "enough allocatable" in held["no_room"]
+    assert actuator.advance(core, apps, DS, held, 60.0) is None  # a left, b refused too
+    assert held["left"] == ["api-1-a"] and (held["pod"], held["resized"]) == ("api-1-b", 1)
+    assert "enough allocatable" in held["no_room"]
+    refused = actuator.advance(core, apps, DS, held, 120.0)
+    assert refused is not None and refused.outcome == "failed" and "no_room" not in held
+
+
+def test_a_new_nodes_pod_with_no_room_is_left_and_the_daemonset_keeps_its_requests() -> None:
+    core, apps = kinded("DaemonSet", requests=TEMPLATE)
+    _, held = start(core, apps, raised())
+    for at in (600.0, 660.0):
+        actuator.advance(core, apps, DS, held, at)
+    act = make(hub_of([], []), core, apps, held={DS: held})
+    late = pod("api-1-c", "api-1")  # a new node's pod, from its template
+    late.metadata.namespace = "shop"
+    late.metadata.owner_references = [owner("DaemonSet", "api", "u1")]
+    core.list_namespaced_pod.return_value.items.append(late)
+    act.catch_up()
+    assert resized(core)[-1] == ("api-1-c", FULL)
+    stuck(core, "api-1-c")
+    (done,) = act.advance("off")
+    assert (done.outcome, done.pods) == ("applied", 0)
+    assert done.reason == f"0 of 3 pods resized in place, one at a time; api-1-c {NONE}"
+    assert act.held[DS]["outcome"] == "applied" and act.held[DS]["left"] == ["api-1-c"]
+    assert resized(core)[-1] == ("api-1-c", body(cpu="1", memory="96Mi"))
+    new = owned_by("DaemonSet", "api", requests=TEMPLATE)["request"]
+    assert actuator.mutation(new, act.held, "x") == [  # still held: new pods lowered
+        {"op": "add", "path": "/spec/containers/1/resources/requests/memory", "value": "96Mi"}
+    ]
+    count = len(resized(core))
+    assert act.catch_up() == [] and len(resized(core)) == count  # api-1-c not tried again
+    later = pod("api-1-d", "api-1")  # another new node's: caught up, api-1-c still left
+    later.metadata.namespace = "shop"
+    later.metadata.owner_references = [owner("DaemonSet", "api", "u1")]
+    core.list_namespaced_pod.return_value.items.append(later)
+    act.catch_up()
+    assert [n for n, _ in resized(core)[count:]] == ["api-1-d"]
+    assert act.held[DS]["left"] == ["api-1-c"] and act.held[DS]["pod"] == "api-1-d"

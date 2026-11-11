@@ -1,4 +1,4 @@
-# Its pod-creation webhook (slice 12.2): a new pod of a Deployment whose requests the
+# Its pod-creation webhook (slice 12.2): a new pod of a workload whose requests the
 # Actuator applied gets them too. It fails open: with the Actuator down or slow (2 s), the
 # API server creates the pod unchanged. Only the Contract's namespaces on this cluster,
 # never kube-* or the Actuator's own (it refuses those itself as well). The Actuator puts

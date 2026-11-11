@@ -1,7 +1,7 @@
 # The Actuator's writes are pod resizes (pods/resize: requests and limits only, never an
 # image or a command), pod evictions (pods/eviction, used only when the Contract turns
 # eviction on, through the Eviction API so PodDisruptionBudgets hold), Events, and its own
-# ConfigMap. It never patches a Deployment.
+# ConfigMap. It never patches a workload (Deployment, StatefulSet, DaemonSet): it only reads them.
 # Bound per namespace with RoleBindings: the Contract's namespaces on this cluster.
 apiVersion: v1
 kind: ServiceAccount
@@ -27,7 +27,7 @@ rules:
     resources: [events]
     verbs: [create]
   - apiGroups: ["apps"]
-    resources: [deployments, replicasets]
+    resources: [deployments, replicasets, statefulsets, daemonsets]
     verbs: [get, list]
   # What would refuse or fight a resize (slice 12.3): read only.
   - apiGroups: [""]

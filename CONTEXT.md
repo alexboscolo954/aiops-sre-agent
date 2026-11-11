@@ -181,7 +181,7 @@ The standing approval for one Workload: the Operator approves its Sizing policy 
 _Avoid_: Auto mode, Proposed action (a Sizing under Automation never pauses)
 
 **Actuator**:
-The process in a client cluster that applies approved Sizings, in place first, and reports what it did. It runs only what the Hub approved: every minute it pulls its cluster's desired state from the Hub with its own token, bound to one Contract's cluster, and nothing while the Kill switch is on. What it applied it holds: new pods of that Workload get the same requests until a person changes them in its template. Pods start unchanged when it is down. While the Hub is unreachable it keeps what it holds and changes nothing new. A Deployment annotated `squero-actuator/pause: "true"` is left alone, as under the Kill switch.
+The process in a client cluster that applies approved Sizings, in place first, and reports what it did. It runs only what the Hub approved: every minute it pulls its cluster's desired state from the Hub with its own token, bound to one Contract's cluster, and nothing while the Kill switch is on. What it applied it holds: new pods of that Workload get the same requests until a person changes them in its template. Pods start unchanged when it is down. While the Hub is unreachable it keeps what it holds and changes nothing new. A Workload annotated `squero-actuator/pause: "true"` is left alone, as under the Kill switch. It resizes Deployments, StatefulSets and DaemonSets.
 _Avoid_: Agent, controller (alone)
 
 **Actuation**:
@@ -197,7 +197,7 @@ The Operator's undo of what the Actuator holds for a container, asked from the c
 _Avoid_: Rollback (that is the Actuator's own undo of a Sizing that made pods unhealthy)
 
 **Eviction window**:
-The days and hours, in the Contract's own timezone (its `actuator:` block), when the Actuator may evict a pod whose in-place resize is Infeasible: its node can never fit the new requests (the kubelet says so on Kubernetes 1.33 and 1.34; from 1.35 the API server refuses the resize at once), so that it starts again elsewhere with them. Eviction is off unless the Contract turns it on, and then needs at least one window. It goes through the Eviction API, so PodDisruptionBudgets hold; one pod at a time, at least 5 minutes apart, never another pod to make room, never a pod of a Deployment with one replica or that no PodDisruptionBudget covers. Outside a window the rollout waits on that pod. A replacement not Ready within 10 minutes is a Rollback.
+The days and hours, in the Contract's own timezone (its `actuator:` block), when the Actuator may evict a pod whose in-place resize is Infeasible: its node can never fit the new requests (the kubelet says so on Kubernetes 1.33 and 1.34; from 1.35 the API server refuses the resize at once), so that it starts again elsewhere with them. Eviction is off unless the Contract turns it on, and then needs at least one window. It goes through the Eviction API, so PodDisruptionBudgets hold; one pod at a time, at least 5 minutes apart, never another pod to make room, never a StatefulSet's or DaemonSet's pod, never a pod of a Deployment with one replica or that no PodDisruptionBudget covers. Outside a window the rollout waits on that pod. A replacement not Ready within 10 minutes is a Rollback.
 _Avoid_: Maintenance window (it gates eviction only; resizes in place go on at any time)
 
 **Reflex**:

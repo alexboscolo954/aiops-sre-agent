@@ -1628,7 +1628,6 @@ def create_app(
             where = (r["namespace"], r["kind"], r["name"])
             if (
                 r.get("state") != "ready"
-                or r["kind"] != "Deployment"  # other kinds in slice 12.8
                 or r["namespace"] not in cluster.namespaces
                 or where in ended
                 or (*where, r["container"]) in reverted
@@ -1646,12 +1645,16 @@ def create_app(
     @app.get("/actuator/desired")
     async def actuator_desired(
         creds: HTTPAuthorizationCredentials = Depends(bearer),  # noqa: B008
+        kinds: str = "Deployment",
     ) -> actuator.Desired:
-        """What an Actuator should apply now: its cluster's current Approved Sizings of
-        Deployments in the cluster's namespaces, Automation's for the containers no
-        approval covers, the Reverts it hasn't done, and whether it may evict now (slice
-        12.7); nothing while the Kill switch is on."""
+        """What an Actuator should apply now: its cluster's current Approved Sizings in the
+        cluster's namespaces, Automation's for the containers no approval covers, the
+        Reverts it hasn't done, and whether it may evict now (slice 12.7); nothing while
+        the Kill switch is on. Only of the `kinds` it names that the Hub's knows (slice
+        12.8a): an Actuator that names none, 0.43.0 or older, reads every Sizing as a
+        Deployment's, so it gets Deployments' only."""
         cid, cluster = actuator_of(creds)
+        known = set(kinds.split(",")) & set(actuator.KINDS)
         if await store().kill_switch(cid) is not None:
             return actuator.Desired(kill_switch=True, sizings=[])
         reverted = await store().reverted(cid, cluster.name)  # an approval before it is undone
@@ -1660,7 +1663,7 @@ def create_app(
             for a in await store().approved_sizings(cid)
             if a["cluster"] == cluster.name
             and a["namespace"] in cluster.namespaces
-            and a["kind"] == "Deployment"  # other kinds in slice 12.8
+            and a["kind"] in known
             and (a["namespace"], a["kind"], a["name"], a["container"]) not in reverted
         ]
         mine = {(w.namespace, w.kind, w.name, w.container) for w in approved}
@@ -1671,12 +1674,12 @@ def create_app(
             automated=[
                 w
                 for w in await automation(cid, cluster)
-                if (w.namespace, w.kind, w.name, w.container) not in mine
+                if (w.namespace, w.kind, w.name, w.container) not in mine and w.kind in known
             ],
             reverts=[
                 actuator.Undo.model_validate(r)
                 for r in await store().pending_reverts(cid, cluster.name)
-                if r["namespace"] in cluster.namespaces
+                if r["namespace"] in cluster.namespaces and r["kind"] in known
             ],
         )
 
