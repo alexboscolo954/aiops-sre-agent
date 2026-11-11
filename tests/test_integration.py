@@ -190,7 +190,7 @@ async def test_the_actuator_resizes_a_deployment_in_place_without_a_restart(
     except SystemExit as e:
         pytest.skip(str(e))
     d = apps.read_namespaced_deployment("inventory", "orders")
-    (before,) = actuator.pods_of(core, apps, d)
+    (before,) = actuator.pods_of(core, apps, d, "Deployment")
     restarts = before.status.container_statuses[0].restart_count
     cpu = float(actuator.qty(before.spec.containers[0].resources.requests["cpu"])) + 0.005
     wanted = actuator.Wanted(
