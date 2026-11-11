@@ -32,7 +32,8 @@ kubelet's Infeasible, or from Kubernetes 1.35 the API server's refusal) is evict
 the Eviction API (PodDisruptionBudgets hold) inside one of the Contract's windows, one at a
 time and at least 5 minutes apart; the webhook gives its
 replacement the requests. Outside a window the rollout waits on it; a replacement not Ready
-in 10 minutes is a rollback.
+in 10 minutes is a rollback. A pod of a Deployment with one replica, or that no
+PodDisruptionBudget covers, is never evicted: its rollout fails as with eviction off.
 """
 
 import base64
@@ -514,13 +515,20 @@ def apply(
 
 
 def advance(
-    core: Any, apps: Any, key: str, h: dict[str, Any], now: float, eviction: str = "off"
+    core: Any,
+    apps: Any,
+    key: str,
+    h: dict[str, Any],
+    now: float,
+    eviction: str = "off",
+    policy: Any = None,
 ) -> Actuation | None:
     """One minute of a rolling resize: wait for its current pod, then (after the canary's
     10 minutes) resize the next one. An Actuation once it ends: applied when every live pod
     has the requests, failed when a pod's resize is Infeasible or not done in 10 minutes.
     With eviction on (slice 12.7) an Infeasible pod is evicted instead, when `eviction` is
-    open, its replacement getting the requests from the webhook; until then it waits."""
+    open, its replacement getting the requests from the webhook; until then it waits. Not
+    a pod `unevictable` names: that still fails. `policy` is a PolicyV1Api."""
     ns, kind, name, container = key.split("/")
     set_to = h["requests"]
 
@@ -557,9 +565,10 @@ def advance(
         if "no_room" in h:  # the API server refused its resize: no room on its node, ever
             state, message = "infeasible", h["no_room"]
         if state == "infeasible":
-            if eviction == "off":
+            never = None if eviction == "off" else unevictable(apps, policy, ns, name, p)
+            if eviction == "off" or never:
                 why_ = f"{pod}: Infeasible: {message}; {resized - 1} other pods resized"
-                return end("failed", why_)
+                return end("failed", why_ + (f"; {never}" if never else ""))
             if eviction == "open":
                 return evict(core, apps, key, h, now, message, end)
             wait(core, key, h, "window", f"{pod}: Infeasible: {message}; it waits to be "
@@ -585,6 +594,39 @@ def advance(
         h["no_room"] = room
     h.update(pod=todo[0].metadata.name, since=now, resized=resized + 1)
     h.setdefault("pods", {})[todo[0].metadata.name] = baseline(todo[0], container, now)
+    return None
+
+
+def selects(s: Any, labels: dict[str, str]) -> bool:
+    """A label selector `s` matches `labels`: a null one matches nothing, an empty one all."""
+    if s is None:
+        return False
+    for e in s.match_expressions or []:
+        has, values = e.key in labels, e.values or []
+        if not {
+            "In": labels.get(e.key) in values,
+            "NotIn": labels.get(e.key) not in values,
+            "Exists": has,
+            "DoesNotExist": not has,
+        }.get(e.operator, False):
+            return False
+    return all(labels.get(k) == v for k, v in (s.match_labels or {}).items())
+
+
+def unevictable(apps: Any, policy: Any, ns: str, name: str, p: Any) -> str | None:
+    """Why the Deployment's pod `p` is never evicted, if it is not: one replica (eviction would
+    stop it) or no PodDisruptionBudget covering it (nothing would keep enough pods up). A
+    read that fails: never evicted either."""
+    try:
+        replicas = apps.read_namespaced_deployment(name, ns).spec.replicas
+        if (1 if replicas is None else replicas) < 2:
+            return "it has one replica, so it is never evicted"
+        budgets = policy.list_namespaced_pod_disruption_budget(ns).items
+    except ApiException as e:
+        return f"not evicted: checking it: {why(e)}"
+    labels = p.metadata.labels or {}
+    if not any(selects(b.spec.selector, labels) for b in budgets):
+        return "no PodDisruptionBudget covers it, so it is never evicted"
     return None
 
 
@@ -1052,6 +1094,7 @@ class Actuator:
     unanswered: float | None = None  # since when the Hub hasn't answered
     told: bool = False  # the Event that it hasn't is out
     eviction: str = "off"  # the Hub's last word on eviction (slice 12.7)
+    policy: Any = None  # PolicyV1Api: PodDisruptionBudgets, read before an eviction
 
     def load(self) -> None:
         try:
@@ -1228,7 +1271,7 @@ class Actuator:
                 busy = any("evicted" in x for x in self.held.values())
                 if may == "open" and (busy or now - last < EVICT_EVERY):
                     may = "closed"
-                a = advance(self.core, self.apps, key, h, now, may)
+                a = advance(self.core, self.apps, key, h, now, may, self.policy)
                 if a:
                     log.info("%s %s: %s", a.outcome, key, a.reason)
                     event(self.core, a, h)
@@ -1417,6 +1460,7 @@ def main(s: ActuatorSettings) -> None:  # pragma: no cover - the cluster's own p
     with httpx.Client(base_url=s.hub, headers=headers, timeout=15) as http:
         a = Actuator(http, core, apps, s.namespace)
         a.autoscaling, a.custom = client.AutoscalingV2Api(), client.CustomObjectsApi()
+        a.policy = client.PolicyV1Api()
         a.load()
         serve(a, cert, key)
         try:  # until then the API server can't call it, and pods start unchanged

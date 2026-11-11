@@ -197,7 +197,7 @@ The Operator's undo of what the Actuator holds for a container, asked from the c
 _Avoid_: Rollback (that is the Actuator's own undo of a Sizing that made pods unhealthy)
 
 **Eviction window**:
-The days and hours, in the Contract's own timezone (its `actuator:` block), when the Actuator may evict a pod whose in-place resize is Infeasible: its node can never fit the new requests (the kubelet says so on Kubernetes 1.33 and 1.34; from 1.35 the API server refuses the resize at once), so that it starts again elsewhere with them. Eviction is off unless the Contract turns it on, and then needs at least one window. It goes through the Eviction API, so PodDisruptionBudgets hold; one pod at a time, at least 5 minutes apart, never another pod to make room. Outside a window the rollout waits on that pod. A replacement not Ready within 10 minutes is a Rollback.
+The days and hours, in the Contract's own timezone (its `actuator:` block), when the Actuator may evict a pod whose in-place resize is Infeasible: its node can never fit the new requests (the kubelet says so on Kubernetes 1.33 and 1.34; from 1.35 the API server refuses the resize at once), so that it starts again elsewhere with them. Eviction is off unless the Contract turns it on, and then needs at least one window. It goes through the Eviction API, so PodDisruptionBudgets hold; one pod at a time, at least 5 minutes apart, never another pod to make room, never a pod of a Deployment with one replica or that no PodDisruptionBudget covers. Outside a window the rollout waits on that pod. A replacement not Ready within 10 minutes is a Rollback.
 _Avoid_: Maintenance window (it gates eviction only; resizes in place go on at any time)
 
 **Reflex**:
