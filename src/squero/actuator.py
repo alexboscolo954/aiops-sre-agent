@@ -19,7 +19,8 @@ the kubelet allocated it and the pod is Ready; an Infeasible resize, or one not 
 minutes, stops it there. Deployments, and from slice 12.8a StatefulSets and DaemonSets: a
 DaemonSet's new pod gets only lowered requests from the webhook (it must fit any node), a
 DaemonSet's pod whose node has no room is left as it runs while the others go on, and
-neither kind's pod is ever evicted.
+neither kind's pod is ever evicted. From slice 12.8b Argo Rollouts, in place only: read as a
+Deployment (`Apps`), their pods their own ReplicaSets', never evicted.
 
 Under Automation (slice 12.5) it also applies, unasked, the newest Sizing of each container
 the Contract automates: a change under 10% ignored, an increase at once, a decrease at most
@@ -55,6 +56,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
@@ -90,8 +92,15 @@ CHURN = Decimal("0.10")  # under Automation, a change smaller than this is ignor
 LOWER_EVERY = 86400  # under Automation, a container's requests go down at most this often
 UNREACHABLE_SECONDS = 900  # the Hub unanswered this long: an Event says so
 PAUSE = "squero-actuator/pause"  # a workload annotated "true" is left alone
-# the kinds it resizes (StatefulSet and DaemonSet from slice 12.8a), as named in its API calls
-KINDS = {"Deployment": "deployment", "StatefulSet": "stateful_set", "DaemonSet": "daemon_set"}
+# the kinds it resizes (StatefulSet and DaemonSet from slice 12.8a, Argo Rollouts from 12.8b),
+# as named in its API calls (a Rollout's through `Apps`)
+KINDS = {
+    "Deployment": "deployment",
+    "StatefulSet": "stateful_set",
+    "DaemonSet": "daemon_set",
+    "Rollout": "rollout",
+}
+ARGO = ("argoproj.io", "v1alpha1")  # an Argo Rollout's API group and version
 EVICT_EVERY = 300  # at least this long between two evictions (slice 12.7)
 # held while rolling; "waiting": on an Infeasible pod, to evict it; "evicted": its replacement
 ROLLOUT = ("pod", "since", "canary_until", "resized", "notes", "waiting", "evicted", "no_room")
@@ -223,17 +232,61 @@ def why(e: ApiException) -> str:
     return f"{e.status}: {message}"[:300]
 
 
+class Apps:
+    """AppsV1Api with Argo Rollouts beside its own kinds (slice 12.8b): a Rollout read as
+    a Deployment, its template its own or its `workloadRef` Deployment's."""
+
+    def __init__(self, apps: Any, custom: Any) -> None:
+        self.apps, self.custom, self.decoder = apps, custom, client.ApiClient()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.apps, name)
+
+    def shaped(self, r: dict[str, Any]) -> Any:
+        spec = r.get("spec") or {}
+        ref = spec.get("workloadRef") or {}
+        if ref.get("kind") == "Deployment":
+            d = self.apps.read_namespaced_deployment(ref.get("name"), r["metadata"]["namespace"])
+            on = self.decoder.sanitize_for_serialization(d.spec)  # type: ignore[no-untyped-call]
+            spec = {
+                **spec,
+                "template": on["template"],
+                "selector": spec.get("selector") or on["selector"],
+            }
+        # its status left out; its spec's own fields (a canary strategy) a Deployment ignores
+        body = json.dumps({"metadata": r.get("metadata"), "spec": spec})
+        try:
+            return self.decoder.deserialize(body, "V1Deployment", None)
+        except ValueError as e:  # no template: a workloadRef of another kind, or none
+            raise ApiException(status=422, reason=f"not read as a Deployment: {e}") from e
+
+    def read_namespaced_rollout(self, name: str, ns: str) -> Any:
+        return self.shaped(self.custom.get_namespaced_custom_object(*ARGO, ns, "rollouts", name))
+
+    def list_namespaced_rollout(self, ns: str) -> Any:
+        """Their metadata only, all the pause annotation needs: one Rollout that can't be
+        shaped never hides another's pause."""
+        found = self.custom.list_namespaced_custom_object(*ARGO, ns, "rollouts")
+        metas = [json.dumps(r.get("metadata") or {}) for r in found.get("items") or []]
+        return SimpleNamespace(
+            items=[
+                SimpleNamespace(metadata=self.decoder.deserialize(m, "V1ObjectMeta", None))
+                for m in metas
+            ]
+        )
+
+
 def read(apps: Any, kind: str, name: str, ns: str) -> Any:
     """The workload `kind`/`name` (one of KINDS) from the API server."""
     return getattr(apps, f"read_namespaced_{KINDS[kind]}")(name, ns)
 
 
 def pods_of(core: Any, apps: Any, d: Any, kind: str) -> list[Any]:
-    """The workload's live pods, however its selector reads: a Deployment's are its own
-    ReplicaSets', a StatefulSet's or DaemonSet's its own (slice 12.8a)."""
+    """The workload's live pods, however its selector reads: a Deployment's or Rollout's
+    are its own ReplicaSets', a StatefulSet's or DaemonSet's its own (slice 12.8a)."""
     ns = d.metadata.namespace
     labels = ",".join(f"{k}={v}" for k, v in sorted((d.spec.selector.match_labels or {}).items()))
-    if kind == "Deployment":
+    if kind in ("Deployment", "Rollout"):
         mine = {
             rs.metadata.name
             for rs in apps.list_namespaced_replica_set(ns, label_selector=labels).items
@@ -963,6 +1016,8 @@ def post(
     """An Event on `what` (api version, kind, name) in `ns`; a refused one is only logged."""
     now = datetime.now(UTC)
     api_version, kind, name = what
+    if kind == "Rollout":
+        api_version = "/".join(ARGO)
     body = client.CoreV1Event(
         metadata=client.V1ObjectMeta(name=f"{name}.{uuid.uuid4().hex[:16]}"),
         involved_object=client.V1ObjectReference(
@@ -1002,17 +1057,23 @@ def mutation(
     never above its limit, never in kube-* or the Actuator's own namespace, never for a
     paused workload (`ns/kind/name` in `paused`). A DaemonSet's pod gets only requests
     lower than its template's (slice 12.8a): it must fit on whatever node it starts; a raise
-    reaches it in place, where its node has room."""
+    reaches it in place, where its node has room. An Argo Rollout's pod is told by its
+    `rollouts-pod-template-hash` label (slice 12.8b)."""
     ns = req.get("namespace") or ""
     if req.get("operation") != "CREATE" or ns == own or ns.startswith("kube-"):
         return []
     pod = req.get("object") or {}
     meta = pod.get("metadata") or {}
     owners = {o.get("kind"): o.get("name", "") for o in meta.get("ownerReferences") or []}
+    labels = meta.get("labels") or {}
     kind = next((k for k in ("StatefulSet", "DaemonSet") if owners.get(k)), "Deployment")
     name = owners.get(kind, "")
-    if kind == "Deployment":
-        hashed = (meta.get("labels") or {}).get("pod-template-hash")
+    if kind == "Deployment" and "rollouts-pod-template-hash" in labels:
+        kind = "Rollout"  # Argo's ReplicaSet, named and labelled as a Deployment's (12.8b)
+    if kind in ("Deployment", "Rollout"):
+        hashed = labels.get(
+            "rollouts-pod-template-hash" if kind == "Rollout" else "pod-template-hash"
+        )
         rs = owners.get("ReplicaSet", "")
         if not hashed or not rs.endswith(f"-{hashed}"):
             return []  # not a workload's pod it resizes
@@ -1528,13 +1589,14 @@ class Actuator:
 
 def main(s: ActuatorSettings) -> None:  # pragma: no cover - the cluster's own process
     config.load_incluster_config()  # type: ignore[no-untyped-call]
-    core, apps = client.CoreV1Api(), client.AppsV1Api()
+    core, custom = client.CoreV1Api(), client.CustomObjectsApi()
+    apps = Apps(client.AppsV1Api(), custom)
     check_version(client.VersionApi())
     cert, key = certificate(f"{WEBHOOK}.{s.namespace}.svc")
     headers = {"Authorization": f"Bearer {s.token.get_secret_value()}"}
     with httpx.Client(base_url=s.hub, headers=headers, timeout=15) as http:
         a = Actuator(http, core, apps, s.namespace)
-        a.autoscaling, a.custom = client.AutoscalingV2Api(), client.CustomObjectsApi()
+        a.autoscaling, a.custom = client.AutoscalingV2Api(), custom
         a.policy = client.PolicyV1Api()
         a.load()
         serve(a, cert, key)

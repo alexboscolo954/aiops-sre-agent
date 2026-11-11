@@ -97,12 +97,15 @@ def test_an_actuator_gets_only_its_own_clusters_current_approved_deployments(
             approve("acme", 1, name="db", kind="StatefulSet"),  # slice 12.8a
             approve("acme", 1, name="agent", kind="DaemonSet"),
             approve("acme", 1, name="web", kind="Rollout"),  # Argo Rollouts: slice 12.8b
+            approve("acme", 1, name="nightly", kind="CronJob"),  # no Actuator resizes one
             approve("acme", 1, cluster="edge"),  # another cluster of acme's
             approve("acme", 1, ns="old"),  # no longer one of its namespaces
             approve("bank", 1, name="ledger"),
         )
-        kinds = {"kinds": "Deployment,StatefulSet,DaemonSet,Rollout"}  # Rollout: not yet
+        kinds = {"kinds": "Deployment,StatefulSet,DaemonSet,Rollout,CronJob"}
         mine = c.get("/actuator/desired", headers=as_actuator(A_TOKEN), params=kinds)
+        three = {"kinds": "Deployment,StatefulSet,DaemonSet"}  # 0.44.0: no Rollouts
+        before = c.get("/actuator/desired", headers=as_actuator(A_TOKEN), params=three)
         old = c.get("/actuator/desired", headers=as_actuator(A_TOKEN))  # 0.43.0: names none
         theirs = c.get("/actuator/desired", headers=as_actuator(B_TOKEN))
         wrong = c.get("/actuator/desired", headers=as_actuator(A_TOKEN + "x"))
@@ -113,6 +116,7 @@ def test_an_actuator_gets_only_its_own_clusters_current_approved_deployments(
         "sizings": [
             {**wanted, "kind": "DaemonSet", "name": "agent", "cpu": 0.115, "memory": None},
             {**wanted, "name": "api", "cpu": 0.115, "memory": None},
+            {**wanted, "kind": "Rollout", "name": "web", "cpu": 0.115, "memory": None},
             {**wanted, "kind": "StatefulSet", "name": "db", "cpu": 0.115, "memory": None},
         ],
         "automated": [],
@@ -120,6 +124,7 @@ def test_an_actuator_gets_only_its_own_clusters_current_approved_deployments(
         "eviction": "off",
     }
     assert old.json()["sizings"] == [{**wanted, "name": "api", "cpu": 0.115, "memory": None}]
+    assert before.json()["sizings"] == [x for x in mine.json()["sizings"] if x["kind"] != "Rollout"]
     assert theirs.json()["sizings"] == [{**wanted, "name": "ledger", "cpu": 0.115, "memory": None}]
     assert wrong.status_code == 401 and none.status_code in (401, 403)
 
@@ -731,7 +736,7 @@ def test_a_rollout_goes_on_only_while_the_hub_answers_and_the_kill_switch_is_off
     ]
     assert all(r.headers["authorization"] == f"Bearer {A_TOKEN}" for r in seen)
     pulls = [r.url.params.get("kinds") for r in seen if r.method == "GET"]
-    assert set(pulls) == {"Deployment,StatefulSet,DaemonSet"}  # what it resizes (slice 12.8a)
+    assert set(pulls) == {"Deployment,StatefulSet,DaemonSet,Rollout"}  # what it resizes (12.8b)
     held = json.loads(core.replace_namespaced_config_map.call_args.args[2].data[actuator.KEY])
     assert held[KEY]["outcome"] == "applied"
     assert core.replace_namespaced_config_map.call_count == 7  # each step while rolling or watched
@@ -840,6 +845,8 @@ def test_the_manifests_resize_pods_and_never_edit_a_deployment() -> None:
         "resources": ["poddisruptionbudgets"],
         "verbs": ["get", "list"],
     } in rules
+    argo = {"apiGroups": ["argoproj.io"], "resources": ["rollouts"], "verbs": ["get", "list"]}
+    assert argo in rules  # slice 12.8b: read only
     webhook_rbac = next(r for r in rules if "mutatingwebhookconfigurations" in r["resources"])
     assert webhook_rbac["resourceNames"] == [actuator.WEBHOOK]
     deploy, service = yaml.safe_load_all((ROOT / "deploy/actuator/deployment.yaml").read_text())
@@ -1413,8 +1420,11 @@ def test_an_actuator_gets_the_newest_sizings_of_what_its_contract_automates(
     assert [w["name"] for w in mine["sizings"]] == ["approved"]
     assert mine["automated"] == [
         {**one, "name": n, "cpu": 0.115, "memory": None} for n in ("api", "elsewhere", "twice")
-    ] + [{**one, "kind": "StatefulSet", "name": "db", "cpu": 0.115, "memory": None}]
-    assert old["automated"] == mine["automated"][:-1]  # an Actuator naming no kinds: no db
+    ] + [
+        {**one, "kind": "Rollout", "name": "web", "cpu": 0.115, "memory": None},
+        {**one, "kind": "StatefulSet", "name": "db", "cpu": 0.115, "memory": None},
+    ]
+    assert old["automated"] == mine["automated"][:-2]  # an Actuator naming no kinds: no db, web
     assert theirs["automated"] == [{**one, "run_id": 3, "name": "ledger", "cpu": 0.115,
                                     "memory": None}]  # fmt: skip
     assert killed == {
@@ -2413,9 +2423,9 @@ def test_an_hpa_or_a_vpa_counts_only_for_its_own_kind() -> None:
     assert held["requests"] == {"memory": "96Mi"}
 
 
-@pytest.mark.parametrize("kind", ["StatefulSet"])  # a DaemonSet's is left as it runs
-def test_a_statefulsets_or_daemonsets_pod_is_never_evicted(kind: str) -> None:
-    core, apps = kinded(kind)
+@pytest.mark.parametrize("kind", ["StatefulSet", "Rollout"])  # a DaemonSet's is left as it runs
+def test_a_statefulsets_or_rollouts_pod_is_never_evicted(kind: str) -> None:
+    core, apps = rolled() if kind == "Rollout" else kinded(kind)
     _, held = start(core, apps, of(kind))
     infeasible(core)
     failed = actuator.advance(core, apps, f"shop/{kind}/api/app", held, 60.0, "open", PDB)
@@ -2467,16 +2477,20 @@ def test_pauses_are_read_for_each_kind_it_holds() -> None:
     apps.list_namespaced_stateful_set.return_value = MagicMock(
         items=[MagicMock(metadata=k.V1ObjectMeta(name="api", annotations=note))]
     )
+    apps.list_namespaced_rollout.return_value = MagicMock(
+        items=[MagicMock(metadata=k.V1ObjectMeta(name="web", annotations=note))]
+    )
     a = make(hub_of([], []), MagicMock(), apps)
     keys = {"shop/StatefulSet/api/app", "shop/Deployment/api/app", "shop/Rollout/web/app"}
     a.pauses(keys)
-    assert a.paused == {"shop/Deployment/db", "shop/StatefulSet/api"}
+    assert a.paused == {"shop/Deployment/db", "shop/StatefulSet/api", "shop/Rollout/web"}
     assert a.is_paused("shop/StatefulSet/api/app") and not a.is_paused("shop/Deployment/api/app")
     assert not apps.list_namespaced_daemon_set.called
     apps.list_namespaced_stateful_set.side_effect = ApiException(status=500)
     apps.list_namespaced_deployment.return_value = MagicMock(items=[])
-    a.pauses(keys)  # its StatefulSets unreadable: they keep what it knew
-    assert a.paused == {"shop/StatefulSet/api"}
+    apps.list_namespaced_rollout.side_effect = ApiException(status=404)  # Argo uninstalled
+    a.pauses(keys)  # its StatefulSets and Rollouts unreadable: they keep what it knew
+    assert a.paused == {"shop/StatefulSet/api", "shop/Rollout/web"}
 
 
 def test_a_statefulset_is_read_as_one_for_its_hand_back_catch_up_and_a_kind_it_skips() -> None:
@@ -2500,8 +2514,8 @@ def test_a_statefulset_is_read_as_one_for_its_hand_back_catch_up_and_a_kind_it_s
     apps.read_namespaced_daemon_set.side_effect = ApiException(status=500, reason="boom")
     broken, _ = start(core, apps, of("DaemonSet"))
     assert (broken.outcome, broken.reason) == ("failed", "reading the DaemonSet: 500: boom")
-    rollout, _ = start(core, apps, of("Rollout"))
-    assert (rollout.outcome, rollout.reason) == ("skipped", "a Rollout is not resized")
+    cronjob, _ = start(core, apps, of("CronJob"))
+    assert (cronjob.outcome, cronjob.reason) == ("skipped", "a CronJob is not resized")
 
 
 def stuck(core: Any, *names: str, reason: str = "Infeasible") -> None:
@@ -2630,3 +2644,133 @@ def test_a_new_nodes_pod_with_no_room_is_left_and_the_daemonset_keeps_its_reques
     act.catch_up()
     assert [n for n, _ in resized(core)[count:]] == ["api-1-d"]
     assert act.held[DS]["left"] == ["api-1-c"] and act.held[DS]["pod"] == "api-1-d"
+
+
+# --- Argo Rollouts (slice 12.8b) -----------------------------------------------------------
+
+
+def rolled(**kw: Any) -> tuple[Any, Any]:
+    """cluster(), api an Argo Rollout (uid u1) owning ReplicaSet api-1; api-x another's."""
+    core, apps = cluster(**kw)
+    apps.read_namespaced_rollout.return_value = apps.read_namespaced_deployment.return_value
+    apps.read_namespaced_deployment.side_effect = ApiException(status=404)
+    for rs in apps.list_namespaced_replica_set.return_value.items:
+        rs.metadata.owner_references[0].kind = "Rollout"
+    return core, apps
+
+
+def test_an_argo_rollout_is_resized_on_its_own_replicasets_pods() -> None:
+    core, apps = rolled()
+    a, held = start(core, apps, of("Rollout"))
+    assert a is None and resized(core) == [("api-1-a", body(cpu="115m", memory="96Mi"))]
+    key = "shop/Rollout/api/app"
+    assert actuator.advance(core, apps, key, held, 600.0) is None  # the next: b
+    done = actuator.advance(core, apps, key, held, 660.0)
+    assert done is not None and (done.outcome, done.kind, done.pods) == ("applied", "Rollout", 2)
+    assert [n for n, _ in resized(core)] == ["api-1-a", "api-1-b"]  # not api-x-a, another's
+    actuator.event(core, done)
+    on = core.create_namespaced_event.call_args.args[1].involved_object
+    assert (on.api_version, on.kind, on.name) == ("argoproj.io/v1alpha1", "Rollout", "api")
+    gone, _ = start(*rolled(), of("Deployment"))  # a Deployment of its name: none
+    assert (gone.outcome, gone.reason) == ("skipped", "no such Deployment")
+
+
+def test_the_webhook_tells_an_argo_rollouts_pod_by_its_hash_label() -> None:
+    review = new_pod()
+    labels = review["request"]["object"]["metadata"]["labels"]
+    del labels["pod-template-hash"]
+    labels["rollouts-pod-template-hash"] = "5d8f"
+    held = {"shop/Rollout/api/app": HELD["shop/Deployment/api/app"]}
+    assert patched(review, held) == patched(new_pod()) is not None  # as a Deployment's
+    assert patched(review) is None  # a Deployment of its name holds nothing for it
+    assert patched(new_pod(), held) is None  # nor it for a Deployment's pod
+    labels["rollouts-pod-template-hash"] = "9999"  # not its ReplicaSet's hash
+    assert patched(review, held) is None
+    db = owned_by("StatefulSet", "db")  # a StatefulSet's pod, whatever its labels say
+    db["request"]["object"]["metadata"]["labels"]["rollouts-pod-template-hash"] = "5d8f"
+    assert patched(db, {"shop/StatefulSet/db/app": HELD["shop/Deployment/api/app"]})
+
+
+def test_a_rollout_is_read_as_a_deployment_its_template_its_own_or_its_workload_refs() -> None:
+    custom, apps = MagicMock(), MagicMock()
+    template = {"metadata": {"labels": {"app": "web"}}, "spec": {"containers": [
+        {"name": "app", "image": "x", "resources": {"requests": {"cpu": "100m"}},
+         "resizePolicy": [{"resourceName": "cpu", "restartPolicy": "NotRequired"}]}]}}  # fmt: skip
+    meta = {
+        "name": "web",
+        "namespace": "shop",
+        "uid": "u9",
+        "annotations": {actuator.PAUSE: "true"},
+    }
+    own = {
+        "apiVersion": "argoproj.io/v1alpha1",
+        "kind": "Rollout",
+        "metadata": meta,
+        "spec": {
+            "replicas": 3,
+            "selector": {"matchLabels": {"app": "web"}},
+            "strategy": {"canary": {"steps": [{"setWeight": 20}]}},  # not a Deployment's
+            "template": template,
+        },
+        "status": {"phase": "Healthy", "conditions": [{"type": "Progressing", "status": "True"}]},
+    }
+    custom.get_namespaced_custom_object.return_value = own
+    d = actuator.Apps(apps, custom).read_namespaced_rollout("web", "shop")
+    assert custom.get_namespaced_custom_object.call_args.args == (
+        "argoproj.io",
+        "v1alpha1",
+        "shop",
+        "rollouts",
+        "web",
+    )
+    c = d.spec.template.spec.containers[0]
+    assert (d.metadata.uid, d.spec.replicas, d.spec.selector.match_labels) == (
+        "u9",
+        3,
+        {"app": "web"},
+    )
+    assert (c.resources.requests, c.resize_policy[0].restart_policy) == (
+        {"cpu": "100m"},
+        "NotRequired",
+    )
+    base = k.V1Deployment(
+        spec=k.V1DeploymentSpec(
+            selector=k.V1LabelSelector(match_labels={"app": "base"}),
+            template=k.V1PodTemplateSpec(spec=k.V1PodSpec(containers=[container({"cpu": "7m"})])),
+        )
+    )
+    apps.read_namespaced_deployment.return_value = base
+    ref = {"apiVersion": "apps/v1", "kind": "Deployment", "name": "web-base"}
+    reffed = {"metadata": meta, "spec": {"replicas": 2, "workloadRef": ref}}
+    custom.get_namespaced_custom_object.return_value = reffed
+    d = actuator.Apps(apps, custom).read_namespaced_rollout("web", "shop")
+    assert apps.read_namespaced_deployment.call_args.args == ("web-base", "shop")
+    assert d.spec.template.spec.containers[0].resources.requests == {"cpu": "7m"}
+    assert d.spec.selector.match_labels == {"app": "base"}
+    reffed["spec"]["selector"] = {"matchLabels": {"app": "web"}}  # as Argo's examples give it
+    d = actuator.Apps(apps, custom).read_namespaced_rollout("web", "shop")
+    assert d.spec.selector.match_labels == {"app": "web"}  # its own, not the Deployment's
+    assert (
+        actuator.Apps(apps, custom).list_namespaced_replica_set is apps.list_namespaced_replica_set
+    )
+
+
+def test_a_rollout_it_cant_read_as_a_deployment_fails_and_never_hides_anothers_pause() -> None:
+    custom, apps = MagicMock(), MagicMock()
+    meta = {"name": "web", "namespace": "shop", "uid": "u9"}
+    other = {"apiVersion": "v1", "kind": "PodTemplate", "name": "web-template"}
+    custom.get_namespaced_custom_object.return_value = {
+        "metadata": meta,
+        "spec": {"selector": {"matchLabels": {"app": "web"}}, "workloadRef": other},
+    }
+    core, _ = cluster()
+    a, _ = start(core, actuator.Apps(apps, custom), of("Rollout"))
+    assert a.outcome == "failed"
+    assert a.reason.startswith("reading the Rollout: 422: not read as a Deployment")
+    paused = {"name": "db", "namespace": "shop", "annotations": {actuator.PAUSE: "true"}}
+    custom.list_namespaced_custom_object.return_value = {
+        "items": [custom.get_namespaced_custom_object.return_value, {"metadata": paused}]
+    }
+    act = make(hub_of([], []), core, actuator.Apps(apps, custom))
+    act.pauses({"shop/Rollout/web/app", "shop/Rollout/db/app"})
+    assert act.paused == {"shop/Rollout/db"} and not apps.read_namespaced_deployment.called
