@@ -20,7 +20,9 @@ minutes, stops it there. Deployments, and from slice 12.8a StatefulSets and Daem
 DaemonSet's new pod gets only lowered requests from the webhook (it must fit any node), a
 DaemonSet's pod whose node has no room is left as it runs while the others go on, and
 neither kind's pod is ever evicted. From slice 12.8b Argo Rollouts, in place only: read as a
-Deployment (`Apps`), their pods their own ReplicaSets', never evicted.
+Deployment (`Apps`), their pods their own ReplicaSets', never evicted. From slice 12.8c
+CronJobs, through the webhook only: held at once for their next run's pods, that first run
+watched until it ends (`first_run`), a pod of it Failed or OOM-killed a Rollback.
 
 Under Automation (slice 12.5) it also applies, unasked, the newest Sizing of each container
 the Contract automates: a change under 10% ignored, an increase at once, a decrease at most
@@ -99,12 +101,15 @@ KINDS = {
     "StatefulSet": "stateful_set",
     "DaemonSet": "daemon_set",
     "Rollout": "rollout",
+    "CronJob": "cron_job",  # slice 12.8c: through the webhook only
 }
 ARGO = ("argoproj.io", "v1alpha1")  # an Argo Rollout's API group and version
+API = {"Rollout": "/".join(ARGO), "CronJob": "batch/v1"}  # others: apps/v1
+RUN_WATCH = 7 * 86400  # a CronJob's first run under its hold is watched this long at most
 EVICT_EVERY = 300  # at least this long between two evictions (slice 12.7)
 # held while rolling; "waiting": on an Infeasible pod, to evict it; "evicted": its replacement
 ROLLOUT = ("pod", "since", "canary_until", "resized", "notes", "waiting", "evicted", "no_room")
-WATCHED = ("pods", "watch_until")  # held while watched
+WATCHED = ("pods", "watch_until", "first_run")  # held while watched
 Outcome = Literal["applied", "skipped", "failed", "handed_back", "rolled_back", "reverted"]
 # held, never reported: "rolling"
 Ending = Callable[[Outcome, str], "Actuation"]  # how advance() ends a rollout
@@ -236,8 +241,8 @@ class Apps:
     """AppsV1Api with Argo Rollouts beside its own kinds (slice 12.8b): a Rollout read as
     a Deployment, its template its own or its `workloadRef` Deployment's."""
 
-    def __init__(self, apps: Any, custom: Any) -> None:
-        self.apps, self.custom, self.decoder = apps, custom, client.ApiClient()
+    def __init__(self, apps: Any, custom: Any, batch: Any = None) -> None:
+        self.apps, self.custom, self.batch, self.decoder = apps, custom, batch, client.ApiClient()
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.apps, name)
@@ -275,6 +280,21 @@ class Apps:
             ]
         )
 
+    # a CronJob's and its Jobs' (slice 12.8c), from BatchV1Api
+    def read_namespaced_cron_job(self, name: str, ns: str) -> Any:
+        return self.batch.read_namespaced_cron_job(name, ns)
+
+    def list_namespaced_cron_job(self, ns: str) -> Any:
+        return self.batch.list_namespaced_cron_job(ns)
+
+    def list_namespaced_job(self, ns: str) -> Any:
+        return self.batch.list_namespaced_job(ns)
+
+
+def template_of(d: Any, kind: str) -> Any:
+    """The pod template of a workload read with `read`: a CronJob's is its Jobs'."""
+    return (d.spec.job_template.spec if kind == "CronJob" else d.spec).template
+
 
 def read(apps: Any, kind: str, name: str, ns: str) -> Any:
     """The workload `kind`/`name` (one of KINDS) from the API server."""
@@ -283,7 +303,11 @@ def read(apps: Any, kind: str, name: str, ns: str) -> Any:
 
 def pods_of(core: Any, apps: Any, d: Any, kind: str) -> list[Any]:
     """The workload's live pods, however its selector reads: a Deployment's or Rollout's
-    are its own ReplicaSets', a StatefulSet's or DaemonSet's its own (slice 12.8a)."""
+    are its own ReplicaSets', a StatefulSet's or DaemonSet's its own (slice 12.8a). A CronJob's
+    none: they are never resized in place, the webhook gives its next run's pods the hold
+    (slice 12.8c)."""
+    if kind == "CronJob":
+        return []
     ns = d.metadata.namespace
     labels = ",".join(f"{k}={v}" for k, v in sorted((d.spec.selector.match_labels or {}).items()))
     if kind in ("Deployment", "Rollout"):
@@ -491,7 +515,7 @@ def apply(
         if e.status == 404:
             return done("skipped", 0, f"no such {w.kind}")
         return done("failed", 0, f"reading the {w.kind}: {why(e)}")
-    containers = d.spec.template.spec.containers
+    containers = template_of(d, w.kind).spec.containers
     template = next((c for c in containers if c.name == w.container), None)
     if template is None:
         return done("skipped", 0, f"no container {w.container!r} in its template")
@@ -554,6 +578,18 @@ def apply(
         )
         if why_not:
             return done("skipped", 0, why_not)
+        if w.kind == "CronJob":  # through the webhook only (slice 12.8c): its next run
+            runs = d.spec.job_template.spec.parallelism or 1
+            why_not = quota_breach(core, w.namespace, set_to, asked, runs)
+            if why_not:
+                return done("skipped", 0, why_not)
+            a, held = done("applied", 0, "held for its next run's pods, given them as they start")
+            held["first_run"] = {"after": at, "until": at + RUN_WATCH}
+            if lowered:
+                held["lowered_at"] = at
+            if deferred:
+                held["deferred"] = deferred
+            return a, held
         pods = pods_of(core, apps, d, w.kind)
         if not pods:
             return done("skipped", 0, "no live pods")
@@ -908,6 +944,66 @@ def trouble(core: Any, apps: Any, key: str, h: dict[str, Any], now: float) -> st
     return None
 
 
+def first_run(core: Any, apps: Any, key: str, h: dict[str, Any], now: float) -> str | None:
+    """Why a CronJob's first run under the requests held as `h` (slice 12.8c) is a reason
+    to roll back, or None: a pod of it with them Failed or OOM-killed. That run is the first
+    Job, created since, whose pods got them (one started from its template, the webhook
+    missing it, is not); it ends the watch once it finished or is gone, as do 7 days
+    without one."""
+    ns, kind, name, container = key.split("/")
+    run = h["first_run"]
+
+    def pods(job: str) -> list[Any]:  # Succeeded and Failed ones too: pods_of drops them
+        selector = f"batch.kubernetes.io/job-name={job}"
+        return list(core.list_namespaced_pod(ns, label_selector=selector).items)
+
+    try:
+        cj = read(apps, kind, name, ns)
+        jobs = sorted(
+            (
+                j
+                for j in apps.list_namespaced_job(ns).items
+                if any(o.uid == cj.metadata.uid for o in j.metadata.owner_references or [])
+                and j.metadata.creation_timestamp.timestamp() >= run["after"]
+            ),
+            key=lambda j: j.metadata.creation_timestamp,
+        )
+        if "job" not in run:
+            chosen = next(
+                (
+                    j.metadata.name
+                    for j in jobs
+                    if any(not needs(p, container, h["requests"]) for p in pods(j.metadata.name))
+                ),
+                None,
+            )
+            if chosen is None:
+                if now >= run["until"]:
+                    h.pop("first_run")  # no run in 7 days: kept, no longer watched
+                return None
+            run["job"] = chosen
+        job = next((j for j in jobs if j.metadata.name == run["job"]), None)
+        for p in pods(run["job"]) if job else []:
+            if needs(p, container, h["requests"]):
+                continue  # from its template: not the Actuator's doing
+            st = container_status(p, container)
+            for state in (st.state, st.last_state) if st else ():
+                if state and state.terminated and state.terminated.reason == "OOMKilled":
+                    return f"{p.metadata.name}: {container} was OOM-killed"
+            if p.status.phase == "Failed":
+                return f"{p.metadata.name} Failed"
+    except ApiException as e:
+        log.warning("watching %s: %s", key, why(e))
+        return None
+    finished = job is None or any(
+        c.type in ("Complete", "Failed") and c.status == "True"
+        for c in (job.status.conditions if job.status else None) or []
+    )
+    if finished:
+        h.pop("first_run")  # its first run is over: kept, no longer watched
+    return None
+
+
 def rollback(core: Any, apps: Any, key: str, h: dict[str, Any], why_: str, now: float) -> Actuation:
     """Every pod with the Actuator's requests back to its template's, in place and at once;
     then no new Sizing of that container for 24 hours, doubling with each rollback in 7 days."""
@@ -957,11 +1053,14 @@ def put_back(
     for k in ROLLOUT + WATCHED:
         h.pop(k, None)
     h["outcome"] = outcome
-    reason = f"{why_}: {done} pods back from {texts(h['requests'])}"
-    if back:
-        reason += f" to their template's {texts(back)}"
-    if unset:
-        reason += f" ({unset} left: the template sets none)"
+    if kind == "CronJob":  # never resized in place (slice 12.8c)
+        reason = f"{why_}: its next run's pods start from its template, not {texts(h['requests'])}"
+    else:
+        reason = f"{why_}: {done} pods back from {texts(h['requests'])}"
+        if back:
+            reason += f" to their template's {texts(back)}"
+        if unset:
+            reason += f" ({unset} left: the template sets none)"
     if stuck:
         reason += f"; {stuck} Pending replacement evicted to start from its template"
     if refused:
@@ -1016,8 +1115,7 @@ def post(
     """An Event on `what` (api version, kind, name) in `ns`; a refused one is only logged."""
     now = datetime.now(UTC)
     api_version, kind, name = what
-    if kind == "Rollout":
-        api_version = "/".join(ARGO)
+    api_version = API.get(kind, api_version)
     body = client.CoreV1Event(
         metadata=client.V1ObjectMeta(name=f"{name}.{uuid.uuid4().hex[:16]}"),
         involved_object=client.V1ObjectReference(
@@ -1068,7 +1166,12 @@ def mutation(
     labels = meta.get("labels") or {}
     kind = next((k for k in ("StatefulSet", "DaemonSet") if owners.get(k)), "Deployment")
     name = owners.get(kind, "")
-    if kind == "Deployment" and "rollouts-pod-template-hash" in labels:
+    # a CronJob's run, its Job named for its minute (slice 12.8c); a lone Job's pod falls
+    # through to a Deployment's, which its missing `pod-template-hash` refuses
+    run = re.fullmatch(r"(.+)-\d+", owners.get("Job", ""))
+    if kind == "Deployment" and run:
+        kind, name = "CronJob", run.group(1)
+    elif kind == "Deployment" and "rollouts-pod-template-hash" in labels:
         kind = "Rollout"  # Argo's ReplicaSet, named and labelled as a Deployment's (12.8b)
     if kind in ("Deployment", "Rollout"):
         hashed = labels.get(
@@ -1295,7 +1398,10 @@ class Actuator:
             done += self.revert(desired.reverts) + self.advance(desired.eviction)
             done += self.act(desired.sizings, desired.automated)
             done += self.catch_up()
-        rolling = any(h.get("outcome") == "rolling" or "pods" in h for h in self.held.values())
+        rolling = any(
+            h.get("outcome") == "rolling" or "pods" in h or "first_run" in h
+            for h in self.held.values()
+        )
         if done or rolling:
             self.save()
         self.unsent += done
@@ -1349,6 +1455,14 @@ class Actuator:
         """Roll back each Sizing that made its pods unhealthy within its hour (slice 12.4)."""
         out, now = [], time.time()
         for key, h in self.held.items():
+            if "first_run" in h:  # a CronJob's (slice 12.8c)
+                reason = first_run(self.core, self.apps, key, h, now)
+                if reason:
+                    a = rollback(self.core, self.apps, key, h, reason, now)
+                    log.warning("rolled back %s: %s", key, a.reason)
+                    event(self.core, a, h)
+                    out.append(a)
+                continue
             if "pods" not in h:
                 continue
             if h.get("outcome") != "rolling" and now >= h.get("watch_until", 0):
@@ -1500,7 +1614,7 @@ class Actuator:
                 return f"no such {kind}"
             log.warning("reading %s: %s", key, why(e))  # the API server's trouble, no change
             return None
-        c = next((c for c in d.spec.template.spec.containers if c.name == container), None)
+        c = next((c for c in template_of(d, kind).spec.containers if c.name == container), None)
         if c is None:
             return f"no container {container!r} in its template"
         now = (c.resources.requests if c.resources else None) or {}
@@ -1590,7 +1704,7 @@ class Actuator:
 def main(s: ActuatorSettings) -> None:  # pragma: no cover - the cluster's own process
     config.load_incluster_config()  # type: ignore[no-untyped-call]
     core, custom = client.CoreV1Api(), client.CustomObjectsApi()
-    apps = Apps(client.AppsV1Api(), custom)
+    apps = Apps(client.AppsV1Api(), custom, client.BatchV1Api())
     check_version(client.VersionApi())
     cert, key = certificate(f"{WEBHOOK}.{s.namespace}.svc")
     headers = {"Authorization": f"Bearer {s.token.get_secret_value()}"}

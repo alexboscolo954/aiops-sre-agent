@@ -5,6 +5,7 @@ import asyncio
 import base64
 import json
 import ssl
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -97,12 +98,13 @@ def test_an_actuator_gets_only_its_own_clusters_current_approved_deployments(
             approve("acme", 1, name="db", kind="StatefulSet"),  # slice 12.8a
             approve("acme", 1, name="agent", kind="DaemonSet"),
             approve("acme", 1, name="web", kind="Rollout"),  # Argo Rollouts: slice 12.8b
-            approve("acme", 1, name="nightly", kind="CronJob"),  # no Actuator resizes one
+            approve("acme", 1, name="nightly", kind="CronJob"),  # slice 12.8c
+            approve("acme", 1, name="once", kind="Job"),  # a Job of no CronJob: never sent
             approve("acme", 1, cluster="edge"),  # another cluster of acme's
             approve("acme", 1, ns="old"),  # no longer one of its namespaces
             approve("bank", 1, name="ledger"),
         )
-        kinds = {"kinds": "Deployment,StatefulSet,DaemonSet,Rollout,CronJob"}
+        kinds = {"kinds": "Deployment,StatefulSet,DaemonSet,Rollout,CronJob,Job"}
         mine = c.get("/actuator/desired", headers=as_actuator(A_TOKEN), params=kinds)
         three = {"kinds": "Deployment,StatefulSet,DaemonSet"}  # 0.44.0: no Rollouts
         before = c.get("/actuator/desired", headers=as_actuator(A_TOKEN), params=three)
@@ -114,6 +116,7 @@ def test_an_actuator_gets_only_its_own_clusters_current_approved_deployments(
     assert mine.json() == {
         "kill_switch": False,
         "sizings": [
+            {**wanted, "kind": "CronJob", "name": "nightly", "cpu": 0.115, "memory": None},
             {**wanted, "kind": "DaemonSet", "name": "agent", "cpu": 0.115, "memory": None},
             {**wanted, "name": "api", "cpu": 0.115, "memory": None},
             {**wanted, "kind": "Rollout", "name": "web", "cpu": 0.115, "memory": None},
@@ -124,7 +127,8 @@ def test_an_actuator_gets_only_its_own_clusters_current_approved_deployments(
         "eviction": "off",
     }
     assert old.json()["sizings"] == [{**wanted, "name": "api", "cpu": 0.115, "memory": None}]
-    assert before.json()["sizings"] == [x for x in mine.json()["sizings"] if x["kind"] != "Rollout"]
+    known = ("Deployment", "StatefulSet", "DaemonSet")  # what 0.44.0 names
+    assert before.json()["sizings"] == [x for x in mine.json()["sizings"] if x["kind"] in known]
     assert theirs.json()["sizings"] == [{**wanted, "name": "ledger", "cpu": 0.115, "memory": None}]
     assert wrong.status_code == 401 and none.status_code in (401, 403)
 
@@ -736,7 +740,7 @@ def test_a_rollout_goes_on_only_while_the_hub_answers_and_the_kill_switch_is_off
     ]
     assert all(r.headers["authorization"] == f"Bearer {A_TOKEN}" for r in seen)
     pulls = [r.url.params.get("kinds") for r in seen if r.method == "GET"]
-    assert set(pulls) == {"Deployment,StatefulSet,DaemonSet,Rollout"}  # what it resizes (12.8b)
+    assert set(pulls) == {"Deployment,StatefulSet,DaemonSet,Rollout,CronJob"}  # slice 12.8c
     held = json.loads(core.replace_namespaced_config_map.call_args.args[2].data[actuator.KEY])
     assert held[KEY]["outcome"] == "applied"
     assert core.replace_namespaced_config_map.call_count == 7  # each step while rolling or watched
@@ -847,6 +851,8 @@ def test_the_manifests_resize_pods_and_never_edit_a_deployment() -> None:
     } in rules
     argo = {"apiGroups": ["argoproj.io"], "resources": ["rollouts"], "verbs": ["get", "list"]}
     assert argo in rules  # slice 12.8b: read only
+    batch = {"apiGroups": ["batch"], "resources": ["cronjobs", "jobs"], "verbs": ["get", "list"]}
+    assert batch in rules  # slice 12.8c: read only
     webhook_rbac = next(r for r in rules if "mutatingwebhookconfigurations" in r["resources"])
     assert webhook_rbac["resourceNames"] == [actuator.WEBHOOK]
     deploy, service = yaml.safe_load_all((ROOT / "deploy/actuator/deployment.yaml").read_text())
@@ -2514,8 +2520,8 @@ def test_a_statefulset_is_read_as_one_for_its_hand_back_catch_up_and_a_kind_it_s
     apps.read_namespaced_daemon_set.side_effect = ApiException(status=500, reason="boom")
     broken, _ = start(core, apps, of("DaemonSet"))
     assert (broken.outcome, broken.reason) == ("failed", "reading the DaemonSet: 500: boom")
-    cronjob, _ = start(core, apps, of("CronJob"))
-    assert (cronjob.outcome, cronjob.reason) == ("skipped", "a CronJob is not resized")
+    lone, _ = start(core, apps, of("Job"))
+    assert (lone.outcome, lone.reason) == ("skipped", "a Job is not resized")
 
 
 def stuck(core: Any, *names: str, reason: str = "Infeasible") -> None:
@@ -2774,3 +2780,216 @@ def test_a_rollout_it_cant_read_as_a_deployment_fails_and_never_hides_anothers_p
     act = make(hub_of([], []), core, actuator.Apps(apps, custom))
     act.pauses({"shop/Rollout/web/app", "shop/Rollout/db/app"})
     assert act.paused == {"shop/Rollout/db"} and not apps.read_namespaced_deployment.called
+
+
+# --- CronJobs, through the webhook only (slice 12.8c) -------------------------------------
+
+CRON = "shop/CronJob/api/app"
+
+
+def cronned(parallelism: int | None = None) -> tuple[Any, Any]:
+    """cluster(), api a CronJob (uid u1) whose Jobs' template is cluster()'s Deployment's;
+    its Jobs from list_namespaced_job, their pods by `batch.kubernetes.io/job-name`."""
+    core, apps = cluster()
+    d = apps.read_namespaced_deployment.return_value
+    apps.read_namespaced_cron_job.return_value = k.V1CronJob(
+        metadata=d.metadata,
+        spec=k.V1CronJobSpec(
+            schedule="* * * * *",
+            job_template=k.V1JobTemplateSpec(
+                spec=k.V1JobSpec(template=d.spec.template, parallelism=parallelism)
+            ),
+        ),
+    )
+    apps.read_namespaced_deployment.side_effect = ApiException(status=404)
+    apps.list_namespaced_job.return_value = k.V1JobList(items=[])
+    runs: dict[str, list[Any]] = {}
+    core.list_namespaced_pod.side_effect = lambda ns, label_selector: k.V1PodList(
+        items=runs.get(label_selector.removeprefix("batch.kubernetes.io/job-name="), [])
+    )
+    core.runs = runs  # each Job's pods, by its name
+    return core, apps
+
+
+def job(
+    core: Any, apps: Any, name: str, at: float, *pods: Any, ended: str = "", uid: str = "u1"
+) -> k.V1Job:
+    """A Job of api created at `at` (its CronJob's `uid`), with these pods; `ended`: Complete
+    or Failed."""
+    j = k.V1Job(
+        metadata=k.V1ObjectMeta(
+            name=name,
+            creation_timestamp=datetime.fromtimestamp(at, UTC),
+            owner_references=[owner("CronJob", "api", uid)],
+        ),
+        status=k.V1JobStatus(
+            conditions=[k.V1JobCondition(type=ended, status="True")] if ended else None
+        ),
+    )
+    apps.list_namespaced_job.return_value.items.append(j)
+    core.runs[name] = list(pods)
+    return j
+
+
+def ran(name: str, phase: str = "Running", held: bool = True, oom: str = "") -> k.V1Pod:
+    """A run's pod with api's held requests (or its template's); `oom`: state or last_state."""
+    p = pod(name, "", phase, **({"cpu": "115m", "memory": "96Mi"} if held else {}))
+    st = status("app", None)
+    if oom:
+        setattr(st, oom, k.V1ContainerState(terminated=k.V1ContainerStateTerminated(
+            exit_code=137, reason="OOMKilled")))  # fmt: skip
+    p.status.container_statuses = [st]
+    return p
+
+
+def test_a_cronjob_is_held_for_its_next_run_never_resized_in_place() -> None:
+    core, apps = cronned()
+    a, held = start(core, apps, of("CronJob"), at=100.0)
+    assert (a.outcome, a.pods, a.reason) == (
+        "applied",
+        0,
+        "held for its next run's pods, given them as they start",
+    )
+    assert held["requests"] == {"cpu": "115m", "memory": "96Mi"}
+    assert held["first_run"] == {"after": 100.0, "until": 100.0 + 7 * 86400}
+    assert not core.patch_namespaced_pod_resize.called
+    actuator.event(core, a)
+    on = core.create_namespaced_event.call_args.args[1].involved_object
+    assert (on.api_version, on.kind, on.name) == ("batch/v1", "CronJob", "api")
+    core.list_namespaced_resource_quota.return_value = quota({"cpu": "3"}, {"cpu": "2"})
+    one, _ = start(core, apps, of("CronJob", cpu=2.0, memory=None))
+    assert one.outcome == "applied"  # 2 + 1 x 1 fits
+    core, apps = cronned(parallelism=2)
+    core.list_namespaced_resource_quota.return_value = quota({"cpu": "3"}, {"cpu": "2"})
+    two, _ = start(core, apps, of("CronJob", cpu=2.0, memory=None))
+    assert two.reason == "2 pods at cpu 2000m would pass ResourceQuota team's cpu 3"
+    restarts, _ = start(*cronned(), of("CronJob"))  # the pre-checks hold: its resizePolicy
+    assert restarts.outcome == "applied"
+    core, apps = cronned()
+    template = apps.read_namespaced_cron_job.return_value.spec.job_template.spec.template
+    template.spec.containers[0].resize_policy = [
+        k.V1ContainerResizePolicy(resource_name="cpu", restart_policy="RestartContainer")
+    ]
+    skipped, _ = start(core, apps, of("CronJob"))
+    assert skipped.reason == "its resizePolicy restarts the container for ['cpu']"
+
+
+def test_the_webhook_gives_a_cronjobs_run_its_hold_and_a_lone_job_nothing() -> None:
+    held = {CRON: HELD["shop/Deployment/api/app"]}
+    expected = patched(new_pod())
+    assert expected is not None
+    assert patched(owned_by("Job", "api-29400000"), held) == expected
+    assert patched(owned_by("Job", "api-manual"), held) is None  # no CronJob's name
+    assert patched(owned_by("Job", "other-29400000"), held) is None  # another's: not held
+    assert patched(owned_by("Job", "api-29400000")) is None  # a Deployment api's hold
+    req = owned_by("Job", "api-29400000")["request"]
+    assert actuator.mutation(req, held, "x", frozenset({"shop/CronJob/api"})) == []
+
+
+def test_a_cronjobs_first_run_under_its_hold_is_watched_until_it_ends() -> None:
+    core, apps = cronned()
+    t0 = time.time() - 600
+    _, held = start(core, apps, of("CronJob"), at=t0)
+    act = make(hub_of([], []), core, apps, held={CRON: held})
+    job(core, apps, "api-1", t0 - 60, ran("api-1-a", "Failed"))  # before the hold
+    job(core, apps, "api-2", t0 + 60, ran("api-2-a", held=False))  # from its template
+    assert act.watch() == [] and "job" not in act.held[CRON]["first_run"]
+    job(core, apps, "api-x", t0 + 90, ran("api-x-a", "Failed"), uid="u2")  # another CronJob's
+    j = job(core, apps, "api-3", t0 + 120, ran("api-3-a"))
+    job(core, apps, "api-4", t0 + 180, ran("api-4-a"))  # a later run
+    apps.list_namespaced_job.return_value.items.reverse()  # listed in no particular order
+    assert act.watch() == [] and act.held[CRON]["first_run"]["job"] == "api-3"
+    j.status.conditions = [k.V1JobCondition(type="Complete", status="True")]
+    assert act.watch() == [] and "first_run" not in act.held[CRON]  # over: kept, unwatched
+    assert act.held[CRON]["outcome"] == "applied"
+    held["first_run"] = {"after": t0, "until": t0 + 7 * 86400, "job": "api-3"}
+    apps.list_namespaced_job.return_value.items.remove(j)  # its history limit took it
+    assert act.watch() == [] and "first_run" not in act.held[CRON]
+    held["first_run"] = {"after": t0 + 1000, "until": t0 + 7 * 86400}  # none since
+    assert act.watch() == [] and "first_run" in act.held[CRON]
+    held["first_run"]["until"] = t0  # 7 days without a run
+    assert act.watch() == [] and "first_run" not in act.held[CRON]
+
+
+@pytest.mark.parametrize(
+    ("bad", "why_"),
+    [
+        (ran("api-3-a", "Failed"), "api-3-a Failed"),
+        (ran("api-3-a", "Failed", oom="state"), "api-3-a: app was OOM-killed"),  # Never
+        (ran("api-3-a", oom="last_state"), "api-3-a: app was OOM-killed"),  # OnFailure
+    ],
+)
+def test_a_failed_or_oom_killed_pod_of_that_run_rolls_the_hold_back(bad: Any, why_: str) -> None:
+    core, apps = cronned()
+    t0 = time.time() - 600
+    _, held = start(core, apps, of("CronJob"), at=t0)
+    act = make(hub_of([], []), core, apps, held={CRON: held})
+    job(core, apps, "api-3", t0 + 60, ran("api-3-ok", "Succeeded"), bad, ended="Failed")
+    (a,) = act.watch()
+    assert (a.outcome, a.kind, a.pods) == ("rolled_back", "CronJob", 0)
+    assert a.reason.startswith(
+        f"{why_}: its next run's pods start from its template, not cpu 115m, memory 96Mi; "
+        "no new Sizing of it until"
+    )
+    h = act.held[CRON]
+    assert h["outcome"] == "rolled_back" and "first_run" not in h and h["backoff_until"]
+    assert not core.patch_namespaced_pod_resize.called  # nothing in place
+    assert patched(owned_by("Job", "api-29400001"), act.held) is None  # the webhook stops
+    core.runs["api-3"] = [ran("api-3-ok"), ran("api-3-b", "Failed", held=False)]  # a template's
+    held2 = start(core, apps, of("CronJob"), at=t0)[1]
+    act = make(hub_of([], []), core, apps, held={CRON: held2})
+    assert act.watch() == []  # not the Actuator's doing
+
+
+def test_a_held_cronjob_steps_through_hand_back_pause_revert_and_catch_up() -> None:
+    core, apps = cronned()
+    seen: list[httpx.Request] = []
+    sizing = {**wanted().model_dump(), "kind": "CronJob"}
+    hub = hub_of([{"kill_switch": False, "sizings": [sizing]}] * 3, seen)
+    act = make(hub, core, apps)
+    act.step()  # applied at once, held for its next run
+    assert act.held[CRON]["outcome"] == "applied" and "first_run" in act.held[CRON]
+    stale = ran("api-9-a", held=False)  # a run from its template while the Kill switch was on
+    job(core, apps, "api-9", time.time() + 1, stale)
+    core.replace_namespaced_config_map.reset_mock()
+    act.step()  # no catch-up: its pods are never resized in place
+    assert not core.patch_namespaced_pod_resize.called
+    assert core.replace_namespaced_config_map.called  # saved while its first run is watched
+    apps.list_namespaced_cron_job.return_value = MagicMock(
+        items=[MagicMock(metadata=k.V1ObjectMeta(name="api", annotations={actuator.PAUSE: "true"}))]
+    )
+    act.step()
+    assert act.is_paused(CRON)
+    a = actuator.put_back(core, apps, CRON, dict(act.held[CRON]), "reverted", "reverted (1)", 0.0)
+    assert (a.outcome, a.pods) == ("reverted", 0)
+    assert (
+        a.reason
+        == "reverted (1): its next run's pods start from its template, not cpu 115m, memory 96Mi"
+    )
+    template = apps.read_namespaced_cron_job.return_value.spec.job_template.spec.template
+    template.spec.containers[0].resources.requests = {"cpu": "2"}
+    assert act.changed(CRON, act.held[CRON]) == "its template's requests changed: cpu 1 to 2"
+    (back,) = act.hand_back()
+    assert back.outcome == "handed_back" and "first_run" not in act.held[CRON]
+    posted = [json.loads(r.content) for r in seen if r.method == "POST"]
+    assert [(x["kind"], x["outcome"]) for p in posted for x in p] == [("CronJob", "applied")]
+
+
+def test_automation_of_a_cronjob_keeps_the_churn_rule() -> None:
+    core, apps = cronned()
+    scaling = scalers()
+    _, held = actuator.apply(core, apps, of("CronJob"), 5.0, *scaling, {}, True)
+    assert held["lowered_at"] == 5.0  # cpu 1 down to 115m: once a day at most
+    near = of("CronJob", cpu=0.95)  # 5% under its template's 1: too small to move
+    _, held = actuator.apply(core, apps, near, 5.0, *scaling, {}, True)
+    assert held["deferred"] == ["cpu"] and held["requests"] == {"memory": "96Mi"}
+
+
+def test_apps_reads_cronjobs_and_their_jobs_from_the_batch_api() -> None:
+    batch = MagicMock()
+    apps = actuator.Apps(MagicMock(), MagicMock(), batch)
+    assert apps.read_namespaced_cron_job("api", "shop") is batch.read_namespaced_cron_job()
+    assert batch.read_namespaced_cron_job.call_args_list[0].args == ("api", "shop")
+    assert apps.list_namespaced_cron_job("shop") is batch.list_namespaced_cron_job.return_value
+    assert apps.list_namespaced_job("shop") is batch.list_namespaced_job.return_value
+    assert batch.list_namespaced_job.call_args.args == ("shop",)
