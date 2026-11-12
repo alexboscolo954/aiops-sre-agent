@@ -1736,26 +1736,36 @@ def create_app(
             summed[key] = at
             await store().mark_all_told(cid, at, cluster)
 
-    async def automation(cid: str, cluster: contracts.Cluster) -> list[actuator.Wanted]:
-        """The newest Sizings of the containers the Contract automates on this cluster
-        (slice 12.5): ready, changing something, of a Workload without 3 Rollbacks in 7 days."""
+    async def automated(
+        cid: str, cluster: contracts.Cluster
+    ) -> tuple[list[dict[str, Any]], int | None]:
+        """The containers under Automation on this cluster now, as their newest Sizings'
+        rows, and that run: of a Workload without 3 Rollbacks in 7 days, not reverted
+        since their last approval."""
         c = by_id[cid]
         if not any(r.automate for r in c.sizing.rules):
-            return []
+            return [], None
         rows, status = await store().latest_sizings(cid, {cluster.name})
-        run = (status.get(cluster.name) or {}).get("run")
         ended = actuator.resumes(await rollbacks(cid, cluster.name))
         reverted = await store().reverted(cid, cluster.name)  # until its next approval
         out = []
         for r in rows:
             where = (r["namespace"], r["kind"], r["name"])
             if (
-                r.get("state") != "ready"
-                or r["namespace"] not in cluster.namespaces
-                or where in ended
-                or (*where, r["container"]) in reverted
-                or not c.sizing.automated(cluster.name, *where, r["container"])
+                r["namespace"] in cluster.namespaces
+                and where not in ended
+                and (*where, r["container"]) not in reverted
+                and c.sizing.automated(cluster.name, *where, r["container"])
             ):
+                out.append(r)
+        return out, (status.get(cluster.name) or {}).get("run")
+
+    def automation(rows: list[dict[str, Any]], run: int | None) -> list[actuator.Wanted]:
+        """The Sizings Automation applies (slice 12.5), of the `automated` containers:
+        ready, changing something."""
+        out = []
+        for r in rows:
+            if r.get("state") != "ready":
                 continue
             values = {
                 res: r[res]["target"] if r.get(res) and r[res]["action"] != "keep" else None
@@ -1773,7 +1783,9 @@ def create_app(
         """What an Actuator should apply now: its cluster's current Approved Sizings in the
         cluster's namespaces, Automation's for the containers no approval covers, the
         Reverts it hasn't done, and whether it may evict now (slice 12.7); nothing while
-        the Kill switch is on. Only of the `kinds` it names that the Hub's knows (slice
+        the Kill switch is on; and, where the Contract sets `reflexes.oom`, the automated
+        containers whose OOM kills to report (slice 13.1a). Only of the `kinds` it names
+        that the Hub's knows (slice
         12.8a): an Actuator that names none, 0.43.0 or older, reads every Sizing as a
         Deployment's, so it gets Deployments' only."""
         cid, cluster = actuator_of(creds)
@@ -1790,15 +1802,21 @@ def create_app(
             and (a["namespace"], a["kind"], a["name"], a["container"]) not in reverted
         ]
         mine = {(w.namespace, w.kind, w.name, w.container) for w in approved}
+        rows, run = await automated(cid, cluster)
         return actuator.Desired(
             kill_switch=False,
             eviction=by_id[cid].actuator.evicting(datetime.now(UTC)),
             sizings=approved,
             automated=[
                 w
-                for w in await automation(cid, cluster)
+                for w in automation(rows, run)
                 if (w.namespace, w.kind, w.name, w.container) not in mine and w.kind in known
             ],
+            # slice 13.1a: with the Contract's `reflexes.oom`, the containers whose OOM
+            # kills its Actuator reports, a Sizing ready or not
+            oom=[actuator.Watched.model_validate(r) for r in rows if r["kind"] in known]
+            if by_id[cid].actuator.reflexes.oom
+            else [],
             reverts=[
                 actuator.Undo.model_validate(r)
                 for r in await store().pending_reverts(cid, cluster.name)

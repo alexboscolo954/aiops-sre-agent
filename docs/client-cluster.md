@@ -10,7 +10,7 @@ Two optional parts run inside a client's cluster, from the Hub's own image. Each
 | | Relay | Actuator |
 |---|---|---|
 | Namespace | `squero-relay` | `squero-actuator` |
-| Reads | read-only ServiceAccount, bound per namespace, like the Hub's own | pods, Deployments, ReplicaSets, StatefulSets, DaemonSets, Argo Rollouts, CronJobs, Jobs, HPAs, VPAs, PodDisruptionBudgets, LimitRanges and ResourceQuotas in the Contract's namespaces |
+| Reads | read-only ServiceAccount, bound per namespace, like the Hub's own | pods, Deployments, ReplicaSets, StatefulSets, DaemonSets, Argo Rollouts, CronJobs, Jobs, HPAs, VPAs, PodDisruptionBudgets, LimitRanges and ResourceQuotas in the Contract's namespaces; Events in `default`, where a Node's are (for `reflexes.oom`; its own Role, which a client may remove) |
 | Writes | none, unless the client also applies `deploy/relay-actions`: evict pods and scale deployments only | resize pods (`pods/resize`, a RoleBinding per namespace), evict pods (`pods/eviction`, only with the Contract's eviction on), create Events, read and replace its own ConfigMap, patch its own webhook's `caBundle` |
 | Token | `relay_token_secret` | `actuator_token_secret`, never a Relay's |
 | Talks to | `wss://<the Hub's domain>/relay` | `GET /actuator/desired`, `POST /actuator/reports` |
@@ -118,6 +118,27 @@ The Hub tells each of the Contract's Actuators, in `/actuator/desired`'s `evicti
 - **The replacement** (a pod of the Deployment that wasn't there before the eviction), once Ready with the requests, stands for the evicted pod: watched for a Rollback like any pod it resized (an evicted canary's 10 minutes start again), and the rollout goes on. One that starts from its template (the webhook missed it) fails the rollout instead of evicting again. None Ready within 10 minutes is a Rollback (unless none is owed: the Deployment scaled down meanwhile and already has the pods it wants, and the rollout goes on), and a replacement still `Pending` (no node has room) is evicted again, holding nothing, so it starts from its template; a Pending pod's eviction ignores budgets.
 
 Eviction needs a cluster with an `actuator_token_secret`, and the Actuator's RBAC in `deploy/actuator/rbac.yaml` grants `create pods/eviction` and reads `poddisruptionbudgets` per namespace (re-apply it when upgrading from 0.42.0: without that read, nothing is evicted). An Actuator of 0.42.0 or older never reads `eviction` and fails an `Infeasible` resize, as before.
+
+## Reflexes: OOM kills seen
+
+A Reflex is a bounded, expiring change the Actuator makes on its own for a Workload under Automation. The first, for OOM kills, is switched on per Contract:
+
+```yaml
+actuator:
+  reflexes:
+    oom: {}        # no settings yet: `max` and `expires` come with the step-up they bound, and are refused until then
+```
+
+It needs a cluster with an `actuator_token_secret`. For now it only looks and reports: nothing in the cluster changes, and an OOM kill in a Sizing's watch hour is still a Rollback.
+
+The Hub lists, in `/actuator/desired`'s `oom`, the cluster's containers under Automation (a Sizing ready or not; not of a Workload whose Automation three Rollbacks ended, nor of a container reverted since its last approval; none under the Kill switch). Each minute the Hub answers, the Actuator reads the pods of those namespaces once and tells each OOM kill of the last 10 minutes of a listed container, once:
+
+- **container-limit**: the container has a memory limit and its node's kubelet said nothing. It reached its own limit, or one above it: its pod's, or the node's allocatable memory, which the kubelet sets as a limit on all pods together. Those read alike on the pod and bring no Event, so the Actuator can't tell them apart (the container runtime marks a container `OOMKilled` whichever limit caused the kill).
+- **node-level**: the node itself ran out of memory, which the kubelet says in a `SystemOOM` Event on the Node within 2 minutes of the kill; or the container has no memory limit.
+
+The pod reads the same in both (`OOMKilled`, exit code 137), so the Event decides. A Node's Events are in `default`: `deploy/actuator/rbac.yaml` grants a Role there with `get` and `list` on Events, which covers every Event in `default`, those of anything that runs there included. A client who would not grant that removes the Role and its RoleBinding; then, as on a cluster installed before this and not re-applied, a kill of a container with a memory limit counts as container-limit and its report says the node's Events were not read, and why.
+
+Each container's kills are one Actuation `oom_killed`, with the limit it had, how many pods, and which kind each was (five pods named, the rest counted). The Hub stores it with the others and, for now, shows it nowhere: the Automation page shows what a container holds as before, nothing is posted to Slack, and no Event is put on the Workload (the page and the Slack line come with the step-up). Until then a sighting is in the Actuator's log and the Hub's `actuations` table. A container is reported every 10 minutes at most, with its pods killed since the last report; a pod shows only its last kill, so one killed three times in that time counts once. At most 50 containers are reported in a minute, the others the next. The Actuator keeps when it last reported in memory only: after its restart the kills of the last 10 minutes are reported again, the same report stored once, one with a newer kill as a second row that counts the earlier pods again. It reports none while the Hub is unreachable or has not taken its earlier reports. Not seen: a kill the container runtime reports as `Error` with exit code 137 (it sometimes misses the kernel's event), which no one can tell from a `SIGKILL`. A paused Workload's kills are reported too: reporting changes nothing.
 
 ## Automation
 

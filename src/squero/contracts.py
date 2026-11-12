@@ -667,13 +667,27 @@ class Window(Strict):
         )
 
 
+class OomReflex(Strict):
+    """The Reflex for OOM kills, on by being there (slice 13.1a): the Actuator tells each
+    OOM kill of an automated container as container-limit or node-level and reports it.
+    Its `max` and `expires` come with the step-up they bound (slices 13.1b and 13.1c)."""
+
+
+class Reflexes(Strict):
+    """The Contract's Reflexes (Phase 13), each off unless set."""
+
+    oom: OomReflex | None = None
+
+
 class ActuatorConfig(Strict):
     """What the Contract's Actuators may do beyond resizing in place (slice 12.7): evict a
-    pod whose resize is Infeasible, only inside one of its windows, in its timezone."""
+    pod whose resize is Infeasible, only inside one of its windows, in its timezone; and
+    its Reflexes (slice 13.1a)."""
 
     eviction: bool = False
     timezone: str = "UTC"
     windows: list[Window] = []
+    reflexes: Reflexes = Reflexes()
 
     @model_validator(mode="after")
     def _usable(self) -> "ActuatorConfig":
@@ -765,6 +779,8 @@ class Contract(Strict):
                 raise ValueError(f"sizing rule {i + 1} automates: {where} no actuator_token_secret")
         if self.actuator.eviction and not actuated:
             raise ValueError("actuator: eviction, but no cluster has an actuator_token_secret")
+        if self.actuator.reflexes.oom and not actuated:
+            raise ValueError("actuator: reflexes, but no cluster has an actuator_token_secret")
         for i, t in enumerate(self.allocation.teams):
             if t.cluster is not None and t.cluster not in groups["cluster"]:
                 raise ValueError(f"team rule {i + 1}: no cluster {t.cluster!r}")

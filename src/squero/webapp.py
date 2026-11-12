@@ -532,6 +532,12 @@ class RevertIn(BaseModel):
     container: str
 
 
+async def done(st: Store, contract_id: str) -> list[dict[str, Any]]:
+    """What the Contract's Actuators did, newest first: their Actuations but the OOM kills
+    they only saw (slice 13.1a), which hold nothing and leave nothing to revert."""
+    return [a for a in await st.actuations(contract_id, 0.0) if a["outcome"] != "oom_killed"]
+
+
 async def revert(st: Store, c: Contract, keys: tuple[str, ...], by: str, at: float) -> None:
     """Ask a Revert of the container `keys` names (cluster, namespace, kind, name,
     container), from the console or the Hub MCP server (slice 12.6a); ValueError with
@@ -542,7 +548,7 @@ async def revert(st: Store, c: Contract, keys: tuple[str, ...], by: str, at: flo
         raise ValueError(f"cluster {keys[0]!r} runs no Actuator: one of {runs}")
     if keys[1] not in cl.namespaces:
         raise ValueError(f"namespace {keys[1]!r} is not one of {sorted(cl.namespaces)}")
-    seen = await st.actuations(c.id, 0.0)
+    seen = await done(st, c.id)
     fields = ("cluster", "namespace", "kind", "name", "container")
     if not any(tuple(a[k] for k in fields) == keys for a in seen):
         raise ValueError("the Actuator has reported nothing of that container: nothing to revert")
@@ -555,7 +561,7 @@ async def revert(st: Store, c: Contract, keys: tuple[str, ...], by: str, at: flo
 
 async def automation_of(st: Store, c: Contract, now: float) -> AutomationPage:
     """What each Actuator of the Contract last did with each container (90 days)."""
-    seen = await st.actuations(c.id, 0.0)  # newest first
+    seen = await done(st, c.id)  # newest first
     out = []
     for cl in c.clusters:
         if not cl.actuator_token_secret:

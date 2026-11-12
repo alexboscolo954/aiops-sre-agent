@@ -90,6 +90,36 @@ subjects:
     name: squero-actuator
     namespace: squero-actuator
 ---
+# Slice 13.1a, for the Contract's `reflexes.oom`: a Node's Events are in `default`, and the
+# kubelet's `SystemOOM` one there tells an OOM kill of a node out of memory from one at a
+# container's own limit. It reads every Event in `default`, so those of anything that runs
+# there too: a client who would not grant that deletes this Role and its RoleBinding, and
+# an OOM kill of a container with a memory limit then counts as container-limit (the
+# Actuator says once that it could not read them).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: squero-actuator-node-events
+  namespace: default
+rules:
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: squero-actuator-node-events
+  namespace: default
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: squero-actuator-node-events
+subjects:
+  - kind: ServiceAccount
+    name: squero-actuator
+    namespace: squero-actuator
+---
 # What it applied, in its own namespace: one ConfigMap, read and replaced by name.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role

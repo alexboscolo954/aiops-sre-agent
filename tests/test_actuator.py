@@ -9,7 +9,7 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 import httpx
 import psycopg
@@ -143,6 +143,7 @@ def test_an_actuator_gets_only_its_own_clusters_current_approved_deployments(
             {"id": 1, "namespace": "shop", "kind": "StatefulSet", "name": "db", "container": "app"}
         ],
         "eviction": "off",
+        "oom": [],
     }
     assert old.json()["sizings"] == [{**wanted, "name": "api", "cpu": 0.115, "memory": None}]
     known = ("Deployment", "StatefulSet", "DaemonSet")  # what 0.44.0 names
@@ -168,6 +169,7 @@ def test_the_kill_switch_and_a_later_run_leave_nothing_to_apply(
         "automated": [],
         "reverts": [],
         "eviction": "off",
+        "oom": [],
     }
     assert superseded == {
         "kill_switch": False,
@@ -175,6 +177,7 @@ def test_the_kill_switch_and_a_later_run_leave_nothing_to_apply(
         "automated": [],
         "reverts": [],
         "eviction": "off",
+        "oom": [],
     }
 
 
@@ -1477,6 +1480,7 @@ def test_an_actuator_gets_the_newest_sizings_of_what_its_contract_automates(
         "automated": [],
         "reverts": [],
         "eviction": "off",
+        "oom": [],
     }
 
 
@@ -4271,3 +4275,383 @@ def test_a_returned_nodes_pod_is_notready_from_when_its_containers_started_again
     gated(b)
     since(1500.0, 1950.0, "True")  # held by a gate, its containers ready: counted from 1500
     assert actuator.trouble(core, apps, KEY, h, 2000.0) == "api-1-b: NotReady for 2 minutes"
+
+
+# --- slice 13.1a: OOM kills of automated containers, seen, told apart and reported -----------
+
+OOM = {"actuator": {"reflexes": {"oom": {}}}}
+
+
+def test_the_oom_reflex_needs_an_actuator_and_takes_no_settings_yet() -> None:
+    assert automating("acme", A_TOKEN, AUTO, **OOM).actuator.reflexes.oom is not None
+    assert automating("acme", A_TOKEN, AUTO).actuator.reflexes.oom is None  # off unless set
+    data = actuated("acme", A_TOKEN).model_dump(mode="json", exclude_none=True)
+    data["clusters"][0].pop("actuator_token_secret")  # no cluster runs an Actuator
+    with pytest.raises(ValueError, match="actuator: reflexes, but no cluster has an actuator"):
+        contracts.build({**data, **OOM}, secrets={"r": SecretStr("r" * 40)})
+    for bad in ({"oom": {"max": 2.0}}, {"oom": {"expires": "7d"}}, {"burst": {}}):
+        with pytest.raises(ValueError, match="Extra inputs are not permitted"):
+            automating("acme", A_TOKEN, AUTO, actuator={"reflexes": bad})
+
+
+def test_the_hub_lists_a_contracts_automated_containers_only_with_its_oom_reflex(
+    settings: Settings, database_url: str
+) -> None:
+    now = time.time()
+    acme = automating("acme", A_TOKEN, AUTO, **OOM)
+    bank = automating("bank", B_TOKEN, {**AUTO, "name": "ledger"}, **OOM)
+    with TestClient(hub(settings, database_url, acme, bank)) as c:
+        sql(
+            database_url,
+            run("acme", '{"test": null}'),
+            sized("acme", 1),
+            sized("acme", 1, "learning", state="learning"),  # no Sizing yet: still watched
+            sized("acme", 1, "steady", cpu={"action": "keep", "current": 1.0, "target": 1.0}),
+            sized("acme", 1, "db", kind="StatefulSet"),
+            sized("acme", 1, "side", container="sidecar"),  # no rule automates it
+            sized("acme", 1, "broken"),
+            sized("acme", 1, "undone"),
+            sized("acme", 1, "moved", namespace="old"),  # no longer one of its namespaces
+            *(rolled_back("acme", now - d * 86400, name="broken") for d in (1, 2, 3)),  # ended
+            revert("acme", now - 50, "undone"),  # its Automation stopped until an approval
+            run("bank", '{"test": null}'),
+            sized("bank", 2, "ledger"),
+            sized("bank", 2, "api"),  # bank automates only its ledger
+        )
+        kinds = {"kinds": ",".join(actuator.KINDS)}
+        mine = c.get("/actuator/desired", headers=as_actuator(A_TOKEN), params=kinds).json()
+        old = c.get("/actuator/desired", headers=as_actuator(A_TOKEN)).json()
+        theirs = c.get("/actuator/desired", headers=as_actuator(B_TOKEN), params=kinds).json()
+        sql(database_url, ("insert into kill_switches values ('acme', 't', 1)", ()))
+        killed = c.get("/actuator/desired", headers=as_actuator(A_TOKEN), params=kinds).json()
+    one = {"namespace": "shop", "kind": "Deployment", "container": "app"}
+    assert mine["oom"] == [{**one, "name": n} for n in ("api", "learning", "steady")] + [
+        {**one, "kind": "StatefulSet", "name": "db"}
+    ]
+    assert old["oom"] == mine["oom"][:-1]  # an Actuator naming no kinds: Deployments only
+    assert theirs["oom"] == [{**one, "name": "ledger"}] and killed["oom"] == []
+    off = automating("acme", A_TOKEN, AUTO)  # the same Contract without the Reflex
+    with TestClient(hub(settings, database_url, off)) as c:
+        sql(database_url, ("delete from kill_switches", ()))
+        mine = c.get("/actuator/desired", headers=as_actuator(A_TOKEN), params=kinds).json()
+    assert mine["oom"] == [] and [w["name"] for w in mine["automated"]] == ["api", "db"]
+
+
+def seen_kill(**more: Any) -> dict[str, Any]:
+    return report(outcome="oom_killed", run_id=0, cpu=None, memory=256.0 * MI, pods=1, **more)
+
+
+def test_an_oom_kill_seen_is_stored_never_told_nor_held_nor_something_to_revert(
+    settings: Settings, database_url: str
+) -> None:
+    from tests.test_console import OPERATOR, VIEW
+
+    settings.console_operators = {OPERATOR}
+    app, slack = slacked(settings, database_url)
+    now = time.time()
+    path, same = "/api/v1/contracts/acme/automation", {**VIEW, "Sec-Fetch-Site": "same-origin"}
+    with TestClient(app) as c:
+        mixed = [
+            report(at=now - 300),  # api: applied
+            seen_kill(at=now - 200, reason="OOM-killed: api-1-a at its memory limit"),
+            seen_kill(at=now - 100, name="lone", reason="OOM-killed: lone-1-a"),  # nothing held
+            back(now - 50, name="web"),
+        ]
+        sent = c.post("/actuator/reports", json=mixed, headers=as_actuator(A_TOKEN))
+        again = c.post("/actuator/reports", json=mixed[1:2], headers=as_actuator(A_TOKEN))
+        tell(c)
+        page = c.get(path, headers=VIEW).json()
+        what = {"cluster": "test", "namespace": "shop", "name": "lone", "container": "app"}
+        never = c.post(f"{path}/revert", json=what, headers=same)
+    assert (sent.status_code, again.status_code) == (204, 204)
+    stored = sql(
+        database_url, ("select name, outcome, told, memory from actuations order by at", ())
+    )
+    assert stored == [
+        ("api", "applied", True, None),
+        ("api", "oom_killed", True, 256.0 * MI),  # once, though sent twice
+        ("lone", "oom_killed", True, 256.0 * MI),
+        ("web", "rolled_back", True, None),
+    ]
+    assert len(posts(slack)) == 1 and "rolled back test/shop/Deployment/web" in posts(slack)[0][1]
+    shown = {h["name"]: h for h in page["clusters"][0]["containers"]}
+    assert list(shown) == ["api", "web"]  # lone holds nothing: not a row
+    assert shown["api"]["outcome"] == "applied" and shown["api"]["revertable"]
+    assert never.status_code == 409 and "nothing to revert" in never.text
+
+
+def killed(
+    core: Any,
+    name: str,
+    ago: float,
+    limit: str | None = "256Mi",
+    reason: str = "OOMKilled",
+    node: str = "n1",
+    how: str = "last_state",
+) -> Any:
+    """api's pod `name`, of its ReplicaSet api-1, its container ended `ago` seconds ago."""
+    p = next(p for p in core.list_namespaced_pod.return_value.items if p.metadata.name == name)
+    p.metadata.labels = {"app": "api", "pod-template-hash": "1"}
+    p.spec.node_name = node
+    p.spec.containers[0].resources.limits = {"memory": limit} if limit else None
+    st = status("app", None)
+    end = k.V1ContainerStateTerminated(
+        exit_code=137, reason=reason, finished_at=datetime.fromtimestamp(time.time() - ago, UTC)
+    )
+    setattr(st, how, k.V1ContainerState(terminated=end))
+    p.status.container_statuses = [st]
+    return p
+
+
+def system_oom(core: Any, *ago: float) -> None:
+    """The node's kubelet said SystemOOM that many seconds ago."""
+    core.list_namespaced_event.side_effect = None
+    core.list_namespaced_event.return_value = k.CoreV1EventList(
+        items=[
+            k.CoreV1Event(
+                metadata=k.V1ObjectMeta(name=f"e{i}"),
+                involved_object=k.V1ObjectReference(kind="Node", name="n1"),
+                reason="SystemOOM",
+                last_timestamp=datetime.fromtimestamp(time.time() - s, UTC),
+            )
+            for i, s in enumerate(ago)
+        ]
+    )
+
+
+API = actuator.Watched(namespace="shop", kind="Deployment", name="api", container="app")
+
+
+def posted(seen: list[httpx.Request]) -> list[list[str]]:
+    """The outcomes of each batch of reports the Hub was sent."""
+    return [
+        [a["outcome"] for a in json.loads(r.content)]
+        for r in seen
+        if r.url.path == "/actuator/reports"
+    ]
+
+
+def looking(core: Any, apps: Any, **kw: Any) -> actuator.Actuator:
+    system_oom(core)
+    return make(hub_of([], []), core, apps, **kw)
+
+
+def test_an_oom_kill_at_its_limit_is_container_limit_and_reported_once() -> None:
+    core, apps = cluster()
+    a = looking(core, apps)
+    at = killed(core, "api-1-a", 60).status.container_statuses[0].last_state.terminated
+    (seen,) = a.ooms([API])
+    assert seen.model_dump() == {
+        "namespace": "shop",
+        "kind": "Deployment",
+        "name": "api",
+        "container": "app",
+        "run_id": 0,  # nothing of it held
+        "outcome": "oom_killed",
+        "cpu": None,
+        "memory": 256.0 * MI,
+        "pods": 1,
+        "reason": "OOM-killed: api-1-a with a memory limit of 256Mi, its node not out of "
+        "memory (container-limit). Nothing changed",
+        "at": at.finished_at.timestamp(),
+    }
+    asked = "involvedObject.kind=Node,involvedObject.name=n1,reason=SystemOOM"
+    assert core.list_namespaced_event.call_args == call("default", field_selector=asked)
+    assert a.ooms([API]) == [] and resized(core) == []  # said once, and nothing changed
+    a.held[KEY] = {"run_id": 7, "outcome": "applied"}
+    a.oom_said.clear()  # as after its restart: the same report again, which the Hub stores once
+    (again,) = a.ooms([API])
+    assert again.model_dump() == {**seen.model_dump(), "run_id": 7}  # held now: its run
+
+
+@pytest.mark.parametrize(
+    ("events", "limit", "told"),
+    [
+        (
+            (70.0,),
+            "256Mi",
+            "api-1-a with its node n1 out of memory (node-level: a SystemOOM Event)",
+        ),
+        (
+            (180.0,),
+            "256Mi",
+            "api-1-a with its node n1 out of memory (node-level: a SystemOOM Event)",
+        ),
+        (
+            (181.0,),
+            "256Mi",
+            "api-1-a with a memory limit of 256Mi, its node not out of memory (container-limit)",
+        ),
+        (
+            (3000.0, 181.0),
+            "256Mi",
+            "api-1-a with a memory limit of 256Mi, its node not out of memory (container-limit)",
+        ),
+        ((), None, "api-1-a with no memory limit (node-level)"),
+    ],
+)
+def test_a_kill_near_its_nodes_system_oom_or_without_a_limit_is_node_level(
+    events: tuple[float, ...], limit: str | None, told: str
+) -> None:
+    core, apps = cluster()
+    a = looking(core, apps)
+    killed(core, "api-1-a", 60, limit)
+    system_oom(core, *events)
+    (seen,) = a.ooms([API])
+    assert seen.reason == f"OOM-killed: {told}. Nothing changed"
+    assert seen.memory == (256.0 * MI if limit else None)
+    assert core.list_namespaced_event.called is bool(limit)  # no limit: nothing to read
+
+
+def test_node_events_it_may_not_read_leave_a_kill_container_limit_said_once(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    core, apps = cluster()
+    a = looking(core, apps)
+    core.list_namespaced_event.side_effect = ApiException(status=403, reason="Forbidden")
+    killed(core, "api-1-a", 60)
+    killed(core, "api-1-b", 50, node="n2")
+    with caplog.at_level("WARNING"):
+        (seen,) = a.ooms([API])
+    assert seen.pods == 2 and seen.reason == (
+        "OOM-killed: api-1-a with a memory limit of 256Mi (container-limit: its node's Events "
+        "not read); api-1-b with a memory limit of 256Mi (container-limit: its node's Events "
+        "not read). Node Events not read: 403: Forbidden. Nothing changed"
+    )
+    assert caplog.text.count("reading Node Events in default") == 1
+    assert core.list_namespaced_event.call_count == 2  # each node asked once
+
+
+def test_only_fresh_kills_of_listed_containers_count_and_a_crash_loop_is_said_every_10_minutes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    core, apps = cluster()
+    a = looking(core, apps)
+    killed(core, "api-1-a", 600)  # 10 minutes old: no news
+    killed(core, "api-1-b", 60, reason="Error")  # the runtime's own word only
+    killed(core, "api-x-a", 60)  # another Deployment's, its ReplicaSet api-x
+    assert a.ooms([API]) == []
+    other = actuator.Watched(namespace="shop", kind="Deployment", name="api", container="side")
+    killed(core, "api-1-a", 599)
+    assert a.ooms([other]) == []  # the container named is not the one killed
+    (first,) = a.ooms([API])
+    assert first.pods == 1
+    clock = time.time()
+    monkeypatch.setattr(actuator.time, "time", lambda: clock + 300)  # the test's clock too
+    killed(core, "api-1-a", 10)  # killed again, 10 seconds ago
+    assert a.ooms([API]) == []  # one report a container every 10 minutes
+    monkeypatch.setattr(actuator.time, "time", lambda: clock + 601)
+    killed(core, "api-1-b", 5, reason="OOMKilled")
+    (later,) = a.ooms([API])  # its kills since the last report, together: none left out
+    assert later.pods == 2 and "api-1-a" in later.reason and "api-1-b" in later.reason
+    monkeypatch.setattr(actuator.time, "time", lambda: clock + 1202)
+    assert a.ooms([API]) == []  # and none told twice: both are old news by its next report
+
+
+def test_kills_of_one_container_are_one_report_and_past_five_pods_only_counted() -> None:
+    core, apps = cluster()
+    a = looking(core, apps)
+    live = core.list_namespaced_pod.return_value.items
+    for i in range(7):
+        extra = pod(f"api-1-p{i}", "api-1")
+        extra.metadata.namespace = "shop"
+        live.append(extra)
+        killed(core, f"api-1-p{i}", 100 - i)
+    (seen,) = a.ooms([API])
+    assert seen.pods == 7 and seen.reason.count("(container-limit)") == 5
+    assert core.list_namespaced_event.call_count == 1  # their one node's Events, read once
+    assert seen.reason.endswith("; and 2 more. Nothing changed")
+    assert seen.at == max(
+        p.status.container_statuses[0].last_state.terminated.finished_at.timestamp()
+        for p in live
+        if p.metadata.name.startswith("api-1-p")
+    )
+
+
+def test_a_namespace_it_may_not_list_does_not_hide_the_others_kills() -> None:
+    core, apps = cluster()
+    a = looking(core, apps)
+    killed(core, "api-1-a", 60)
+    pods = core.list_namespaced_pod.return_value
+
+    def listed(ns: str, **_: Any) -> Any:
+        if ns == "bank":
+            raise ApiException(status=403, reason="Forbidden")
+        return pods
+
+    core.list_namespaced_pod.side_effect = listed
+    theirs = actuator.Watched(namespace="bank", kind="Deployment", name="api", container="app")
+    (seen,) = a.ooms([theirs, API])
+    assert seen.namespace == "shop"
+
+
+def test_a_cronjobs_run_killed_for_good_is_its_cronjobs_kill() -> None:
+    core, apps = cluster()
+    a = looking(core, apps)
+    p = killed(core, "api-1-a", 60, how="state")
+    minute = int(time.time() // 60)
+    p.metadata.labels = {}
+    p.metadata.owner_references = [owner("Job", f"nightly-{minute}")]
+    p.status.phase = "Failed"
+    nightly = actuator.Watched(namespace="shop", kind="CronJob", name="nightly", container="app")
+    (seen,) = a.ooms([nightly])
+    assert (seen.kind, seen.name, seen.pods) == ("CronJob", "nightly", 1)
+
+
+def test_a_minute_reports_kills_only_when_the_hub_lists_containers_and_took_its_reports() -> None:
+    core, apps = cluster()
+    system_oom(core)
+    killed(core, "api-1-a", 60)
+    listing = {**desired(), "oom": [API.model_dump()]}
+    seen: list[httpx.Request] = []
+    a = make(hub_of([desired(), listing, listing, listing], seen), core, apps)
+    a.step()  # an older Hub, or the Reflex off: nothing listed, nothing reported
+    assert posted(seen) == [] and not core.list_namespaced_event.called
+    a.unsent.append(actuator.Actuation(**report()))  # one the Hub has not taken yet
+    a.http.reports.append(httpx.Response(503))  # type: ignore[attr-defined]
+    a.step()
+    a.step()  # taken now, at this minute's end
+    assert posted(seen) == [["applied"], ["applied"]]  # it waited: never crowding one out
+    assert not core.list_namespaced_event.called
+    a.step()
+    assert posted(seen)[2:] == [["oom_killed"]]
+
+
+def test_an_oom_kill_in_a_watch_hour_still_rolls_back_and_is_reported_too(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    core, apps = cluster()
+    listing = {**desired(1), "oom": [API.model_dump()]}
+    a = settled(monkeypatch, [listing], core, apps)
+    system_oom(core)
+    p = killed(core, "api-1-a", 30, limit=None)
+    p.spec.containers[0].resources.requests = {"cpu": "115m", "memory": "96Mi"}  # the held ones
+    p.status.container_statuses[0].restart_count = 1
+    a.step()
+    assert posted(a.seen)[-1] == ["rolled_back", "oom_killed"]
+    assert a.held[KEY]["outcome"] == "rolled_back"
+
+
+def test_a_minute_reports_50_containers_at_most_the_others_the_next() -> None:
+    core, apps = cluster()
+    a = looking(core, apps)
+    killed(core, "api-1-a", 60)
+    live = core.list_namespaced_pod.return_value.items
+    many = []
+    for i in range(60):  # a node out of memory: one pod each of 60 Workloads
+        p = pod(f"w{i:02d}-1-a", f"w{i:02d}-1")
+        p.metadata.namespace = "shop"
+        live.append(p)
+        killed(core, p.metadata.name, 60)
+        many.append(API.model_copy(update={"name": f"w{i:02d}"}))
+    first = a.ooms([API, *many])
+    assert len(first) == actuator.OOM_REPORTS == 50
+    rest = a.ooms([API, *many])  # the next minute: the ones not yet said, each once
+    assert len(rest) == 11 and not {x.name for x in first} & {x.name for x in rest}
+    assert a.ooms([API, *many]) == []
+
+
+def test_an_actuator_ignores_what_a_newer_hub_adds_to_its_answer() -> None:
+    newer = {**desired(1), "oom": [API.model_dump() | {"since": 1}], "burst": [{"x": 1}]}
+    got = actuator.Desired.model_validate(newer)
+    assert got.oom == [API] and not hasattr(got, "burst")

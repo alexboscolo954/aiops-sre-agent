@@ -107,6 +107,11 @@ NOT_READY_SECONDS = 120  # a resized pod NotReady this long is a reason to roll 
 BACKOFF_SECONDS = 86400  # after a rollback, no new Sizing of that container this long, doubling
 ROLLBACKS_FOR = 7 * 86400  # how far back rollbacks count for the doubling
 ENDING = 3  # Rollbacks of a Workload in 7 days that end its Automation (slice 12.5)
+OOM_RECENT = 600  # an OOM kill this old is no news; one report a container this often (13.1a)
+OOM_NEAR = 120  # a node's SystemOOM Event this close to a kill makes it node-level
+OOM_SHOWN = 5  # pods named in one report's reason
+OOM_REPORTS = 50  # containers reported in one minute, the rest the next: a node out of
+# memory kills many at once, and of its unsent reports only the newest 200 outlive a restart
 # why Kubernetes removed a pod whose node is gone: its taint manager, or its pod garbage
 # collector once the Node is deleted (a DisruptionTarget condition's reasons, slice 12.10)
 NODE_GONE = ("DeletionByTaintManager", "DeletionByPodGC")
@@ -138,7 +143,9 @@ ROLLOUT = (
 # five against an API server that accepts and never answers; stop at the first if it matters
 API_TIMEOUT = 15
 WATCHED = ("pods", "watch_until", "first_run")  # held while watched
-Outcome = Literal["applied", "skipped", "failed", "handed_back", "rolled_back", "reverted"]
+Outcome = Literal[
+    "applied", "skipped", "failed", "handed_back", "rolled_back", "reverted", "oom_killed"
+]
 # held, never reported: "rolling"
 Ending = Callable[[Outcome, str], "Actuation"]  # how advance() ends a rollout
 
@@ -184,6 +191,17 @@ class Undo(BaseModel):
     container: str
 
 
+class Watched(BaseModel):
+    """A container whose OOM kills the Hub wants reported (slice 13.1a)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    namespace: str
+    kind: str
+    name: str
+    container: str
+
+
 class Desired(BaseModel):
     kill_switch: bool
     sizings: list[Wanted]  # Approved Sizings
@@ -193,6 +211,9 @@ class Desired(BaseModel):
     reverts: list[Undo] = []  # slice 12.6a
     # slice 12.7: the Contract's eviction off, or on and its window closed or open now
     eviction: Literal["off", "closed", "open"] = "off"
+    # slice 13.1a: the automated containers of a Contract with `reflexes.oom`; an Actuator
+    # given none never reports an OOM kill, so an older Hub never gets an outcome it refuses
+    oom: list[Watched] = []
 
 
 class Actuation(BaseModel):
@@ -1335,23 +1356,9 @@ def check_version(version: Any) -> None:
 # --- the pod-creation webhook (slice 12.2) ------------------------------------------------
 
 
-def mutation(
-    req: dict[str, Any], held: dict[str, dict[str, Any]], own: str, paused: Any = frozenset()
-) -> list[Any]:
-    """The JSON Patch giving a new pod of a workload the requests applied to it: only
-    where its container still asks what the template asked then (a person's change wins),
-    never above its limit, never in kube-* or the Actuator's own namespace, never for a
-    paused workload (`ns/kind/name` in `paused`). A DaemonSet's pod gets only requests
-    lower than its template's (slice 12.8a): it must fit on whatever node it starts; a raise
-    reaches it in place, where its node has room. An Argo Rollout's pod is told by its
-    `rollouts-pod-template-hash` label (slice 12.8b)."""
-    ns = req.get("namespace") or ""
-    if req.get("operation") != "CREATE" or ns == own or ns.startswith("kube-"):
-        return []
-    pod = req.get("object") or {}
-    meta = pod.get("metadata") or {}
-    owners = {o.get("kind"): o.get("name", "") for o in meta.get("ownerReferences") or []}
-    labels = meta.get("labels") or {}
+def workload_of(owners: dict[str, str], labels: dict[str, str]) -> tuple[str, str] | None:
+    """The kind and name of the workload a pod is of, from its owners (kind to name) and
+    labels alone, no read: the webhook has 2 seconds. None: not one the Actuator handles."""
     kind = next((k for k in ("StatefulSet", "DaemonSet") if owners.get(k)), "Deployment")
     name = owners.get(kind, "")
     # a CronJob's run, its Job named for its minute (slice 12.8c); a lone Job's pod falls
@@ -1369,8 +1376,52 @@ def mutation(
         )
         rs = owners.get("ReplicaSet", "")
         if not hashed or not rs.endswith(f"-{hashed}"):
-            return []  # not a workload's pod it resizes
+            return None
         name = rs.removesuffix(f"-{hashed}")
+    return kind, name
+
+
+def oom_killed_at(st: Any) -> float | None:
+    """When the container was last OOM-killed, as its status shows it (running again, or
+    ended for good), or None. The runtime's own word only: a kill it reports as `Error`,
+    137 (it sometimes misses the cgroup's event) is not told from a SIGKILL."""
+    for state in (st.state, st.last_state):
+        ended = state.terminated if state else None
+        if ended and ended.reason == "OOMKilled" and ended.finished_at:
+            return float(ended.finished_at.timestamp())
+    return None
+
+
+def system_ooms(core: Any, node: str) -> list[float]:
+    """When `node`'s kubelet saw the node itself out of memory: its `SystemOOM` Events,
+    which like every Node's are in `default` (slice 13.1a). Raises ApiException."""
+    selector = f"involvedObject.kind=Node,involvedObject.name={node},reason=SystemOOM"
+    events = core.list_namespaced_event("default", field_selector=selector).items
+    times = ((e.last_timestamp, e.event_time, e.first_timestamp) for e in events)
+    return [float(t.timestamp()) for ts in times for t in ts if t]
+
+
+def mutation(
+    req: dict[str, Any], held: dict[str, dict[str, Any]], own: str, paused: Any = frozenset()
+) -> list[Any]:
+    """The JSON Patch giving a new pod of a workload the requests applied to it: only
+    where its container still asks what the template asked then (a person's change wins),
+    never above its limit, never in kube-* or the Actuator's own namespace, never for a
+    paused workload (`ns/kind/name` in `paused`). A DaemonSet's pod gets only requests
+    lower than its template's (slice 12.8a): it must fit on whatever node it starts; a raise
+    reaches it in place, where its node has room. An Argo Rollout's pod is told by its
+    `rollouts-pod-template-hash` label (slice 12.8b)."""
+    ns = req.get("namespace") or ""
+    if req.get("operation") != "CREATE" or ns == own or ns.startswith("kube-"):
+        return []
+    pod = req.get("object") or {}
+    meta = pod.get("metadata") or {}
+    owners = {o.get("kind"): o.get("name", "") for o in meta.get("ownerReferences") or []}
+    labels = meta.get("labels") or {}
+    of = workload_of(owners, labels)
+    if of is None:
+        return []  # not a workload's pod it resizes
+    kind, name = of
     if f"{ns}/{kind}/{name}" in paused:
         return []
     ops: list[Any] = []
@@ -1520,6 +1571,10 @@ class Actuator:
     told: bool = False  # the Event that it hasn't is out
     eviction: str = "off"  # the Hub's last word on eviction (slice 12.7)
     policy: Any = None  # PolicyV1Api: PodDisruptionBudgets, read before an eviction
+    # slice 13.1a, in memory only (the Hub stores a report sent again once): when each
+    # container's OOM kills were last reported
+    oom_said: dict[tuple[str, ...], float] = field(default_factory=dict)
+    events_unread: bool = False  # said once: it may not read Node Events
 
     def load(self) -> None:
         try:
@@ -1617,6 +1672,8 @@ class Actuator:
                 done += self.revert(desired.reverts) + self.advance(desired.eviction)
                 done += self.act(desired.sizings, desired.automated)
                 done += self.catch_up()
+                if desired.oom and not self.unsent:  # never crowding out what the Hub
+                    done += self.ooms(desired.oom)  # hasn't taken yet (slice 13.1a)
         except Exception:  # its own bug: what it changed before is kept, not done twice
             self.unsent += done
             self.save()
@@ -1676,6 +1733,99 @@ class Actuator:
         for p in sorted(paused ^ self.paused):
             log.warning("%s is %s", p, "paused" if p in paused else "no longer paused")
         self.paused = frozenset(paused)
+
+    def ooms(self, watched: list[Watched]) -> list[Actuation]:
+        """The OOM kills of the last 10 minutes of the containers the Hub lists (slice
+        13.1a): told as container-limit or node-level and reported, nothing changed. One
+        read of each namespace's pods. A container is reported every 10 minutes at most,
+        with its pods killed since the last report (a pod shows its last kill only), and
+        50 containers a minute at most."""
+        now = time.time()
+        wanted = {(w.namespace, w.kind, w.name, w.container) for w in watched}
+        found: dict[tuple[str, ...], list[tuple[Any, float]]] = {}
+        for ns in sorted({w.namespace for w in watched}):
+            try:
+                pods = self.core.list_namespaced_pod(ns).items
+            except ApiException as e:  # the other namespaces are still looked at
+                log.warning("looking for OOM kills in %s: %s", ns, why(e))
+                continue
+            for p in pods:
+                owners = {o.kind: o.name for o in p.metadata.owner_references or []}
+                of = workload_of(owners, p.metadata.labels or {})
+                if of is None:
+                    continue
+                for st in (p.status.container_statuses if p.status else None) or []:
+                    key: tuple[str, ...] = (ns, *of, st.name)
+                    at = oom_killed_at(st)
+                    if key in wanted and at is not None and now - at < OOM_RECENT:
+                        found.setdefault(key, []).append((p, at))
+        out: list[Actuation] = []
+        nodes: dict[str, Any] = {}  # each node's SystemOOM times, or why they were not read
+        for key, kills in sorted(found.items()):
+            if now - self.oom_said.get(key, 0.0) < OOM_RECENT:
+                continue  # said within 10 minutes: these wait for its next report
+            if len(out) == OOM_REPORTS:
+                break  # the others next minute: never so many that a Rollback's is lost
+            self.oom_said[key] = now
+            a = self.oom_report(key, kills, nodes)
+            log.warning("%s: %s", "/".join(key), a.reason)
+            out.append(a)
+        return out
+
+    def oom_report(
+        self, key: tuple[str, ...], kills: list[tuple[Any, float]], nodes: dict[str, Any]
+    ) -> Actuation:
+        """One container's OOM kills as an Actuation: which kind each was, and why."""
+        ns, kind, name, container = key
+        told, limit, unread = [], None, ""
+        for p, at in kills[:OOM_SHOWN]:
+            spec = next((c for c in p.spec.containers if c.name == container), None)
+            memory = limits_of(spec).get("memory")
+            node = p.spec.node_name or ""
+            if not memory:
+                told.append(f"{p.metadata.name} with no memory limit (node-level)")
+                continue
+            limit = limit or memory
+            if node not in nodes:
+                try:
+                    nodes[node] = system_ooms(self.core, node)
+                except ApiException as e:  # no Role in `default`: installed before 13.1a
+                    nodes[node] = why(e)
+                    if not self.events_unread:
+                        self.events_unread = True
+                        log.warning("reading Node Events in default: %s", why(e))
+            times = nodes[node]
+            if isinstance(times, str):  # why, said once at the report's end
+                unread = times
+                told.append(
+                    f"{p.metadata.name} with a memory limit of {memory} (container-limit: "
+                    "its node's Events not read)"
+                )
+            elif any(abs(t - at) <= OOM_NEAR for t in times):
+                told.append(
+                    f"{p.metadata.name} with its node {node} out of memory "
+                    "(node-level: a SystemOOM Event)"
+                )
+            else:
+                told.append(
+                    f"{p.metadata.name} with a memory limit of {memory}, its node not out of "
+                    "memory (container-limit)"
+                )
+        more = f"; and {len(kills) - OOM_SHOWN} more" if len(kills) > OOM_SHOWN else ""
+        more += f". Node Events not read: {unread}" if unread else ""
+        h = self.held.get("/".join(key)) or {}
+        return Actuation(
+            namespace=ns,
+            kind=kind,
+            name=name,
+            container=container,
+            run_id=h.get("run_id", 0),  # 0: nothing of it held
+            outcome="oom_killed",
+            memory=float(qty(limit)) if limit else None,
+            pods=len(kills),
+            reason=("OOM-killed: " + "; ".join(told) + more + ". Nothing changed")[:1000],
+            at=max(at for _, at in kills),
+        )
 
     def is_paused(self, key: str) -> bool:
         return "/".join(key.split("/")[:3]) in self.paused
