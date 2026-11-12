@@ -126,7 +126,10 @@ ROLLOUT = (
     *("pod", "since", "canary_until", "resized", "notes", "waiting", "evicted", "no_room"),
     "stalled",  # since when the API server hasn't let it go on (slice 12.9a)
 )
-API_TIMEOUT = 30  # seconds one call to the API server may take
+# seconds one call to the API server may take, once (`single`: its client's own retries
+# would make it four times that). ponytail: a minute of some twenty calls can still take
+# five against an API server that accepts and never answers; stop at the first if it matters
+API_TIMEOUT = 15
 WATCHED = ("pods", "watch_until", "first_run")  # held while watched
 Outcome = Literal["applied", "skipped", "failed", "handed_back", "rolled_back", "reverted"]
 # held, never reported: "rolling"
@@ -261,6 +264,16 @@ def why(e: ApiException) -> str:
 def passing(e: ApiException) -> bool:
     """A failure that may be gone next minute: the network's, a 429 or the server's own."""
     return not e.status or e.status == 429 or e.status >= 500
+
+
+def single() -> None:
+    """The Kubernetes clients made from now on try each call once: the Actuator's own
+    minute is the retry. Their default retries a read that timed out three times, so a call
+    to an API server that never answers held the minute four timeouts long (found in
+    12.9's live check: no pull for almost four minutes, the Kill switch unheard)."""
+    cfg = client.Configuration.get_default_copy()
+    cfg.retries = 0
+    client.Configuration.set_default(cfg)
 
 
 class Calm:
@@ -1800,7 +1813,7 @@ class Actuator:
                 rolling = old.get("outcome") == "rolling" and not old.get("waiting")
                 if rolling or now < old.get("backoff_until", 0):
                     continue  # waits, unsaid: a new Sizing comes every hour
-            elif old.get("refused", -1) >= w.run_id:
+            elif old.get("refused") == w.run_id:
                 continue  # said once: what it holds stays (slice 12.9a)
             elif old.get("run_id", -1) > w.run_id or (
                 old.get("run_id") == w.run_id
@@ -1881,6 +1894,7 @@ class Actuator:
 
 def main(s: ActuatorSettings) -> None:  # pragma: no cover - the cluster's own process
     config.load_incluster_config()  # type: ignore[no-untyped-call]
+    single()
     core, custom = Calm(client.CoreV1Api()), Calm(client.CustomObjectsApi())
     apps = Apps(Calm(client.AppsV1Api()), custom, Calm(client.BatchV1Api()))
     check_version(client.VersionApi())

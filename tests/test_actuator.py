@@ -3527,6 +3527,13 @@ def test_an_approval_of_the_reverted_run_applies_only_if_approved_again(
     a.step()  # approved again since
     assert a.held[KEY]["outcome"] == "rolling" and a.held[KEY]["revert"] == 7
     core, apps = cluster()
+    d = settled(monkeypatch, [{**desired(1), "reverts": [undo]}, again], core, apps)
+    d.held[KEY]["refused"] = 2  # a later run refused meanwhile (found in 12.9's live check)
+    d.step()
+    assert d.held[KEY]["outcome"] == "reverted"
+    d.step()  # that mark is run 2's: run 1, approved again, applies
+    assert d.held[KEY]["outcome"] == "rolling" and "refused" not in d.held[KEY]
+    core, apps = cluster()
     both = {**again, "reverts": [undo]}  # a Revert asked while the Hub answered: beside it
     c = settled(monkeypatch, [both, both, again], core, apps)
     c.step()  # the Revert is this minute's word: put back, not applied again
@@ -3542,3 +3549,29 @@ def test_an_approval_of_the_reverted_run_applies_only_if_approved_again(
     b.step()  # still applied: that flag alone applies nothing twice
     assert b.held[KEY]["outcome"] == "applied" and len(resized(core)) == count
     assert "again" not in a.unsent[0].model_dump() if a.unsent else True
+
+
+def test_a_call_to_an_api_server_that_never_answers_is_tried_once() -> None:
+    """Found in 12.9's live check: the client's default retried a timed-out read three
+    times, so one call held the Actuator's minute four timeouts long."""
+    import socket
+
+    silent = socket.socket()  # accepts, and never answers
+    silent.bind(("127.0.0.1", 0))
+    silent.listen(5)
+    before = k.Configuration.get_default_copy()
+    try:
+        actuator.single()
+        cfg = k.Configuration.get_default_copy()
+        assert cfg.retries == 0
+        cfg.host = f"http://127.0.0.1:{silent.getsockname()[1]}"
+        core = actuator.Calm(k.CoreV1Api(k.ApiClient(cfg)))
+        began = time.time()
+        with pytest.raises(ApiException) as e:
+            core.list_namespaced_pod("shop", _request_timeout=0.3)
+        assert e.value.status == 0 and actuator.passing(e.value)
+        assert time.time() - began < 0.9  # once: four tries would take 1.2 s
+    finally:
+        k.Configuration.set_default(before)
+        silent.close()
+    assert actuator.API_TIMEOUT == 15
