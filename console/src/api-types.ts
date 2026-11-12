@@ -908,6 +908,8 @@ export interface components {
             reason: string;
             /** Resumes */
             resumes: number | null;
+            /** Revertable */
+            revertable: boolean;
             /** Reverting */
             reverting: boolean;
             /** Stopped */

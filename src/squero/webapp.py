@@ -505,6 +505,7 @@ class Held(BaseModel):
     resumes: float | None  # its Workload's Automation ended by Rollbacks, until then
     stopped: bool  # Reverted since its last approval: Automation leaves it alone
     reverting: bool  # a Revert asked, not yet done
+    revertable: bool  # it holds requests: its last Actuation that isn't a skip applied or failed
     outcome: str
     cpu: float | None
     memory: float | None
@@ -566,9 +567,13 @@ async def automation_of(st: Store, c: Contract, now: float) -> AutomationPage:
             for r in await st.pending_reverts(c.id, cl.name)
         }
         last: dict[tuple[str, ...], dict[str, Any]] = {}
+        held: dict[tuple[str, ...], str] = {}  # a skip leaves what was held (slice 12.9b)
         for a in seen:
             if a["cluster"] == cl.name and a["namespace"] in cl.namespaces:
-                last.setdefault((a["namespace"], a["kind"], a["name"], a["container"]), a)
+                key = (a["namespace"], a["kind"], a["name"], a["container"])
+                last.setdefault(key, a)
+                if a["outcome"] != "skipped":
+                    held.setdefault(key, a["outcome"])
         containers = [
             Held(
                 **{k: a[k] for k in Held.model_fields if k in a},
@@ -576,6 +581,7 @@ async def automation_of(st: Store, c: Contract, now: float) -> AutomationPage:
                 resumes=ended.get(key[:3]),
                 stopped=key in stopped,
                 reverting=key in reverting,
+                revertable=held.get(key) in ("applied", "failed"),
             )
             for key, a in sorted(last.items())
         ]

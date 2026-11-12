@@ -6,6 +6,7 @@ Guarded: refuses to run against any context that is not a kind cluster.
 import os
 from typing import Any
 
+import anyio
 import pytest
 from fastmcp import Client, FastMCP
 
@@ -47,7 +48,11 @@ def by_app(pods: list[dict[str, Any]], app: str) -> list[dict[str, Any]]:
 
 async def test_finds_all_three_failures(live: contracts.Contract) -> None:
     async with Client(k8s(live)) as c:
-        pods = (await tool(c, "list_pods", cluster="kind", namespace="demo"))["result"]
+        for _ in range(60):  # reports' first OOM kill may still be to come (CI, 2026-11-11)
+            pods = (await tool(c, "list_pods", cluster="kind", namespace="demo"))["result"]
+            if by_app(pods, "reports")[0]["last_terminated"].get("app"):
+                break
+            await anyio.sleep(2)
 
         crashing = [p for p in by_app(pods, "checkout") if p["restarts"] >= 2]
         assert crashing, pods

@@ -27,7 +27,11 @@ watched until it ends (`first_run`), a pod of it Failed or OOM-killed a Rollback
 Slice 12.9a (an audit's findings): a network failure is an ApiException (`Calm`), a minute
 that fails keeps and reports what it did, a rollout waits out a passing failure, a put back
 some pod refused is finished later (`finish`), restarts are counted from when a rollout
-begins, and a refused approval leaves the earlier hold as it is.
+begins, and a refused approval leaves the earlier hold as it is. Slice 12.9b: the Kill
+switch as last heard and the reports not yet taken are kept in its ConfigMap (`state.json`),
+an approval a passing failure met is tried again, a rollout scaled to zero ends applied, a
+CronJob's run is told by a recent minute in its Job's name, and an approval made again after
+a Revert (`again`) applies the run that Revert undid.
 
 Under Automation (slice 12.5) it also applies, unasked, the newest Sizing of each container
 the Contract automates: a change under 10% ignored, an increase at once, a decrease at most
@@ -83,6 +87,10 @@ log = logging.getLogger("squero.actuator")
 
 CONFIGMAP = "squero-actuator"  # in its own namespace: what it applied, by container
 KEY = "applied.json"
+KEPT_REPORTS = 200  # of its unsent reports, the newest kept across a restart: the
+# ConfigMap's megabyte is its holds' first
+STATE = "state.json"  # beside it: the Kill switch as last heard, reports not yet taken
+RUN_AGE = 30 * 1440  # minutes: how old a CronJob run's scheduled time may be (slice 12.9b)
 MAX_REPORTS = 1000  # per POST, and kept unsent while the Hub is unreachable
 MIN_MINOR = 33  # Kubernetes 1.33: in-place pod resize on by default
 MI = 2**20
@@ -149,6 +157,9 @@ class Wanted(BaseModel):
     container: str
     cpu: float | None
     memory: float | None
+    # approved after a Revert of that container (slice 12.9b): applied even if it is the
+    # run that Revert undid, which an approval from before it never is
+    again: bool = False
 
 
 class Undo(BaseModel):
@@ -533,7 +544,7 @@ def apply(
     def done(outcome: Outcome, pods: int, reason: str) -> tuple[Actuation, dict[str, Any]]:
         values = {r: float(qty(q)) for r, q in set_to.items()}
         a = Actuation(
-            **w.model_dump(exclude={"cpu", "memory"}),
+            **w.model_dump(exclude={"cpu", "memory", "again"}),
             outcome=outcome,
             pods=pods,
             reason=(reason + "".join(notes))[:1000],
@@ -543,6 +554,12 @@ def apply(
         kept = {"requests": set_to, "template": template_had}
         return a, {"run_id": w.run_id, "outcome": outcome, **kept, "at": at}
 
+    def failed(e: ApiException, reason: str) -> tuple[Actuation, dict[str, Any]]:
+        a, held = done("failed", 0, reason)
+        if passing(e):
+            held["passing"] = True  # nothing changed, and it may work next minute (12.9b)
+        return a, held
+
     if w.kind not in KINDS:
         return done("skipped", 0, f"a {w.kind} is not resized")
     try:
@@ -550,7 +567,7 @@ def apply(
     except ApiException as e:
         if e.status == 404:
             return done("skipped", 0, f"no such {w.kind}")
-        return done("failed", 0, f"reading the {w.kind}: {why(e)}")
+        return failed(e, f"reading the {w.kind}: {why(e)}")
     containers = template_of(d, w.kind).spec.containers
     template = next((c for c in containers if c.name == w.container), None)
     if template is None:
@@ -633,7 +650,7 @@ def apply(
         if why_not:
             return done("skipped", 0, why_not)
     except ApiException as e:  # a namespace its RoleBinding misses: the others still go on
-        return done("failed", 0, f"checking it: {why(e)}")
+        return failed(e, f"checking it: {why(e)}")
     todo = [
         p for p in pods if needs(p, w.container, set_to) and p.metadata.name not in (left or [])
     ]
@@ -645,7 +662,7 @@ def apply(
     except ApiException as e:
         room = no_room(e)
         if room is None or (eviction == "off" and w.kind != "DaemonSet"):  # off: failed at once
-            return done("failed", 0, f"{todo[0].metadata.name}: {why(e)}")
+            return failed(e, f"{todo[0].metadata.name}: {why(e)}")
     _, held = done("applied", 1, "")
     held |= {
         "outcome": "rolling",
@@ -749,6 +766,8 @@ def advance(
         pods = pods_of(core, apps, read(apps, kind, name, ns), kind)
         left = h.get("left") or []
         todo = [x for x in pods if needs(x, container, set_to) and x.metadata.name not in left]
+        if not pods:  # scaled to zero meanwhile: held, and its webhook gives them to new pods
+            return end("applied", f"{resized} pods resized in place, then none left to resize")
         if not todo:
             if all(needs(x, container, set_to) for x in pods):  # every pod left: none has room
                 return end("failed", f"no node of its {len(pods)} pods has room for them")
@@ -1260,7 +1279,9 @@ def mutation(
     name = owners.get(kind, "")
     # a CronJob's run, its Job named for its minute (slice 12.8c); a lone Job's pod falls
     # through to a Deployment's, which its missing `pod-template-hash` refuses
-    run = re.fullmatch(r"(.+)-\d+", owners.get("Job", ""))
+    run = re.fullmatch(r"(.+)-(\d+)", owners.get("Job", ""))
+    if run and not -5 <= time.time() / 60 - int(run.group(2)) <= RUN_AGE:
+        run = None  # digits that are no recent minute: a lone Job's own name (slice 12.9b)
     if kind == "Deployment" and run:
         kind, name = "CronJob", run.group(1)
     elif kind == "Deployment" and "rollouts-pod-template-hash" in labels:
@@ -1412,6 +1433,8 @@ class Actuator:
     namespace: str
     held: dict[str, dict[str, Any]] = field(default_factory=dict)
     unsent: list[Actuation] = field(default_factory=list)
+    stored: str = ""  # its state() as last saved
+    reverting: frozenset[str] | set[str] = frozenset()  # containers with a Revert in this pull
     killed: bool = False
     autoscaling: Any = None  # AutoscalingV2Api: HPAs (slice 12.3)
     custom: Any = None  # CustomObjectsApi: VPAs
@@ -1429,11 +1452,28 @@ class Actuator:
                 raise
             return
         self.held = json.loads((cm.data or {}).get(KEY) or "{}")
+        try:  # what it can't read (another version's) is dropped, never its holds with it
+            state = json.loads((cm.data or {}).get(STATE) or "{}")
+            self.killed = bool(state.get("killed", False))
+            for a in state.get("unsent") or []:
+                try:
+                    self.unsent.append(Actuation(**a))
+                except (ValidationError, TypeError) as e:
+                    log.error("a stored report dropped: %s", type(e).__name__)
+        except (ValueError, AttributeError) as e:
+            log.error("reading %s: %s", STATE, type(e).__name__)
+        self.stored = self.state()
+
+    def state(self) -> str:
+        """What a restart must not forget beside its holds (slice 12.9b): the Kill switch as
+        the Hub last said it (the Hub may be unreachable then), and the reports not yet taken."""
+        unsent = [a.model_dump() for a in self.unsent[-KEPT_REPORTS:]]
+        return json.dumps({"killed": self.killed, "unsent": unsent}, sort_keys=True)
 
     def save(self) -> None:
         body = client.V1ConfigMap(
             metadata=client.V1ObjectMeta(name=CONFIGMAP),
-            data={KEY: json.dumps(self.held, sort_keys=True)},
+            data={KEY: json.dumps(self.held, sort_keys=True), STATE: (state := self.state())},
         )
         try:
             try:
@@ -1442,6 +1482,7 @@ class Actuator:
                 if e.status != 404:
                     raise
                 self.core.create_namespaced_config_map(self.namespace, body)
+            self.stored = state
         except ApiException as e:  # pods already match: a restart finds nothing to change
             log.error("saving %s: %s", CONFIGMAP, why(e))
 
@@ -1493,22 +1534,30 @@ class Actuator:
                         finish(self.core, self.apps, key, h)
             if desired is not None and not self.killed:  # the Hub's word: rollouts go on
                 self.eviction = desired.eviction
+                self.reverting = {
+                    "/".join((u.namespace, u.kind, u.name, u.container)) for u in desired.reverts
+                }
                 done += self.revert(desired.reverts) + self.advance(desired.eviction)
                 done += self.act(desired.sizings, desired.automated)
                 done += self.catch_up()
         except Exception:  # its own bug: what it changed before is kept, not done twice
             self.unsent += done
             self.save()
-            self.report()  # a Rollback before the bug still reaches the Hub
+            self.send()  # a Rollback before the bug still reaches the Hub
             raise
         rolling = any(
             h.get("outcome") == "rolling" or "pods" in h or "first_run" in h
             for h in self.held.values()
         )
-        if done or rolling or undoing:
-            self.save()
         self.unsent += done
+        if done or rolling or undoing:
+            self.save()  # before reporting: a restart sends again what the Hub didn't take
+        self.send()
+
+    def send(self) -> None:
         self.report()
+        if self.state() != self.stored:  # taken (or refused): not sent again after a restart
+            self.save()
 
     def answered(self, ok: bool, now: float) -> None:
         """Count how long the Hub hasn't answered; at 15 minutes, one Event on its ConfigMap."""
@@ -1658,6 +1707,9 @@ class Actuator:
                 self.core, self.apps, w, time.time(), self.autoscaling, self.custom,
                 eviction=self.eviction, left=left,
             )  # fmt: skip
+            if new.pop("passing", False):
+                log.warning("%s waits to catch up: %s", key, a.reason if a else "")
+                continue  # still held: tried again next minute
             carried = (
                 *("rollbacks", "backoff_until", "watch_until", "lowered_at", "automated"),
                 *("revert", "evicted_at", "left"),
@@ -1736,8 +1788,8 @@ class Actuator:
         out = []
         for w, auto in [*((w, False) for w in sizings), *((w, True) for w in automated or [])]:
             key = "/".join((w.namespace, w.kind, w.name, w.container))
-            if self.is_paused(key):
-                continue  # waits: applied once the person lifts the pause, if still current
+            if self.is_paused(key) or key in self.reverting:
+                continue  # waits: for the pause to lift; for a Revert still listed (12.9b)
             old = self.held.get(key, {})
             now = time.time()
             if "evicted" in old:
@@ -1751,7 +1803,9 @@ class Actuator:
             elif old.get("refused", -1) >= w.run_id:
                 continue  # said once: what it holds stays (slice 12.9a)
             elif old.get("run_id", -1) > w.run_id or (
-                old.get("run_id") == w.run_id and not old.get("automated")
+                old.get("run_id") == w.run_id
+                and not old.get("automated")
+                and not (w.again and old.get("outcome") == "reverted")
             ):
                 continue
             elif old.get("run_id") == w.run_id and old.get("outcome") in ("applied", "rolling"):
@@ -1767,7 +1821,7 @@ class Actuator:
             if now < old.get("backoff_until", 0):
                 until = datetime.fromtimestamp(old["backoff_until"], UTC)
                 a = Actuation(
-                    **w.model_dump(exclude={"cpu", "memory"}),
+                    **w.model_dump(exclude={"cpu", "memory", "again"}),
                     outcome="skipped",
                     pods=0,
                     reason=f"rolled back {len(old.get('rollbacks') or [])} times in 7 days: "
@@ -1786,6 +1840,15 @@ class Actuator:
             else:
                 args = (self.core, self.apps, w, now, self.autoscaling, self.custom, old, auto)
                 a, new = apply(*args, eviction=self.eviction)
+                if new.pop("passing", False):  # tried again each minute, 10 at most
+                    t = old.get("trying") or {}
+                    if t.get("run") != w.run_id:
+                        t = {"run": w.run_id, "since": now}
+                    if now - t["since"] < WAIT_SECONDS:
+                        log.warning("%s waits: %s", key, a.reason if a else "")
+                        self.held[key] = {**old, "trying": t}
+                        continue
+                old.pop("trying", None)
                 if not new:  # nothing moves enough: the churn rule
                     self.held[key] = {**old, "seen": w.run_id}
                     continue

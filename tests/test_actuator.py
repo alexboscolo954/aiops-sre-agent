@@ -64,6 +64,12 @@ def sql(database_url: str, *statements: tuple[str, tuple[Any, ...]]) -> list[Any
         return out[-1].fetchall() if out[-1].description else []
 
 
+REVERT = (
+    "insert into reverts (contract_id, cluster, namespace, kind, name, container, asked_by, "
+    "asked_at) values (%s, 'test', %s, %s, %s, 'app', 'mcp:x', %s)",
+)
+
+
 def approve(cid: str, run_id: int, cluster: str = "test", ns: str = "shop", **more: Any) -> Any:
     keys = {"kind": "Deployment", "name": "api", "container": "app", **more}
     return (
@@ -96,6 +102,8 @@ def test_an_actuator_gets_only_its_own_clusters_current_approved_deployments(
             run("acme"),  # run 1, still going: supersedes nothing
             approve("acme", 1),
             approve("acme", 1, name="db", kind="StatefulSet"),  # slice 12.8a
+            # db reverted before that approval: approved again (slice 12.9b), still to undo
+            (*REVERT, ("acme", "shop", "StatefulSet", "db", 0.5)),
             approve("acme", 1, name="agent", kind="DaemonSet"),
             approve("acme", 1, name="web", kind="Rollout"),  # Argo Rollouts: slice 12.8b
             approve("acme", 1, name="nightly", kind="CronJob"),  # slice 12.8c
@@ -113,6 +121,7 @@ def test_an_actuator_gets_only_its_own_clusters_current_approved_deployments(
         wrong = c.get("/actuator/desired", headers=as_actuator(A_TOKEN + "x"))
         none = c.get("/actuator/desired")
     wanted = {"run_id": 1, "namespace": "shop", "kind": "Deployment", "container": "app"}
+    wanted["again"] = False  # none approved after a Revert (slice 12.9b)
     assert mine.json() == {
         "kill_switch": False,
         "sizings": [
@@ -120,10 +129,19 @@ def test_an_actuator_gets_only_its_own_clusters_current_approved_deployments(
             {**wanted, "kind": "DaemonSet", "name": "agent", "cpu": 0.115, "memory": None},
             {**wanted, "name": "api", "cpu": 0.115, "memory": None},
             {**wanted, "kind": "Rollout", "name": "web", "cpu": 0.115, "memory": None},
-            {**wanted, "kind": "StatefulSet", "name": "db", "cpu": 0.115, "memory": None},
+            {
+                **wanted,
+                "kind": "StatefulSet",
+                "name": "db",
+                "cpu": 0.115,
+                "memory": None,
+                "again": True,
+            },
         ],
         "automated": [],
-        "reverts": [],
+        "reverts": [
+            {"id": 1, "namespace": "shop", "kind": "StatefulSet", "name": "db", "container": "app"}
+        ],
         "eviction": "off",
     }
     assert old.json()["sizings"] == [{**wanted, "name": "api", "cpu": 0.115, "memory": None}]
@@ -743,7 +761,8 @@ def test_a_rollout_goes_on_only_while_the_hub_answers_and_the_kill_switch_is_off
     assert set(pulls) == {"Deployment,StatefulSet,DaemonSet,Rollout,CronJob"}  # slice 12.8c
     held = json.loads(core.replace_namespaced_config_map.call_args.args[2].data[actuator.KEY])
     assert held[KEY]["outcome"] == "applied"
-    assert core.replace_namespaced_config_map.call_count == 7  # each step while rolling or watched
+    # each step while rolling or watched, and once more when its report is taken
+    assert core.replace_namespaced_config_map.call_count == 8
     events = [c.args[1] for c in core.create_namespaced_event.call_args_list]
     assert [(e.reason, e.type, e.involved_object.name) for e in events] == [
         ("SizingApplied", "Normal", "api")
@@ -1059,7 +1078,7 @@ def test_a_person_changing_the_template_gets_the_container_back() -> None:
     events = [c.args[1] for c in core.create_namespaced_event.call_args_list]
     assert [e.reason for e in events] == ["HandedBack"] * 3
     assert events[2].message.startswith("app: back to its template (Approved Sizing, run 1)")
-    assert core.replace_namespaced_config_map.call_count == 2
+    assert core.replace_namespaced_config_map.call_count == 4  # with its reports, then without
     template.name = "web"
     a.held["shop/Deployment/api/app"]["outcome"] = "applied"
     (renamed,) = a.hand_back()
@@ -1423,6 +1442,7 @@ def test_an_actuator_gets_the_newest_sizings_of_what_its_contract_automates(
         sql(database_url, ("insert into kill_switches values ('acme', 't', 1)", ()))
         killed = c.get("/actuator/desired", headers=as_actuator(A_TOKEN)).json()
     one = {"run_id": 2, "namespace": "shop", "kind": "Deployment", "container": "app"}
+    one["again"] = False
     assert [w["name"] for w in mine["sizings"]] == ["approved"]
     assert mine["automated"] == [
         {**one, "name": n, "cpu": 0.115, "memory": None} for n in ("api", "elsewhere", "twice")
@@ -1893,6 +1913,9 @@ def test_the_automation_view_shows_the_contracts_own_containers_and_reverts_one(
             *(rolled_back("acme", now - d * 86400, name="web") for d in (1, 2, 3)),
             rolled_back("acme", now - 100, name="db", outcome="applied"),
             revert("acme", now - 50, "db"),  # pending, and stops db's Automation
+            rolled_back("acme", now - 900, name="kept", outcome="failed"),
+            rolled_back("acme", now - 800, name="kept", outcome="skipped"),  # leaves it held
+            rolled_back("acme", now - 800, name="idle", outcome="skipped"),  # nothing held
             rolled_back("acme", now - 100, "edge", "api", "skipped"),  # edge runs no Actuator
             (
                 "insert into actuations values ('acme', 'test', 'old', 'Deployment', 'x', 'app', "
@@ -1924,7 +1947,9 @@ def test_the_automation_view_shows_the_contracts_own_containers_and_reverts_one(
     (cluster,) = page["clusters"]
     assert cluster["cluster"] == "test" and not page["kill_switch"]
     shown = {h["name"]: h for h in cluster["containers"]}
-    assert list(shown) == ["api", "db", "side", "web"] and shows_killed
+    assert list(shown) == ["api", "db", "idle", "kept", "side", "web"] and shows_killed
+    assert [n for n, h in shown.items() if h["revertable"]] == ["api", "db", "kept", "side"]
+    assert shown["kept"]["outcome"] == "skipped"  # its last Actuation, a Revert still offered
     assert not shown["side"]["automated"]
     assert shown["api"]["outcome"] == "applied" and shown["api"]["automated"]
     assert shown["api"]["resumes"] is None and not shown["api"]["stopped"]
@@ -2874,15 +2899,26 @@ def test_a_cronjob_is_held_for_its_next_run_never_resized_in_place() -> None:
     assert skipped.reason == "its resizePolicy restarts the container for ['cpu']"
 
 
+def run_of(cronjob: str, ago: int = 0) -> str:
+    """A Job as the CronJob controller names it: for its scheduled minute, `ago` minutes back."""
+    return f"{cronjob}-{int(time.time() // 60) - ago}"
+
+
 def test_the_webhook_gives_a_cronjobs_run_its_hold_and_a_lone_job_nothing() -> None:
     held = {CRON: HELD["shop/Deployment/api/app"]}
     expected = patched(new_pod())
     assert expected is not None
-    assert patched(owned_by("Job", "api-29400000"), held) == expected
+    assert patched(owned_by("Job", run_of("api")), held) == expected
     assert patched(owned_by("Job", "api-manual"), held) is None  # no CronJob's name
-    assert patched(owned_by("Job", "other-29400000"), held) is None  # another's: not held
-    assert patched(owned_by("Job", "api-29400000")) is None  # a Deployment api's hold
-    req = owned_by("Job", "api-29400000")["request"]
+    assert patched(owned_by("Job", "api-123"), held) is None  # digits, no recent minute
+    assert actuator.RUN_AGE == 30 * 1440  # a month of minutes
+    assert patched(owned_by("Job", run_of("api", ago=actuator.RUN_AGE - 1)), held) == expected
+    assert patched(owned_by("Job", run_of("api", ago=actuator.RUN_AGE + 2)), held) is None
+    assert patched(owned_by("Job", run_of("api", ago=-4)), held) == expected  # a clock ahead
+    assert patched(owned_by("Job", run_of("api", ago=-7)), held) is None
+    assert patched(owned_by("Job", run_of("other")), held) is None  # another's: not held
+    assert patched(owned_by("Job", run_of("api"))) is None  # a Deployment api's hold
+    req = owned_by("Job", run_of("api"))["request"]
     assert actuator.mutation(req, held, "x", frozenset({"shop/CronJob/api"})) == []
 
 
@@ -2934,7 +2970,7 @@ def test_a_failed_or_oom_killed_pod_of_that_run_rolls_the_hold_back(bad: Any, wh
     h = act.held[CRON]
     assert h["outcome"] == "rolled_back" and "first_run" not in h and h["backoff_until"]
     assert not core.patch_namespaced_pod_resize.called  # nothing in place
-    assert patched(owned_by("Job", "api-29400001"), act.held) is None  # the webhook stops
+    assert patched(owned_by("Job", run_of("api")), act.held) is None  # the webhook stops
     core.runs["api-3"] = [ran("api-3-ok"), ran("api-3-b", "Failed", held=False)]  # a template's
     held2 = start(core, apps, of("CronJob"), at=t0)[1]
     act = make(hub_of([], []), core, apps, held={CRON: held2})
@@ -3340,3 +3376,169 @@ def test_a_bug_every_minute_still_reports_each_minutes_rollback() -> None:
             a.step()
     said = [x["outcome"] for r in seen if r.method == "POST" for x in json.loads(r.content)]
     assert said == ["handed_back"]  # the first minute's, told then; the second had none
+
+
+# --- the audit's narrower findings (slice 12.9b) ---------------------------------------------
+
+
+def test_the_kill_switch_and_unsent_reports_outlive_a_restart(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    core, apps = cluster()
+    down = [httpx.Response(503)]
+    a = settled(monkeypatch, [desired(1, killed=True), *down], core, apps)
+    for watched in actuator.WATCHED:  # its hour over: nothing else to save
+        a.held[KEY].pop(watched, None)
+    count = core.replace_namespaced_config_map.call_count
+    a.step()  # the Kill switch on: nothing else to save, saved for that
+    assert a.killed and core.replace_namespaced_config_map.call_count == count + 1
+    report = actuator.rollback(core, apps, KEY, a.held[KEY], "a test", time.time())
+    a.unsent.append(report)  # the Hub down when it happened
+    a.killed = True
+    a.save()
+    data = core.replace_namespaced_config_map.call_args.args[2].data
+    core.read_namespaced_config_map.return_value = k.V1ConfigMap(data=data)
+    seen: list[httpx.Request] = []
+    b = make(hub_of([*down, desired(1, killed=True)], seen), core, apps)
+    b.load()
+    assert b.killed and [x.outcome for x in b.unsent] == ["rolled_back"]
+    assert b.held[KEY]["outcome"] == "rolled_back"
+    held = {KEY: HELD[KEY]}
+    assert actuator.admit(new_pod(), held, b.killed, "x")["response"].get("patch") is None
+    core.patch_namespaced_pod_resize.reset_mock()
+    b.step()  # the Hub down at its start: still under the Kill switch
+    assert b.killed and resized(core) == []
+    b.step()  # the Hub back: the report it never took
+    posted = [x for r in seen if r.method == "POST" for x in json.loads(r.content)]
+    assert [x["outcome"] for x in posted] == ["rolled_back"]
+    data = core.replace_namespaced_config_map.call_args.args[2].data
+    assert json.loads(data[actuator.STATE]) == {"killed": True, "unsent": []}
+    core.read_namespaced_config_map.return_value = k.V1ConfigMap(data={actuator.KEY: "{}"})
+    old = make(hub_of([], []), core, apps)
+    old.load()  # a ConfigMap from before 12.9b
+    assert not old.killed and old.unsent == []
+    good = report.model_dump()
+    newer = {**good, "outcome": "an outcome of a later version"}
+    for state, killed, kept in (
+        ({"killed": True, "unsent": [newer, good, "x"]}, True, 1),  # what it can't read: dropped
+        ("not json", False, 0),
+        (["a list"], False, 0),
+    ):
+        text = state if isinstance(state, str) else json.dumps(state)
+        data = {actuator.KEY: json.dumps({KEY: HELD[KEY]}), actuator.STATE: text}
+        core.read_namespaced_config_map.return_value = k.V1ConfigMap(data=data)
+        other = make(hub_of([], []), core, apps)
+        other.load()  # never its holds with it
+        assert other.held == {KEY: HELD[KEY]}
+        assert (other.killed, len(other.unsent)) == (killed, kept)
+    many = make(hub_of([], []), core, apps)
+    many.unsent = [report.model_copy(update={"at": float(i)}) for i in range(250)]
+    kept_ = json.loads(many.state())["unsent"]
+    assert actuator.KEPT_REPORTS == 200 and [x["at"] for x in kept_] == [
+        float(i) for i in range(50, 250)
+    ]  # the newest: its holds come first in the ConfigMap's megabyte
+
+
+def test_a_passing_failure_doesnt_use_an_approval_up(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(actuator, "CANARY_SECONDS", 0)
+    core, apps = cluster()
+    seen: list[httpx.Request] = []
+    a = make(hub_of([desired(1)] * 4, seen), core, apps)
+    read = apps.read_namespaced_deployment
+    ok, read.side_effect = read.return_value, ApiException(status=503, reason="busy")
+    a.step()
+    assert a.held[KEY]["trying"]["run"] == 1 and "outcome" not in a.held[KEY]
+    since = a.held[KEY]["trying"]["since"]
+    a.step()  # again, counted from the first
+    assert a.held[KEY]["trying"]["since"] == since and a.unsent == []
+    assert [r for r in seen if r.method == "POST"] == []  # nothing said
+    read.side_effect, read.return_value = None, ok
+    a.step()  # the API server back: applied as if nothing
+    assert a.held[KEY]["outcome"] == "rolling" and "trying" not in a.held[KEY]
+    core, apps = cluster()
+    b = make(hub_of([desired(1)] * 2, seen), core, apps)
+    apps.read_namespaced_deployment.side_effect = ApiException(status=503, reason="busy")
+    b.step()
+    b.held[KEY]["trying"]["since"] -= actuator.WAIT_SECONDS  # ten minutes of it
+    b.step()
+    assert b.held[KEY]["outcome"] == "failed" and "trying" not in b.held[KEY]
+    posted = [x for r in seen if r.method == "POST" for x in json.loads(r.content)]
+    assert [x["reason"] for x in posted] == ["reading the Deployment: 503: busy"]
+    core, apps = cluster()
+    c = make(hub_of([desired(1)], []), core, apps)
+    apps.read_namespaced_deployment.side_effect = ApiException(status=403, reason="no")
+    c.step()  # a refusal: its verdict, at once
+    assert c.held[KEY]["outcome"] == "failed"
+    core, apps = cluster()
+    e = settled(monkeypatch, [desired(1, 2)] * 2, core, apps)
+    apps.read_namespaced_deployment.side_effect = ApiException(status=503, reason="busy")
+    e.step()  # run 2 waits; run 1 stays held meanwhile
+    assert (e.held[KEY]["outcome"], e.held[KEY]["trying"]["run"]) == ("applied", 2)
+    e.held[KEY]["trying"]["since"] -= actuator.WAIT_SECONDS
+    e.step()  # ten minutes of it: run 2 failed, run 1 still held
+    assert (e.held[KEY]["run_id"], e.held[KEY]["refused"]) == (1, 2) and "trying" not in e.held[KEY]
+    for where in ("list_namespaced_limit_range", "patch_namespaced_pod_resize"):
+        core, apps = cluster()
+        d = make(hub_of([desired(1)], []), core, apps)
+        getattr(core, where).side_effect = ApiException(status=500, reason="boom")
+        d.step()  # its checks, or the canary's resize: passing too
+        assert "outcome" not in d.held[KEY] and d.held[KEY]["trying"]["run"] == 1
+
+
+def test_a_catch_up_waits_out_a_passing_failure_still_held(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    core, apps = cluster()
+    a = settled(monkeypatch, [], core, apps)
+    late = pod("api-1-c", "api-1")
+    late.metadata.namespace = "shop"
+    core.list_namespaced_pod.return_value.items.append(late)
+    core.list_namespaced_limit_range.side_effect = ApiException(status=503, reason="busy")
+    assert a.catch_up() == [] and a.held[KEY]["outcome"] == "applied"  # its webhook goes on
+    core.list_namespaced_limit_range.side_effect = ApiException(status=403, reason="no")
+    (failed,) = a.catch_up()  # a refusal ends the hold, as before
+    assert failed.outcome == "failed" and a.held[KEY]["outcome"] == "failed"
+
+
+def test_a_rollout_scaled_to_zero_ends_applied_and_held() -> None:
+    core, apps = cluster()
+    _, held = start(core, apps, wanted())
+    canary = core.read_namespaced_pod("api-1-a", "shop")  # allocated, Ready
+    core.read_namespaced_pod.side_effect = None
+    core.read_namespaced_pod.return_value = canary
+    core.list_namespaced_pod.return_value = k.V1PodList(items=[])
+    done = actuator.advance(core, apps, KEY, held, 600.0)
+    assert (done.outcome, done.pods) == ("applied", 1)
+    assert done.reason == "1 pods resized in place, then none left to resize"
+    assert held["outcome"] == "applied" and patched(new_pod(), {KEY: held}) is not None
+
+
+def test_an_approval_of_the_reverted_run_applies_only_if_approved_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    undo = {"id": 7, "namespace": "shop", "kind": "Deployment", "name": "api", "container": "app"}
+    again = {"kill_switch": False, "sizings": [{**wanted(1).model_dump(), "again": True}]}
+    core, apps = cluster()
+    a = settled(monkeypatch, [{**desired(1), "reverts": [undo]}, desired(1), again], core, apps)
+    a.step()  # reverted
+    count = len(resized(core))
+    a.step()  # run 1 as approved before its Revert: nothing
+    assert a.held[KEY]["outcome"] == "reverted" and len(resized(core)) == count
+    a.step()  # approved again since
+    assert a.held[KEY]["outcome"] == "rolling" and a.held[KEY]["revert"] == 7
+    core, apps = cluster()
+    both = {**again, "reverts": [undo]}  # a Revert asked while the Hub answered: beside it
+    c = settled(monkeypatch, [both, both, again], core, apps)
+    c.step()  # the Revert is this minute's word: put back, not applied again
+    assert c.held[KEY]["outcome"] == "reverted"
+    count = len(resized(core))
+    c.step()  # still listed (its report not taken yet): still waits
+    assert c.held[KEY]["outcome"] == "reverted" and len(resized(core)) == count
+    c.step()  # the approval alone: made after it
+    assert c.held[KEY]["outcome"] == "rolling"
+    core, apps = cluster()
+    b = settled(monkeypatch, [again], core, apps)
+    count = len(resized(core))
+    b.step()  # still applied: that flag alone applies nothing twice
+    assert b.held[KEY]["outcome"] == "applied" and len(resized(core)) == count
+    assert "again" not in a.unsent[0].model_dump() if a.unsent else True

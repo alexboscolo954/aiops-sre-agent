@@ -76,7 +76,7 @@ export function AutomationPage({ contract }: { contract: string }) {
                         {h.reverting ? (
                           <span className="hint">reverting</span>
                         ) : (
-                          (h.outcome === "applied" || h.outcome === "failed") && (
+                          h.revertable && (
                             <button aria-label={`Revert ${where}`} onClick={() => undo(cl.cluster, h)}>
                               Revert
                             </button>

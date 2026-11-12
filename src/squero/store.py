@@ -695,7 +695,16 @@ class Store:
         stored = await self._one(
             "insert into approved_sizings select %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s "
             "where not exists (select 1 from kill_switches where contract_id = %s) "
-            "on conflict do nothing returning run_id",
+            # approved again after a Revert of that container: its time moves past the
+            # Revert, so it is sent to the Actuator once more (slice 12.9b)
+            "on conflict (contract_id, run_id, cluster, namespace, kind, name, container) "
+            "do update set approved_by = excluded.approved_by, approved_at = excluded.approved_at "
+            "where exists (select 1 from reverts r where "
+            "r.contract_id = approved_sizings.contract_id "
+            "and r.cluster = approved_sizings.cluster and r.namespace = approved_sizings.namespace "
+            "and r.kind = approved_sizings.kind and r.name = approved_sizings.name "
+            "and r.container = approved_sizings.container "
+            "and r.asked_at >= approved_sizings.approved_at) returning run_id",
             (contract_id, run_id, *keys, *wanted, by, at, contract_id),
         )
         if stored:
@@ -704,9 +713,14 @@ class Store:
 
     async def approved_sizings(self, contract_id: str) -> list[dict[str, Any]]:
         """The Contract's current Approved Sizings: those no later run read the
-        cluster of (a run still going, or failing there, supersedes nothing)."""
+        cluster of (a run still going, or failing there, supersedes nothing). `again`: one
+        approved after a Revert of its container (slice 12.9b)."""
         return await self._all(
-            "select * from approved_sizings a where contract_id = %s and not exists ("
+            "select a.*, exists (select 1 from reverts v where v.contract_id = a.contract_id "
+            "and v.cluster = a.cluster and v.namespace = a.namespace and v.kind = a.kind "
+            "and v.name = a.name and v.container = a.container "
+            "and v.asked_at < a.approved_at) as again "
+            "from approved_sizings a where contract_id = %s and not exists ("
             "select 1 from sizing_runs r where r.contract_id = a.contract_id "
             "and r.id > a.run_id and r.clusters -> a.cluster = 'null'::jsonb) "
             "order by approved_at",

@@ -854,7 +854,7 @@ test("the Contracts page lists every Contract with its spend against its budget"
 
 const HELD = {
   namespace: "shop", kind: "Deployment", container: "app", automated: true, resumes: null, stopped: false,
-  reverting: false, outcome: "applied", cpu: 0.115, memory: 96 * 2 ** 20, pods: 3, reason: "3 of 3 pods resized", at: 1_700_000_000,
+  reverting: false, revertable: true, outcome: "applied", cpu: 0.115, memory: 96 * 2 ** 20, pods: 3, reason: "3 of 3 pods resized", at: 1_700_000_000,
 };
 const AUTOMATION = {
   kill_switch: false,
@@ -863,9 +863,11 @@ const AUTOMATION = {
       cluster: "kind",
       containers: [
         { ...HELD, name: "api", reason: '<img src=x onerror="alert(1)">' },
-        { ...HELD, name: "db", stopped: true, reverting: true, outcome: "reverted" },
-        { ...HELD, name: "web", automated: false, outcome: "rolled_back", resumes: 1_700_604_800 },
+        { ...HELD, name: "db", stopped: true, reverting: true, revertable: false, outcome: "reverted" },
+        { ...HELD, name: "web", automated: false, revertable: false, outcome: "rolled_back", resumes: 1_700_604_800 },
         { ...HELD, name: "cache", resumes: 1_700_604_800, outcome: "failed" },
+        { ...HELD, name: "kept", outcome: "skipped" }, // a skip leaves the earlier hold: still to revert
+        { ...HELD, name: "idle", outcome: "skipped", revertable: false },
       ],
     },
   ],
@@ -905,7 +907,9 @@ test("Automation lists each container's last Actuation as text, and Revert posts
   expect(screen.queryByLabelText("Revert shop/Deployment/db/app")).toBeNull();
   expect(screen.queryByLabelText("Revert shop/Deployment/web/app")).toBeNull(); // rolled back: nothing held
   expect(screen.getByLabelText("Revert shop/Deployment/cache/app")).toBeTruthy(); // failed: pods may hold it
-  expect(screen.getAllByText(/cpu 115m memory 96Mi/).length).toBe(4);
+  expect(screen.getByLabelText("Revert shop/Deployment/kept/app")).toBeTruthy(); // by revertable, not its outcome
+  expect(screen.queryByLabelText("Revert shop/Deployment/idle/app")).toBeNull();
+  expect(screen.getAllByText(/cpu 115m memory 96Mi/).length).toBe(6);
   fireEvent.click(screen.getByLabelText("Revert shop/Deployment/api/app"));
   await waitFor(() => expect(screen.queryByLabelText("Revert shop/Deployment/api/app")).toBeNull());
   expect(sent).toEqual([

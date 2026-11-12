@@ -494,6 +494,41 @@ async def test_an_approved_sizing_is_current_until_a_later_run_reads_its_cluster
 
 
 @pytest.mark.anyio
+async def test_approving_again_after_a_revert_moves_the_approval_past_it(store: Store) -> None:
+    """Slice 12.9b: before, the second approval was a no-op, so the Revert stayed the last
+    word and the Sizing was never sent again."""
+    lowered = row(cpu={"action": "lower", "target": 0.1})
+    other = row("web", cpu={"action": "lower", "target": 0.1})
+    side = row(cpu={"action": "lower", "target": 0.1}, container="sidecar")
+    side["workload"] = "test/shop/Deployment/api/sidecar"
+    late = row("late", cpu={"action": "lower", "target": 0.1})
+    run = await stored(store, "acme", NOW, {"test": None}, lowered, other, side, late)
+    keys = ("test", lowered["namespace"], lowered["kind"], "api", lowered["container"])
+    for r in (lowered, other, side):
+        assert await store.approve_sizing("acme", run, r, "mcp:op", NOW) == "approved"
+    await store.ask_revert("acme", keys, "mcp:op", NOW + 60)
+    for cid, cluster in (("bank", "test"), ("acme", "edge")):  # another Contract's, cluster's
+        await store.ask_revert(cid, (cluster, *keys[1:3], "late", keys[4]), "mcp:op", NOW + 70)
+        await store.ask_revert(cid, (cluster, *keys[1:4], "sidecar"), "mcp:op", NOW + 70)
+    assert await store.approve_sizing("acme", run, late, "mcp:op", NOW + 90) == "approved"
+    assert await store.approve_sizing("acme", run, side, "mcp:two", NOW + 120) == "already"
+    await store.ask_revert("bank", (*keys[:3], "web", keys[4]), "mcp:op", NOW + 60)  # bank's web
+    assert await store.reverted("acme", "test") == {keys[1:]}
+    assert await store.approve_sizing("acme", run, other, "mcp:two", NOW + 120) == "already"
+    assert await store.approve_sizing("acme", run, lowered, "mcp:two", NOW + 120) == "approved"
+    assert await store.reverted("acme", "test") == set()
+    found = {a["name"]: a for a in await store.approved_sizings("acme")}
+    assert (found["api"]["approved_by"], found["api"]["approved_at"]) == ("mcp:two", NOW + 120)
+    assert found["api"]["again"] is True and found["web"]["again"] is False
+    assert found["late"]["again"] is False  # after api's Revert, not one of its own
+    await store.ask_revert("acme", (*keys[:3], "web", keys[4]), "mcp:op", NOW + 150)
+    found = {a["name"]: a for a in await store.approved_sizings("acme")}
+    assert found["web"]["again"] is False  # reverted since: not approved again
+    assert found["web"]["approved_at"] == NOW
+    assert await store.approve_sizing("acme", run, lowered, "mcp:op", NOW + 180) == "already"
+
+
+@pytest.mark.anyio
 async def test_no_sizing_is_approved_while_the_kill_switch_is_on(store: Store) -> None:
     lowered = row(cpu={"action": "lower", "target": 0.1})
     run = await stored(store, "acme", NOW, {"test": None}, lowered)

@@ -1340,6 +1340,10 @@
             ],
             "title": "Resumes"
           },
+          "revertable": {
+            "title": "Revertable",
+            "type": "boolean"
+          },
           "reverting": {
             "title": "Reverting",
             "type": "boolean"
@@ -1358,6 +1362,7 @@
           "resumes",
           "stopped",
           "reverting",
+          "revertable",
           "outcome",
           "cpu",
           "memory",
