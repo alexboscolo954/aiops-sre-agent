@@ -31,6 +31,8 @@ from urllib.parse import urlsplit
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, WebSocket
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastmcp import Client
 from langchain_core.language_models import BaseChatModel
@@ -84,6 +86,10 @@ from squero.store import Store, connect, now
 
 log = logging.getLogger("squero.api")
 CHECK_TICK = 30  # seconds between looks for due Checks
+# Rollbacks told in Slack (slice 12.9c): a cluster's in one hour, the rest counted in one
+# line; and how long one Slack never took is still tried
+ROLLBACK_POSTS, TELL_FOR, LATE = 20, 7 * 86400, 600
+REST = 300.0  # a Contract whose post Slack didn't take is left alone this long, doubling
 REPORTED = ("triage", "check")  # kinds whose Report gets Feedback, Jira, the client
 MODALS = ("reject", "correction", "teaching_edit")  # Slack modals: <callback>_submit
 TEACHING_ACTIONS = {
@@ -286,6 +292,7 @@ def create_app(
             app.state.due_checks = due_checks  # for tests: one tick at a given time
             app.state.poll_deploys, app.state.due_deploys = poll_deploys, due_deploys
             app.state.due_sizings, app.state.due_digests = due_sizings, due_digests
+            app.state.tell = tell
             if settings.slack_app_token:
                 spawn(db["slack"].listen(settings.slack_app_token, on_socket))
             try:
@@ -299,6 +306,16 @@ def create_app(
                 await asyncio.gather(*tasks, *sizing_task, return_exceptions=True)
 
     app = FastAPI(title="squero", lifespan=lifespan)
+
+    @app.exception_handler(RequestValidationError)
+    async def invalid(request: Request, e: RequestValidationError) -> JSONResponse:
+        """A 422 that says where and why, never the value (slice 12.9c): FastAPI's own
+        echoes it, and a NaN in a body can't be said in JSON, so that answer was a 500
+        (which an Actuator sends again forever); nor is a request's content the Hub's to
+        send back."""
+        said = [{k: x[k] for k in ("type", "loc", "msg") if k in x} for x in e.errors()]
+        return JSONResponse({"detail": said}, status_code=422)
+
     bearer = HTTPBearer()
 
     def check(creds: HTTPAuthorizationCredentials, expected: str) -> None:
@@ -1274,6 +1291,8 @@ def create_app(
             try:
                 await due_checks()
                 await due_digests()
+                if not telling.locked():  # beside the tick, never in it: Slack may be slow
+                    spawn(tell())  # Rollbacks Slack didn't take when they arrived (12.9c)
                 if time.monotonic() - polled >= deploys.POLL_SECONDS:
                     polled = time.monotonic()
                     await poll_deploys()
@@ -1613,6 +1632,110 @@ def create_app(
         rows = await store().actuations(cid, at - actuator.ROLLBACKS_FOR)
         return actuator.rollbacks_of(rows, cluster, at)
 
+    telling = asyncio.Lock()  # one teller at a time: the route's and the scheduler's
+    posted: dict[tuple[str, str], list[float]] = {}  # a cluster's Rollback posts, last hour
+    summed: dict[tuple[str, str], float] = {}  # when its "N more" line was last posted
+    resting: dict[str, tuple[float, float]] = {}  # a Contract Slack refused: until, how long
+
+    async def tell(only: str | None = None, at: float | None = None) -> None:
+        """Tell each Contract's Operator of its Rollbacks not told yet (slice 12.9c): from
+        what is stored, after the Actuator was answered and again each tick, so one Slack
+        didn't take is told late, never lost. One Contract's failure never stops another's."""
+        async with telling:
+            for cid in [only] if only else list(by_id):
+                try:
+                    await tell_contract(cid, at or time.time())  # at: for tests
+                except Exception:
+                    log.exception("telling %s of its rollbacks failed", cid)
+
+    async def tell_contract(cid: str, at: float) -> None:
+        if at < resting.get(cid, (0.0, 0.0))[0]:
+            return  # Slack didn't take its last: left alone a while
+        slack = by_id[cid].slack if settings.slack_bot_token else None
+        # no channel to tell, or a week of Slack not taking it: given up
+        await store().mark_all_told(cid, at if slack is None else at - TELL_FOR)
+        counts = await store().untold_counts(cid, at)
+        if not counts or slack is None:
+            return
+
+        async def say(text: str) -> bool:
+            """Whether Slack took it; if not, this Contract rests: 5 minutes, then twice as
+            long each time, an hour at most (a channel Slack refuses for good is asked a
+            few times an hour, not at every tick)."""
+            if await db["slack"].post(slack.operator_channel, text) is not None:
+                resting.pop(cid, None)
+                return True
+            wait = min(2 * resting.get(cid, (0.0, REST / 2))[1], 3600.0)
+            resting[cid] = (at + wait, wait)
+            return False
+
+        seen = await store().actuations(cid, at - actuator.ROLLBACKS_FOR)
+        sized, _ = await store().latest_sizings(cid, set(counts))
+        automated = {
+            (r["cluster"], r["namespace"], r["kind"], r["name"])
+            for r in sized
+            if by_id[cid].sizing.automated(
+                r["cluster"], r["namespace"], r["kind"], r["name"], r["container"]
+            )
+        }
+
+        def order(r: dict[str, Any]) -> tuple[Any, ...]:
+            return (r["at"], r["received_at"], r["container"], r["run_id"])
+
+        for cluster, waiting in sorted(counts.items()):
+            key = (cid, cluster)
+            posts = posted[key] = [t for t in posted.get(key, []) if at - t < 3600]
+            room = ROLLBACK_POSTS - len(posts)  # a pass reads no more than it may post
+            rows = await store().untold(cid, cluster, at, room) if room > 0 else []
+            for r in rows:
+                w = (r["namespace"], r["kind"], r["name"])
+                # what an Actuator sent, as text: its names and its reason (an API server's
+                # message among them) never ping a channel or make a link
+                where = f"{cluster}/{clean('/'.join(w))}"
+                text = (
+                    f":rewind: {cid}: the Actuator rolled back {where} container "
+                    f"{clean(r['container'])}: {clean(r['reason'])}"
+                )
+                if at - r["received_at"] >= LATE:
+                    when = datetime.fromtimestamp(r["received_at"], UTC)
+                    text += f" (reported {when:%Y-%m-%d %H:%M} UTC)"
+                mine = sorted(
+                    (
+                        x
+                        for x in seen
+                        if x["outcome"] == "rolled_back"
+                        and (x["cluster"], x["namespace"], x["kind"], x["name"]) == (cluster, *w)
+                    ),
+                    key=order,
+                )
+                # the Rollback that ends its Workload's Automation (slice 12.5): its third
+                # in 7 days, said with it, from what is stored, so a retry says it too
+                third = sum(order(x) <= order(r) for x in mine) == actuator.ENDING
+                if third and (cluster, *w) in automated:
+                    ts = [x["at"] for x in mine]
+                    until = datetime.fromtimestamp(actuator.resumes({w: ts})[w], UTC)
+                    text += (
+                        f"\n:octagonal_sign: {cid}: Automation of {where} ended: {len(ts)} "
+                        f"rollbacks in 7 days. It resumes on {until:%Y-%m-%d %H:%M} UTC "
+                        "unless more follow; remove `automate` from its rule to end it for good."
+                    )
+                if not await say(text):
+                    return  # told at a later pass, the others after it
+                posts.append(at)
+                await store().mark_told(cid, [r])
+            rest = waiting - len(rows)
+            if rest <= 0 or at - summed.get(key, 0.0) < 3600:
+                continue  # none over its hour's posts; or said within the hour: counted next
+            text = (
+                f":warning: {cid}: {rest} more Rollbacks reported by {cluster}'s Actuator "
+                f"are not posted here ({ROLLBACK_POSTS} in the last hour already): see the "
+                "Automation page."
+            )
+            if not await say(text):
+                return
+            summed[key] = at
+            await store().mark_all_told(cid, at, cluster)
+
     async def automation(cid: str, cluster: contracts.Cluster) -> list[actuator.Wanted]:
         """The newest Sizings of the containers the Contract automates on this cluster
         (slice 12.5): ready, changing something, of a Workload without 3 Rollbacks in 7 days."""
@@ -1689,48 +1812,22 @@ def create_app(
         creds: HTTPAuthorizationCredentials = Depends(bearer),  # noqa: B008
     ) -> None:
         """An Actuator's Actuations, stored as its Contract's cluster's, by its token only;
-        one naming a namespace outside the cluster's is refused whole."""
+        one naming a namespace outside the cluster's is refused whole, as is one with a
+        number that isn't one (slice 12.9c). Its Rollbacks are told after it is answered."""
         cid, cluster = actuator_of(creds)
         if len(reports) > actuator.MAX_REPORTS:
             raise HTTPException(413, f"at most {actuator.MAX_REPORTS} reports at once")
         outside = sorted({r.namespace for r in reports} - set(cluster.namespaces))
         if outside:
             raise HTTPException(422, f"namespaces not in cluster {cluster.name!r}: {outside}")
+        unreal = sorted({f for f in map(actuator.unreal, reports) if f})
+        if unreal:  # said without the value: a NaN can't be said in JSON
+            raise HTTPException(422, f"not a number an Actuator sends: {unreal}")
         new = await store().record_actuations(
             cid, cluster.name, [r.model_dump() for r in reports], time.time()
         )
-        slack = by_id[cid].slack if settings.slack_bot_token else None
-        for n in new:  # a rollback reaches the Operator at once (slice 12.4); once
-            if n["outcome"] == "rolled_back" and slack:
-                where = f"{cluster.name}/{n['namespace']}/{n['kind']}/{n['name']}"
-                text = (
-                    f":rewind: {cid}: the Actuator rolled back {where} container "
-                    f"{n['container']}: {redact(n['reason'])}"
-                )
-                await db["slack"].post(slack.operator_channel, text)
-        back = [n for n in new if n["outcome"] == "rolled_back"]
-        if back and slack:  # the one that ends a Workload's Automation (slice 12.5)
-            counted = await rollbacks(cid, cluster.name)
-            rows, _ = await store().latest_sizings(cid, {cluster.name})
-            automated = {
-                (r["namespace"], r["kind"], r["name"])
-                for r in rows
-                if by_id[cid].sizing.automated(
-                    cluster.name, r["namespace"], r["kind"], r["name"], r["container"]
-                )
-            }
-            for w in sorted({(n["namespace"], n["kind"], n["name"]) for n in back} & automated):
-                these = [n for n in back if (n["namespace"], n["kind"], n["name"]) == w]
-                ts = counted.get(w, [])
-                if len(ts) - len(these) < actuator.ENDING <= len(ts):
-                    until = datetime.fromtimestamp(actuator.resumes({w: ts})[w], UTC)
-                    await db["slack"].post(
-                        slack.operator_channel,
-                        f":octagonal_sign: {cid}: Automation of {cluster.name}/{'/'.join(w)} "
-                        f"ended: {len(ts)} rollbacks in 7 days. It resumes on "
-                        f"{until:%Y-%m-%d %H:%M} UTC unless more follow; remove `automate` "
-                        "from its rule to end it for good.",
-                    )
+        if any(n["outcome"] == "rolled_back" for n in new):
+            spawn(tell(cid))  # not in its request: Slack may be slow, or down
         for r in reports:
             log.info(
                 "actuation %s/%s %s %s/%s/%s/%s: %s",

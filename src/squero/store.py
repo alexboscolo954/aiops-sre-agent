@@ -30,6 +30,14 @@ SIZING_LOCK = 4_242_002  # with the Contract's hash: one Sizing run claimed at a
 HOURLY_FOR = 14 * 86400  # Sizing runs kept hourly this long, then the last of each day
 DAILY_FOR = 400 * 86400  # and those this long
 ACTUATIONS_FOR = 90 * 86400  # an Actuator's audit trail (slice 12.1)
+# An Actuation as read (slice 12.9c): `at`, the Actuator's own clock, never later than the
+# Hub's when it arrived. A report dated in the future would otherwise stay a container's
+# last Actuation, count as a Rollback and outlive its 90 days for as long as it claims; the
+# table's own `at` only tells a report from one sent again.
+ACTUATION = (
+    "contract_id, cluster, namespace, kind, name, container, run_id, outcome, cpu, memory, "
+    "pods, reason, least(at, received_at) as at, received_at"
+)
 # An Actuation's columns after contract_id and cluster, in order, up to received_at
 ACTUATION_FIELDS = (
     "namespace",
@@ -641,7 +649,7 @@ class Store:
             (contract_id, at - DAILY_FOR, at - HOURLY_FOR, contract_id),
         )
         await self._exec(
-            "delete from actuations where contract_id = %s and at < %s",
+            "delete from actuations where contract_id = %s and least(at, received_at) < %s",
             (contract_id, at - ACTUATIONS_FOR),
         )
 
@@ -774,12 +782,13 @@ class Store:
         for r in rows:
             stored = await self._one(
                 "insert into actuations values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
-                "%s, %s, %s) on conflict do nothing returning run_id",
+                "%s, %s, %s, %s) on conflict do nothing returning run_id",
                 (
                     contract_id,
                     cluster,
                     *(r[k] for k in ACTUATION_FIELDS),
                     at,
+                    r["outcome"] != "rolled_back",  # told: a Rollback is still to tell
                 ),
             )
             if stored:
@@ -789,9 +798,54 @@ class Store:
     async def actuations(self, contract_id: str, since: float) -> list[dict[str, Any]]:
         """The Contract's Actuations since `since`, newest first."""
         return await self._all(
-            "select * from actuations where contract_id = %s and at >= %s "
-            "order by at desc, namespace, name, container",
+            f"select {ACTUATION} from actuations "  # noqa: S608 - a constant column list
+            "where contract_id = %s and least(at, received_at) >= %s "
+            "order by least(at, received_at) desc, namespace, name, container",
             (contract_id, since),
+        )
+
+    async def untold_counts(self, contract_id: str, upto: float) -> dict[str, int]:
+        """How many Rollbacks received by `upto` the Operator hasn't been told of (slice
+        12.9c), by cluster."""
+        rows = await self._all(
+            "select cluster, count(*) as n from actuations where contract_id = %s "
+            "and not told and received_at <= %s group by cluster",
+            (contract_id, upto),
+        )
+        return {r["cluster"]: r["n"] for r in rows}
+
+    async def untold(
+        self, contract_id: str, cluster: str, upto: float, limit: int
+    ) -> list[dict[str, Any]]:
+        """The first `limit` of them on `cluster`, in the order they arrived; `sent_at`: the
+        Actuator's own time, part of the row's key."""
+        return await self._all(
+            f"select {ACTUATION}, at as sent_at from actuations "  # noqa: S608
+            "where contract_id = %s and cluster = %s and not told and received_at <= %s "
+            "order by received_at, at, namespace, name, container limit %s",
+            (contract_id, cluster, upto, limit),
+        )
+
+    async def mark_told(self, contract_id: str, rows: list[dict[str, Any]]) -> None:
+        """These rows of `untold`: told."""
+        keys = ("cluster", "namespace", "kind", "name", "container", "run_id", "sent_at")
+        for r in rows:
+            await self._exec(
+                "update actuations set told = true where contract_id = %s and cluster = %s "
+                "and namespace = %s and kind = %s and name = %s and container = %s "
+                "and run_id = %s and at = %s",
+                (contract_id, *(r[k] for k in keys)),
+            )
+
+    async def mark_all_told(
+        self, contract_id: str, upto: float, cluster: str | None = None
+    ) -> None:
+        """Every untold Rollback of the Contract (of `cluster`, if named) received by
+        `upto`: counted in one line, or given up on."""
+        await self._exec(
+            "update actuations set told = true where contract_id = %s and not told "
+            "and received_at <= %s and (%s::text is null or cluster = %s)",
+            (contract_id, upto, cluster, cluster),
         )
 
     async def first_sizings(self, contract_id: str, clusters: set[str]) -> dict[str, float]:

@@ -206,6 +206,19 @@ class Actuation(BaseModel):
     at: float
 
 
+def unreal(a: Actuation) -> str | None:
+    """Which of an Actuation's numbers no Actuator sends (slice 12.9c), or None: one that
+    isn't a number (NaN, infinity) or is below zero. The Hub refuses the whole report
+    for it; nothing an honest Actuator may send is refused, since a refused report is
+    dropped there, its Rollbacks with it. Checked by the Hub, not by the model: the
+    Actuator builds one after it has resized, and reads its own stored ones back."""
+    for name in ("cpu", "memory", "at"):
+        value = getattr(a, name)
+        if value is not None and not (math.isfinite(value) and value >= 0):
+            return name
+    return None
+
+
 def rollbacks_of(
     actuations: list[dict[str, Any]], cluster: str, now: float
 ) -> dict[tuple[str, ...], list[float]]:

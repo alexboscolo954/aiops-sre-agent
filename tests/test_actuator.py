@@ -234,15 +234,18 @@ def test_actuations_are_kept_90_days(database_url: str) -> None:
             store = Store(pool)
             await store.migrate()
             day = 86400.0
-            rows = [report(at=0.0), report(at=10 * day)]
-            await store.record_actuations("acme", "test", rows, 0.0)
+            await store.record_actuations("acme", "test", [report(at=0.0)], 0.0)
+            await store.record_actuations("acme", "test", [report(at=10 * day)], 10 * day)
+            # dated ten years ahead by its Actuator (slice 12.9c): as old as its arrival
+            ahead = [report(at=3650 * day, name="ahead")]
+            await store.record_actuations("acme", "test", ahead, 0.0)
             await store.record_actuations("bank", "test", [report(at=0.0)], 0.0)
             await store.prune_sizings("acme", 90 * day + 1)
             return await store.actuations("acme", 0.0) + await store.actuations("bank", 0.0)
 
-    assert [(r["contract_id"], r["at"]) for r in asyncio.run(go())] == [
-        ("acme", 10 * 86400.0),
-        ("bank", 0.0),
+    assert [(r["contract_id"], r["name"], r["at"]) for r in asyncio.run(go())] == [
+        ("acme", "api", 10 * 86400.0),
+        ("bank", "api", 0.0),
     ]
 
 
@@ -1252,6 +1255,18 @@ def test_no_rollback_under_the_kill_switch_and_none_once_its_hour_is_over() -> N
     assert h["outcome"] == "applied" and "pods" not in h and "watch_until" not in h
 
 
+def tell(c: TestClient, cid: str | None = None, at: float | None = None) -> list[Any]:
+    """Tell the Rollbacks not told yet, as the Hub does after a report and each tick, and
+    wait for it (the one a report started runs under the same lock)."""
+    assert c.portal is not None
+    c.portal.call(c.app.state.tell, cid, at)  # type: ignore[attr-defined]
+    return []
+
+
+def untold(database_url: str) -> list[Any]:
+    return sql(database_url, ("select contract_id, name from actuations where not told", ()))
+
+
 def test_a_rollback_reaches_the_operators_channel_once(
     settings: Settings, database_url: str
 ) -> None:
@@ -1277,7 +1292,10 @@ def test_a_rollback_reaches_the_operators_channel_once(
     with TestClient(app) as c:
         for _ in range(2):  # sent again: posted once
             c.post("/actuator/reports", json=[back, report(at=1.0)], headers=as_actuator(A_TOKEN))
+            tell(c)
         c.post("/actuator/reports", json=[back], headers=as_actuator(B_TOKEN))  # no Slack
+        tell(c)
+        assert tell(c) == [] == untold(database_url)  # bank's: no channel, nothing to tell
     posts = [p for m, p, _ in slack.calls if m == "chat.postMessage"]
     assert [(p["channel"], p["text"]) for p in posts] == [
         (
@@ -1495,9 +1513,11 @@ def test_the_rollback_that_ends_automation_reaches_the_operator_once(
             *(sized("acme", 1, n) for n in ("api", "web")),
             sized("acme", 1, "db", container="sidecar"),  # no container of db is automated
         )
-        post = lambda *rs: c.post(  # noqa: E731
-            "/actuator/reports", json=list(rs), headers=as_actuator(A_TOKEN)
-        )
+
+        def post(*rs: Any) -> None:
+            c.post("/actuator/reports", json=list(rs), headers=as_actuator(A_TOKEN))
+            tell(c)  # as its own request starts it: before the next arrives
+
         post(back(now - 3 * day), back(now - 2 * day))  # two: Automation goes on
         post(back(now - day, container="sidecar"))  # the third, of api's other container
         post(back(now - day + 1))  # the fourth in 7 days: it was already over
@@ -1507,8 +1527,14 @@ def test_the_rollback_that_ends_automation_reaches_the_operator_once(
         post(*(back(now - d * day, name="db", container="sidecar") for d in (1, 2, 3)))
         c.post("/actuator/reports", json=[back(now - d * day) for d in (1, 2, 3)],
                headers=as_actuator(B_TOKEN))  # bank: no channel  # fmt: skip
-    ended = [
-        p["text"] for m, p, _ in slack.calls if m == "chat.postMessage" and "ended" in p["text"]
+        tell(c)
+    texts = [p["text"] for m, p, _ in slack.calls if m == "chat.postMessage"]
+    assert len(texts) == 11 and all(t.startswith(":rewind: acme: ") for t in texts)
+    # said with the Rollback that ends it, in one message (slice 12.9c)
+    ended = [t.split("\n")[1] for t in texts if "ended" in t]
+    assert [t.split(" container ")[1].split(":")[0] for t in texts if "ended" in t] == [
+        "sidecar",
+        "app",
     ]
     until = datetime.fromtimestamp(now - 3 * day + 7 * day, UTC)
     web = datetime.fromtimestamp(now - 2 * day + 7 * day, UTC)
@@ -3575,3 +3601,405 @@ def test_a_call_to_an_api_server_that_never_answers_is_tried_once() -> None:
         k.Configuration.set_default(before)
         silent.close()
     assert actuator.API_TIMEOUT == 15
+
+
+# --- the Hub against an Actuator's reports (slice 12.9c) -------------------------------------
+
+ACME_CHANNEL, BANK_CHANNEL = "C0123456789", "C0999999999"
+
+
+def slacked(
+    settings: Settings,
+    database_url: str,
+    bank_channel: bool = True,
+    handler: Any = None,
+    acme: contracts.Contract | None = None,
+) -> tuple[Any, Any]:
+    """The Hub with Slack: acme and bank automate `app` containers, each with its channel.
+    `handler`: Slack's answers, given the FakeSlack to pass a request on to."""
+    from tests.test_slack import TOKEN, FakeSlack
+
+    settings.slack_bot_token = SecretStr(TOKEN)
+    settings.database_url = SecretStr(database_url)
+    settings.approver_token = SecretStr("approver-token")
+    slack = FakeSlack()
+    theirs = {"slack": {"operator_channel": BANK_CHANNEL}} if bank_channel else {}
+    app = create_app(
+        settings,
+        scripted(),
+        lambda c: None,
+        {
+            "acme": acme
+            or automating("acme", A_TOKEN, AUTO, slack={"operator_channel": ACME_CHANNEL}),
+            "bank": automating("bank", B_TOKEN, AUTO, **theirs),
+        },
+        slack_http=httpx.AsyncClient(
+            transport=httpx.MockTransport((lambda r: handler(slack, r)) if handler else slack)
+        ),
+    )
+    return app, slack
+
+
+def back(at: float, **more: Any) -> dict[str, Any]:
+    return report(outcome="rolled_back", reason="r", at=at, **more)
+
+
+def posts(slack: Any) -> list[tuple[str, str]]:
+    return [(p["channel"], p["text"]) for m, p, _ in slack.calls if m == "chat.postMessage"]
+
+
+def test_a_report_with_a_number_that_isnt_one_is_refused_and_an_honest_one_taken(
+    settings: Settings, database_url: str
+) -> None:
+    app, _ = slacked(settings, database_url)
+    json_ = {**as_actuator(A_TOKEN), "Content-Type": "application/json"}
+    now = time.time()
+    with TestClient(app) as c:
+        for field, value in (
+            ("cpu", "NaN"),
+            ("memory", "1e999"),  # infinity, as JSON reads it
+            ("at", "NaN"),
+            ("at", "-Infinity"),
+            ("cpu", "-1"),
+            ("memory", "-0.5"),
+            ("at", "-1"),
+        ):
+            body = json.dumps([report(), report(name="bad", **{field: "X"})]).replace('"X"', value)
+            refused = c.post("/actuator/reports", content=body, headers=json_)
+            assert refused.status_code == 422, (field, value)
+            assert refused.json() == {"detail": f"not a number an Actuator sends: ['{field}']"}
+        assert sql(database_url, ("select count(*) from actuations", ())) == [(0,)]  # whole
+        honest = [
+            report(outcome=o, name=o.replace("_", "-"), cpu=None, at=now + 3600)  # a clock ahead
+            for o in ("applied", "skipped", "failed", "handed_back", "rolled_back", "reverted")
+        ]
+        honest.append(report(name="zero", cpu=0.0, memory=0.0, pods=0, at=0.0))
+        taken = c.post("/actuator/reports", json=honest, headers=as_actuator(A_TOKEN))
+        assert taken.status_code == 204
+        assert sql(database_url, ("select count(*) from actuations", ())) == [(7,)]
+    # its own model is as it was: what the Actuator builds after a resize, and reads back
+    assert actuator.Actuation(**report(cpu=float("nan"))).cpu != 0
+
+
+def test_a_report_dated_ahead_is_as_old_as_its_arrival(database_url: str) -> None:
+    async def go() -> tuple[list[dict[str, Any]], dict[Any, Any], dict[Any, Any]]:
+        async with connect(database_url) as pool:
+            store = Store(pool)
+            await store.migrate()
+            ahead = [back(1000.0 + 10 * 365 * 86400 + i) for i in range(3)]  # ten years on
+            await store.record_actuations("acme", "test", ahead, 1000.0)
+            await store.record_actuations("acme", "test", [report(at=1060.0)], 1060.0)
+            await store.record_actuations("acme", "test", ahead, 2000.0)  # again: kept once
+            rows = await store.actuations("acme", 0.0)
+            week = actuator.ROLLBACKS_FOR
+            counted = actuator.rollbacks_of(rows, "test", 1000.0 + week - 1)
+            later = actuator.rollbacks_of(await store.actuations("acme", 1001.0), "test", 2000.0)
+            return rows, counted, later
+
+    rows, counted, later = asyncio.run(go())
+    assert [(r["outcome"], r["at"]) for r in rows] == [
+        ("applied", 1060.0),  # the newest is the one that came last, whatever the others say
+        *[("rolled_back", 1000.0)] * 3,
+    ]
+    assert counted == {("shop", "Deployment", "api"): [1000.0] * 3}  # Rollbacks of then
+    assert later == {}  # and no longer, once their 7 days from then are over
+
+
+def test_a_rollback_slack_didnt_take_is_told_later_never_lost(
+    settings: Settings, database_url: str
+) -> None:
+    from squero import api
+
+    app, slack = slacked(settings, database_url)
+    now, day = time.time(), 86400.0
+    with TestClient(app) as c:
+        sql(database_url, run("acme", '{"test": null}'), sized("acme", 1))
+        slack.answers = [httpx.Response(500)]
+        rows = [back(now - 2 * day), back(now - day), back(now)]
+        rows.append(report(at=now - 3 * day))  # applied before them: no Rollback, not counted
+        c.post("/actuator/reports", json=rows, headers=as_actuator(A_TOKEN))
+        # Slack down as it arrives (the telling its report started): the first not taken,
+        # the others not tried behind it; and acme left alone 5 minutes
+        tell(c)
+        tell(c, at=now + api.REST - 30)
+        assert len(posts(slack)) == 1 and len(untold(database_url)) == 3
+        tell(c, at=now + api.REST + 30)  # back: each once, the third with what it ended
+        assert len(posts(slack)) == 4 and untold(database_url) == []
+        tell(c, at=now + api.REST + 60)
+        assert len(posts(slack)) == 4  # told: never again
+        c.post("/actuator/reports", json=[back(now + 1, name="web")], headers=as_actuator(A_TOKEN))
+        tell(c)
+        assert len(posts(slack)) == 5  # Slack took its last: acme rests no more
+    texts = [t for _, t in posts(slack)[1:4]]
+    until = datetime.fromtimestamp(now - 2 * day + 7 * day, UTC)
+    assert (
+        texts[:2]
+        == [":rewind: acme: the Actuator rolled back test/shop/Deployment/api container app: r"] * 2
+    )
+    assert texts[2] == (
+        ":rewind: acme: the Actuator rolled back test/shop/Deployment/api container app: r\n"
+        ":octagonal_sign: acme: Automation of test/shop/Deployment/api ended: 3 rollbacks in "
+        f"7 days. It resumes on {until:%Y-%m-%d %H:%M} UTC unless more follow; remove "
+        "`automate` from its rule to end it for good."
+    )
+
+
+def test_a_flood_of_rollbacks_is_capped_and_never_spends_another_contracts_posts(
+    settings: Settings, database_url: str
+) -> None:
+    from squero import api
+
+    app, slack = slacked(settings, database_url)
+    now = time.time()
+    with TestClient(app) as c:
+        flood = [back(now + i, name=f"w{i:02d}") for i in range(25)]
+        c.post("/actuator/reports", json=flood, headers=as_actuator(A_TOKEN))
+        tell(c)
+        assert api.ROLLBACK_POSTS == 20 and len(posts(slack)) == 21
+        assert posts(slack)[-1] == (
+            ACME_CHANNEL,
+            ":warning: acme: 5 more Rollbacks reported by test's Actuator are not posted here "
+            "(20 in the last hour already): see the Automation page.",
+        )
+        assert untold(database_url) == []  # said, in that line
+        c.post("/actuator/reports", json=[back(now + 100 + i) for i in range(3)],
+               headers=as_actuator(A_TOKEN))  # fmt: skip
+        tell(c)  # within the hour: one such line is enough, these wait for the next
+        assert len(posts(slack)) == 21 and len(untold(database_url)) == 3
+        c.post("/actuator/reports", json=[back(now)], headers=as_actuator(B_TOKEN))
+        tell(c)  # bank's own posts, in bank's own channel
+        assert posts(slack)[-1] == (
+            BANK_CHANNEL,
+            ":rewind: bank: the Actuator rolled back test/shop/Deployment/api container app: r",
+        )
+        assert untold(database_url) == [("acme", "api")] * 3
+        tell(c, at=now + 3601)  # an hour on: acme's are told
+        assert len(posts(slack)) == 25 and untold(database_url) == []
+    assert {ch for ch, text in posts(slack) if " acme: " in text} == {ACME_CHANNEL}
+    assert [ch for ch, text in posts(slack) if " bank: " in text] == [BANK_CHANNEL]
+
+
+def test_what_an_actuator_sends_reaches_slack_as_text(
+    settings: Settings, database_url: str
+) -> None:
+    app, slack = slacked(settings, database_url)
+    forged = report(
+        outcome="rolled_back",
+        at=time.time(),
+        name="<!channel>",
+        container="<@U012345>",
+        reason="denied: <https://evil.example/x|click here> <!here> & more",
+    )
+    with TestClient(app) as c:
+        c.post("/actuator/reports", json=[forged], headers=as_actuator(A_TOKEN))
+        tell(c)
+    ((channel, text),) = posts(slack)
+    assert channel == ACME_CHANNEL and "<" not in text and ">" not in text
+    assert "&lt;!channel&gt; container &lt;@U012345&gt;: denied: " in text
+    assert "&lt;!here&gt; &amp; more" in text
+
+
+def test_a_late_rollback_says_when_and_a_week_old_one_is_given_up(
+    settings: Settings, database_url: str
+) -> None:
+    from squero import api
+
+    app, slack = slacked(settings, database_url, bank_channel=False)
+    now = time.time()
+    with TestClient(app) as c:
+        down, when = httpx.Response(500), datetime.fromtimestamp(now, UTC)
+
+        def late(by: float, i: int) -> None:
+            """A Rollback Slack doesn't take as it arrives, told again `by` seconds on."""
+            slack.answers = [down]
+            c.post("/actuator/reports", json=[back(now + i)], headers=as_actuator(A_TOKEN))
+            tell(c)
+            assert len(untold(database_url)) == 1
+            tell(c, at=now + by)
+            assert untold(database_url) == []
+
+        late(api.LATE - 30, 0)  # under ten minutes late: as it would have been
+        assert len(posts(slack)) == 2 and not posts(slack)[-1][1].endswith("UTC)")
+        late(api.LATE + 30, 1)
+        assert len(posts(slack)) == 4
+        assert posts(slack)[-1][1].endswith(f": r (reported {when:%Y-%m-%d %H:%M} UTC)")
+        late(api.TELL_FOR - 3600, 2)  # not yet a week: still tried, and taken
+        assert len(posts(slack)) == 6
+        late(api.TELL_FOR + 3600, 3)  # a week of Slack not taking it: given up
+        assert len(posts(slack)) == 7
+        c.post("/actuator/reports", json=[back(now)], headers=as_actuator(B_TOKEN))
+        tell(c)  # bank has no channel: nothing to tell, nothing left untold
+        assert untold(database_url) == [] and len(posts(slack)) == 7
+
+
+def test_the_scheduler_tells_what_no_report_started_and_only_what_is_untold(
+    settings: Settings, database_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from squero import api
+
+    monkeypatch.setattr(api, "CHECK_TICK", 0.05)
+    app, slack = slacked(settings, database_url)
+    now = time.time()
+    with TestClient(app):
+        sql(
+            database_url,
+            rolled_back("acme", now - 5, name="before"),  # stored before 12.9c: told
+            (
+                "insert into actuations values ('acme', 'test', 'shop', 'Deployment', 'left', "
+                "'app', 1, 'rolled_back', null, null, 1, 'x', %s, %s, false)",
+                (now, now),
+            ),
+        )
+        slack.until(1)
+        time.sleep(0.3)  # a few more ticks: nothing more
+    assert [t for _, t in posts(slack)] == [
+        ":rewind: acme: the Actuator rolled back test/shop/Deployment/left container app: x"
+    ]
+
+
+def test_one_contracts_telling_that_fails_never_stops_anothers(
+    settings: Settings, database_url: str, caplog: Any
+) -> None:
+    def broken(slack: Any, request: httpx.Request) -> httpx.Response:
+        if json.loads(request.content)["channel"] == ACME_CHANNEL:
+            raise RuntimeError("a bug telling acme")  # nothing Slack's client expects
+        return slack(request)
+
+    app, slack = slacked(settings, database_url, handler=broken)
+    now = time.time()
+    with TestClient(app) as c:
+        c.post("/actuator/reports", json=[back(now)], headers=as_actuator(A_TOKEN))
+        c.post("/actuator/reports", json=[back(now)], headers=as_actuator(B_TOKEN))
+        tell(c)  # every Contract: acme's fails, bank's is told all the same
+    assert [ch for ch, _ in posts(slack)] == [BANK_CHANNEL]
+    assert untold(database_url) == [("acme", "api")]  # still to tell
+    assert "telling acme of its rollbacks failed" in caplog.text
+
+
+def refusing_channel(slack: Any, request: httpx.Request) -> httpx.Response:
+    slack(request)  # counted
+    return httpx.Response(200, json={"ok": False, "error": "channel_not_found"})
+
+
+def test_a_contract_slack_refuses_rests_longer_each_time_an_hour_at_most(
+    settings: Settings, database_url: str
+) -> None:
+    from squero import api
+
+    app, slack = slacked(settings, database_url, handler=refusing_channel)
+    now = time.time()
+    with TestClient(app) as c:
+        c.post("/actuator/reports", json=[back(now)], headers=as_actuator(A_TOKEN))
+        tell(c)  # asked once as it arrived; resting 5 minutes
+        tried = [0.0]
+        for wait in (300, 600, 1200, 2400, 3600, 3600):  # twice as long, an hour at most
+            tell(c, at=now + tried[-1] + wait - 5)
+            assert len(posts(slack)) == len(tried), wait
+            tried.append(tried[-1] + wait + 5)
+            tell(c, at=now + tried[-1])
+            assert len(posts(slack)) == len(tried), wait
+        assert api.REST == 300 and len(untold(database_url)) == 1
+
+
+def test_a_refused_channel_is_asked_once_however_many_ticks(
+    settings: Settings, database_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from squero import api
+
+    monkeypatch.setattr(api, "CHECK_TICK", 0.02)
+    app, slack = slacked(settings, database_url, handler=refusing_channel)
+    with TestClient(app) as c:
+        c.post("/actuator/reports", json=[back(time.time())], headers=as_actuator(A_TOKEN))
+        slack.until(1)
+        time.sleep(0.5)  # some twenty ticks
+    assert len(posts(slack)) == 1
+
+
+def test_slack_never_answering_holds_no_tick_of_the_scheduler(
+    settings: Settings, database_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from squero import api
+
+    async def silent(slack: Any, request: httpx.Request) -> httpx.Response:
+        slack(request)
+        await asyncio.sleep(3600)  # never, as far as this test goes
+        raise AssertionError
+
+    ticks = []
+    due = Store.due_checks
+
+    async def counted(self: Store, at: float) -> list[tuple[str, str]]:
+        ticks.append(at)
+        return await due(self, at)
+
+    monkeypatch.setattr(Store, "due_checks", counted)
+    monkeypatch.setattr(api, "CHECK_TICK", 0.02)
+    app, slack = slacked(settings, database_url, handler=silent)
+    with TestClient(app) as c:
+        untold_row = (
+            "insert into actuations values ('acme', 'test', 'shop', 'Deployment', 'left', "
+            "'app', 1, 'rolled_back', null, null, 1, 'x', %s, %s, false)",
+            (time.time(), time.time()),
+        )
+        sql(database_url, untold_row)  # no report started its telling: a tick does
+        slack.until(1)  # and it is waiting on Slack now
+        before = len(ticks)
+        end = time.monotonic() + 3
+        while len(ticks) < before + 5 and time.monotonic() < end:
+            time.sleep(0.02)
+        took = c.post("/actuator/reports", json=[report()], headers=as_actuator(A_TOKEN))
+    assert len(ticks) >= before + 5  # Checks, digests and deploys go on beside it
+    assert took.status_code == 204 and len(posts(slack)) == 1  # and the Actuator is answered
+
+
+def test_a_number_that_cant_be_said_in_json_is_a_422_wherever_it_is(
+    settings: Settings, database_url: str
+) -> None:
+    app, _ = slacked(settings, database_url)
+    json_ = {**as_actuator(A_TOKEN), "Content-Type": "application/json"}
+    with TestClient(app) as c:
+        for field in ("pods", "run_id"):  # integers: FastAPI's own check, which echoed it
+            body = json.dumps([report(**{field: "X"})]).replace('"X"', "NaN")
+            refused = c.post("/actuator/reports", content=body, headers=json_)
+            assert refused.status_code == 422
+            (said,) = refused.json()["detail"]
+            assert said["loc"] == ["body", 0, field] and set(said) == {"type", "loc", "msg"}
+
+
+def test_a_clusters_flood_never_spends_another_clusters_posts(
+    settings: Settings, database_url: str
+) -> None:
+    other = "c" * 40
+    data = automating("acme", A_TOKEN, AUTO).model_dump(mode="json", exclude_none=True)
+    data["clusters"][1]["actuator_token_secret"] = "act2"
+    data["slack"] = {"operator_channel": ACME_CHANNEL}
+    secrets = {"act": SecretStr(A_TOKEN), "act2": SecretStr(other), "r": SecretStr("r" * 40)}
+    app, slack = slacked(settings, database_url, acme=contracts.build(data, secrets=secrets))
+    now = time.time()
+    with TestClient(app) as c:
+        flood = [back(now + i, name=f"w{i:02d}") for i in range(25)]
+        c.post("/actuator/reports", json=flood, headers=as_actuator(other))  # edge's
+        tell(c)
+        assert len(posts(slack)) == 21  # 20, and "5 more"
+        c.post("/actuator/reports", json=[back(now + 100)], headers=as_actuator(other))
+        tell(c)  # edge's line was just said: this one waits
+        assert len(posts(slack)) == 21 and untold(database_url) == [("acme", "api")]
+        c.post("/actuator/reports", json=flood[:23], headers=as_actuator(A_TOKEN))  # test's
+        tell(c)  # its own 20 posts, and a line that counts its own 3, never edge's one
+        assert len(posts(slack)) == 42 and untold(database_url) == [("acme", "api")]
+        tell(c, at=now + 3601)  # an hour on: edge's is told
+        assert len(posts(slack)) == 43 and untold(database_url) == []
+    said = [t for _, t in posts(slack) if "more Rollbacks" in t]
+    assert [t.split("reported by ")[1].split("'s")[0] for t in said] == ["edge", "test"]
+    assert [t.split(" more ")[0].rsplit(" ", 1)[1] for t in said] == ["5", "3"]
+    assert posts(slack)[-1][1].startswith(":rewind: acme: the Actuator rolled back edge/shop/")
+
+
+def test_a_rollback_is_told_as_soon_as_its_report_is_answered(
+    settings: Settings, database_url: str
+) -> None:
+    app, slack = slacked(settings, database_url)
+    with TestClient(app) as c:  # no tick in this test's time (30 s), no telling asked
+        c.post("/actuator/reports", json=[back(time.time())], headers=as_actuator(A_TOKEN))
+        slack.until(1)
+    assert [ch for ch, _ in posts(slack)] == [ACME_CHANNEL]
