@@ -4003,3 +4003,271 @@ def test_a_rollback_is_told_as_soon_as_its_report_is_answered(
         c.post("/actuator/reports", json=[back(time.time())], headers=as_actuator(A_TOKEN))
         slack.until(1)
     assert [ch for ch, _ in posts(slack)] == [ACME_CHANNEL]
+
+
+# slice 12.10: a pod whose node is gone is never a Sizing's fault, nor resized
+
+
+def shown(p: Any, conditions: dict[str, Any], since: float = 0.0, **status_: Any) -> Any:
+    """`p` with these conditions (a status, or (status, reason)), all since `since`."""
+    when = datetime.fromtimestamp(since, UTC)
+    p.status.conditions = [
+        k.V1PodCondition(
+            type=t,
+            status=s if isinstance(s, str) else s[0],
+            reason=None if isinstance(s, str) else s[1],
+            last_transition_time=when,
+        )
+        for t, s in conditions.items()
+    ]
+    for field, value in status_.items():
+        setattr(p.status, field, value)
+    return p
+
+
+# as the node-lifecycle controller leaves a pod whose node is NotReady
+NODE_GONE = {"Ready": "False", "ContainersReady": "True"}
+PROBE_FAILS = {"Ready": "False", "ContainersReady": "False"}
+SHUT = "Pod was terminated in response to imminent node shutdown."
+
+
+def gated(p: Any, gate: str = "example.com/lb") -> Any:
+    p.spec.readiness_gates = [k.V1PodReadinessGate(condition_type=gate)]
+    return p
+
+
+@pytest.mark.parametrize(
+    ("p", "is_lost"),
+    [
+        (shown(pod("a", "api-1"), NODE_GONE), True),
+        (shown(pod("a", "api-1"), PROBE_FAILS), False),
+        (shown(pod("a", "api-1"), {"Ready": "False"}), False),  # the kubelet's word unknown
+        (shown(pod("a", "api-1"), {"Ready": "True", "ContainersReady": "True"}), False),
+        (shown(pod("a", "api-1"), {}), False),
+        # a readiness gate not met gives the same shape through no node's fault
+        (shown(gated(pod("a", "api-1")), NODE_GONE), False),
+        (shown(gated(pod("a", "api-1")), NODE_GONE | {"example.com/lb": "False"}), False),
+        (shown(gated(pod("a", "api-1")), NODE_GONE | {"example.com/lb": "True"}), True),
+        # removed for its node
+        (shown(pod("a", "", "Failed"), {"DisruptionTarget": ("True", "DeletionByPodGC")}), True),
+        (
+            shown(pod("a", "", "Failed"), {"DisruptionTarget": ("True", "DeletionByTaintManager")}),
+            True,
+        ),
+        (shown(pod("a", "", "Failed"), {"DisruptionTarget": ("False", "DeletionByPodGC")}), False),
+        # a drain or a node under pressure may be a Sizing's doing: not counted as node loss
+        (
+            shown(pod("a", "", "Failed"), {"DisruptionTarget": ("True", "EvictionByEvictionAPI")}),
+            False,
+        ),
+        (
+            shown(pod("a", "", "Failed"), {"DisruptionTarget": ("True", "TerminationByKubelet")}),
+            False,
+        ),
+        # its node shut down: the kubelet's documented reason and message, both
+        (shown(pod("a", "", "Failed"), {}, reason="Terminated", message=SHUT), True),
+        (shown(pod("a", "", "Failed"), {}, reason="Evicted", message=SHUT), False),
+        (shown(pod("a", "", "Failed"), {}, reason="Terminated", message="out of memory"), False),
+    ],
+)
+def test_a_pod_whose_node_is_gone_is_told_from_the_pod_alone(p: Any, is_lost: bool) -> None:
+    assert actuator.lost(p) is is_lost
+
+
+def test_a_resized_pod_notready_with_its_node_is_no_rollback_a_failing_probe_still_is() -> None:
+    core, apps = cluster()
+    h = watched(core, apps)
+    a, b = core.list_namespaced_pod.return_value.items[:2]
+    unhealthy(b)
+    shown(b, NODE_GONE, since=1500.0)
+    assert actuator.trouble(core, apps, KEY, h, 2000.0) is None
+    shown(b, PROBE_FAILS, since=1500.0)
+    assert actuator.trouble(core, apps, KEY, h, 2000.0) == "api-1-b: NotReady for 2 minutes"
+    unhealthy(a, restarts=1, oom=True)  # a restart before its node went is still the Sizing's
+    shown(a, NODE_GONE, since=1500.0)
+    assert actuator.trouble(core, apps, KEY, h, 2000.0) == "api-1-a: app was OOM-killed"
+
+
+def test_an_evicted_pods_replacement_lost_with_its_node_is_no_verdict() -> None:
+    core, apps = cluster()
+    _, held = start(core, apps, wanted())
+    infeasible(core)
+    actuator.advance(core, apps, KEY, held, 60.0, "open", PDB)
+    pods = core.list_namespaced_pod.return_value.items
+    pods[0].metadata.deletion_timestamp = datetime.now(UTC)
+    new = up("api-1-c", ready=False, cpu="115m", memory="96Mi")
+    pods.append(new)
+    assert actuator.trouble(core, apps, KEY, held, 660.0) == (
+        "api-1-a evicted: no replacement Ready in 10 minutes"
+    )
+    shown(new, NODE_GONE)
+    assert actuator.trouble(core, apps, KEY, held, 660.0) is None
+
+
+def test_a_lost_pod_is_never_the_canary_and_one_alone_behind_is_tried_again() -> None:
+    core, apps = cluster()
+    a, b = core.list_namespaced_pod.return_value.items[:2]
+    shown(a, NODE_GONE)
+    done, held = start(core, apps, wanted())
+    assert done is None and held["pod"] == "api-1-b" and "passing" not in held
+    assert [n for n, _ in resized(core)] == ["api-1-b"]
+    core, apps = cluster()
+    a, b = core.list_namespaced_pod.return_value.items[:2]
+    b.spec.containers[0].resources.requests = {"cpu": "115m", "memory": "96Mi"}  # has them
+    shown(a, NODE_GONE)
+    done, held = start(core, apps, wanted())
+    assert (done.outcome, done.reason) == (
+        "skipped",
+        "the pods without these requests are on a node that is gone",
+    )
+    assert held["passing"] is True and resized(core) == []  # act() tries again next minute
+    shown(a, {"Ready": "True", "ContainersReady": "True"})  # its node back
+    done, held = start(core, apps, wanted())
+    assert done is None and held["pod"] == "api-1-a"
+
+
+def losing(core: Any, name: str) -> None:
+    """From now `name` reads as on a node that is gone, however it is read."""
+    read = core.read_namespaced_pod.side_effect
+
+    def lost_now(pod_: str, ns: str) -> Any:
+        p = read(pod_, ns)
+        return shown(p, NODE_GONE) if pod_ == name else p
+
+    core.read_namespaced_pod.side_effect = lost_now
+    live = core.list_namespaced_pod.return_value.items
+    shown(next(p for p in live if p.metadata.name == name), NODE_GONE)
+
+
+def test_a_rollout_goes_on_without_a_pod_whose_node_is_gone() -> None:
+    core, apps = cluster()
+    _, held = start(core, apps, wanted())
+    core.patch_namespaced_pod_resize.side_effect = None  # the kubelet is gone: never allocated
+    losing(core, "api-1-a")  # the canary's node goes after its ten minutes
+    assert actuator.advance(core, apps, KEY, held, 600.0) is None  # not "in progress" too long
+    assert held["pod"] == "api-1-b" and held["resized"] == 2  # the next one, never api-1-a again
+    assert held["canary_until"] == 600.0
+    core, apps = cluster()
+    _, held = start(core, apps, wanted())
+    losing(core, "api-1-a")  # inside its ten minutes: nobody was watched, so the next is the canary
+    assert actuator.advance(core, apps, KEY, held, 60.0) is None
+    assert (held["pod"], held["resized"], held["canary_until"]) == ("api-1-b", 1, 660.0)
+    assert actuator.advance(core, apps, KEY, held, 120.0) is None and held["pod"] == "api-1-b"
+    core, apps = cluster()
+    _, held = start(core, apps, wanted())
+    losing(core, "api-1-b")  # the other pod's node goes before its turn
+    done = actuator.advance(core, apps, KEY, held, 600.0)
+    assert (done.outcome, done.reason) == ("applied", "1 of 1 pods resized in place, one at a time")
+    assert [n for n, _ in resized(core)] == ["api-1-a"]  # the lost pod never resized
+    core, apps = cluster()
+    _, held = start(core, apps, wanted())
+    for name in ("api-1-a", "api-1-b"):
+        losing(core, name)  # every pod's node gone: as scaled to zero, never "no node has room"
+    done = actuator.advance(core, apps, KEY, held, 600.0)
+    assert done.reason == "1 pods resized in place, then none left to resize"
+
+
+def test_a_catch_up_leaves_a_lost_pod_until_its_node_is_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    core, apps = cluster()
+    a = settled(monkeypatch, [], core, apps)
+    late = pod("api-1-c", "api-1")  # from its template, the Actuator down then
+    late.metadata.namespace = "shop"
+    core.list_namespaced_pod.return_value.items.append(shown(late, NODE_GONE))
+    before = len(resized(core))
+    assert a.catch_up() == [] and a.held[KEY]["outcome"] == "applied"
+    assert len(resized(core)) == before and core.list_namespaced_limit_range.call_count == 1
+    shown(late, {"Ready": "True", "ContainersReady": "True"})
+    assert a.catch_up() == [] and a.held[KEY]["pod"] == "api-1-c"  # rolling again
+
+
+@pytest.mark.parametrize(
+    ("how", "rolled_back"),
+    [
+        ({"conditions": {"DisruptionTarget": ("True", "DeletionByPodGC")}}, False),
+        ({"conditions": {}, "reason": "Terminated", "message": SHUT}, False),
+        ({"conditions": {"DisruptionTarget": ("True", "EvictionByEvictionAPI")}}, True),
+    ],
+)
+def test_a_runs_pod_failed_with_its_node_is_no_rollback(how: Any, rolled_back: bool) -> None:
+    core, apps = cronned()
+    t0 = time.time() - 600
+    _, held = start(core, apps, of("CronJob"), at=t0)
+    act = make(hub_of([], []), core, apps, held={CRON: held})
+    job(core, apps, "api-3", t0 + 60, shown(ran("api-3-a", "Failed"), **how))
+    assert [a.outcome for a in act.watch()] == (["rolled_back"] if rolled_back else [])
+    assert ("first_run" in act.held[CRON]) is not rolled_back  # still watched: the Job retries
+    core.runs["api-3"] = [shown(ran("api-3-a", "Failed", oom="state"), **how)]
+    if not rolled_back:  # an OOM kill is the Sizing's, whatever became of its node after
+        assert [a.outcome for a in act.watch()] == ["rolled_back"]
+
+
+def test_a_rollback_still_puts_a_lost_pods_requests_back() -> None:
+    core, apps = cluster()
+    h = watched(core, apps)
+    a, b = core.list_namespaced_pod.return_value.items[:2]
+    unhealthy(a, restarts=1)
+    shown(unhealthy(b), NODE_GONE)  # its node may return: not left with requests nobody holds
+    before = len(resized(core))
+    back = actuator.rollback(core, apps, KEY, h, "api-1-a: app restarted", 2000.0)
+    assert back.pods == 2 and {n for n, _ in resized(core)[before:]} == {"api-1-a", "api-1-b"}
+
+
+# slice 12.11: a container its node's restart started again is no Sizing's fault
+
+
+def ended(p: Any, restarts: int, reason: str, code: int) -> Any:
+    """`p`'s container restarted `restarts` times, its last end as the runtime reports it."""
+    unhealthy(p, restarts=restarts)
+    last = k.V1ContainerStateTerminated(exit_code=code, reason=reason)
+    p.status.container_statuses[0].last_state = k.V1ContainerState(terminated=last)
+    return p
+
+
+def test_a_restart_with_its_node_is_no_rollback_a_crash_then_or_later_still_is() -> None:
+    core, apps = cluster()
+    h = watched(core, apps)
+    a = core.list_namespaced_pod.return_value.items[0]
+
+    def found() -> str | None:
+        return actuator.trouble(core, apps, KEY, h, 2000.0)
+
+    ended(a, 1, "Unknown", 255)  # as kind's containerd reported it once its node was back
+    assert found() is None
+    ended(a, 1, "Unknown", 137)  # the reason alone is not it
+    assert found() == "api-1-a: app restarted"
+    ended(a, 1, "Error", 255)  # nor the exit code alone: a crash can end with 255
+    assert found() == "api-1-a: app restarted"
+    ended(a, 2, "Error", 1)  # a crash after its node's restart
+    assert found() == "api-1-a: app restarted"
+    ended(a, 2, "OOMKilled", 137)
+    assert found() == "api-1-a: app was OOM-killed"
+    a.status.container_statuses[0].last_state = None  # restarted, its last end unknown: counted
+    assert found() == "api-1-a: app restarted"
+
+
+def test_a_returned_nodes_pod_is_notready_from_when_its_containers_started_again() -> None:
+    core, apps = cluster()
+    h = watched(core, apps)
+    b = core.list_namespaced_pod.return_value.items[1]
+
+    def since(ready: float, own: float, own_status: str = "False") -> None:
+        ended(b, 1, "Unknown", 255)
+        shown(b, {"Ready": "False"}, since=ready)
+        at = datetime.fromtimestamp(own, UTC)
+        b.status.conditions.append(
+            k.V1PodCondition(type="ContainersReady", status=own_status, last_transition_time=at)
+        )
+
+    since(1500.0, 1950.0)  # its node went at 1500 and is back at 1950, its app slow to be ready
+    assert actuator.trouble(core, apps, KEY, h, 2000.0) is None
+    assert actuator.trouble(core, apps, KEY, h, 2069.0) is None
+    assert actuator.trouble(core, apps, KEY, h, 2070.0) == "api-1-b: NotReady for 2 minutes"
+    since(1950.0, 1500.0)  # the later of the two, whichever it is
+    assert actuator.trouble(core, apps, KEY, h, 2000.0) is None
+    since(900.0, 1950.0)  # NotReady since before its resize: still not its doing
+    assert actuator.trouble(core, apps, KEY, h, 2100.0) is None
+    gated(b)
+    since(1500.0, 1950.0, "True")  # held by a gate, its containers ready: counted from 1500
+    assert actuator.trouble(core, apps, KEY, h, 2000.0) == "api-1-b: NotReady for 2 minutes"

@@ -31,7 +31,10 @@ begins, and a refused approval leaves the earlier hold as it is. Slice 12.9b: th
 switch as last heard and the reports not yet taken are kept in its ConfigMap (`state.json`),
 an approval a passing failure met is tried again, a rollout scaled to zero ends applied, a
 CronJob's run is told by a recent minute in its Job's name, and an approval made again after
-a Revert (`again`) applies the run that Revert undid.
+a Revert (`again`) applies the run that Revert undid. Slice 12.10: a pod whose node is gone
+(`lost`) is never a Sizing's fault, nor given one's requests: no Rollback for its NotReady or
+its run's Failed pod, and a rollout goes on without it. Slice 12.11: nor is a container its
+node's own restart started again (`rebooted`).
 
 Under Automation (slice 12.5) it also applies, unasked, the newest Sizing of each container
 the Contract automates: a change under 10% ignored, an increase at once, a decrease at most
@@ -104,6 +107,10 @@ NOT_READY_SECONDS = 120  # a resized pod NotReady this long is a reason to roll 
 BACKOFF_SECONDS = 86400  # after a rollback, no new Sizing of that container this long, doubling
 ROLLBACKS_FOR = 7 * 86400  # how far back rollbacks count for the doubling
 ENDING = 3  # Rollbacks of a Workload in 7 days that end its Automation (slice 12.5)
+# why Kubernetes removed a pod whose node is gone: its taint manager, or its pod garbage
+# collector once the Node is deleted (a DisruptionTarget condition's reasons, slice 12.10)
+NODE_GONE = ("DeletionByTaintManager", "DeletionByPodGC")
+SHUTDOWN = "imminent node shutdown"  # in a pod's message, its reason Terminated: the kubelet's
 CHURN = Decimal("0.10")  # under Automation, a change smaller than this is ignored (slice 12.5)
 LOWER_EVERY = 86400  # under Automation, a container's requests go down at most this often
 UNREACHABLE_SECONDS = 900  # the Hub unanswered this long: an Event says so
@@ -677,9 +684,14 @@ def apply(
             return done("skipped", 0, why_not)
     except ApiException as e:  # a namespace its RoleBinding misses: the others still go on
         return failed(e, f"checking it: {why(e)}")
-    todo = [
+    behind = [
         p for p in pods if needs(p, w.container, set_to) and p.metadata.name not in (left or [])
     ]
+    todo = [p for p in behind if not lost(p)]  # one whose node is gone is no canary (12.10)
+    if behind and not todo:
+        a, held = done("skipped", 0, "the pods without these requests are on a node that is gone")
+        held["passing"] = True  # their replacements start within minutes: tried again then
+        return a, held
     if not todo:
         return done("skipped", 0, f"all {len(pods)} pods already have these requests")
     room = None
@@ -764,7 +776,7 @@ def advance(
             log.warning("reading %s/%s: %s", ns, pod, why(e))
             return None
         p = None  # gone: its replacement is one of the pods still to do
-    if p is not None and not p.metadata.deletion_timestamp:
+    if p is not None and not p.metadata.deletion_timestamp and not lost(p):
         state, message = resize_state(p, container, set_to)
         if "no_room" in h:  # the API server refused its resize: no room on its node, ever
             state, message = "infeasible", h["no_room"]
@@ -786,10 +798,14 @@ def advance(
             if not late:
                 return None
             return end("failed", f"{pod}: {state} for {WAIT_SECONDS // 60} minutes: {message}")
-    if now < h["canary_until"]:
+    if p is not None and lost(p) and now < h["canary_until"]:  # only a canary has that wait
+        # the canary's node went inside its ten minutes: the next pod resized is the canary
+        resized = h["resized"] = 0
+    elif now < h["canary_until"]:
         return None
     try:
         pods = pods_of(core, apps, read(apps, kind, name, ns), kind)
+        pods = [x for x in pods if not lost(x)]  # its node gone: a catch-up's, if it returns
         left = h.get("left") or []
         todo = [x for x in pods if needs(x, container, set_to) and x.metadata.name not in left]
         if not pods:  # scaled to zero meanwhile: held, and its webhook gives them to new pods
@@ -884,6 +900,25 @@ def unevictable(apps: Any, policy: Any, ns: str, kind: str, name: str, p: Any) -
 
 def is_ready(p: Any) -> bool:
     return any(c.type == "Ready" and c.status == "True" for c in (p.status.conditions or []))
+
+
+def lost(p: Any) -> bool:
+    """Whether the pod's node is gone (slice 12.10), told from the pod alone: the Actuator
+    reads no node. While a node is NotReady, Kubernetes sets only the pod's `Ready` to False:
+    `ContainersReady` and its readiness gates stay as the kubelet last wrote them, where a
+    failing probe shows both False. Or Kubernetes removed it for that (`NODE_GONE`), or its
+    node shut down. Such a pod is no Sizing's doing, and no kubelet is there to resize it."""
+    status = p.status
+    conds = {c.type: c for c in (status.conditions if status else None) or []}
+    gone = conds.get("DisruptionTarget")
+    if gone and gone.status == "True" and gone.reason in NODE_GONE:
+        return True
+    if status and status.reason == "Terminated" and SHUTDOWN in (status.message or ""):
+        return True
+    gates = [g.condition_type for g in (p.spec.readiness_gates if p.spec else None) or []]
+    kubelet = [conds.get(t) for t in ("ContainersReady", *gates)]  # all it makes Ready from
+    ready = conds.get("Ready")
+    return bool(ready and ready.status != "True" and all(c and c.status == "True" for c in kubelet))
 
 
 def wait(core: Any, key: str, h: dict[str, Any], why_: str, message: str) -> None:
@@ -996,11 +1031,22 @@ def container_status(pod: Any, container: str) -> Any:
     return next((s for s in statuses if s.name == container), None)
 
 
+def rebooted(st: Any) -> bool:
+    """Whether the container last ended with its node (slice 12.11), not by itself: a node
+    that restarts and comes back starts its containers again, and the runtime, having lost
+    track of the old one, reports reason Unknown, exit code 255 (seen on kind, containerd).
+    A crash reads Error, an OOM kill OOMKilled: those are a Sizing's to answer for."""
+    ended = st.last_state.terminated if st.last_state else None
+    return bool(ended and ended.reason == "Unknown" and ended.exit_code == 255)
+
+
 def trouble(core: Any, apps: Any, key: str, h: dict[str, Any], now: float) -> str | None:
     """Why the Sizing held as `h` made its pods unhealthy (slice 12.4), or None: a pod with
     its requests whose container restarted (an OOM kill named as one) since it got them, or
     a pod it resized that has been NotReady for 2 minutes since, or an evicted pod's
-    replacement not Ready in 10 minutes (slice 12.7). Throttling is not one."""
+    replacement not Ready in 10 minutes (slice 12.7). Throttling is not one, nor a pod
+    whose node is gone (`lost`, slice 12.10) or a restart that was its node's (`rebooted`,
+    slice 12.11)."""
     ns, kind, name, container = key.split("/")
     try:
         d = read(apps, kind, name, ns)
@@ -1010,7 +1056,9 @@ def trouble(core: Any, apps: Any, key: str, h: dict[str, Any], now: float) -> st
         return None
     ev = h.get("evicted")
     new = replacements(d, pods, ev) if ev else []
-    if ev and now - ev["at"] >= WAIT_SECONDS and new is not None and not any(map(is_ready, new)):
+    late = ev and now - ev["at"] >= WAIT_SECONDS
+    # a replacement lost with its node (slice 12.10) is no verdict yet
+    if ev and late and new is not None and not any(is_ready(p) or lost(p) for p in new):
         return f"{ev['pod']} evicted: no replacement Ready in {WAIT_SECONDS // 60} minutes"
     seen = h.get("pods") or {}
     for p in pods:
@@ -1018,28 +1066,31 @@ def trouble(core: Any, apps: Any, key: str, h: dict[str, Any], now: float) -> st
             continue  # not the Actuator's requests: not its doing
         st = container_status(p, container)
         mine = seen.get(p.metadata.name) or {"at": 0.0, "restarts": 0}  # new: from the webhook
-        if st and (st.restart_count or 0) > mine["restarts"]:
+        if st and (st.restart_count or 0) > mine["restarts"] and not rebooted(st):
             ended = st.last_state.terminated if st.last_state else None
             what = "was OOM-killed" if ended and ended.reason == "OOMKilled" else "restarted"
             return f"{p.metadata.name}: {container} {what}"
-        if "at" not in mine or p.metadata.name not in seen:
-            continue  # a new pod may take its time to be Ready; only one it resized counts
-        for c in (p.status.conditions if p.status else None) or []:
-            since = c.last_transition_time.timestamp() if c.last_transition_time else None
-            if (
-                c.type == "Ready"
-                and c.status != "True"
-                and since is not None
-                and since >= mine["at"]
-                and now - since >= NOT_READY_SECONDS
-            ):
-                return f"{p.metadata.name}: NotReady for {NOT_READY_SECONDS // 60} minutes"
+        if "at" not in mine or p.metadata.name not in seen or lost(p):
+            continue  # a new pod may take its time to be Ready; only one it resized counts,
+            # and never one whose node is gone (slice 12.10)
+        conds = {c.type: c for c in (p.status.conditions if p.status else None) or []}
+        ready, own = conds.get("Ready"), conds.get("ContainersReady")
+        if not ready or ready.status == "True" or not ready.last_transition_time:
+            continue
+        since = down = ready.last_transition_time.timestamp()
+        if own and own.status != "True" and own.last_transition_time:
+            # its node back after a while (slice 12.11): `Ready` still dates from when the
+            # node went, its containers are not ready only since they started again
+            down = max(down, own.last_transition_time.timestamp())
+        if since >= mine["at"] and now - down >= NOT_READY_SECONDS:
+            return f"{p.metadata.name}: NotReady for {NOT_READY_SECONDS // 60} minutes"
     return None
 
 
 def first_run(core: Any, apps: Any, key: str, h: dict[str, Any], now: float) -> str | None:
     """Why a CronJob's first run under the requests held as `h` (slice 12.8c) is a reason
-    to roll back, or None: a pod of it with them Failed or OOM-killed. That run is the first
+    to roll back, or None: a pod of it with them Failed (not with its node, slice 12.10) or
+    OOM-killed. That run is the first
     Job, created since, whose pods got them (one started from its template, the webhook
     missing it, is not); it ends the watch once it finished or is gone, as do 7 days
     without one."""
@@ -1083,7 +1134,7 @@ def first_run(core: Any, apps: Any, key: str, h: dict[str, Any], now: float) -> 
             for state in (st.state, st.last_state) if st else ():
                 if state and state.terminated and state.terminated.reason == "OOMKilled":
                     return f"{p.metadata.name}: {container} was OOM-killed"
-            if p.status.phase == "Failed":
+            if p.status.phase == "Failed" and not lost(p):  # its node gone: the Job's retry
                 return f"{p.metadata.name} Failed"
     except ApiException as e:
         log.warning("watching %s: %s", key, why(e))
@@ -1720,7 +1771,9 @@ class Actuator:
             behind = [
                 p.metadata.name
                 for p in pods
-                if needs(p, container, h["requests"]) and p.metadata.name not in left
+                if needs(p, container, h["requests"])
+                and p.metadata.name not in left
+                and not lost(p)  # its node gone (slice 12.10): caught up if it comes back
             ]
             if not behind:
                 continue

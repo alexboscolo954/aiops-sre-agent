@@ -185,11 +185,11 @@ The process in a client cluster that applies approved Sizings, in place first, a
 _Avoid_: Agent, controller (alone)
 
 **Actuation**:
-One outcome the Actuator reports for one container of a Workload: applied (every live pod of the Workload has the new requests, allocated by the kubelet), skipped, failed, rolled back (see Rollback), or handed back (a person changed the template's requests it held, or the Workload is gone: the Actuator lets go), with the reason and how many pods. The Hub keeps them as the Actuator's audit trail, each dated by the Actuator's clock but never later than the Hub received it.
+One outcome the Actuator reports for one container of a Workload: applied (every live pod of the Workload has the new requests, allocated by the kubelet; a pod whose node is gone is not counted), skipped, failed, rolled back (see Rollback), or handed back (a person changed the template's requests it held, or the Workload is gone: the Actuator lets go), with the reason and how many pods. The Hub keeps them as the Actuator's audit trail, each dated by the Actuator's clock but never later than the Hub received it.
 _Avoid_: Executed action (that is a Proposed action the Operator approved)
 
 **Rollback**:
-The Actuator's own undo of a Sizing that made pods unhealthy within an hour of its resize (a container with its requests restarted or was OOM-killed, or a pod it resized stayed NotReady for 2 minutes): every such pod back to its template's requests, in place and at once. Then no new Sizing of that container for 24 hours, doubling with each rollback within 7 days. Not while the Kill switch is on; the Operator hears of it in Slack at once.
+The Actuator's own undo of a Sizing that made pods unhealthy within an hour of its resize (a container with its requests restarted or was OOM-killed, or a pod it resized stayed NotReady for 2 minutes; never a pod whose node is gone, which is NotReady or Failed through no Sizing, nor a container its node's own restart started again): every such pod back to its template's requests, in place and at once. Then no new Sizing of that container for 24 hours, doubling with each rollback within 7 days. Not while the Kill switch is on; the Operator hears of it in Slack at once.
 _Avoid_: Revert (that is the Operator's undo)
 
 **Revert**:
