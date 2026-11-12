@@ -184,7 +184,8 @@ async def test_the_actuator_resizes_a_deployment_in_place_without_a_restart(
     from squero import actuator
 
     api = kubernetes.api_client(live.clusters[0], live)
-    core, apps = client.CoreV1Api(api), client.AppsV1Api(api)
+    # through Calm, as the Actuator's own process calls them (slice 12.9a)
+    core, apps = actuator.Calm(client.CoreV1Api(api)), actuator.Calm(client.AppsV1Api(api))
     try:
         actuator.check_version(client.VersionApi(api))
     except SystemExit as e:

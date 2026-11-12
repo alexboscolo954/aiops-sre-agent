@@ -2993,3 +2993,350 @@ def test_apps_reads_cronjobs_and_their_jobs_from_the_batch_api() -> None:
     assert apps.list_namespaced_cron_job("shop") is batch.list_namespaced_cron_job.return_value
     assert apps.list_namespaced_job("shop") is batch.list_namespaced_job.return_value
     assert batch.list_namespaced_job.call_args.args == ("shop",)
+
+
+# --- what the audit found (slice 12.9a) ------------------------------------------------------
+
+
+def settled(monkeypatch: pytest.MonkeyPatch, answers: list[Any], core: Any, apps: Any) -> Any:
+    """An Actuator that applied run 1 to api's two pods; `answers`: the Hub's, after."""
+    monkeypatch.setattr(actuator, "CANARY_SECONDS", 0)
+    seen: list[httpx.Request] = []
+    a = make(hub_of([desired(1)] * 3 + answers, seen), core, apps)
+    for _ in range(3):
+        a.step()
+    assert a.held[KEY]["outcome"] == "applied"
+    a.seen = seen
+    return a
+
+
+def restarted(core: Any, name: str, count: int) -> None:
+    p = next(p for p in core.list_namespaced_pod.return_value.items if p.metadata.name == name)
+    st = status("app", None)
+    st.restart_count = count
+    p.status.container_statuses = [st]
+
+
+def test_a_catch_up_counts_restarts_from_now_not_from_ever(monkeypatch: pytest.MonkeyPatch) -> None:
+    core, apps = cluster()
+    a = settled(monkeypatch, [desired(1)], core, apps)
+    for watched in actuator.WATCHED:  # its hour is over
+        a.held[KEY].pop(watched, None)
+    restarted(core, "api-1-a", 2)  # long ago, under the requests it still has
+    late = pod("api-1-c", "api-1")  # started from its template: a catch-up
+    late.metadata.namespace = "shop"
+    core.list_namespaced_pod.return_value.items.append(late)
+    a.step()
+    h = a.held[KEY]
+    assert h["outcome"] == "rolling" and h["pods"]["api-1-a"]["restarts"] == 2
+    assert set(h["pods"]) == {"api-1-a", "api-1-b", "api-1-c"}
+    assert actuator.trouble(core, apps, KEY, h, time.time()) is None
+    restarted(core, "api-1-a", 3)  # a new one is news
+    assert actuator.trouble(core, apps, KEY, h, time.time()) == "api-1-a: app restarted"
+
+
+def test_a_catch_up_keeps_the_count_of_a_pod_it_still_watches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    core, apps = cluster()
+    a = settled(monkeypatch, [], core, apps)
+    assert a.held[KEY]["pods"]["api-1-a"]["restarts"] == 0  # within its hour
+    restarted(core, "api-1-a", 1)
+    late = pod("api-1-c", "api-1")
+    late.metadata.namespace = "shop"
+    core.list_namespaced_pod.return_value.items.append(late)
+    a.catch_up()
+    assert a.held[KEY]["pods"]["api-1-a"]["restarts"] == 0  # not forgiven by the catch-up
+
+
+def refusing(core: Any, *names: str, status_: int = 503) -> None:
+    """Resizes of these pods refused from now on."""
+    patch = core.patch_namespaced_pod_resize.side_effect
+
+    def refuse(name: str, ns: str, body: Any) -> None:
+        if name in names:
+            raise ApiException(status=status_, reason="busy")
+        patch(name, ns, body)
+
+    core.patch_namespaced_pod_resize.side_effect = refuse
+    core.patch = patch
+
+
+def test_a_put_back_a_pod_refused_is_finished_later(monkeypatch: pytest.MonkeyPatch) -> None:
+    core, apps = cluster()
+    a = settled(monkeypatch, [httpx.Response(503)] * 3, core, apps)
+    refusing(core, "api-1-b")
+    h = a.held[KEY]
+    back = actuator.rollback(core, apps, KEY, h, "a test", time.time())
+    assert back.pods == 1 and back.reason.count("; 1 refused, first api-1-b: 503: busy; tried")
+    assert "tried again each minute" in back.reason and h["unfinished"] is True
+    before = len(resized(core))
+    a.step()  # the Hub down: still refused, still to finish
+    assert h["unfinished"] and len(resized(core)) == before + 1
+    core.patch_namespaced_pod_resize.side_effect = core.patch
+    a.killed = True
+    a.step()  # the Hub down, the Kill switch on as far as it knows: a resize is a change
+    assert h["unfinished"] and len(resized(core)) == before + 1
+    a.killed = False
+    core.replace_namespaced_config_map.reset_mock()
+    a.step()  # the Hub still down: finished all the same
+    assert "unfinished" not in h and resized(core)[-1] == ("api-1-b", body(cpu="1"))
+    assert h["outcome"] == "rolled_back" and core.replace_namespaced_config_map.called
+    assert [json.loads(r.content) for r in a.seen if r.method == "POST"][1:] == []  # said once
+
+
+def test_a_put_back_is_not_finished_on_a_template_a_person_changed_or_a_workload_gone() -> None:
+    def left(change: Any) -> tuple[Any, Any]:
+        core, apps = cluster()
+        _, held = start(core, apps, wanted())
+        for at in (600.0, 660.0):
+            actuator.advance(core, apps, KEY, held, at)
+        refusing(core, "api-1-a", "api-1-b")
+        actuator.put_back(core, apps, KEY, held, "reverted", "x", 0.0)
+        assert held["unfinished"]
+        core.patch_namespaced_pod_resize.side_effect = core.patch
+        core.patch_namespaced_pod_resize.reset_mock()
+        change(apps)
+        actuator.finish(core, apps, KEY, held)
+        return core, held
+
+    def theirs(apps: Any) -> None:
+        template = apps.read_namespaced_deployment.return_value.spec.template
+        template.spec.containers[0].resources.requests = {"cpu": "2"}
+
+    def gone(apps: Any) -> None:
+        apps.read_namespaced_deployment.side_effect = ApiException(status=404)
+
+    def down(apps: Any) -> None:
+        apps.read_namespaced_deployment.side_effect = ApiException(status=500)
+
+    core, held = left(lambda apps: None)
+    assert "unfinished" not in held and [n for n, _ in resized(core)] == ["api-1-a", "api-1-b"]
+    for change in (theirs, gone):
+        core, held = left(change)
+        assert "unfinished" not in held and resized(core) == []
+    core, held = left(down)
+    assert held["unfinished"] and resized(core) == []
+    core, apps = cluster(requests={})  # its template sets none: nothing to put back
+    _, held = start(core, apps, wanted())
+    core.list_namespaced_pod.side_effect = ApiException(status=500)  # its pods unlisted
+    a = actuator.put_back(core, apps, KEY, held, "reverted", "x", 0.0)
+    assert "1 refused, first listing its pods" in a.reason and "unfinished" not in held
+
+
+def test_an_approval_in_its_backoff_keeps_a_put_back_still_to_finish(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    core, apps = cluster()
+    a = settled(monkeypatch, [desired(1, 2)], core, apps)
+    refusing(core, "api-1-b")
+    actuator.rollback(core, apps, KEY, a.held[KEY], "a test", time.time())
+    a.step()  # run 2: skipped, in its backoff
+    h = a.held[KEY]
+    assert (h["run_id"], h["outcome"], h["unfinished"]) == (2, "skipped", True)
+    assert h["requests"] == {"cpu": "115m", "memory": "96Mi"} and h["template"]["cpu"] == "1"
+    core.patch_namespaced_pod_resize.side_effect = core.patch
+    actuator.finish(core, apps, KEY, h)
+    assert "unfinished" not in h and resized(core)[-1] == ("api-1-b", body(cpu="1"))
+
+
+def test_a_rollout_waits_out_a_passing_failure_ten_minutes_at_most() -> None:
+    core, apps = cluster()
+    _, held = start(core, apps, wanted())
+    listing = core.list_namespaced_pod.return_value
+    core.list_namespaced_pod.side_effect = ApiException(status=503, reason="busy")
+    assert actuator.advance(core, apps, KEY, held, 600.0) is None
+    assert (held["outcome"], held["stalled"]) == ("rolling", 600.0)
+    assert actuator.advance(core, apps, KEY, held, 1199.0) is None
+    core.list_namespaced_pod.side_effect = None
+    core.list_namespaced_pod.return_value = listing
+    assert actuator.advance(core, apps, KEY, held, 1200.0) is None  # on: the next pod
+    assert "stalled" not in held and [n for n, _ in resized(core)] == ["api-1-a", "api-1-b"]
+    _, held = start(*cluster(), wanted())
+    core, apps = cluster()
+    _, held = start(core, apps, wanted())
+    core.list_namespaced_pod.side_effect = ApiException(status=0, reason="ProtocolError")
+    assert actuator.advance(core, apps, KEY, held, 600.0) is None
+    failed = actuator.advance(core, apps, KEY, held, 1200.0)  # ten minutes of it
+    assert failed.outcome == "failed" and "stalled" not in held
+    assert failed.reason == "resizing its next pod: 0: ProtocolError"
+    core, apps = cluster()
+    _, held = start(core, apps, wanted())
+    core.list_namespaced_pod.side_effect = ApiException(status=403, reason="no")
+    assert actuator.advance(core, apps, KEY, held, 600.0).outcome == "failed"  # a refusal
+    for status_, verdict in ((None, True), (0, True), (429, True), (500, True), (404, False)):
+        assert actuator.passing(ApiException(status=status_)) is verdict
+
+
+def test_a_refused_approval_keeps_what_the_one_before_holds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    core, apps = cluster()
+    a = settled(monkeypatch, [desired(1, 2)] * 2 + [desired(1, 2, 3)], core, apps)
+    core.list_namespaced_limit_range.return_value = limit_range(min={"cpu": "3"})
+    a.step()  # run 2: skipped by its LimitRange
+    h = a.held[KEY]
+    assert (h["run_id"], h["outcome"], h["refused"]) == (1, "applied", 2)
+    assert h["requests"] == {"cpu": "115m", "memory": "96Mi"}
+    a.step()  # run 2 again: said once
+    posted = [x for r in a.seen if r.method == "POST" for x in json.loads(r.content)]
+    assert [(x["run_id"], x["outcome"]) for x in posted] == [(1, "applied"), (2, "skipped")]
+    assert posted[1]["reason"] == (
+        "cpu 115m is under its LimitRange's minimum 3; run 1's requests stay held"
+    )
+    core.list_namespaced_limit_range.return_value = k.V1LimitRangeList(items=[])
+    late = pod("api-1-c", "api-1")
+    late.metadata.namespace = "shop"
+    core.list_namespaced_pod.return_value.items.append(late)
+    a.step()  # run 3 applies, and the mark goes
+    assert a.held[KEY]["run_id"] == 3 and "refused" not in a.held[KEY]
+    fresh = make(hub_of([desired(1)], []), *cluster())
+    fresh.core.list_namespaced_limit_range.return_value = limit_range(min={"cpu": "3"})
+    fresh.step()  # nothing held before: the skip is what it holds, as ever
+    assert fresh.held[KEY]["outcome"] == "skipped" and "refused" not in fresh.held[KEY]
+
+
+def test_a_network_failure_is_an_api_exception_and_no_call_waits_forever() -> None:
+    import urllib3
+
+    api = MagicMock()
+    calm = actuator.Calm(api)
+    assert calm.read_namespaced_pod("a", "shop") is api.read_namespaced_pod.return_value
+    assert api.read_namespaced_pod.call_args.kwargs == {"_request_timeout": actuator.API_TIMEOUT}
+    calm.read_namespaced_pod("a", "shop", _request_timeout=5)
+    assert api.read_namespaced_pod.call_args.kwargs == {"_request_timeout": 5}
+    api.list_namespaced_pod.side_effect = urllib3.exceptions.ProtocolError("reset")
+    with pytest.raises(ApiException) as e:
+        calm.list_namespaced_pod("shop")
+    assert (e.value.status, e.value.reason) == (0, "ProtocolError")
+    api.list_namespaced_pod.side_effect = ApiException(status=403)
+    with pytest.raises(ApiException) as e:
+        calm.list_namespaced_pod("shop")
+    assert e.value.status == 403
+    api.list_namespaced_pod.side_effect = KeyError("a bug")
+    with pytest.raises(KeyError):
+        calm.list_namespaced_pod("shop")
+
+
+def test_a_minute_that_fails_keeps_what_it_changed_before() -> None:
+    core, apps = cluster()
+    seen: list[httpx.Request] = []
+    a = make(hub_of([desired(1), desired(1)], seen), core, apps)
+    a.held[KEY] = {"run_id": 0, "outcome": "applied", "requests": {"cpu": "2"}, "template": {}}
+    a.catch_up = MagicMock(side_effect=RuntimeError("a bug"))  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError):
+        a.step()  # handed back (no template kept), then run 1's canary, then the bug
+    saved = json.loads(core.replace_namespaced_config_map.call_args.args[2].data[actuator.KEY])
+    assert saved[KEY]["outcome"] == "rolling" and saved[KEY]["pod"] == "api-1-a"
+    said = [x["outcome"] for r in seen if r.method == "POST" for x in json.loads(r.content)]
+    assert said == ["handed_back"] and a.unsent == []  # told in the minute that failed
+    a.catch_up = MagicMock(return_value=[])  # type: ignore[method-assign]
+    a.step()
+    assert [n for n, _ in resized(core)] == ["api-1-a"]  # not done twice
+    assert len([r for r in seen if r.method == "POST"]) == 1
+
+
+def test_finishing_a_put_back_goes_pod_by_pod_and_gives_up_on_a_verdict() -> None:
+    def left(*names: str, status_: int = 503) -> tuple[Any, Any, Any]:
+        core, apps = cluster()
+        _, held = start(core, apps, wanted())
+        for at in (600.0, 660.0):
+            actuator.advance(core, apps, KEY, held, at)
+        refusing(core, *names, status_=status_)
+        actuator.put_back(core, apps, KEY, held, "reverted", "x", 0.0)
+        core.patch_namespaced_pod_resize.reset_mock()
+        actuator.finish(core, apps, KEY, held)
+        return core, apps, held
+
+    core, apps, held = left("api-1-a")  # the first listed refuses, again
+    assert held["unfinished"] and [n for n, _ in resized(core)] == ["api-1-a"]
+    core, apps, held = left("api-1-a", "api-1-b")
+    core.patch_namespaced_pod_resize.side_effect = core.patch
+    refusing(core, "api-1-a")  # b no longer does: not kept waiting behind a
+    core.patch_namespaced_pod_resize.reset_mock()
+    actuator.finish(core, apps, KEY, held)
+    b = next(p for p in core.list_namespaced_pod.return_value.items if p.metadata.name == "api-1-b")
+    assert held["unfinished"] and b.spec.containers[0].resources.requests["cpu"] == "1"
+    for verdict in (403, 404):  # forbidden for good, or the pod gone meanwhile
+        core, apps, held = left("api-1-a", status_=verdict)
+        assert "unfinished" not in held
+
+
+def test_a_put_back_to_finish_outlives_a_skipped_sizing_and_a_failed_hold_a_refused_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    core, apps = cluster()
+    a = settled(monkeypatch, [desired(1, 2)], core, apps)
+    refusing(core, "api-1-b")
+    actuator.put_back(core, apps, KEY, a.held[KEY], "reverted", "x", 0.0)
+    core.list_namespaced_limit_range.return_value = limit_range(min={"cpu": "3"})
+    a.step()  # run 2 skipped, the minute after a Revert: no backoff
+    h = a.held[KEY]
+    assert (h["run_id"], h["outcome"], h["unfinished"]) == (2, "skipped", True)
+    assert h["requests"] == {"cpu": "115m", "memory": "96Mi"} and h["template"]["cpu"] == "1"
+    core, apps = cluster()
+    half = {"kill_switch": False, "sizings": [wanted(2, cpu=0.5).model_dump()]}
+    a = settled(monkeypatch, [half], core, apps)
+    actuator.put_back(core, apps, KEY, a.held[KEY], "reverted", "x", 0.0)  # none refused
+    core.list_namespaced_limit_range.return_value = limit_range(min={"cpu": "3"})
+    a.step()  # run 2 skipped: nothing of run 1's hold is left to undo
+    assert a.held[KEY]["requests"]["cpu"] == "500m" and "unfinished" not in a.held[KEY]
+    core, apps = cluster()
+    a = settled(monkeypatch, [{"kill_switch": False, "sizings": [wanted(2, cpu=0.5).model_dump()]}],
+                core, apps)  # fmt: skip
+    refusing(core, "api-1-b")
+    actuator.put_back(core, apps, KEY, a.held[KEY], "reverted", "x", 0.0)
+    a.step()  # b still refuses; run 2 rolls on a: its requests now, the old undo moot
+    h = a.held[KEY]
+    assert (h["outcome"], h["requests"]["cpu"]) == ("rolling", "500m") and "unfinished" not in h
+    core, apps = cluster()
+    failed = {"run_id": 1, "outcome": "failed", "requests": {"cpu": "115m"}, "at": 0.0}
+    failed["template"] = {"cpu": "1"}
+    a = make(hub_of([desired(2)], []), core, apps, held={KEY: failed})
+    core.list_namespaced_limit_range.return_value = limit_range(min={"cpu": "3"})
+    a.step()  # its pods may have run 1's requests: still a Revert's to undo
+    assert (a.held[KEY]["run_id"], a.held[KEY]["outcome"], a.held[KEY]["refused"]) == (
+        1,
+        "failed",
+        2,
+    )
+
+
+def test_a_pod_that_already_had_the_requests_is_never_notready_trouble(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    core, apps = cluster()
+    a = settled(monkeypatch, [], core, apps)
+    for watched in actuator.WATCHED:
+        a.held[KEY].pop(watched, None)
+    late = pod("api-1-c", "api-1")
+    late.metadata.namespace = "shop"
+    core.list_namespaced_pod.return_value.items.append(late)
+    a.catch_up()
+    h, now = a.held[KEY], time.time()
+    assert "at" not in h["pods"]["api-1-a"] and h["pods"]["api-1-c"]["at"]
+
+    def unready(name: str) -> None:
+        p = next(p for p in core.list_namespaced_pod.return_value.items if p.metadata.name == name)
+        since = datetime.fromtimestamp(now + 10, UTC)
+        p.status.conditions = [
+            k.V1PodCondition(type="Ready", status="False", last_transition_time=since)
+        ]
+
+    unready("api-1-a")  # not resized by this rollout: its own trouble
+    assert actuator.trouble(core, apps, KEY, h, now + 300) is None
+    unready("api-1-c")  # the one it resized
+    assert actuator.trouble(core, apps, KEY, h, now + 300) == "api-1-c: NotReady for 2 minutes"
+
+
+def test_a_bug_every_minute_still_reports_each_minutes_rollback() -> None:
+    core, apps = cluster()
+    seen: list[httpx.Request] = []
+    a = make(hub_of([desired(1)] * 2, seen), core, apps)
+    a.held[KEY] = {"run_id": 0, "outcome": "applied", "requests": {"cpu": "2"}, "template": {}}
+    a.act = MagicMock(side_effect=RuntimeError("a bug"))  # type: ignore[method-assign]
+    for _ in range(2):
+        with pytest.raises(RuntimeError):
+            a.step()
+    said = [x["outcome"] for r in seen if r.method == "POST" for x in json.loads(r.content)]
+    assert said == ["handed_back"]  # the first minute's, told then; the second had none
