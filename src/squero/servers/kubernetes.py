@@ -49,7 +49,12 @@ GITOPS = (
 IN_CLUSTER_SERVER = "https://kubernetes.default.svc"
 MAX_CHANGES = 30
 LOG_MARKER_ROOM = 64
-LOG_RACE = "unable to retrieve container logs"
+# What the kubelet answers in place of logs while a container is being replaced, or once
+# it removed a dead one's log file (the second seen in CI, 2026-11-12): never log content.
+LOG_RACE = (
+    "unable to retrieve container logs",
+    'failed to try resolving symlinks in path "/var/log/pods/',
+)
 # How the API server says a crashed run's logs are gone for good (HTTP 400), when the
 # kubelet has already replaced or garbage-collected that container.
 PREVIOUS_GONE = "previous terminated container"
@@ -526,9 +531,9 @@ def build_server(
         tail_lines = max(1, min(tail_lines, 1000))
 
         def read(prev: bool) -> str | None:
-            # The kubelet answers "unable to retrieve container logs" while a
-            # container is being replaced, and for dead containers it already
-            # garbage-collected. Retry briefly, then give up (None).
+            # The kubelet answers with one of LOG_RACE while a container is being
+            # replaced, and for dead containers it already garbage-collected. Retry
+            # briefly, then give up (None).
             for attempt in range(3):
                 try:
                     text = core.read_namespaced_pod_log(

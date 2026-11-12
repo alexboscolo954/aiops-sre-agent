@@ -218,6 +218,34 @@ async def test_pod_logs_retries_restart_race(
 
 
 @pytest.mark.anyio
+async def test_a_dead_containers_missing_log_file_is_the_same_race_never_shown_as_logs(
+    settings: Settings, fake_cluster: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The kubelet's other answer for a crashed run whose log file it already removed
+    (seen in CI, 2026-11-12, where it reached the caller as the pod's logs)."""
+    monkeypatch.setattr(kubernetes, "LOG_RETRY_SECONDS", 0)
+    gone = (
+        'failed to try resolving symlinks in path "/var/log/pods/shop_p_1b2c/app/2.log": '
+        "lstat /var/log/pods/shop_p_1b2c/app/2.log: no such file or directory"
+    )
+    asked = {"cluster": "test", "namespace": "shop", "name": "p", "previous": True}
+    core = fake_cluster[0]
+    core.read_namespaced_pod_log.side_effect = [gone, "FATAL: DATABASE_URL is not set"]
+    async with Client(k8s(settings, fake_cluster)) as c:
+        result = await c.call_tool("pod_logs", asked)  # there on a second try
+        assert result.content[0].text == "FATAL: DATABASE_URL is not set"
+        core.read_namespaced_pod_log.side_effect = [gone, gone, gone, "FATAL: boom"]
+        result = await c.call_tool("pod_logs", asked)  # gone for good: the latest run's
+        assert "previous instance's logs are gone" in result.content[0].text
+        assert "FATAL: boom" in result.content[0].text and "symlinks" not in result.content[0].text
+        # an app's own line about symlinks is log content
+        own = "failed to try resolving symlinks in path /data/in: retrying"
+        core.read_namespaced_pod_log.side_effect = [own]
+        result = await c.call_tool("pod_logs", asked)
+        assert result.content[0].text == own
+
+
+@pytest.mark.anyio
 async def test_previous_logs_the_api_calls_not_found_fall_back_to_the_latest_run(
     settings: Settings, fake_cluster: Any
 ) -> None:
