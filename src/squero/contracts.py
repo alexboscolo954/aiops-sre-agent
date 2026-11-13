@@ -669,8 +669,11 @@ class Window(Strict):
 
 class OomReflex(Strict):
     """The Reflex for OOM kills, on by being there (slice 13.1a): the Actuator tells each
-    OOM kill of an automated container as container-limit or node-level and reports it.
-    Its `max` and `expires` come with the step-up they bound (slices 13.1b and 13.1c)."""
+    OOM kill of an automated container as container-limit or node-level, reports it, and
+    answers a container-limit one with a Step-up (slice 13.1b, ADR 0005), never past `max`
+    times the memory limit in the Workload's template. Its `expires` comes with slice 13.1c."""
+
+    max: float = Field(2.0, gt=1, le=4)
 
 
 class Reflexes(Strict):

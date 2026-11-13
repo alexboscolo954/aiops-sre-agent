@@ -533,9 +533,11 @@ class RevertIn(BaseModel):
 
 
 async def done(st: Store, contract_id: str) -> list[dict[str, Any]]:
-    """What the Contract's Actuators did, newest first: their Actuations but the OOM kills
-    they only saw (slice 13.1a), which hold nothing and leave nothing to revert."""
-    return [a for a in await st.actuations(contract_id, 0.0) if a["outcome"] != "oom_killed"]
+    """What the Contract's Actuators did with Sizings, newest first: their Actuations but
+    the OOM kills they saw (slice 13.1a), their Step-ups and the ends of those (13.1b), no
+    Sizing's and, until slice 13.1c shows them, not this page's."""
+    seen = await st.actuations(contract_id, 0.0)
+    return [a for a in seen if a["outcome"] not in ("oom_killed", "stepped_up", "step_ended")]
 
 
 async def revert(st: Store, c: Contract, keys: tuple[str, ...], by: str, at: float) -> None:

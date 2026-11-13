@@ -185,7 +185,7 @@ The process in a client cluster that applies approved Sizings, in place first, a
 _Avoid_: Agent, controller (alone)
 
 **Actuation**:
-One outcome the Actuator reports for one container of a Workload: applied (every live pod of the Workload has the new requests, allocated by the kubelet; a pod whose node is gone is not counted), skipped, failed, rolled back (see Rollback), or handed back (a person changed the template's requests it held, or the Workload is gone: the Actuator lets go), with the reason and how many pods; or, changing nothing, an OOM kill it saw (`oom_killed`, see OOM kill). The Hub keeps them as the Actuator's audit trail, each dated by the Actuator's clock but never later than the Hub received it.
+One outcome the Actuator reports for one container of a Workload: applied (every live pod of the Workload has the new requests, allocated by the kubelet; a pod whose node is gone is not counted), skipped, failed, rolled back (see Rollback), or handed back (a person changed the template's requests it held, or the Workload is gone: the Actuator lets go), with the reason and how many pods; or, changing nothing, an OOM kill it saw (`oom_killed`, see OOM kill); or a Step-up it made (`stepped_up`) or that ended (`step_ended`). The Hub keeps them as the Actuator's audit trail, each dated by the Actuator's clock but never later than the Hub received it.
 _Avoid_: Executed action (that is a Proposed action the Operator approved)
 
 **Rollback**:
@@ -205,6 +205,10 @@ A bounded, expiring change the Actuator makes on its own under Automation: memor
 
 **OOM kill**:
 A container ended by the kernel for want of memory, of two kinds the pod itself doesn't tell apart (`OOMKilled`, exit code 137 in both). *Node-level*: its node ran out of memory, whatever the container's limit (the kubelet says so in a `SystemOOM` Event on the node), or the container has no memory limit. *Container-limit*: any other, of a container with a memory limit: it reached its own limit or, which nothing on a pod or in an Event tells apart, one above it (its pod's, or the node's allocatable memory that all pods share). Where the Contract sets `reflexes.oom`, the Actuator tells which each kill of an automated container was and reports it as an Actuation, changing nothing; the memory step-up acts on it.
+
+**Step-up**:
+The Reflex for OOM kills: after a container-limit OOM kill of an automated container, the Actuator raises its memory limit and its memory request together, by one step (to the larger of 1.2 times and 100 MiB more, the same factor for both, so the pod's QoS class stays) on every pod of the Workload in place. Never past `max` times the limit in the Workload's template; one step a container every 10 minutes; a pod killed below the current step gets that step, not a further one. It takes the container's memory from any Sizing held for it, and a Sizing never undoes it. The only time the Actuator changes a limit ([ADR 0005](docs/adr/0005-reflexes-may-raise-limits.md)).
+_Avoid_: bump, boost (that is the startup CPU boost)
 
 **List price**:
 What a cloud charges on demand per hour for an instance type in a region, from its public price list (USD unless the Contract asks for another currency, which only Azure's and GCP's catalogs give; no discounts). A cluster with no typed prices gets its nodes' list prices, split into a CPU and a GiB price by one weight, so they add back up to the nodes' price.

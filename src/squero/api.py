@@ -1803,6 +1803,7 @@ def create_app(
         ]
         mine = {(w.namespace, w.kind, w.name, w.container) for w in approved}
         rows, run = await automated(cid, cluster)
+        reflex = by_id[cid].actuator.reflexes.oom
         return actuator.Desired(
             kill_switch=False,
             eviction=by_id[cid].actuator.evicting(datetime.now(UTC)),
@@ -1815,8 +1816,9 @@ def create_app(
             # slice 13.1a: with the Contract's `reflexes.oom`, the containers whose OOM
             # kills its Actuator reports, a Sizing ready or not
             oom=[actuator.Watched.model_validate(r) for r in rows if r["kind"] in known]
-            if by_id[cid].actuator.reflexes.oom
+            if reflex
             else [],
+            oom_max=reflex.max if reflex else None,  # slice 13.1b: how far a Step-up may go
             reverts=[
                 actuator.Undo.model_validate(r)
                 for r in await store().pending_reverts(cid, cluster.name)

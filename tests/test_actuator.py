@@ -7,6 +7,7 @@ import json
 import ssl
 import time
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, call
@@ -144,6 +145,7 @@ def test_an_actuator_gets_only_its_own_clusters_current_approved_deployments(
         ],
         "eviction": "off",
         "oom": [],
+        "oom_max": None,
     }
     assert old.json()["sizings"] == [{**wanted, "name": "api", "cpu": 0.115, "memory": None}]
     known = ("Deployment", "StatefulSet", "DaemonSet")  # what 0.44.0 names
@@ -170,6 +172,7 @@ def test_the_kill_switch_and_a_later_run_leave_nothing_to_apply(
         "reverts": [],
         "eviction": "off",
         "oom": [],
+        "oom_max": None,
     }
     assert superseded == {
         "kill_switch": False,
@@ -178,6 +181,7 @@ def test_the_kill_switch_and_a_later_run_leave_nothing_to_apply(
         "reverts": [],
         "eviction": "off",
         "oom": [],
+        "oom_max": None,
     }
 
 
@@ -349,10 +353,10 @@ def cluster(
     def patch(name: str, ns: str, body: Any) -> None:
         live = core.list_namespaced_pod.return_value.items  # pods added later included
         c = next(p for p in live if p.metadata.name == name).spec.containers[0]
-        c.resources.requests = {
-            **c.resources.requests,
-            **body["spec"]["containers"][0]["resources"]["requests"],
-        }
+        asked = body["spec"]["containers"][0]["resources"]
+        c.resources.requests = {**(c.resources.requests or {}), **(asked.get("requests") or {})}
+        if asked.get("limits"):  # a Step-up's (slice 13.1b)
+            c.resources.limits = {**(c.resources.limits or {}), **asked["limits"]}
 
     def read(name: str, ns: str) -> Any:
         p = next(p for p in core.list_namespaced_pod.return_value.items if p.metadata.name == name)
@@ -1481,6 +1485,7 @@ def test_an_actuator_gets_the_newest_sizings_of_what_its_contract_automates(
         "reverts": [],
         "eviction": "off",
         "oom": [],
+        "oom_max": None,
     }
 
 
@@ -4282,16 +4287,22 @@ def test_a_returned_nodes_pod_is_notready_from_when_its_containers_started_again
 OOM = {"actuator": {"reflexes": {"oom": {}}}}
 
 
-def test_the_oom_reflex_needs_an_actuator_and_takes_no_settings_yet() -> None:
+def test_the_oom_reflex_needs_an_actuator_and_takes_how_far_a_step_up_may_go() -> None:
     assert automating("acme", A_TOKEN, AUTO, **OOM).actuator.reflexes.oom is not None
     assert automating("acme", A_TOKEN, AUTO).actuator.reflexes.oom is None  # off unless set
+    assert automating("acme", A_TOKEN, AUTO, **OOM).actuator.reflexes.oom.max == 2.0
     data = actuated("acme", A_TOKEN).model_dump(mode="json", exclude_none=True)
     data["clusters"][0].pop("actuator_token_secret")  # no cluster runs an Actuator
     with pytest.raises(ValueError, match="actuator: reflexes, but no cluster has an actuator"):
         contracts.build({**data, **OOM}, secrets={"r": SecretStr("r" * 40)})
-    for bad in ({"oom": {"max": 2.0}}, {"oom": {"expires": "7d"}}, {"burst": {}}):
+    for bad in ({"oom": {"expires": "7d"}}, {"burst": {}}):  # those of later slices
         with pytest.raises(ValueError, match="Extra inputs are not permitted"):
             automating("acme", A_TOKEN, AUTO, actuator={"reflexes": bad})
+    for bad in (1.0, 4.5):  # never no step at all, nor past 4 times its template's limit
+        with pytest.raises(ValueError, match="max"):
+            automating("acme", A_TOKEN, AUTO, actuator={"reflexes": {"oom": {"max": bad}}})
+    three = automating("acme", A_TOKEN, AUTO, actuator={"reflexes": {"oom": {"max": 3}}})
+    assert three.actuator.reflexes.oom.max == 3.0
 
 
 def test_the_hub_lists_a_contracts_automated_containers_only_with_its_oom_reflex(
@@ -4330,11 +4341,18 @@ def test_the_hub_lists_a_contracts_automated_containers_only_with_its_oom_reflex
     ]
     assert old["oom"] == mine["oom"][:-1]  # an Actuator naming no kinds: Deployments only
     assert theirs["oom"] == [{**one, "name": "ledger"}] and killed["oom"] == []
+    # how far a Step-up may go (slice 13.1b): the Contract's, 2 unless it says; none when off
+    assert (mine["oom_max"], theirs["oom_max"], killed["oom_max"]) == (2.0, 2.0, None)
     off = automating("acme", A_TOKEN, AUTO)  # the same Contract without the Reflex
     with TestClient(hub(settings, database_url, off)) as c:
         sql(database_url, ("delete from kill_switches", ()))
         mine = c.get("/actuator/desired", headers=as_actuator(A_TOKEN), params=kinds).json()
     assert mine["oom"] == [] and [w["name"] for w in mine["automated"]] == ["api", "db"]
+    assert mine["oom_max"] is None
+    three = automating("acme", A_TOKEN, AUTO, actuator={"reflexes": {"oom": {"max": 3}}})
+    with TestClient(hub(settings, database_url, three)) as c:
+        mine = c.get("/actuator/desired", headers=as_actuator(A_TOKEN), params=kinds).json()
+    assert mine["oom_max"] == 3.0
 
 
 def seen_kill(**more: Any) -> dict[str, Any]:
@@ -4356,6 +4374,11 @@ def test_an_oom_kill_seen_is_stored_never_told_nor_held_nor_something_to_revert(
             seen_kill(at=now - 200, reason="OOM-killed: api-1-a at its memory limit"),
             seen_kill(at=now - 100, name="lone", reason="OOM-killed: lone-1-a"),  # nothing held
             back(now - 50, name="web"),
+            {**seen_kill(at=now - 40, reason="memory limit"), "outcome": "stepped_up"}
+            | {"memory": 356.0 * MI},
+            # its end is no Sizing's hand-back: api still holds its cpu, and can be reverted
+            {**seen_kill(at=now - 30, reason="its template's memory changed"), "pods": 0}
+            | {"outcome": "step_ended", "memory": None},
         ]
         sent = c.post("/actuator/reports", json=mixed, headers=as_actuator(A_TOKEN))
         again = c.post("/actuator/reports", json=mixed[1:2], headers=as_actuator(A_TOKEN))
@@ -4372,6 +4395,8 @@ def test_an_oom_kill_seen_is_stored_never_told_nor_held_nor_something_to_revert(
         ("api", "oom_killed", True, 256.0 * MI),  # once, though sent twice
         ("lone", "oom_killed", True, 256.0 * MI),
         ("web", "rolled_back", True, None),
+        ("api", "stepped_up", True, 356.0 * MI),  # a Step-up (slice 13.1b): stored, as untold
+        ("api", "step_ended", True, None),
     ]
     assert len(posts(slack)) == 1 and "rolled back test/shop/Deployment/web" in posts(slack)[0][1]
     shown = {h["name"]: h for h in page["clusters"][0]["containers"]}
@@ -4655,3 +4680,864 @@ def test_an_actuator_ignores_what_a_newer_hub_adds_to_its_answer() -> None:
     newer = {**desired(1), "oom": [API.model_dump() | {"since": 1}], "burst": [{"x": 1}]}
     got = actuator.Desired.model_validate(newer)
     assert got.oom == [API] and not hasattr(got, "burst")
+
+
+# --- slice 13.1b: the Step-up (ADR 0005) -------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("limit", "asks", "top", "step"),
+    [
+        (256, 128, 512, ("356Mi", "178Mi")),  # 100 MiB more is the larger
+        (1024, 512, 2048, ("1229Mi", "615Mi")),  # 1.2 times is the larger, in whole Mi
+        (1024, 1024, 2048, ("1229Mi", "1229Mi")),  # Guaranteed: the very same quantity
+        (456, 228, 512, ("512Mi", "256Mi")),  # the last one stops at the top
+        (512, 256, 512, None),  # at it
+        (600, 300, 512, None),  # past it (its template's limit was lowered since)
+        (300, 100, 512, ("400Mi", "134Mi")),  # the request's factor, rounded up
+        (256, 128, 511.5, ("356Mi", "178Mi")),
+        (500, 250, 511.5, ("511Mi", "256Mi")),  # a top of no whole Mi: never past it
+    ],
+)
+def test_one_step_up_is_the_larger_of_a_fifth_and_100_mib_never_past_its_top(
+    limit: float, asks: float, top: float, step: Any
+) -> None:
+    mi = Decimal(MI)
+    assert actuator.next_step(limit * mi, asks * mi, Decimal(str(top)) * mi) == step
+
+
+def limited(limit: str = "256Mi", request: str | None = "128Mi", **kw: Any) -> tuple[Any, Any]:
+    """api with a memory limit (and request) in its template and on its two pods."""
+    requests = {"cpu": "1"} | ({"memory": request} if request else {})
+    core, apps = cluster(limits={"memory": limit}, requests=requests, **kw)
+    for p in core.list_namespaced_pod.return_value.items[:2]:
+        p.spec.containers[0].resources = k.V1ResourceRequirements(
+            requests=dict(requests), limits={"memory": limit}
+        )
+    return core, apps
+
+
+def stepping(core: Any, apps: Any, top: float = 2.0, **kw: Any) -> actuator.Actuator:
+    a = looking(core, apps, **kw)
+    a.oom_max = top
+    return a
+
+
+def kill(core: Any, name: str, ago: float = 30, **kw: Any) -> Any:
+    """`name` OOM-killed `ago` seconds ago at the memory limit it has now."""
+    p = next(p for p in core.list_namespaced_pod.return_value.items if p.metadata.name == name)
+    return killed(core, name, ago, limit=p.spec.containers[0].resources.limits["memory"], **kw)
+
+
+def memory(core: Any, name: str) -> tuple[str | None, str | None]:
+    p = next(p for p in core.list_namespaced_pod.return_value.items if p.metadata.name == name)
+    r = p.spec.containers[0].resources
+    return (r.limits or {}).get("memory"), (r.requests or {}).get("memory")
+
+
+def test_a_kill_at_its_limit_steps_every_pods_limit_and_request_up_in_place() -> None:
+    core, apps = limited()
+    a = stepping(core, apps)
+    kill(core, "api-1-a")
+    (up,) = a.ooms([API])
+    assert (up.outcome, up.pods, up.memory, up.cpu, up.run_id) == (
+        "stepped_up",
+        2,
+        356.0 * MI,
+        None,
+        0,
+    )
+    assert up.reason == (
+        "memory limit 256Mi to 356Mi, request 128Mi to 178Mi on 2 of 2 pods in place: OOM-killed: "
+        "api-1-a with a memory limit of 256Mi, its node not out of memory (container-limit)"
+    )
+    grown = {"limits": {"memory": "356Mi"}, "requests": {"memory": "178Mi"}}
+    wanted_ = {"spec": {"containers": [{"name": "app", "resources": grown}]}}
+    assert resized(core) == [("api-1-a", wanted_), ("api-1-b", wanted_)]  # the pod killed or not
+    assert memory(core, "api-1-a") == memory(core, "api-1-b") == ("356Mi", "178Mi")
+    assert (
+        core.list_namespaced_pod.return_value.items[0].spec.containers[0].resources.requests["cpu"]
+        == "1"
+    )
+    st = a.stepped[KEY]
+    assert (st["limit"], st["request"], st["steps"]) == ("356Mi", "178Mi", 1)
+    assert st["template"] == {"limit": "256Mi", "request": "128Mi"} and a.steps == [st["at"]]
+    said = core.create_namespaced_event.call_args.args[1]
+    assert (said.reason, said.type) == ("MemorySteppedUp", "Normal")
+    assert said.message.startswith("app: memory limit 256Mi to 356Mi, request 128Mi to 178Mi")
+
+
+def test_a_further_step_needs_a_kill_at_the_step_ten_minutes_on_and_stops_at_its_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    core, apps = limited()
+    a = stepping(core, apps)
+    kill(core, "api-1-a")
+    a.ooms([API])
+    clock = time.time()
+
+    def later(seconds: float) -> None:
+        monkeypatch.setattr(actuator.time, "time", lambda: clock + seconds)
+        a.oom_said.clear()
+
+    later(60)  # its restart: the same kill, from before the step every pod has now
+    (same_kill,) = a.ooms([API])
+    assert same_kill.outcome == "oom_killed" and same_kill.reason.endswith(
+        "No Step-up: these kills were before its last Step-up, which every pod has"
+    )
+    a.oom_said.clear()
+    kill(core, "api-1-a", 5)  # killed again, at 356Mi
+    (soon,) = a.ooms([API])
+    assert soon.reason.endswith(
+        "No Step-up: stepped up 1 minutes ago: one a container every 10 minutes"
+    )
+    assert len(resized(core)) == 2 and a.stepped[KEY]["steps"] == 1
+    later(601)
+    kill(core, "api-1-a", 5)
+    (second,) = a.ooms([API])
+    assert second.outcome == "stepped_up" and second.reason.startswith(
+        "memory limit 356Mi to 456Mi, request 178Mi to 228Mi on 2 of 2 pods in place"
+    )
+    later(1202)
+    kill(core, "api-1-b", 5)
+    (third,) = a.ooms([API])
+    assert third.reason.startswith("memory limit 456Mi to 512Mi, request 228Mi to 256Mi on 2 of 2")
+    assert a.stepped[KEY]["steps"] == 3 and len(a.steps) == 3
+    later(1803)
+    kill(core, "api-1-b", 5)
+    (capped,) = a.ooms([API])
+    assert capped.outcome == "oom_killed" and capped.reason.endswith(
+        "No Step-up: it is at 2 times its template's limit (512Mi): raise it in its manifest, "
+        "or look for a leak"
+    )
+    assert memory(core, "api-1-a") == ("512Mi", "256Mi") and len(resized(core)) == 6
+
+
+def test_a_pod_killed_below_the_step_is_brought_to_it_never_a_further_step() -> None:
+    core, apps = limited()
+    a = stepping(core, apps)
+    kill(core, "api-1-a")
+    a.ooms([API])
+    before = dict(a.stepped[KEY])
+    new = pod("api-1-c", "api-1", cpu="1", memory="128Mi")  # from its template since
+    new.metadata.namespace = "shop"
+    new.spec.containers[0].resources.limits = {"memory": "256Mi"}
+    core.list_namespaced_pod.return_value.items.append(new)
+    kill(core, "api-1-c", 5)
+    a.oom_said.clear()
+    (level,) = a.ooms([API])
+    assert level.outcome == "stepped_up" and level.pods == 1 and level.memory == 356.0 * MI
+    assert level.reason.startswith(
+        "brought to its Step-up, memory limit 356Mi, request 178Mi on 1 of 3 pods in place: "
+    )
+    assert memory(core, "api-1-c") == ("356Mi", "178Mi")
+    assert a.stepped[KEY] == before and len(a.steps) == 1  # no step, none of the hour's budget
+
+
+@pytest.mark.parametrize(
+    ("why_not", "set_up"),
+    [
+        ("the Workload is paused", "paused"),
+        ("its resizePolicy restarts the container for memory", "policy"),
+        ("a VPA in mode Auto sizes it", "vpa"),
+        ("an HPA scales on its memory", "hpa"),
+        ("its template sets no memory limit", "no_limit"),
+        ("the cluster's 10 Step-ups an hour are used", "budget"),
+        ("memory 356Mi is over its LimitRange's maximum 300Mi", "limit_range"),
+        ("2 pods at memory 356Mi would pass ResourceQuota team's limits.memory 1Gi", "limits"),
+        (
+            "2 pods at memory 178Mi would pass ResourceQuota team's requests.memory 300Mi",
+            "requests",
+        ),
+        ("reading it: 503: busy", "busy"),
+    ],
+)
+def test_what_keeps_a_step_up_from_being_made_is_said_with_the_kill(
+    why_not: str, set_up: str
+) -> None:
+    restart = [k.V1ContainerResizePolicy(resource_name="memory", restart_policy="RestartContainer")]
+    core, apps = limited(policy=restart if set_up == "policy" else None)
+    a = stepping(core, apps)
+    template = apps.read_namespaced_deployment.return_value
+    if set_up == "paused":
+        template.metadata.annotations = {actuator.PAUSE: "true"}
+    elif set_up == "vpa":
+        vpa = {"spec": {"targetRef": {"kind": "Deployment", "name": "api"}}}
+        a.custom = scalers(vpas=[vpa])[1]
+    elif set_up == "hpa":
+        a.autoscaling = scalers(hpas=[hpa("api", "memory")])[0]
+    elif set_up == "no_limit":
+        template.spec.template.spec.containers[0].resources.limits = None
+    elif set_up == "budget":
+        a.steps = [time.time() - 3599] * 10
+    elif set_up == "limit_range":
+        core.list_namespaced_limit_range.return_value = limit_range(max={"memory": "300Mi"})
+    elif set_up == "limits":
+        used = quota({"limits.memory": "1Gi"}, {"limits.memory": "900Mi"})
+        core.list_namespaced_resource_quota.return_value = used
+    elif set_up == "requests":
+        used = quota({"requests.memory": "300Mi"}, {"requests.memory": "256Mi"})
+        core.list_namespaced_resource_quota.return_value = used
+    elif set_up == "busy":
+        apps.list_namespaced_replica_set.side_effect = ApiException(status=503, reason="busy")
+    kill(core, "api-1-a")
+    (seen,) = a.ooms([API])
+    assert seen.outcome == "oom_killed" and seen.reason == (
+        "OOM-killed: api-1-a with a memory limit of 256Mi, its node not out of memory "
+        f"(container-limit). No Step-up: {why_not}"
+    )
+    assert resized(core) == [] and a.stepped == {} and len(a.steps) in (0, 10)
+    if set_up == "budget":  # an hour on, its ten are old
+        a.steps = [time.time() - 3601] * 10
+        a.oom_said.clear()
+        assert a.ooms([API])[0].outcome == "stepped_up" and len(a.steps) == 1
+
+
+def test_a_guaranteed_pods_limit_and_request_stay_the_very_same() -> None:
+    core, apps = limited("1Gi", "1Gi")
+    a = stepping(core, apps)
+    kill(core, "api-1-a")
+    (up,) = a.ooms([API])
+    assert up.reason.startswith("memory limit 1024Mi to 1229Mi, request 1024Mi to 1229Mi")
+    assert memory(core, "api-1-a") == memory(core, "api-1-b") == ("1229Mi", "1229Mi")
+
+
+def test_one_pods_refusal_or_a_lost_pod_leaves_the_others_their_step() -> None:
+    core, apps = limited()
+    a = stepping(core, apps)
+    extra = pod("api-1-c", "api-1", cpu="1", memory="128Mi")
+    extra.metadata.namespace = "shop"
+    extra.spec.containers[0].resources.limits = {"memory": "256Mi"}
+    core.list_namespaced_pod.return_value.items.append(shown(extra, NODE_GONE))
+    grow = core.patch_namespaced_pod_resize.side_effect
+
+    def refusing(name: str, ns: str, body_: Any) -> None:
+        if name == "api-1-a":  # the first it tries
+            raise ApiException(status=403, reason="its node has no room")
+        grow(name, ns, body_)
+
+    core.patch_namespaced_pod_resize.side_effect = refusing
+    kill(core, "api-1-b")
+    (up,) = a.ooms([API])
+    assert (
+        up.outcome == "stepped_up"
+        and up.pods == 1
+        and up.reason.startswith(
+            "memory limit 256Mi to 356Mi, request 128Mi to 178Mi on 1 of 2 pods in place; "
+            "1 refused: api-1-a: 403: its node has no room: OOM-killed: "
+        )
+    )
+    assert [n for n, _ in resized(core)] == ["api-1-a", "api-1-b"]  # never the lost api-1-c
+    assert memory(core, "api-1-b")[0] == "356Mi" and memory(core, "api-1-c")[0] == "256Mi"
+    assert memory(core, "api-1-a")[0] == "256Mi"
+
+
+def holding(a: actuator.Actuator, memory_: str | None, had: str | None = "128Mi") -> dict[str, Any]:
+    """api held applied at cpu 115m and this memory request, its template's then `had`."""
+    requests = {"cpu": "115m"} | ({"memory": memory_} if memory_ else {})
+    template: dict[str, Any] = {"cpu": "1"} | ({"memory": had} if memory_ else {})
+    a.held[KEY] = {"run_id": 7, "outcome": "applied", "requests": requests, "template": template}
+    return a.held[KEY]
+
+
+@pytest.mark.parametrize(
+    ("held", "asks"),
+    [("200Mi", "279Mi"), ("96Mi", "178Mi"), (None, "178Mi")],  # raised; lowered; cpu only
+)
+def test_a_step_up_takes_the_containers_memory_from_its_sizing_never_a_lowered_request(
+    held: str | None, asks: str
+) -> None:
+    core, apps = limited()
+    a = stepping(core, apps)
+    h = holding(a, held)
+    for name in ("api-1-a", "api-1-b"):  # as the Sizing left them
+        p = next(p for p in core.list_namespaced_pod.return_value.items if p.metadata.name == name)
+        p.spec.containers[0].resources.requests = {"cpu": "115m", "memory": held or "128Mi"}
+    kill(core, "api-1-a")
+    (up,) = a.ooms([API])
+    assert up.outcome == "stepped_up" and up.run_id == 7
+    assert a.stepped[KEY]["request"] == asks and memory(core, "api-1-b") == ("356Mi", asks)
+    assert h["requests"] == {"cpu": "115m"} and h["template"] == {"cpu": "1"}  # cpu stays held
+    assert h["outcome"] == "applied" and not actuator.lowered(h)
+
+
+@pytest.mark.parametrize(
+    ("held", "outcome", "after"),
+    [
+        ("96Mi", "rolled_back", "rolled_back"),  # it had lowered the request: its doing, maybe
+        ("200Mi", "oom_killed", "applied"),  # raised: only said
+        (None, "oom_killed", "applied"),
+        (
+            "only-a-limit",
+            "rolled_back",
+            "rolled_back",
+        ),  # 96Mi where its template's limit asked 256Mi
+    ],
+)
+def test_a_node_level_kill_rolls_back_a_sizing_that_lowered_its_memory_else_is_only_said(
+    held: str | None, outcome: str, after: str
+) -> None:
+    core, apps = limited()
+    a = stepping(core, apps)
+    h = holding(a, "96Mi", None) if held == "only-a-limit" else holding(a, held)
+    kill(core, "api-1-a", 60)
+    system_oom(core, 70.0)
+    (got,) = a.ooms([API])
+    assert got.outcome == outcome and h["outcome"] == after and a.stepped == {}
+    assert "api-1-a with its node n1 out of memory (node-level: a SystemOOM Event)" in got.reason
+    if outcome == "rolled_back":
+        assert got.reason.startswith("OOM-killed: api-1-a with its node n1 out of memory")
+        assert "no new Sizing of it until" in got.reason and h["rollbacks"]
+        a.oom_said.clear()
+        system_oom(core)  # the same kill seen again, at its limit this time
+        (again,) = a.ooms([API])
+        assert again.outcome == "oom_killed" and a.stepped == {}  # answered by that Rollback
+
+
+def reflexing(top: float | None = 2.0, *runs: int) -> dict[str, Any]:
+    more = {} if top is None else {"oom_max": top}
+    return {**desired(*runs), "oom": [API.model_dump()], **more}
+
+
+def test_in_a_watch_hour_a_kill_at_its_limit_is_a_step_up_not_a_rollback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    core, apps = limited(request="64Mi")  # the Sizing raises its memory request: 96Mi
+    a = settled(monkeypatch, [reflexing(2.0, 1)] * 2, core, apps)
+    system_oom(core)
+    p = kill(core, "api-1-a")
+    p.status.container_statuses[0].restart_count = 3  # crash-looping, NotReady for long
+    shown(p, PROBE_FAILS, since=time.time() - 300)
+    a.step()
+    assert posted(a.seen)[-1] == ["stepped_up"] and a.held[KEY]["outcome"] == "applied"
+    assert a.held[KEY]["requests"] == {"cpu": "115m"}  # its memory is the Step-up's now
+    assert memory(core, "api-1-b") == ("356Mi", "134Mi")  # the Sizing's 96Mi, a step up
+    a.step()
+    assert posted(a.seen) == [["applied"], ["stepped_up"]]  # nothing more the minute after
+    crashed = ended(core.list_namespaced_pod.return_value.items[1], 1, "Error", 1)
+    crashed.spec.containers[0].resources.requests = {"cpu": "115m", "memory": "134Mi"}
+    a.http = hub_of([reflexing(2.0, 1)], a.seen)
+    a.step()  # a crash is still the Sizing's to answer for: only an OOM kill is the Reflex's
+    assert posted(a.seen)[-1] == ["rolled_back"] and "api-1-b: app restarted" in str(
+        json.loads(a.seen[-1].content)[0]["reason"]
+    )
+
+
+def test_in_a_watch_hour_a_kill_under_a_lowered_memory_request_is_a_rollback_never_a_step(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    core, apps = limited()  # its template asks 128Mi, the Sizing 96Mi
+    a = settled(monkeypatch, [reflexing(2.0, 1)], core, apps)
+    system_oom(core)
+    p = kill(core, "api-1-a")
+    p.status.container_statuses[0].restart_count = 1
+    a.step()
+    assert posted(a.seen)[-1] == ["rolled_back", "oom_killed"] and a.stepped == {}
+    assert a.held[KEY]["outcome"] == "rolled_back"
+
+
+@pytest.mark.parametrize("never_looked", ["hub_of_13_1a", "reports_waiting", "not_listed"])
+def test_a_kill_the_reflex_never_looked_at_is_a_rollback_as_before(
+    monkeypatch: pytest.MonkeyPatch, never_looked: str
+) -> None:
+    core, apps = limited(request=None)
+    answer = reflexing(None, 1) if never_looked == "hub_of_13_1a" else reflexing(2.0, 1)
+    if never_looked == "not_listed":
+        answer["oom"] = []
+    a = settled(monkeypatch, [answer], core, apps)
+    system_oom(core)
+    p = kill(core, "api-1-a")
+    p.status.container_statuses[0].restart_count = 1
+    if never_looked == "reports_waiting":
+        a.unsent.append(actuator.Actuation(**report()))
+    a.step()
+    assert "rolled_back" in posted(a.seen)[-1] and "stepped_up" not in posted(a.seen)[-1]
+    assert a.stepped == {} and a.held[KEY]["outcome"] == "rolled_back"
+
+
+STEP = {
+    "limit": "356Mi",
+    "request": "178Mi",
+    "template": {"limit": "256Mi", "request": "128Mi"},
+    "at": 1.0,
+    "steps": 1,
+}
+
+
+def test_a_sizing_leaves_the_memory_of_a_container_a_step_up_holds_and_says_so(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    core, apps = limited()
+    a = settled(monkeypatch, [], core, apps)
+    a.stepped[KEY] = dict(STEP)
+    del a.held[KEY]["requests"]["memory"], a.held[KEY]["template"]["memory"]  # as a step does
+    for p in core.list_namespaced_pod.return_value.items[:2]:  # and its pods at the step
+        p.spec.containers[0].resources.limits = {"memory": "356Mi"}
+    both = wanted(2, cpu=0.5, memory=64 * MI).model_dump()
+    only = wanted(3, cpu=None, memory=64 * MI).model_dump()
+    a.http = hub_of([{**desired(), "sizings": [both]}, {**desired(), "sizings": [only]}], a.seen)
+    before = len(resized(core))
+    a.step()
+    (_, sent) = resized(core)[before]
+    assert sent == body(cpu="500m")  # its cpu, and the memory left alone
+    assert a.held[KEY]["notes"] == "; memory left to its Step-up"  # said when it ends
+    a.step()
+    (said,) = json.loads(a.seen[-1].content)
+    assert (said["run_id"], said["outcome"]) == (3, "skipped") and said["reason"].startswith(
+        "it asks memory only, which is its Step-up's while it lasts"
+    )
+    assert a.held[KEY]["run_id"] == 2  # what it holds stays
+
+
+def test_its_step_ups_and_the_hours_count_outlive_a_restart() -> None:
+    core, apps = limited()
+    a = stepping(core, apps)
+    kill(core, "api-1-a")
+    a.ooms([API])
+    a.save()
+    saved = core.replace_namespaced_config_map.call_args.args[2].data
+    state = json.loads(saved[actuator.STATE])
+    assert state["stepped"] == a.stepped and state["steps"] == a.steps
+    core.read_namespaced_config_map.return_value = k.V1ConfigMap(data=saved)
+    b = make(hub_of([], []), core, apps)
+    b.load()
+    assert b.stepped == a.stepped and b.steps == a.steps
+    plain = make(hub_of([], []), *cluster())  # none: its state reads as before this slice
+    assert set(json.loads(plain.state())) == {"killed", "unsent"}
+
+
+def test_a_template_changed_since_makes_the_step_up_no_longer_its_own() -> None:
+    core, apps = limited()
+    a = stepping(core, apps)
+    kill(core, "api-1-a")
+    a.ooms([API])
+    template = apps.read_namespaced_deployment.return_value.spec.template.spec.containers[0]
+    template.resources.limits = {"memory": "300Mi"}  # a person raised it in the manifest
+    a.oom_said.clear()
+    kill(core, "api-1-a", 5)  # its pod still at the step's 356Mi
+    (seen,) = a.ooms([API])
+    assert seen.reason.endswith("No Step-up: its pods' memory limit is not its template's")
+    assert a.stepped == {} and len(resized(core)) == 2
+
+
+NIGHTLY = actuator.Watched(namespace="shop", kind="CronJob", name="nightly", container="app")
+RUNS = "shop/CronJob/nightly/app"
+
+
+def nightly(parallelism: int | None = None) -> tuple[Any, Any, Any]:
+    """limited(), with a CronJob `nightly` of the same template, and a run's pod of it."""
+    core, apps = limited()
+    d = apps.read_namespaced_deployment.return_value
+    apps.read_namespaced_cron_job.return_value = k.V1CronJob(
+        metadata=k.V1ObjectMeta(name="nightly", namespace="shop", uid="u9"),
+        spec=k.V1CronJobSpec(
+            schedule="* * * * *",
+            job_template=k.V1JobTemplateSpec(
+                spec=k.V1JobSpec(template=d.spec.template, parallelism=parallelism)
+            ),
+        ),
+    )
+    p = core.list_namespaced_pod.return_value.items[0]
+    return core, apps, p
+
+
+def run_killed(core: Any, p: Any, ago: float = 30) -> None:
+    kill(core, p.metadata.name, ago, how="state")
+    p.metadata.labels = {}
+    p.metadata.owner_references = [owner("Job", f"nightly-{int(time.time() // 60)}")]
+    p.status.phase = "Failed"
+
+
+def test_a_cronjobs_step_up_is_for_its_next_runs_pods_never_in_place() -> None:
+    core, apps, p = nightly(parallelism=3)
+    a = stepping(core, apps)
+    run_killed(core, p)
+    (up,) = a.ooms([NIGHTLY])
+    assert (up.outcome, up.kind, up.pods, up.memory) == ("stepped_up", "CronJob", 0, 356.0 * MI)
+    assert up.reason.startswith(
+        "memory limit 256Mi to 356Mi, request 128Mi to 178Mi for its next runs' pods, given them "
+        "as they start: OOM-killed: api-1-a with a memory limit of 256Mi"
+    )
+    assert resized(core) == [] and a.stepped[RUNS]["limit"] == "356Mi" and len(a.steps) == 1
+    a.oom_said.clear()
+    (again,) = a.ooms([NIGHTLY])  # the same run's kill, from before the step
+    assert again.outcome == "oom_killed"
+    assert again.reason.endswith("No Step-up: its next runs' pods start at its Step-up")
+    # a quota counts its parallelism: 3 pods a run
+    core, apps, p = nightly(parallelism=3)
+    used = quota({"limits.memory": "1Gi"}, {"limits.memory": "800Mi"})
+    core.list_namespaced_resource_quota.return_value = used
+    a = stepping(core, apps)
+    run_killed(core, p)
+    assert a.ooms([NIGHTLY])[0].reason.endswith(
+        "No Step-up: 3 pods at memory 356Mi would pass ResourceQuota team's limits.memory 1Gi"
+    )
+
+
+@pytest.mark.parametrize(
+    ("reflexed", "held", "rolled_back"),
+    [(True, "200Mi", False), (True, "96Mi", True), (False, "200Mi", True)],
+)
+def test_a_watched_runs_oom_kill_is_the_reflexes_unless_its_sizing_lowered_the_memory(
+    reflexed: bool, held: str, rolled_back: bool
+) -> None:
+    core, apps = cronned()
+    t0 = time.time() - 600
+    h = {
+        "run_id": 1,
+        "outcome": "applied",
+        "requests": {"cpu": "115m", "memory": held},
+        "template": {"cpu": "1", "memory": "128Mi"},
+        "first_run": {"after": t0, "until": t0 + 7 * 86400},
+    }
+    bad = pod("api-3-a", "", "Failed", cpu="115m", memory=held)
+    bad.spec.containers[0].resources.limits = {"memory": "256Mi"}
+    st = status("app", None)
+    ended_ = k.V1ContainerStateTerminated(exit_code=137, reason="OOMKilled")
+    st.state = k.V1ContainerState(terminated=ended_)
+    bad.status.container_statuses = [st]
+    job(core, apps, "api-3", t0 + 60, bad)
+    reason = actuator.first_run(core, apps, CRON, dict(h), time.time(), reflexed)
+    assert reason == ("api-3-a: app was OOM-killed" if rolled_back else None)
+    act = make(hub_of([], []), core, apps, held={CRON: h})  # and as its minute's watch asks
+    act.reflexed = frozenset({CRON} if reflexed else ())
+    assert [a.outcome for a in act.watch()] == (["rolled_back"] if rolled_back else [])
+
+
+def test_a_revert_drops_the_containers_step_up_with_its_sizing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    core, apps = limited(request="64Mi")
+    a = settled(monkeypatch, [], core, apps)
+    a.stepped[KEY] = {"limit": "356Mi", "request": "178Mi", "template": {}, "at": 1.0, "steps": 1}
+    undo = actuator.Undo(id=4, namespace="shop", kind="Deployment", name="api", container="app")
+    (done,) = a.revert([undo])
+    assert done.outcome == "reverted" and a.stepped == {}
+    assert "its Step-up dropped, its pods keep their memory until they start again" in done.reason
+
+
+def test_only_a_kill_since_it_got_its_requests_is_the_reflexes_an_old_one_excuses_nothing() -> None:
+    core, apps = limited()
+    h = watched(core, apps)  # resized at 1000, each pod with no restart then
+    b = kill(core, "api-1-b", 5)  # OOM-killed last week, as its status still says
+    b.spec.containers[0].resources.requests = {"cpu": "115m", "memory": "128Mi"}
+    shown(b, PROBE_FAILS, since=1500.0)  # and NotReady since its resize
+    assert actuator.trouble(core, apps, KEY, h, 2000.0, True) == "api-1-b: NotReady for 2 minutes"
+    b.status.container_statuses[0].restart_count = 1  # killed since: the Reflex's to answer
+    assert actuator.trouble(core, apps, KEY, h, 2000.0, True) is None
+    assert actuator.trouble(core, apps, KEY, h, 2000.0) == "api-1-b: app was OOM-killed"
+
+
+def test_a_pod_asked_the_step_but_never_given_it_earns_no_further_one() -> None:
+    core, apps = limited()
+    a = stepping(core, apps)
+    kill(core, "api-1-a")
+    a.ooms([API])
+    before = dict(a.stepped[KEY])
+    p = kill(core, "api-1-b", -5)  # killed since the step, its spec asking 356Mi
+    given = k.V1ResourceRequirements(limits={"memory": "256Mi"}, requests={"memory": "128Mi"})
+    p.status.container_statuses[0].resources = given  # its node had no room: still 256Mi
+    a.oom_said.clear()
+    (level,) = a.ooms([API])
+    assert level.outcome == "stepped_up" and level.pods == 1
+    assert level.reason.startswith("brought to its Step-up, memory limit 356Mi, request 178Mi")
+    assert a.stepped[KEY] == before and len(a.steps) == 1
+
+
+def test_a_step_no_pod_took_is_none_and_one_is_kept_before_a_pod_is_touched() -> None:
+    core, apps = limited()
+    a = stepping(core, apps)
+    kept: list[bool] = []
+
+    def refusing(name: str, ns: str, body_: Any) -> None:
+        kept.append(KEY in json.loads(a.state()).get("stepped", {}))
+        kept.append(core.replace_namespaced_config_map.called)  # and saved: a restart knows
+        raise ApiException(status=403, reason="its node has no room")
+
+    core.patch_namespaced_pod_resize.side_effect = refusing
+    kill(core, "api-1-a")
+    (seen,) = a.ooms([API])
+    assert kept == [True] * 4
+    assert seen.outcome == "oom_killed" and seen.reason.endswith(
+        "No Step-up: every pod refused it: api-1-a: 403: its node has no room; "
+        "api-1-b: 403: its node has no room"
+    )
+    assert a.stepped == {} and a.steps == []  # not kept, nor one of the hour's ten
+
+
+def test_no_step_up_while_the_containers_sizing_still_rolls_out() -> None:
+    core, apps = limited(request="64Mi")
+    a = stepping(core, apps)
+    _, a.held[KEY] = start(core, apps, wanted())
+    assert a.held[KEY]["outcome"] == "rolling"
+    before = len(resized(core))
+    kill(core, "api-1-b")
+    (seen,) = a.ooms([API])
+    assert seen.reason.endswith("No Step-up: its Sizing is still rolling out")
+    assert len(resized(core)) == before and a.held[KEY]["requests"]["memory"] == "96Mi"
+
+
+def test_a_kill_the_reflex_looks_at_and_declines_is_said_and_no_rollback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    core, apps = limited(request="64Mi")
+    a = settled(monkeypatch, [reflexing(2.0, 1)], core, apps)
+    a.autoscaling = scalers(hpas=[hpa("api", "memory")])[0]
+    system_oom(core)
+    p = kill(core, "api-1-a")
+    p.status.container_statuses[0].restart_count = 1
+    a.step()
+    assert posted(a.seen)[-1] == ["oom_killed"] and a.held[KEY]["outcome"] == "applied"
+    assert json.loads(a.seen[-1].content)[0]["reason"].endswith(
+        "No Step-up: an HPA scales on its memory"
+    )
+
+
+def stepped_pod(**resources: Any) -> dict[str, Any]:
+    """A new pod of api, its container `app` asking this memory (256Mi and 128Mi unless said)."""
+    asks = {"requests": {"cpu": "1", "memory": "128Mi"}, "limits": {"memory": "256Mi"}}
+    return new_pod(**(resources or asks))["request"]
+
+
+def test_a_new_pod_starts_at_its_containers_step_up_its_limit_and_request_both() -> None:
+    stepped = {KEY: dict(STEP)}
+    ops = actuator.mutation(stepped_pod(), {}, "squero-actuator", stepped=stepped)
+    at = "/spec/containers/1/resources"
+    assert ops == [
+        {"op": "add", "path": f"{at}/requests/memory", "value": "178Mi"},
+        {"op": "add", "path": f"{at}/limits/memory", "value": "356Mi"},
+    ]
+    held = {KEY: {"outcome": "applied", "requests": {"cpu": "115m"}, "template": {"cpu": "1"}}}
+    ops = actuator.mutation(stepped_pod(), held, "squero-actuator", stepped=stepped)
+    assert ops[0] == {"op": "add", "path": f"{at}/requests/cpu", "value": "115m"}  # its Sizing's
+    assert [o["path"].rsplit("/", 2)[1:] for o in ops[1:]] == [
+        ["requests", "memory"],
+        ["limits", "memory"],
+    ]
+    assert (
+        actuator.mutation(stepped_pod(), held, "squero-actuator") == ops[:1]
+    )  # none held: as before
+    # the Kill switch: nothing, as for a Sizing's requests
+    review = {"request": stepped_pod()}
+    answer = actuator.admit(review, {}, True, "squero-actuator", frozenset(), stepped)
+    assert "patch" not in answer["response"]
+    answer = actuator.admit(review, {}, False, "squero-actuator", frozenset(), stepped)
+    assert json.loads(base64.b64decode(answer["response"]["patch"])) == ops[1:]
+    paused = frozenset({"shop/Deployment/api"})
+    assert actuator.mutation(stepped_pod(), {}, "squero-actuator", paused, stepped) == []
+
+
+@pytest.mark.parametrize(
+    ("resources", "kind", "ops"),
+    [
+        # a template with only a limit asks that much: defaulted on the pod, or not yet
+        ({"requests": {"cpu": "1", "memory": "256Mi"}, "limits": {"memory": "256Mi"}}, "", 2),
+        ({"requests": {"cpu": "1"}, "limits": {"memory": "256Mi"}}, "", 2),
+        # a person changed its template's memory since: theirs
+        ({"requests": {"cpu": "1", "memory": "128Mi"}, "limits": {"memory": "300Mi"}}, "", 0),
+        ({"requests": {"cpu": "1", "memory": "100Mi"}, "limits": {"memory": "256Mi"}}, "", 0),
+        # a DaemonSet's new pod: a raise reaches it in place only
+        (
+            {"requests": {"cpu": "1", "memory": "256Mi"}, "limits": {"memory": "256Mi"}},
+            "DaemonSet",
+            0,
+        ),
+    ],
+)
+def test_a_new_pod_gets_the_step_up_only_from_the_template_it_started_from(
+    resources: Any, kind: str, ops: int
+) -> None:
+    st = {**STEP, "template": {"limit": "256Mi", "request": None}, "request": "356Mi"}
+    if resources["requests"].get("memory") in ("128Mi", "100Mi"):
+        st = dict(STEP)
+    req = stepped_pod(**resources)
+    key = KEY
+    if kind:
+        req["object"]["metadata"]["ownerReferences"] = [{"kind": kind, "name": "api"}]
+        key = f"shop/{kind}/api/app"
+    got = actuator.mutation(req, {}, "squero-actuator", stepped={key: st})
+    assert len(got) == ops
+    if ops:
+        assert got[-1] == {
+            "op": "add",
+            "path": "/spec/containers/1/resources/limits/memory",
+            "value": "356Mi",
+        }
+
+
+def test_a_guaranteed_pod_stays_guaranteed_at_its_step_up() -> None:
+    equal = {"requests": {"cpu": "1", "memory": "1Gi"}, "limits": {"cpu": "1", "memory": "1Gi"}}
+    st = {**STEP, "limit": "1229Mi", "request": "1229Mi"}
+    st["template"] = {"limit": "1Gi", "request": "1Gi"}
+    req = new_pod(sidecar={"resources": equal}, **equal)["request"]
+    ops = actuator.mutation(req, {}, "squero-actuator", stepped={KEY: st})
+    assert [o["value"] for o in ops] == ["1229Mi", "1229Mi"]
+    apart = {**st, "request": "1000Mi"}  # one that would leave it Burstable: never given
+    assert actuator.mutation(req, {}, "squero-actuator", stepped={KEY: apart}) == []
+
+
+def test_a_cronjobs_next_run_starts_at_its_step_up() -> None:
+    req = stepped_pod()
+    minute = int(time.time() // 60)
+    req["object"]["metadata"]["labels"] = {}
+    req["object"]["metadata"]["ownerReferences"] = [{"kind": "Job", "name": f"nightly-{minute}"}]
+    ops = actuator.mutation(req, {}, "squero-actuator", stepped={RUNS: dict(STEP)})
+    assert [o["value"] for o in ops] == ["178Mi", "356Mi"]
+
+
+def kept(core: Any, apps: Any, **kw: Any) -> actuator.Actuator:
+    """An Actuator holding api's Step-up to 356Mi, its two pods at it."""
+    a = stepping(core, apps, **kw)
+    a.stepped[KEY] = dict(STEP)
+    for p in core.list_namespaced_pod.return_value.items[:2]:
+        p.spec.containers[0].resources = k.V1ResourceRequirements(
+            requests={"cpu": "1", "memory": "178Mi"}, limits={"memory": "356Mi"}
+        )
+    return a
+
+
+def test_each_minute_a_pod_asking_less_than_the_step_up_is_brought_to_it(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    core, apps = limited()
+    a = kept(core, apps)
+    assert a.keep_steps() == [] and resized(core) == []  # every pod asks it
+    live = core.list_namespaced_pod.return_value.items
+    for name in ("api-1-c", "api-1-d", "api-1-e"):  # from its template: the webhook was down
+        new = pod(name, "api-1", cpu="1", memory="128Mi")
+        new.metadata.namespace = "shop"
+        new.spec.containers[0].resources.limits = {"memory": "256Mi"}
+        live.append(new)
+    shown(live[-1], NODE_GONE)  # api-1-e: its node gone
+    grow = core.patch_namespaced_pod_resize.side_effect
+
+    def refusing(name: str, ns: str, body_: Any) -> None:
+        if name == "api-1-d":
+            raise ApiException(status=403, reason="its node has no room")
+        grow(name, ns, body_)
+
+    core.patch_namespaced_pod_resize.side_effect = refusing
+    with caplog.at_level("WARNING"):
+        (up,) = a.keep_steps()
+    assert (up.outcome, up.pods, up.memory) == ("stepped_up", 1, 356.0 * MI)
+    assert up.reason == (
+        "brought to its Step-up, memory limit 356Mi, request 178Mi on 1 of 4 pods in place"
+    )
+    assert [n for n, _ in resized(core)] == ["api-1-c", "api-1-d"]  # never the lost api-1-e
+    assert memory(core, "api-1-c") == ("356Mi", "178Mi") and "api-1-d" in caplog.text
+    assert a.keep_steps() == []  # api-1-d refuses again: tried, logged, not reported
+    assert len(a.steps) == 0 and a.stepped[KEY] == STEP  # no step, none of the hour's ten
+
+
+@pytest.mark.parametrize(
+    ("change", "reason"),
+    [
+        ("limit", "its template's memory changed: limit 256Mi to 300Mi: its Step-up dropped"),
+        ("request", "its template's memory changed: request 128Mi to unset: its Step-up dropped"),
+        ("container", "no container 'app' in its template: its Step-up dropped"),
+        ("gone", "no such Deployment: its Step-up dropped"),
+        ("busy", None),
+        ("paused", None),
+    ],
+)
+def test_a_step_up_is_handed_back_when_a_person_changes_its_templates_memory(
+    change: str, reason: str | None
+) -> None:
+    core, apps = limited()
+    a = kept(core, apps)
+    template = apps.read_namespaced_deployment.return_value.spec.template.spec.containers[0]
+    if change == "limit":
+        template.resources.limits = {"memory": "300Mi"}
+    elif change == "request":
+        template.resources.requests = {"cpu": "1"}
+    elif change == "container":
+        template.name = "web"
+    elif change == "gone":
+        apps.read_namespaced_deployment.side_effect = ApiException(status=404)
+    elif change == "busy":
+        apps.read_namespaced_deployment.side_effect = ApiException(status=503, reason="busy")
+    elif change == "paused":
+        a.paused = frozenset({"shop/Deployment/api"})
+        template.resources.limits = {"memory": "300Mi"}  # a paused Workload's is left alone
+    got = a.keep_steps()
+    if reason is None:
+        assert got == [] and a.stepped[KEY] == STEP
+        return
+    (back_,) = got
+    assert (back_.outcome, back_.pods, back_.reason) == ("step_ended", 0, reason)
+    assert a.stepped == {} and resized(core) == []
+    said = core.create_namespaced_event.call_args.args[1]
+    assert (said.reason, said.message) == ("HandedBack", f"app: {reason}")
+
+
+def test_a_minute_keeps_its_step_ups_and_reads_their_workloads_pause(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    core, apps = limited()
+    a = kept(core, apps)
+    late = pod("api-1-c", "api-1", cpu="1", memory="128Mi")
+    late.metadata.namespace = "shop"
+    late.spec.containers[0].resources.limits = {"memory": "256Mi"}
+    core.list_namespaced_pod.return_value.items.append(late)
+    seen: list[httpx.Request] = []
+    a.http = hub_of([reflexing(), desired(), desired(killed=True)], seen)
+    note = {actuator.PAUSE: "true"}
+    apps.list_namespaced_deployment.return_value.items = [
+        MagicMock(metadata=k.V1ObjectMeta(name="api", annotations=note))
+    ]
+    a.step()  # paused: its Step-up waits
+    assert posted(seen) == [] and "shop/Deployment/api" in a.paused
+    apps.list_namespaced_deployment.return_value.items = []
+    a.step()  # the Reflex off at the Hub since: what it holds is still kept
+    assert posted(seen) == [["stepped_up"]] and memory(core, "api-1-c")[0] == "356Mi"
+    late.spec.containers[0].resources.limits = {"memory": "256Mi"}
+    a.step()  # the Kill switch: nothing
+    assert len(posted(seen)) == 1 and memory(core, "api-1-c")[0] == "256Mi"
+
+
+def test_a_step_up_only_ever_raises_a_pod_one_above_it_keeps_its_own() -> None:
+    core, apps = limited()
+    a = stepping(core, apps)
+    high = core.list_namespaced_pod.return_value.items[1]  # from a Step-up dropped since
+    high.spec.containers[0].resources = k.V1ResourceRequirements(
+        requests={"cpu": "1", "memory": "256Mi"}, limits={"memory": "512Mi"}
+    )
+    kill(core, "api-1-a")
+    (up,) = a.ooms([API])
+    assert up.outcome == "stepped_up" and up.pods == 1  # api-1-a only
+    assert memory(core, "api-1-b") == ("512Mi", "256Mi") and memory(core, "api-1-a")[0] == "356Mi"
+    assert a.keep_steps() == [] and [n for n, _ in resized(core)] == ["api-1-a"]
+
+
+def test_a_resize_its_node_cant_fit_is_put_back_and_the_pod_left_never_tried_again() -> None:
+    core, apps = limited()
+    a = kept(core, apps)
+    b = core.list_namespaced_pod.return_value.items[1]  # asks the step, and was never given it
+    waits = k.V1PodCondition(type="PodResizePending", status="True", reason="Infeasible")
+    b.status.conditions = [waits]
+    given = k.V1ResourceRequirements(limits={"memory": "256Mi"}, requests={"memory": "128Mi"})
+    b.status.container_statuses = [status("app", given)]
+    (said,) = a.keep_steps()
+    assert (said.outcome, said.pods) == ("stepped_up", 0) and said.reason.endswith(
+        "on 0 of 2 pods in place; 1 left as they were: their node has no room"
+    )
+    back_ = {"limits": {"memory": "256Mi"}, "requests": {"memory": "128Mi"}}
+    assert resized(core) == [
+        ("api-1-b", {"spec": {"containers": [{"name": "app", "resources": back_}]}})
+    ]
+    assert a.stepped[KEY]["left"] == ["api-1-b"] and memory(core, "api-1-b") == ("256Mi", "128Mi")
+    assert a.keep_steps() == [] and len(resized(core)) == 1  # left: not brought to it again
+    kill(core, "api-1-b", 5)  # nor by its own kill, which earns no step either
+    (seen,) = a.ooms([API])
+    assert seen.outcome == "oom_killed" and len(resized(core)) == 1
+    assert seen.reason.endswith(
+        "No Step-up: 1 of its pods keep their memory, their node without room for its Step-up; "
+        "the others have it"
+    )
+    a.oom_said.clear()
+    kill(core, "api-1-a", 5)  # a further step: for the pods that could take the last
+    (up,) = a.ooms([API])
+    assert up.outcome == "stepped_up" and [n for n, _ in resized(core)][1:] == ["api-1-a"]
+    assert a.stepped[KEY]["left"] == ["api-1-b"] and a.stepped[KEY]["limit"] == "456Mi"
+    core.list_namespaced_pod.return_value.items.remove(b)  # gone: forgotten
+    assert a.keep_steps() == [] and "left" not in a.stepped[KEY]

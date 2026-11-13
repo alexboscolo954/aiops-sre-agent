@@ -36,6 +36,11 @@ a Revert (`again`) applies the run that Revert undid. Slice 12.10: a pod whose n
 its run's Failed pod, and a rollout goes on without it. Slice 12.11: nor is a container its
 node's own restart started again (`rebooted`).
 
+Slice 13.1a: with the Contract's `reflexes.oom` it reports the OOM kills of the containers
+the Hub lists, told as container-limit or node-level. Slice 13.1b (ADR 0005): it answers a
+container-limit one with a Step-up, the container's memory limit and request raised
+together on every pod in place (`step_up`), the only time it changes a limit.
+
 Under Automation (slice 12.5) it also applies, unasked, the newest Sizing of each container
 the Contract automates: a change under 10% ignored, an increase at once, a decrease at most
 once a day. A workload a person annotated `squero-actuator/pause: "true"` is left alone,
@@ -110,6 +115,12 @@ ENDING = 3  # Rollbacks of a Workload in 7 days that end its Automation (slice 1
 OOM_RECENT = 600  # an OOM kill this old is no news; one report a container this often (13.1a)
 OOM_NEAR = 120  # a node's SystemOOM Event this close to a kill makes it node-level
 OOM_SHOWN = 5  # pods named in one report's reason
+# the Step-up (slice 13.1b, ADR 0005): to the larger of 1.2 times and 100 MiB more (VPA's
+# numbers), one a container every 10 minutes, 10 a cluster an hour
+STEP_FACTOR = Decimal("1.2")
+STEP_MORE = 100 * 1024 * 1024
+STEP_EVERY = 600
+STEPS_AN_HOUR = 10
 OOM_REPORTS = 50  # containers reported in one minute, the rest the next: a node out of
 # memory kills many at once, and of its unsent reports only the newest 200 outlive a restart
 # why Kubernetes removed a pod whose node is gone: its taint manager, or its pod garbage
@@ -144,7 +155,15 @@ ROLLOUT = (
 API_TIMEOUT = 15
 WATCHED = ("pods", "watch_until", "first_run")  # held while watched
 Outcome = Literal[
-    "applied", "skipped", "failed", "handed_back", "rolled_back", "reverted", "oom_killed"
+    "applied",
+    "skipped",
+    "failed",
+    "handed_back",
+    "rolled_back",
+    "reverted",
+    "oom_killed",
+    "stepped_up",
+    "step_ended",
 ]
 # held, never reported: "rolling"
 Ending = Callable[[Outcome, str], "Actuation"]  # how advance() ends a rollout
@@ -214,6 +233,9 @@ class Desired(BaseModel):
     # slice 13.1a: the automated containers of a Contract with `reflexes.oom`; an Actuator
     # given none never reports an OOM kill, so an older Hub never gets an outcome it refuses
     oom: list[Watched] = []
+    # slice 13.1b: how many times its template's memory limit a Step-up may reach. None, as
+    # from a Hub of 13.1a: OOM kills are reported and nothing is stepped up
+    oom_max: float | None = None
 
 
 class Actuation(BaseModel):
@@ -531,14 +553,15 @@ def limit_range_breach(
 
 
 def quota_breach(
-    core: Any, ns: str, set_to: dict[str, str], now: dict[str, str], pods: int
+    core: Any, ns: str, set_to: dict[str, str], now: dict[str, str], pods: int, limits: bool = False
 ) -> str | None:
-    """Why raising requests on `pods` pods would pass a ResourceQuota, or None."""
+    """Why raising requests (or `limits`, slice 13.1b) on `pods` pods would pass a
+    ResourceQuota, or None."""
     for rq in core.list_namespaced_resource_quota(ns).items:
         hard, used = (rq.status.hard or {}), (rq.status.used or {})
         for r, q in set_to.items():
             more = (qty(q) - qty(now.get(r) or "0")) * pods
-            for key in (f"requests.{r}", r):
+            for key in (f"limits.{r}",) if limits else (f"requests.{r}", r):
                 if more > 0 and key in hard and qty(used.get(key) or "0") + more > qty(hard[key]):
                     quota = f"ResourceQuota {rq.metadata.name}'s {key} {hard[key]}"
                     return f"{pods} pods at {r} {q} would pass {quota}"
@@ -586,6 +609,7 @@ def apply(
     automated: bool = False,
     eviction: str = "off",
     left: list[str] | None = None,
+    stepped: bool = False,
 ) -> tuple[Actuation | None, dict[str, Any]]:
     """Start resizing `w`'s container in place on its workload's pods (slice 12.3): the
     pre-checks, then one canary pod. An Actuation when it ends here (skipped or failed),
@@ -631,6 +655,9 @@ def apply(
     for res, value, text in (("cpu", w.cpu, cpu_text), ("memory", w.memory, memory_text)):
         if value is None:
             continue
+        if stepped and res == "memory":  # its Step-up's while it lasts (slice 13.1b)
+            notes.append("; memory left to its Step-up")
+            continue
         q = text(value)
         if res in limits and qty(q) > qty(limits[res]):
             q = limits[res]  # requests never above the limit: the Sizing's risk stays shown
@@ -639,6 +666,9 @@ def apply(
         template_had[res] = asked.get(res)
     if capped:
         notes.append(f"; capped at its limit: {capped}")
+    if stepped and not set_to and w.memory is not None:
+        notes.clear()
+        return done("skipped", 0, "it asks memory only, which is its Step-up's while it lasts")
     kept = old if old and old.get("outcome") in ("applied", "rolling") else {}
     holds = kept.get("requests") or {}
     was = {r: holds.get(r) or asked.get(r) for r in set_to}  # what its pods ask now
@@ -1052,6 +1082,35 @@ def container_status(pod: Any, container: str) -> Any:
     return next((s for s in statuses if s.name == container), None)
 
 
+def lowered(h: dict[str, Any], limit: str | None = None) -> bool:
+    """Whether the hold `h` asks less memory for its container than its template did: such
+    a Sizing can bring an OOM kill on (slice 13.1b), a likelier victim on a fuller node. A
+    template that sets only a memory `limit` asks that much: Kubernetes makes it the pod's
+    request."""
+    q = (h.get("requests") or {}).get("memory")
+    had = (h.get("template") or {}).get("memory") or limit
+    return bool(q and had and qty(q) < qty(had))
+
+
+def next_step(limit: Decimal, request: Decimal, top: Decimal) -> tuple[str, str] | None:
+    """The memory limit and request one Step-up above these (bytes), in whole Mi: the limit
+    to the larger of 1.2 times and 100 MiB more, never past `top`; the request by the same
+    factor, so the very same quantity where the two were equal (a Guaranteed pod's must
+    stay so). None: no whole Mi is left under `top`."""
+    up = math.ceil(round(max(limit * STEP_FACTOR, limit + STEP_MORE) / MI, 6))
+    new = min(up, math.floor(top / MI))
+    if new * MI <= limit:
+        return None
+    asked = min(math.ceil(round(request * new / limit, 6)), new)  # equal ones stay equal
+    return f"{new}Mi", f"{asked}Mi"
+
+
+def step_body(container: str, limit: str, request: str) -> dict[str, Any]:
+    """The resize that gives a pod's container a Step-up's memory limit and request."""
+    resources = {"limits": {"memory": limit}, "requests": {"memory": request}}
+    return {"spec": {"containers": [{"name": container, "resources": resources}]}}
+
+
 def rebooted(st: Any) -> bool:
     """Whether the container last ended with its node (slice 12.11), not by itself: a node
     that restarts and comes back starts its containers again, and the runtime, having lost
@@ -1061,13 +1120,17 @@ def rebooted(st: Any) -> bool:
     return bool(ended and ended.reason == "Unknown" and ended.exit_code == 255)
 
 
-def trouble(core: Any, apps: Any, key: str, h: dict[str, Any], now: float) -> str | None:
+def trouble(
+    core: Any, apps: Any, key: str, h: dict[str, Any], now: float, reflexed: bool = False
+) -> str | None:
     """Why the Sizing held as `h` made its pods unhealthy (slice 12.4), or None: a pod with
     its requests whose container restarted (an OOM kill named as one) since it got them, or
     a pod it resized that has been NotReady for 2 minutes since, or an evicted pod's
     replacement not Ready in 10 minutes (slice 12.7). Throttling is not one, nor a pod
     whose node is gone (`lost`, slice 12.10) or a restart that was its node's (`rebooted`,
-    slice 12.11)."""
+    slice 12.11). `reflexed`: the Step-up answers for this container's OOM kills now (slice
+    13.1b), so an OOM-killed pod is no trouble of the Sizing's, unless the Sizing lowered
+    its memory request."""
     ns, kind, name, container = key.split("/")
     try:
         d = read(apps, kind, name, ns)
@@ -1086,8 +1149,15 @@ def trouble(core: Any, apps: Any, key: str, h: dict[str, Any], now: float) -> st
         if needs(p, container, h["requests"]):
             continue  # not the Actuator's requests: not its doing
         st = container_status(p, container)
+        spec = next((c for c in p.spec.containers if c.name == container), None)
+        own = limits_of(spec).get("memory")
         mine = seen.get(p.metadata.name) or {"at": 0.0, "restarts": 0}  # new: from the webhook
-        if st and (st.restart_count or 0) > mine["restarts"] and not rebooted(st):
+        again = bool(st) and (st.restart_count or 0) > mine["restarts"]
+        if reflexed and again and oom_killed_at(st) is not None and not lowered(h, own):
+            # an OOM kill since it got them is the Reflex's to answer (slice 13.1b): no
+            # Sizing changes a limit. One from before is no news, and excuses nothing
+            continue
+        if again and not rebooted(st):
             ended = st.last_state.terminated if st.last_state else None
             what = "was OOM-killed" if ended and ended.reason == "OOMKilled" else "restarted"
             return f"{p.metadata.name}: {container} {what}"
@@ -1108,7 +1178,9 @@ def trouble(core: Any, apps: Any, key: str, h: dict[str, Any], now: float) -> st
     return None
 
 
-def first_run(core: Any, apps: Any, key: str, h: dict[str, Any], now: float) -> str | None:
+def first_run(
+    core: Any, apps: Any, key: str, h: dict[str, Any], now: float, reflexed: bool = False
+) -> str | None:
     """Why a CronJob's first run under the requests held as `h` (slice 12.8c) is a reason
     to roll back, or None: a pod of it with them Failed (not with its node, slice 12.10) or
     OOM-killed. That run is the first
@@ -1152,9 +1224,15 @@ def first_run(core: Any, apps: Any, key: str, h: dict[str, Any], now: float) -> 
             if needs(p, container, h["requests"]):
                 continue  # from its template: not the Actuator's doing
             st = container_status(p, container)
-            for state in (st.state, st.last_state) if st else ():
-                if state and state.terminated and state.terminated.reason == "OOMKilled":
-                    return f"{p.metadata.name}: {container} was OOM-killed"
+            killed = any(
+                state and state.terminated and state.terminated.reason == "OOMKilled"
+                for state in ((st.state, st.last_state) if st else ())
+            )
+            spec = next((c for c in p.spec.containers if c.name == container), None)
+            if killed and reflexed and not lowered(h, limits_of(spec).get("memory")):
+                continue  # the Reflex's to answer, as a Deployment's (slice 13.1b)
+            if killed:
+                return f"{p.metadata.name}: {container} was OOM-killed"
             if p.status.phase == "Failed" and not lost(p):  # its node gone: the Job's retry
                 return f"{p.metadata.name} Failed"
     except ApiException as e:
@@ -1401,8 +1479,30 @@ def system_ooms(core: Any, node: str) -> list[float]:
     return [float(t.timestamp()) for ts in times for t in ts if t]
 
 
+def stepped_for(
+    st: dict[str, Any] | None, kind: str, requests: dict[str, str], limits: dict[str, str]
+) -> tuple[str, str] | None:
+    """The memory limit and request a new pod's container starts with under its Step-up
+    `st` (slice 13.1b), or None: none held; a DaemonSet's (a raise reaches it in place
+    only, as slice 12.8a has it); or its template's memory is no longer what the Step-up
+    started from (a person's change wins). A template with only a limit asks that much."""
+    if not st or kind == "DaemonSet":
+        return None
+    had = st["template"]
+    asked = requests.get("memory")
+    if not same(limits.get("memory"), had["limit"]) or not (
+        same(asked, had["request"]) or (had["request"] is None and same(asked, had["limit"]))
+    ):
+        return None
+    return st["limit"], st["request"]
+
+
 def mutation(
-    req: dict[str, Any], held: dict[str, dict[str, Any]], own: str, paused: Any = frozenset()
+    req: dict[str, Any],
+    held: dict[str, dict[str, Any]],
+    own: str,
+    paused: Any = frozenset(),
+    stepped: dict[str, dict[str, Any]] | None = None,
 ) -> list[Any]:
     """The JSON Patch giving a new pod of a workload the requests applied to it: only
     where its container still asks what the template asked then (a person's change wins),
@@ -1425,33 +1525,46 @@ def mutation(
     if f"{ns}/{kind}/{name}" in paused:
         return []
     ops: list[Any] = []
+    everyone = [
+        (
+            x.get("name", ""),
+            dict((x.get("resources") or {}).get("requests") or {}),
+            dict((x.get("resources") or {}).get("limits") or {}),
+        )
+        for x in (pod.get("spec") or {}).get("containers") or []
+    ]
     for i, c in enumerate((pod.get("spec") or {}).get("containers") or []):
-        h = held.get(f"{ns}/{kind}/{name}/{c.get('name')}")
-        if not h or (h.get("outcome") != "applied" and "evicted" not in h):
-            continue  # applied, or rolling with a pod evicted for these requests (slice 12.7)
+        key = f"{ns}/{kind}/{name}/{c.get('name')}"
+        h = held.get(key) or {}
         resources = c.get("resources") or {}
         requests = resources.get("requests") or {}
         limits = resources.get("limits") or {}
-        had = h.get("template")  # None: held before slice 12.2 recorded it
-        if had is None or not all(same(requests.get(r), had.get(r)) for r in h["requests"]):
-            continue  # its template's requests changed since: theirs, not ours
         new = {}
-        for r, q in h["requests"].items():
-            if r in limits and qty(q) > qty(limits[r]):
-                q = limits[r]
-            if kind == "DaemonSet" and not (requests.get(r) and qty(q) < qty(requests[r])):
-                continue  # a raise: in place only, where its node has room
-            if not same(requests.get(r), q):
-                new[r] = q
-        everyone = [
-            (
-                x.get("name", ""),
-                dict((x.get("resources") or {}).get("requests") or {}),
-                dict((x.get("resources") or {}).get("limits") or {}),
-            )
-            for x in (pod.get("spec") or {}).get("containers") or []
+        # applied, or rolling with a pod evicted for these requests (slice 12.7); and its
+        # template's requests still what they were: changed since, they are theirs
+        had = h.get("template")  # None: held before slice 12.2 recorded it
+        if (
+            (h.get("outcome") == "applied" or "evicted" in h)
+            and had is not None
+            and all(same(requests.get(r), had.get(r)) for r in h["requests"])
+        ):
+            for r, q in h["requests"].items():
+                if r in limits and qty(q) > qty(limits[r]):
+                    q = limits[r]
+                if kind == "DaemonSet" and not (requests.get(r) and qty(q) < qty(requests[r])):
+                    continue  # a raise: in place only, where its node has room
+                if not same(requests.get(r), q):
+                    new[r] = q
+        up = stepped_for((stepped or {}).get(key), kind, requests, limits)
+        grown = {**limits, "memory": up[0]} if up else limits
+        if up:  # its memory is its Step-up's (slice 13.1b), whatever a Sizing holds
+            new["memory"] = up[1]
+        mine = c.get("name", "")
+        after = [
+            ({**r, **new} if n == mine else r, grown if n == mine else lim)
+            for n, r, lim in everyone
         ]
-        if not new or qos_change(everyone, c.get("name", ""), new):
+        if not new or qos([(r, lim) for _, r, lim in everyone]) != qos(after):
             continue  # a pod's QoS class stays its template's (slice 12.3)
         at = f"/spec/containers/{i}/resources"
         if "resources" not in c:
@@ -1460,18 +1573,25 @@ def mutation(
             ops.append({"op": "add", "path": f"{at}/requests", "value": new})
         else:
             ops += [{"op": "add", "path": f"{at}/requests/{r}", "value": q} for r, q in new.items()]
+        if up:
+            ops.append({"op": "add", "path": f"{at}/limits/memory", "value": up[0]})
     return ops
 
 
 def admit(
-    review: Any, held: dict[str, dict[str, Any]], killed: bool, own: str, paused: Any = frozenset()
+    review: Any,
+    held: dict[str, dict[str, Any]],
+    killed: bool,
+    own: str,
+    paused: Any = frozenset(),
+    stepped: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """The AdmissionReview answer: always allowed; a patch unless the Kill switch is on."""
     req = review.get("request") if isinstance(review, dict) else None
     req = req if isinstance(req, dict) else {}
     answer: dict[str, Any] = {"uid": req.get("uid", ""), "allowed": True}
     try:
-        ops = [] if killed else mutation(req, held, own, paused)
+        ops = [] if killed else mutation(req, held, own, paused, stepped)
     except Exception:  # fail open, as the webhook's failurePolicy does
         log.exception("webhook: pod left as it is")
         ops = []
@@ -1529,7 +1649,7 @@ def serve(a: "Actuator", cert: bytes, key: bytes, port: int = WEBHOOK_PORT) -> T
             except ValueError:
                 self.send_error(400)
                 return
-            answer = admit(review, a.held, a.killed, a.namespace, a.paused)
+            answer = admit(review, a.held, a.killed, a.namespace, a.paused, a.stepped)
             body = json.dumps(answer).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -1574,6 +1694,12 @@ class Actuator:
     # slice 13.1a, in memory only (the Hub stores a report sent again once): when each
     # container's OOM kills were last reported
     oom_said: dict[tuple[str, ...], float] = field(default_factory=dict)
+    # slice 13.1b: each container's Step-up (its memory limit and request, its template's
+    # then, when, how many), the times of this hour's, and what the Hub last allowed
+    stepped: dict[str, dict[str, Any]] = field(default_factory=dict)
+    steps: list[float] = field(default_factory=list)
+    oom_max: float | None = None
+    reflexed: frozenset[str] = frozenset()  # containers whose OOM kills it answers this minute
     events_unread: bool = False  # said once: it may not read Node Events
 
     def load(self) -> None:
@@ -1587,6 +1713,8 @@ class Actuator:
         try:  # what it can't read (another version's) is dropped, never its holds with it
             state = json.loads((cm.data or {}).get(STATE) or "{}")
             self.killed = bool(state.get("killed", False))
+            self.stepped = dict(state.get("stepped") or {})
+            self.steps = [float(t) for t in state.get("steps") or []]
             for a in state.get("unsent") or []:
                 try:
                     self.unsent.append(Actuation(**a))
@@ -1600,7 +1728,8 @@ class Actuator:
         """What a restart must not forget beside its holds (slice 12.9b): the Kill switch as
         the Hub last said it (the Hub may be unreachable then), and the reports not yet taken."""
         unsent = [a.model_dump() for a in self.unsent[-KEPT_REPORTS:]]
-        return json.dumps({"killed": self.killed, "unsent": unsent}, sort_keys=True)
+        more = {"stepped": self.stepped, "steps": self.steps} if self.stepped or self.steps else {}
+        return json.dumps({"killed": self.killed, "unsent": unsent, **more}, sort_keys=True)
 
     def save(self) -> None:
         body = client.V1ConfigMap(
@@ -1654,9 +1783,19 @@ class Actuator:
             self.killed = desired.kill_switch
             log.warning("the Kill switch is %s", "on" if self.killed else "off")
         wanted = (desired.sizings + desired.automated) if desired else []
-        self.pauses({*self.held, *(f"{w.namespace}/{w.kind}/{w.name}" for w in wanted)})
+        mine = {*self.held, *self.stepped}
+        self.pauses({*mine, *(f"{w.namespace}/{w.kind}/{w.name}" for w in wanted)})
         done: list[Actuation] = []
         undoing = any("unfinished" in h for h in self.held.values())  # saved once finished too
+        # slice 13.1b: the Step-up answers for these containers' OOM kills this minute, so
+        # they are no Rollback; none when it won't look (the Hub unreachable or of 13.1a,
+        # the Kill switch, reports still waiting): then an OOM kill is a Rollback, as before
+        looks = desired is not None and not self.killed and not self.unsent
+        self.oom_max = desired.oom_max if desired is not None and looks else None
+        self.reflexed = frozenset(
+            "/".join((w.namespace, w.kind, w.name, w.container))
+            for w in (desired.oom if desired is not None and self.oom_max is not None else [])
+        )
         try:
             done += self.hand_back()
             if not self.killed:  # the Actuator undoes its own harm, the Hub reachable or not
@@ -1672,8 +1811,9 @@ class Actuator:
                 done += self.revert(desired.reverts) + self.advance(desired.eviction)
                 done += self.act(desired.sizings, desired.automated)
                 done += self.catch_up()
-                if desired.oom and not self.unsent:  # never crowding out what the Hub
-                    done += self.ooms(desired.oom)  # hasn't taken yet (slice 13.1a)
+                done += self.keep_steps()
+                if desired.oom and looks:  # never crowding out what the Hub hasn't
+                    done += self.ooms(desired.oom)  # taken yet (slice 13.1a)
         except Exception:  # its own bug: what it changed before is kept, not done twice
             self.unsent += done
             self.save()
@@ -1736,10 +1876,11 @@ class Actuator:
 
     def ooms(self, watched: list[Watched]) -> list[Actuation]:
         """The OOM kills of the last 10 minutes of the containers the Hub lists (slice
-        13.1a): told as container-limit or node-level and reported, nothing changed. One
-        read of each namespace's pods. A container is reported every 10 minutes at most,
-        with its pods killed since the last report (a pod shows its last kill only), and
-        50 containers a minute at most."""
+        13.1a): told as container-limit or node-level and reported; and, when the Hub
+        sends `oom_max` (slice 13.1b), answered: a Step-up, a Rollback, or said. One read of
+        each namespace's pods. A container is looked at every 10 minutes at most, with its
+        pods killed since the last time (a pod shows its last kill only), and 50
+        containers a minute at most."""
         now = time.time()
         wanted = {(w.namespace, w.kind, w.name, w.container) for w in watched}
         found: dict[tuple[str, ...], list[tuple[Any, float]]] = {}
@@ -1767,25 +1908,23 @@ class Actuator:
             if len(out) == OOM_REPORTS:
                 break  # the others next minute: never so many that a Rollback's is lost
             self.oom_said[key] = now
-            a = self.oom_report(key, kills, nodes)
+            a = self.answer(key, kills, self.oom_kinds(key[3], kills, nodes), now, nodes)
             log.warning("%s: %s", "/".join(key), a.reason)
             out.append(a)
         return out
 
-    def oom_report(
-        self, key: tuple[str, ...], kills: list[tuple[Any, float]], nodes: dict[str, Any]
-    ) -> Actuation:
-        """One container's OOM kills as an Actuation: which kind each was, and why."""
-        ns, kind, name, container = key
-        told, limit, unread = [], None, ""
-        for p, at in kills[:OOM_SHOWN]:
+    def oom_kinds(
+        self, container: str, kills: list[tuple[Any, float]], nodes: dict[str, Any]
+    ) -> list[tuple[str, str]]:
+        """Which kind each of a container's OOM kills was, and how its report says it."""
+        out = []
+        for p, at in kills:
             spec = next((c for c in p.spec.containers if c.name == container), None)
             memory = limits_of(spec).get("memory")
             node = p.spec.node_name or ""
             if not memory:
-                told.append(f"{p.metadata.name} with no memory limit (node-level)")
+                out.append(("node-level", f"{p.metadata.name} with no memory limit (node-level)"))
                 continue
-            limit = limit or memory
             if node not in nodes:
                 try:
                     nodes[node] = system_ooms(self.core, node)
@@ -1796,22 +1935,38 @@ class Actuator:
                         log.warning("reading Node Events in default: %s", why(e))
             times = nodes[node]
             if isinstance(times, str):  # why, said once at the report's end
-                unread = times
-                told.append(
-                    f"{p.metadata.name} with a memory limit of {memory} (container-limit: "
-                    "its node's Events not read)"
+                text = (
+                    f"with a memory limit of {memory} (container-limit: its node's Events not read)"
                 )
+                out.append(("container-limit", f"{p.metadata.name} {text}"))
             elif any(abs(t - at) <= OOM_NEAR for t in times):
-                told.append(
-                    f"{p.metadata.name} with its node {node} out of memory "
-                    "(node-level: a SystemOOM Event)"
-                )
+                text = f"with its node {node} out of memory (node-level: a SystemOOM Event)"
+                out.append(("node-level", f"{p.metadata.name} {text}"))
             else:
-                told.append(
-                    f"{p.metadata.name} with a memory limit of {memory}, its node not out of "
-                    "memory (container-limit)"
-                )
+                text = f"with a memory limit of {memory}, its node not out of memory"
+                out.append(("container-limit", f"{p.metadata.name} {text} (container-limit)"))
+        return out
+
+    def oom_report(
+        self,
+        key: tuple[str, ...],
+        kills: list[tuple[Any, float]],
+        kinds: list[tuple[str, str]],
+        nodes: dict[str, Any] | None = None,
+        then: str = "Nothing changed",
+    ) -> Actuation:
+        """One container's OOM kills as an Actuation: which kind each was, and `then`."""
+        ns, kind, name, container = key
+        limits = [
+            limits_of(c).get("memory")
+            for p, _ in kills
+            for c in p.spec.containers
+            if c.name == container
+        ]
+        limit = next((q for q in limits if q), None)
+        told = [text for _, text in kinds[:OOM_SHOWN]]
         more = f"; and {len(kills) - OOM_SHOWN} more" if len(kills) > OOM_SHOWN else ""
+        unread = next((w for w in (nodes or {}).values() if isinstance(w, str)), "")
         more += f". Node Events not read: {unread}" if unread else ""
         h = self.held.get("/".join(key)) or {}
         return Actuation(
@@ -1823,9 +1978,328 @@ class Actuator:
             outcome="oom_killed",
             memory=float(qty(limit)) if limit else None,
             pods=len(kills),
-            reason=("OOM-killed: " + "; ".join(told) + more + ". Nothing changed")[:1000],
+            reason=("OOM-killed: " + "; ".join(told) + more + f". {then}")[:1000],
             at=max(at for _, at in kills),
         )
+
+    def answer(
+        self,
+        key: tuple[str, ...],
+        kills: list[tuple[Any, float]],
+        kinds: list[tuple[str, str]],
+        now: float,
+        nodes: dict[str, Any] | None = None,
+    ) -> Actuation:
+        """What a container's OOM kills get (slice 13.1b): a Rollback where its node was
+        out of memory and the Actuator had lowered its memory request; a Step-up where a
+        memory limit was reached; else, and from a Hub that sends no `oom_max`, only said."""
+        seen = self.oom_report(key, kills, kinds, nodes)
+        if self.oom_max is None:
+            return seen
+        k = "/".join(key)
+        h = self.held.get(k) or {}
+        holds = h.get("outcome") in ("applied", "rolling", "failed") and h.get("requests")
+        limit = str(seen.memory) if seen.memory else None  # a pod's, as its template's
+        if holds and lowered(h, limit) and any(kind == "node-level" for kind, _ in kinds):
+            a = rollback(
+                self.core, self.apps, k, h, seen.reason.removesuffix(". Nothing changed"), now
+            )
+            event(self.core, a, h)
+            return a
+        last = (h.get("rollbacks") or [0.0])[-1]
+        if h.get("outcome") == "rolled_back" and seen.at <= last:
+            return seen  # answered by that Rollback: no step for the same kill
+        mine = [
+            kill for kill, (kind, _) in zip(kills, kinds, strict=True) if kind == "container-limit"
+        ]
+        if not mine:
+            return seen
+        stepped = self.step_up(key, mine, now)
+        if isinstance(stepped, str):  # why not, said with the kills
+            return self.oom_report(key, kills, kinds, nodes, f"No Step-up: {stepped}")
+        stepped.reason = (stepped.reason + ": " + seen.reason.removesuffix(". Nothing changed"))[
+            :1000
+        ]
+        return stepped
+
+    def step_up(
+        self, key: tuple[str, ...], kills: list[tuple[Any, float]], now: float
+    ) -> Actuation | str:
+        """One Step-up of a container's memory limit and request on every pod of its
+        Workload, in place (slice 13.1b, ADR 0005); or why not. A kill of a pod already at
+        the container's current step earns the next one, 10 minutes after the last at the
+        soonest; a pod below it is only brought to it."""
+        ns, kind, name, container = key
+        k = "/".join(key)
+        try:
+            d = read(self.apps, kind, name, ns)
+            template = next(
+                (c for c in template_of(d, kind).spec.containers if c.name == container), None
+            )
+            top = limits_of(template).get("memory") if template is not None else None
+            if template is None or not top:
+                return "its template sets no memory limit"
+            had = {"limit": top, "request": requests_of(template).get("memory")}
+            if (d.metadata.annotations or {}).get(PAUSE) == "true":
+                return "the Workload is paused"
+            if any(
+                x.restart_policy == "RestartContainer" and x.resource_name == "memory"
+                for x in template.resize_policy or []
+            ):
+                return "its resizePolicy restarts the container for memory"
+            mode = vpa_mode(self.custom, ns, kind, name)
+            if mode:
+                return f"a VPA in mode {mode} sizes it"
+            if "memory" in hpa_resources(self.autoscaling, ns, kind, name, container):
+                return "an HPA scales on its memory"
+            st = self.stepped.get(k)
+            if st and st["template"] != had:  # a person changed it: theirs again
+                del self.stepped[k]
+                st = None
+            h = self.held.get(k) or {}
+            if h.get("outcome") == "rolling":
+                return "its Sizing is still rolling out"
+            holds = h.get("outcome") == "applied"  # its pods ask what it holds
+            held = (h.get("requests") or {}).get("memory") if holds else None
+            # what its pods ask now, and never less than its template did
+            base = max(qty(held or "0"), qty(had["request"] or top))
+            limit = qty(st["limit"] if st else top)
+            request = qty(st["request"]) if st else min(base, limit)
+            # a CronJob's pods are never resized in place: its next runs' start at it
+            cron = kind == "CronJob"
+            pods = [p for p in pods_of(self.core, self.apps, d, kind) if not lost(p)]
+            many = (d.spec.job_template.spec.parallelism or 1) if cron else len(pods)
+
+            def has(p: Any) -> Decimal | None:
+                """The memory limit the pod's container runs with: what the kubelet says
+                it gave it, where it says (a resize its node can't fit stays asked, never
+                given, on Kubernetes 1.33 and 1.34), else what its spec asks."""
+                status = container_status(p, container)
+                given = (status.resources.limits if status and status.resources else None) or {}
+                c = next((c for c in p.spec.containers if c.name == container), None)
+                q = given.get("memory") or limits_of(c).get("memory")
+                return qty(q) if q else None
+
+            earned = any(has(p) == limit and (not st or at > st["at"]) for p, at in kills)
+            target = (st["limit"], st["request"]) if st else None
+            if earned:
+                if st and now - st["at"] < STEP_EVERY:
+                    ago = int((now - st["at"]) // 60)
+                    return f"stepped up {ago} minutes ago: one a container every 10 minutes"
+                target = next_step(limit, request, qty(top) * Decimal(str(self.oom_max)))
+                if target is None:
+                    return (
+                        f"it is at {self.oom_max:g} times its template's limit "
+                        f"({memory_text(float(limit))}): raise it in its manifest, or look "
+                        "for a leak"
+                    )
+                self.steps = [t for t in self.steps if now - t < 3600]
+                if len(self.steps) >= STEPS_AN_HOUR:
+                    return f"the cluster's {STEPS_AN_HOUR} Step-ups an hour are used"
+                new = {"memory": target[0]}
+                breach = (
+                    limit_range_breach(self.core, ns, new, {})
+                    or quota_breach(self.core, ns, new, {"memory": str(limit)}, many, limits=True)
+                    or quota_breach(
+                        self.core, ns, {"memory": target[1]}, {"memory": str(request)}, many
+                    )
+                )
+                if breach:
+                    return breach
+            if target is None:
+                return "its pods' memory limit is not its template's"
+            if not earned and cron:
+                return "its next runs' pods start at its Step-up"
+            left = (st or {}).get("left") or []  # pods whose node had no room for it
+            if not earned and all(
+                (has(p) or 0) >= qty(target[0]) or p.metadata.name in left for p in pods
+            ):
+                if any(p.metadata.name in left for p, _ in kills):
+                    return (
+                        f"{len(left)} of its pods keep their memory, their node without room "
+                        "for its Step-up; the others have it"
+                    )
+                return "these kills were before its last Step-up, which every pod has"
+        except ApiException as e:
+            return f"reading it: {why(e)}"
+        body = step_body(container, *target)
+        was = memory_text(float(limit)), memory_text(float(request))
+        if earned:  # kept before a pod is touched: a restart then brings its pods to it
+            self.steps.append(now)
+            self.stepped[k] = {
+                "limit": target[0],
+                "request": target[1],
+                "template": had,
+                "at": now,
+                "steps": (st or {}).get("steps", 0) + 1,
+                **({"left": left} if left else {}),
+            }
+            self.save()
+        done, refused = 0, []
+        for p in pods:
+            got = has(p)
+            if got is None or got >= qty(target[0]) or p.metadata.name in left:
+                continue  # only ever raised: one above it (a step dropped since) keeps its own
+            try:  # one pod's refusal (its node has no room) leaves the others their step
+                self.core.patch_namespaced_pod_resize(p.metadata.name, ns, body)
+                done += 1
+            except ApiException as e:
+                refused.append(f"{p.metadata.name}: {why(e)}")
+        if earned and not done and not cron:  # a step no pod took is none: not kept, not counted
+            self.steps.pop()
+            if st:
+                self.stepped[k] = st
+            else:
+                del self.stepped[k]
+            return "every pod refused it: " + "; ".join(refused[:3])
+        if earned and holds and held:  # its memory is the Step-up's now, no Sizing's
+            del h["requests"]["memory"]
+            (h.get("template") or {}).pop("memory", None)
+        said = (
+            f"memory limit {was[0]} to {target[0]}, request {was[1]} to {target[1]}"
+            if earned
+            else f"brought to its Step-up, memory limit {target[0]}, request {target[1]}"
+        )
+        said += (
+            " for its next runs' pods, given them as they start"
+            if cron
+            else f" on {done} of {len(pods)} pods in place"
+        )
+        said += f"; {len(refused)} refused: {'; '.join(refused[:3])}" if refused else ""
+        a = Actuation(
+            namespace=ns,
+            kind=kind,
+            name=name,
+            container=container,
+            run_id=h.get("run_id", 0),
+            outcome="stepped_up",
+            memory=float(qty(target[0])),
+            pods=done,
+            reason=said[:1000],
+            at=now,
+        )
+        post(
+            self.core, ns, ("apps/v1", kind, name), "MemorySteppedUp", f"{container}: {said}", False
+        )
+        return a
+
+    def keep_steps(self) -> list[Actuation]:
+        """Each container's Step-up, each minute (slice 13.1b): handed back when a person
+        changed the memory limit or request in its Workload's template, or the Workload is
+        gone; else its pods that ask less are brought to it in place (one started from its
+        template with the webhook down, a DaemonSet's new pod), and said when any was. Not
+        a paused Workload's, nor a CronJob's pods."""
+        out = []
+        for k, st in sorted(self.stepped.items()):
+            ns, kind, name, container = k.split("/")
+            if self.is_paused(k):
+                continue
+            reason: str | None = None
+            try:
+                d = read(self.apps, kind, name, ns)
+            except ApiException as e:
+                if e.status != 404:
+                    log.warning("reading %s: %s", k, why(e))  # the API server's trouble
+                    continue
+                reason = f"no such {kind}"
+            else:
+                c = next(
+                    (c for c in template_of(d, kind).spec.containers if c.name == container), None
+                )
+                had = {"limit": limits_of(c).get("memory"), "request": requests_of(c).get("memory")}
+                was_ = st["template"]
+                if c is None:
+                    reason = f"no container {container!r} in its template"
+                elif had != was_:
+                    reason = "its template's memory changed: " + ", ".join(
+                        f"{x} {was_[x] or 'unset'} to {had[x] or 'unset'}"
+                        for x in ("limit", "request")
+                        if had[x] != was_[x]
+                    )
+            if reason:
+                del self.stepped[k]
+                said = f"{reason}: its Step-up dropped"
+                a = Actuation(
+                    namespace=ns, kind=kind, name=name, container=container,
+                    run_id=(self.held.get(k) or {}).get("run_id", 0),
+                    outcome="step_ended", pods=0, reason=said, at=time.time(),
+                )  # fmt: skip
+                log.info("handed back %s: %s", k, said)
+                post(
+                    self.core,
+                    ns,
+                    ("apps/v1", kind, name),
+                    "HandedBack",
+                    f"{container}: {said}",
+                    False,
+                )
+                out.append(a)
+                continue
+            try:  # a CronJob has none to bring: its next runs' start at it
+                pods = [p for p in pods_of(self.core, self.apps, d, kind) if not lost(p)]
+            except ApiException as e:
+                log.warning("reading %s's pods: %s", k, why(e))
+                continue
+            live = {p.metadata.name for p in pods}
+            left = [n for n in st.get("left") or [] if n in live]  # no room on their node
+            done, was = 0, len(left)
+            for p in pods:
+                spec = next((c for c in p.spec.containers if c.name == container), None)
+                asks = limits_of(spec).get("memory")
+                if not asks or p.metadata.name in left:
+                    continue
+                try:
+                    if qty(asks) < qty(st["limit"]):  # only ever raised
+                        body = step_body(container, st["limit"], st["request"])
+                        self.core.patch_namespaced_pod_resize(p.metadata.name, ns, body)
+                        done += 1
+                    elif any(
+                        c.type == "PodResizePending" and c.status == "True"
+                        for c in (p.status.conditions if p.status else None) or []
+                    ):
+                        # its node has no room (Kubernetes 1.33 and 1.34 keep the resize
+                        # asked): back to what it was given and left so, or a Sizing's
+                        # rollout would read it as its own Infeasible pod, and evict it
+                        status = container_status(p, container)
+                        given = status.resources if status and status.resources else None
+                        got = (given.limits if given else None) or {}
+                        had_ = (given.requests if given else None) or {}
+                        back = step_body(
+                            container,
+                            got.get("memory") or was_["limit"],
+                            had_.get("memory") or was_["request"] or was_["limit"],
+                        )
+                        self.core.patch_namespaced_pod_resize(p.metadata.name, ns, back)
+                        left.append(p.metadata.name)
+                except ApiException as e:
+                    log.warning("bringing %s to %s's Step-up: %s", p.metadata.name, k, why(e))
+            if left or "left" in st:
+                st["left"] = left
+            if not left:
+                st.pop("left", None)
+            if done or len(left) > was:
+                said = (
+                    f"brought to its Step-up, memory limit {st['limit']}, request "
+                    f"{st['request']} on {done} of {len(pods)} pods in place"
+                )
+                if len(left) > was:
+                    said += f"; {len(left) - was} left as they were: their node has no room"
+                out.append(
+                    Actuation(
+                        namespace=ns,
+                        kind=kind,
+                        name=name,
+                        container=container,
+                        run_id=(self.held.get(k) or {}).get("run_id", 0),
+                        outcome="stepped_up",
+                        memory=float(qty(st["limit"])),
+                        pods=done,
+                        reason=said,
+                        at=time.time(),
+                    )
+                )
+                log.info("%s: %s", k, said)
+        return out
 
     def is_paused(self, key: str) -> bool:
         return "/".join(key.split("/")[:3]) in self.paused
@@ -1835,7 +2309,7 @@ class Actuator:
         out, now = [], time.time()
         for key, h in self.held.items():
             if "first_run" in h:  # a CronJob's (slice 12.8c)
-                reason = first_run(self.core, self.apps, key, h, now)
+                reason = first_run(self.core, self.apps, key, h, now, key in self.reflexed)
                 if reason:
                     a = rollback(self.core, self.apps, key, h, reason, now)
                     log.warning("rolled back %s: %s", key, a.reason)
@@ -1848,7 +2322,7 @@ class Actuator:
                 for k in WATCHED:  # its hour is over: kept, no longer watched
                     h.pop(k, None)
                 continue
-            reason = trouble(self.core, self.apps, key, h, now)
+            reason = trouble(self.core, self.apps, key, h, now, key in self.reflexed)
             if reason:
                 a = rollback(self.core, self.apps, key, h, reason, now)
                 log.warning("rolled back %s: %s", key, a.reason)
@@ -1868,6 +2342,8 @@ class Actuator:
                 continue
             h["revert"] = u.id
             why_ = f"reverted by the Operator ({u.id})"
+            if self.stepped.pop(key, None):  # slice 13.1b: its memory is a Sizing's again
+                why_ += "; its Step-up dropped, its pods keep their memory until they start again"
             if h.get("outcome") in ("applied", "rolling", "failed") and h.get("requests"):
                 a = put_back(self.core, self.apps, key, h, "reverted", why_, time.time())
             else:
@@ -1934,7 +2410,7 @@ class Actuator:
             )  # fmt: skip
             a, new = apply(
                 self.core, self.apps, w, time.time(), self.autoscaling, self.custom,
-                eviction=self.eviction, left=left,
+                eviction=self.eviction, left=left, stepped=key in self.stepped,
             )  # fmt: skip
             if new.pop("passing", False):
                 log.warning("%s waits to catch up: %s", key, a.reason if a else "")
@@ -2068,7 +2544,7 @@ class Actuator:
                 }
             else:
                 args = (self.core, self.apps, w, now, self.autoscaling, self.custom, old, auto)
-                a, new = apply(*args, eviction=self.eviction)
+                a, new = apply(*args, eviction=self.eviction, stepped=key in self.stepped)
                 if new.pop("passing", False):  # tried again each minute, 10 at most
                     t = old.get("trying") or {}
                     if t.get("run") != w.run_id:

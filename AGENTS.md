@@ -34,7 +34,7 @@ Read next, in this order when you need depth:
 | [`docs/safety.md`](docs/safety.md) | The full safety model. |
 | [`docs/development.md`](docs/development.md) | Testing, evals and their results, MCP servers on their own, design notes. |
 | [`docs/roadmap.md`](docs/roadmap.md) | What is built, what is next ("## Next"), every decision, and "How every slice ships". It is the source of truth for project state. |
-| [`docs/adr/`](docs/adr) | Four decisions that are hard to reverse (0001 Category is a root-cause class, 0002 Hub and Relay with the Hub's own read/write list, 0003 Contract data in private git, 0004 standing approval for Sizings). |
+| [`docs/adr/`](docs/adr) | Five decisions that are hard to reverse (0001 Category is a root-cause class, 0002 Hub and Relay with the Hub's own read/write list, 0003 Contract data in private git, 0004 standing approval for Sizings, 0005 Reflexes may raise limits, Sizings never do). |
 
 ## 2. Setup and commands
 
@@ -147,7 +147,7 @@ examples/          Example inputs.
 Use the terms in `CONTEXT.md` exactly and do not invent synonyms: Contract, Operator,
 Integration, Hub, Alert, Alert group, Investigation, Triage, Question, Check, Report,
 Evidence, Runbook, Category, Recommendation, Proposed action, Approval decision, Executed
-action, Teaching, Workload, Sizing, Sizing policy, Waste, Automation, Actuator, Actuation, Revert, Reflex,
+action, Teaching, Workload, Sizing, Sizing policy, Waste, Automation, Actuator, Actuation, Revert, Reflex, Step-up, OOM kill,
 List price, Bill, Savings, Scenario, Expectation. A *Sizing* is machine output for a
 Workload; a *Recommendation* is human advice in a Report, so do not mix them.
 
