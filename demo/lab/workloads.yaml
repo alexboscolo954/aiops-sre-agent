@@ -261,3 +261,56 @@ spec:
           - name: load
             configMap: {name: load}
           restartPolicy: Never
+---
+# Autoscaled (slice 14.1a): a weekly load shared by its pods, under an HPA at 50% of a
+# 100m request. The load needs 1 pod at night and at weekends (below the minimum of 2),
+# 3 on weekdays from 08:00 to 18:00 UTC and 7 on Mondays from 09:00 to 12:00 (above the
+# maximum of 5). No replicas here: they are the HPA's.
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: weekly, namespace: lab}
+spec:
+  selector:
+    matchLabels: {app: weekly}
+  template:
+    metadata:
+      labels: {app: weekly, team: storefront}
+    spec:
+      containers:
+      - name: app
+        image: python:3.12-alpine
+        command: [python, -u, /load/load.py]
+        env:
+        - {name: PROFILE, value: weekly}
+        - {name: CPU, value: '0.05'}
+        - {name: MEMORY_MIB, value: '32'}
+        - {name: SHARE_WITH, value: weekly.lab.svc.cluster.local}
+        resources:
+          requests: {cpu: 100m, memory: 64Mi}
+          limits: {cpu: 200m}
+        volumeMounts:
+        - {name: load, mountPath: /load}
+      volumes:
+      - name: load
+        configMap: {name: load}
+---
+# Headless: its DNS name gives every Ready pod, which is how a pod counts its peers.
+apiVersion: v1
+kind: Service
+metadata: {name: weekly, namespace: lab}
+spec:
+  clusterIP: None
+  selector: {app: weekly}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata: {name: weekly, namespace: lab}
+spec:
+  scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: weekly}
+  minReplicas: 2
+  maxReplicas: 5
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target: {type: Utilization, averageUtilization: 50}

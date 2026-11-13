@@ -10,6 +10,7 @@ several clusters or Contracts (Thanos, Mimir) nothing else may come back.
 """
 
 import dataclasses
+import logging
 import math
 import re
 import time
@@ -23,6 +24,8 @@ from pydantic import SecretStr
 
 from squero.contracts import Cluster, Contract, Prometheus, ksm_label
 from squero.listprices import SAFE
+
+log = logging.getLogger(__name__)
 
 MAX_POINTS = 10_000  # Prometheus refuses a range query over 11,000 points per series
 # the burst Reflex's trigger (slice 13.3a): throttling over the hour before the read, told
@@ -531,6 +534,87 @@ def node_hours(prom: Prom, t: Target, start: float, end: float) -> tuple[float, 
     return vcpu, memory / 2**30, sampled
 
 
+NEEDS_FOR = 56 * 86400  # Needs are kept, and first read, this far back (slice 14.1a)
+HPA = "kube_horizontalpodautoscaler"
+
+
+def needs(prom: Prom, t: Target, start: float, end: float) -> dict[Workload, dict[float, float]]:
+    """Each autoscaled Workload's Need (slice 14.1a) from `start` to `end`, as the peak
+    of every UTC hour (by its start). At each step: the replicas of the Workload's HPA
+    (KEDA's is one) times the largest, over the metrics it scales on, of the metric's
+    current value over its target, both in the unit of the target's own type. A step
+    gives none where a target has no current value (or the HPA no target at all), a
+    target is not above zero, or two HPAs name the Workload. With no replicas nothing
+    ran and nothing was needed: 0, whatever the series say. The replicas are the
+    smaller of the step's and the step before's: an HPA reports a scale-up's new count
+    at once, but the utilization of the pods that already have metrics, the old ones.
+
+    All from kube-state-metrics, as Sizings are; samples at each step, so a peak
+    between two is missed (9 minutes apart on the first read of 8 weeks)."""
+
+    def read(metric: str) -> list[dict[str, Any]]:
+        return prom.range(selector(f"{HPA}_{metric}", t), start, end, step)
+
+    step = step_for(int(end - start))
+    of: dict[tuple[str, str], dict[float, Workload]] = {}  # an HPA's Workload at each step
+    for s in read("info"):
+        m = s["metric"]
+        hpa = (label(m, "namespace"), m.get("horizontalpodautoscaler", ""))
+        w = Workload(hpa[0], m.get("scaletargetref_kind", ""), m.get("scaletargetref_name", ""))
+        of.setdefault(hpa, {}).update((float(at), w) for at, _ in s["values"])
+    if not of:
+        return {}  # no HPA here: one query an hour
+    Values = dict[tuple[str, str], dict[float, dict[tuple[str, ...], float]]]
+
+    def by_step(metric: str) -> Values:
+        """Per HPA and step, each series' value by what tells it from the HPA's others:
+        the metric, its target's type and (kube-state-metrics 2.19) its container."""
+        out: Values = {}
+        for s in read(metric):
+            m = s["metric"]
+            hpa = (label(m, "namespace"), m.get("horizontalpodautoscaler", ""))
+            what = (
+                m.get("metric_name", ""),
+                m.get("metric_target_type", ""),
+                label(m, "container"),
+            )
+            for at, v in s["values"]:
+                out.setdefault(hpa, {}).setdefault(float(at), {})[what] = float(v)
+        return out
+
+    replicas, wanted, now = (
+        by_step(m)
+        for m in ("status_current_replicas", "spec_target_metric", "status_target_metric")
+    )
+    counts: dict[tuple[str, str], dict[float, float]] = {}
+    for who, by in replicas.items():
+        last: tuple[float, float] | None = None
+        for when in sorted(by):
+            count = next(iter(by[when].values()))
+            near = last is not None and when - last[0] <= 1.5 * step  # not across a gap
+            counts.setdefault(who, {})[when] = min(count, last[1]) if last and near else count
+            last = (when, count)
+    found: dict[Workload, dict[float, list[float | None]]] = {}  # a need per HPA per step
+    for hpa, steps in of.items():
+        for at, w in steps.items():
+            n = counts.get(hpa, {}).get(at)
+            targets, values = wanted.get(hpa, {}).get(at, {}), now.get(hpa, {}).get(at, {})
+            need = None
+            if n == 0:
+                need = 0.0
+            elif n and targets and all(v > 0 and k in values for k, v in targets.items()):
+                need = n * max(values[k] / v for k, v in targets.items())
+            found.setdefault(w, {}).setdefault(at, []).append(need)
+    out: dict[Workload, dict[float, float]] = {}
+    for w, steps_ in found.items():
+        for at, (need, *more) in steps_.items():
+            if need is None or more:  # unknown, or two HPAs: nothing to go by
+                continue
+            hour = at - at % 3600
+            out.setdefault(w, {})[hour] = max(need, out.get(w, {}).get(hour, 0.0))
+    return out
+
+
 @dataclass
 class Collected:
     """A Contract's usage per window, (cluster, usage) pairs, and per cluster None when
@@ -540,11 +624,20 @@ class Collected:
     clusters: dict[str, str | None]
     notes: list[str] = field(default_factory=list)
     nodes: dict[str, dict[str, Any]] = field(default_factory=dict)  # per cluster, 10.4
+    # per cluster, each Workload's Need by hour (slice 14.1a); a cluster not read has none
+    needs: dict[str, dict[Workload, dict[float, float]]] = field(default_factory=dict)
 
 
-def collect(c: Contract, windows: list[int], end: float | None = None) -> Collected:
+def collect(
+    c: Contract,
+    windows: list[int],
+    end: float | None = None,
+    needs_since: dict[str, float] | None = None,
+) -> Collected:
     """Every cluster's container usage over each window, ending at `end`. A cluster
-    that fails is named in `clusters` and never stops the others."""
+    that fails is named in `clusters` and never stops the others. `needs_since`: also
+    each cluster's Needs (slice 14.1a) from the hour given for it, 8 weeks back for
+    one it doesn't name and never further; a read of them that fails stops nothing."""
     from kubernetes import client as k
 
     from squero.servers import kubernetes
@@ -575,6 +668,14 @@ def collect(c: Contract, windows: list[int], end: float | None = None) -> Collec
             out.clusters[t.cluster] = str(e)
             continue
         out.clusters[t.cluster] = None
+        if needs_since is not None:
+            # ponytail: a cluster whose HPAs never give a Need (no target series) is
+            # read 8 weeks back every hour; keep a per-cluster read mark if that costs
+            start = max(needs_since.get(t.cluster, 0.0), end - NEEDS_FOR)
+            try:
+                out.needs[t.cluster] = needs(prom, t, start, end)
+            except UsageError as e:
+                log.warning("%s/%s: its Needs not read: %s", c.id, t.cluster, e)
         if c.list_prices:
             if t.cluster in c._shared_stores and not t.labels:
                 out.nodes[t.cluster] = {

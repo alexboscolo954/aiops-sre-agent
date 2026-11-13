@@ -642,7 +642,8 @@ async def store_run(
     run_id = await store.claim_sizing_run(c.id, at, every)
     if run_id is None:
         return None
-    found = await asyncio.to_thread(usage.collect, c, c.sizing.windows(), at)
+    since = await store.needs_since(c.id)  # slice 14.1a: each cluster's Needs from there
+    found = await asyncio.to_thread(usage.collect, c, c.sizing.windows(), at, since)
     # Each cluster's last good run, read before this one finishes (it would compare
     # with itself)
     before, status = await store.latest_sizings(c.id, set(found.clusters))
@@ -650,6 +651,9 @@ async def store_run(
     await store.finish_sizing_run(run_id, c.id, found.clusters, now)
     for cluster, facts in found.nodes.items():
         await store.save_nodes(c.id, cluster, at, facts)
+    for cluster, needs in found.needs.items():
+        by = {(w.namespace, w.kind, w.name): hours for w, hours in needs.items()}
+        await store.save_needs(c.id, cluster, by)
     await realize(store, c, at, before, status, now, found.clusters)
     await store.prune_sizings(c.id, at)
     return found

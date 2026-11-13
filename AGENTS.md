@@ -88,7 +88,8 @@ src/squero/
   slack.py         Slack Socket Mode: buttons, thread updates.
   checks.py, deploys.py, related.py, teachings.py, embeddings.py   Checks, deploy verification,
                    related alert groups, Teachings, similar incidents.
-  usage.py         Reads Prometheus: workloads, node-hours, node facts for list prices.
+  usage.py         Reads Prometheus: workloads, node-hours, node facts for list prices,
+                   autoscaled Workloads' Needs.
   sizing.py        Sizings, policies, cost, waste, Savings, digests.
   listprices.py    Cloud list prices (AWS, Azure, GCP), per currency.
   actuator.py      The Actuator (Phase 12): in a client's cluster, pulls Approved Sizings
@@ -147,7 +148,7 @@ examples/          Example inputs.
 Use the terms in `CONTEXT.md` exactly and do not invent synonyms: Contract, Operator,
 Integration, Hub, Alert, Alert group, Investigation, Triage, Question, Check, Report,
 Evidence, Runbook, Category, Recommendation, Proposed action, Approval decision, Executed
-action, Teaching, Workload, Sizing, Sizing policy, Waste, Automation, Actuator, Actuation, Revert, Reflex, Step-up, Startup boost, Burst, OOM kill,
+action, Teaching, Workload, Sizing, Sizing policy, Waste, Automation, Actuator, Actuation, Revert, Reflex, Step-up, Startup boost, Burst, OOM kill, Need,
 List price, Bill, Savings, Scenario, Expectation. A *Sizing* is machine output for a
 Workload; a *Recommendation* is human advice in a Report, so do not mix them.
 

@@ -38,15 +38,22 @@ lgtm: ## Grafana LGTM + synthetic logs and traces (Grafana Scenarios; not in CI)
 	kubectl --context $(CTX) -n shop rollout status deploy/payments deploy/storefront --timeout=5m
 
 KPS := 92.11.0
+METRICS_SERVER := 3.14.0
 
-lab: ## persistent optimizer lab: kube-prometheus-stack + load generators in namespace lab. Its 30 days of history live in the kind node: `kind delete cluster` erases them
+lab: ## persistent optimizer lab: kube-prometheus-stack, metrics-server (the HPA's) + load generators in namespace lab. Its 30 days of history live in the kind node: `kind delete cluster` erases them
 	for i in 1 2 3 4 5; do helm upgrade --install kps kube-prometheus-stack \
 	  --repo https://prometheus-community.github.io/helm-charts --version $(KPS) \
 	  --kube-context $(CTX) -n monitoring --create-namespace -f demo/lab/values.yaml \
 	  --wait --timeout 15m && break; echo "retry $$i"; sleep 20; done
-	kubectl --context $(CTX) apply -f demo/lab/workloads.yaml
+	helm upgrade --install metrics-server metrics-server \
+	  --repo https://kubernetes-sigs.github.io/metrics-server/ --version $(METRICS_SERVER) \
+	  --kube-context $(CTX) -n kube-system --set 'args={--kubelet-insecure-tls}' \
+	  --wait --timeout 5m
+	kubectl --context $(CTX) create namespace lab --dry-run=client -o yaml \
+	  | kubectl --context $(CTX) apply -f -
 	kubectl --context $(CTX) -n lab create configmap load --from-file=demo/lab/load.py \
 	  --dry-run=client -o yaml | kubectl --context $(CTX) apply -f -
+	kubectl --context $(CTX) apply -f demo/lab/workloads.yaml
 	kubectl --context $(CTX) -n lab rollout status deploy/web deploy/api deploy/spiky deploy/idle --timeout=5m
 
 lab-grafana: ## the lab's Grafana on http://localhost:3000 (admin / lab-only)

@@ -22,6 +22,7 @@ from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel
 
 from squero.models import AlertGroup, Investigation
+from squero.usage import NEEDS_FOR
 
 Pool = AsyncConnectionPool[AsyncConnection[DictRow]]
 MIGRATIONS = Path(__file__).parent / "migrations"
@@ -539,6 +540,45 @@ class Store:
                 (Jsonb(clusters), run_id, contract_id),
             )
 
+    async def save_needs(
+        self,
+        contract_id: str,
+        cluster: str,
+        found: dict[tuple[str, str, str], dict[float, float]],
+    ) -> None:
+        """A cluster's Needs as a run read them (slice 14.1a): per Workload (namespace,
+        kind, name), each UTC hour's peak. An hour read again keeps the larger: the hour
+        under way grows, and a coarser read never lowers a finer one."""
+        async with self.pool.connection() as conn, conn.transaction():
+            for workload, hours in found.items():
+                for hour, need in hours.items():
+                    await conn.execute(
+                        "insert into needs values (%s, %s, %s, %s, %s, %s, %s) on conflict "
+                        "(contract_id, cluster, namespace, kind, name, hour) do update "
+                        "set need = greatest(needs.need, excluded.need)",
+                        (contract_id, cluster, *workload, hour, need),
+                    )
+
+    async def needs_since(self, contract_id: str) -> dict[str, float]:
+        """Per cluster, the newest hour a Need is stored for: where its next read starts."""
+        rows = await self._all(
+            "select cluster, max(hour) as hour from needs where contract_id = %s group by cluster",
+            (contract_id,),
+        )
+        return {r["cluster"]: r["hour"] for r in rows}
+
+    async def needs(
+        self, contract_id: str, clusters: set[str], since: float = 0.0
+    ) -> list[dict[str, Any]]:
+        """The Contract's stored Needs of `clusters` (its clusters now) from `since`:
+        cluster, namespace, kind, name, hour, need, oldest first."""
+        return await self._all(
+            "select cluster, namespace, kind, name, hour, need from needs where "
+            "contract_id = %s and cluster = any(%s) and hour >= %s "
+            "order by hour, cluster, namespace, kind, name",
+            (contract_id, sorted(clusters), since),
+        )
+
     async def save_nodes(
         self, contract_id: str, cluster: str, at: float, facts: dict[str, Any]
     ) -> None:
@@ -651,6 +691,10 @@ class Store:
         await self._exec(
             "delete from actuations where contract_id = %s and least(at, received_at) < %s",
             (contract_id, at - ACTUATIONS_FOR),
+        )
+        await self._exec(
+            "delete from needs where contract_id = %s and hour < %s",
+            (contract_id, at - NEEDS_FOR),
         )
 
     async def latest_sizings(

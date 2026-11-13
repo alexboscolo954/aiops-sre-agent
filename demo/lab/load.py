@@ -1,13 +1,17 @@
 """Load for the optimizer lab: one container burns CPU and holds memory in a shape
 chosen by PROFILE, so Sizings have real usage to learn from.
 
-PROFILE: steady | diurnal | spiky | leak | idle | burst-once (CronJob)
+PROFILE: steady | diurnal | spiky | leak | idle | burst-once (CronJob) | weekly
 CPU (cores) and MEMORY_MIB set the level; PERIOD_S stretches the diurnal day.
+weekly is the load of a whole Workload under an HPA, by the wall clock, split between
+the pods behind the headless Service SHARE_WITH (slice 14.1a).
 """
 
+import contextlib
 import math
 import multiprocessing as mp
 import os
+import socket
 import time
 
 PROFILE = os.environ.get("PROFILE", "steady")
@@ -15,10 +19,35 @@ CPU = float(os.environ.get("CPU", "0.2"))
 MEMORY_MIB = int(os.environ.get("MEMORY_MIB", "64"))
 PERIOD_S = float(os.environ.get("PERIOD_S", str(24 * 3600)))
 SLICE = 0.1
+SHARE_WITH = os.environ.get("SHARE_WITH", "")
+PODS = 1
+
+
+def weekly(now: float) -> float:
+    """The whole Workload's cores at wall-clock `now`, UTC, the same for every pod
+    whenever it started: CPU at night and at weekends, three times that on weekdays
+    from 08:00 to 18:00, seven times on Mondays from 09:00 to 12:00."""
+    t = time.gmtime(now)
+    if t.tm_wday == 0 and 9 <= t.tm_hour < 12:
+        return CPU * 7
+    if t.tm_wday < 5 and 8 <= t.tm_hour < 18:
+        return CPU * 3
+    return CPU
+
+
+def pods() -> int:
+    """The pods that share the load: the addresses behind SHARE_WITH, never under one;
+    the last count when the lookup fails."""
+    global PODS
+    with contextlib.suppress(OSError):
+        PODS = max(1, len({a[4][0] for a in socket.getaddrinfo(SHARE_WITH, None)}))
+    return PODS
 
 
 def cores(t: float) -> float:
     """How many cores to burn at time t (seconds since start)."""
+    if PROFILE == "weekly":
+        return weekly(time.time()) / pods()
     if PROFILE == "diurnal":
         return CPU * (0.55 + 0.45 * math.sin(2 * math.pi * t / PERIOD_S))
     if PROFILE == "spiky":
@@ -28,7 +57,7 @@ def cores(t: float) -> float:
     return CPU
 
 
-PEAK = {"diurnal": CPU, "spiky": CPU * 6, "idle": 0.01}.get(PROFILE, CPU)
+PEAK = {"diurnal": CPU, "spiky": CPU * 6, "idle": 0.01, "weekly": CPU * 7}.get(PROFILE, CPU)
 
 
 def burn(worker: int, level: "mp.sharedctypes.Synchronized[float]") -> None:
