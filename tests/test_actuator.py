@@ -148,6 +148,8 @@ def test_an_actuator_gets_only_its_own_clusters_current_approved_deployments(
         "oom_max": None,
         "oom_expires": None,
         "boosts": [],
+        "burst": [],
+        "burst_run": None,
     }
     assert old.json()["sizings"] == [{**wanted, "name": "api", "cpu": 0.115, "memory": None}]
     known = ("Deployment", "StatefulSet", "DaemonSet")  # what 0.44.0 names
@@ -177,6 +179,8 @@ def test_the_kill_switch_and_a_later_run_leave_nothing_to_apply(
         "oom_max": None,
         "oom_expires": None,
         "boosts": [],
+        "burst": [],
+        "burst_run": None,
     }
     assert superseded == {
         "kill_switch": False,
@@ -188,6 +192,8 @@ def test_the_kill_switch_and_a_later_run_leave_nothing_to_apply(
         "oom_max": None,
         "oom_expires": None,
         "boosts": [],
+        "burst": [],
+        "burst_run": None,
     }
 
 
@@ -1498,6 +1504,8 @@ def test_an_actuator_gets_the_newest_sizings_of_what_its_contract_automates(
         "oom_max": None,
         "oom_expires": None,
         "boosts": [],
+        "burst": [],
+        "burst_run": None,
     }
 
 
@@ -4307,8 +4315,8 @@ def test_the_oom_reflex_needs_an_actuator_and_takes_how_far_a_step_up_may_go() -
     data["clusters"][0].pop("actuator_token_secret")  # no cluster runs an Actuator
     with pytest.raises(ValueError, match="actuator: reflexes, but no cluster has an actuator"):
         contracts.build({**data, **OOM}, secrets={"r": SecretStr("r" * 40)})
-    with pytest.raises(ValueError, match="Extra inputs are not permitted"):  # a later slice's
-        automating("acme", A_TOKEN, AUTO, actuator={"reflexes": {"burst": {}}})
+    with pytest.raises(ValueError, match="Extra inputs are not permitted"):  # no such Reflex
+        automating("acme", A_TOKEN, AUTO, actuator={"reflexes": {"throttle": {}}})
     assert automating("acme", A_TOKEN, AUTO, **OOM).actuator.reflexes.oom.expires == 7 * 86400
     for bad in ("30m", "91d"):  # an hour at least, 90 days at most
         with pytest.raises(ValueError, match="must be from 1h to 90d"):
@@ -4700,9 +4708,9 @@ def test_a_minute_reports_50_containers_at_most_the_others_the_next() -> None:
 
 
 def test_an_actuator_ignores_what_a_newer_hub_adds_to_its_answer() -> None:
-    newer = {**desired(1), "oom": [API.model_dump() | {"since": 1}], "burst": [{"x": 1}]}
+    newer = {**desired(1), "oom": [API.model_dump() | {"since": 1}], "later": [{"x": 1}]}
     got = actuator.Desired.model_validate(newer)
-    assert got.oom == [API] and not hasattr(got, "burst")
+    assert got.oom == [API] and not hasattr(got, "later")
 
 
 # --- slice 13.1b: the Step-up (ADR 0005) -------------------------------------------------------
@@ -6309,3 +6317,109 @@ def test_boosts_go_on_while_the_hub_is_unreachable_and_stop_under_the_kill_switc
     assert answer["response"].get("patch") is None
     b.step()
     assert not b.killed and cpu_limit(core, "api-1-b") == "500m"
+
+
+# --- slice 13.3a: the burst Reflex, the Hub's side ----------------------------------------
+
+BURST = {"actuator": {"reflexes": {"burst": {}}}}
+HOT = {"throttled": 0.4, "peak": 0.7}
+
+
+def test_the_burst_reflex_needs_an_actuator_and_takes_its_term() -> None:
+    on = automating("acme", A_TOKEN, AUTO, **BURST).actuator.reflexes
+    assert on.burst is not None and on.burst.expires == 86400 and on.oom is None
+    assert automating("acme", A_TOKEN, AUTO).actuator.reflexes.burst is None  # off unless set
+    data = actuated("acme", A_TOKEN).model_dump(mode="json", exclude_none=True)
+    data["clusters"][0].pop("actuator_token_secret")  # no cluster runs an Actuator
+    with pytest.raises(ValueError, match="actuator: reflexes, but no cluster has an actuator"):
+        contracts.build({**data, **BURST}, secrets={"r": SecretStr("r" * 40)})
+    for bad in ("30m", "8d"):  # an hour at least; a week at most, the shortest built-in window
+        with pytest.raises(ValueError, match="must be from 1h to 7d"):
+            automating("acme", A_TOKEN, AUTO, actuator={"reflexes": {"burst": {"expires": bad}}})
+    week = automating("acme", A_TOKEN, AUTO, actuator={"reflexes": {"burst": {"expires": "7d"}}})
+    assert week.actuator.reflexes.burst.expires == 7 * 86400
+    with pytest.raises(ValueError, match="Extra inputs are not permitted"):  # slice 13.3b's
+        automating("acme", A_TOKEN, AUTO, actuator={"reflexes": {"burst": {"max": 2}}})
+
+
+def read(cid: str, ago: float = 60.0) -> Any:
+    """A Sizing run of `cid`'s cluster `test`, `ago` seconds ago."""
+    return (
+        "insert into sizing_runs (contract_id, at, clusters) values (%s, %s, %s)",
+        (cid, time.time() - ago, '{"test": null}'),
+    )
+
+
+def test_the_hub_tells_an_actuator_which_of_its_own_containers_a_burst_is_due(
+    settings: Settings, database_url: str
+) -> None:
+    acme = automating("acme", A_TOKEN, AUTO, **BURST)
+    bank = automating("bank", B_TOKEN, {**AUTO, "name": "ledger"}, **BURST)
+    kinds = {"kinds": ",".join(actuator.KINDS)}
+
+    def pulled(c: TestClient, token: str = A_TOKEN, **params: str) -> Any:
+        got = c.get("/actuator/desired", headers=as_actuator(token), params=params).json()
+        got["burst"].sort(key=lambda b: (b["kind"], b["name"]))
+        return got
+
+    with TestClient(hub(settings, database_url, acme, bank)) as c:
+        sql(
+            database_url,
+            read("acme"),  # run 1
+            sized("acme", 1, burst=HOT),
+            sized("acme", 1, "calm", burst={"throttled": 0.25, "peak": 0.1}),  # not over a quarter
+            sized("acme", 1, "learning", state="learning", memory=None, burst={"peak": 0.3}),
+            sized("acme", 1, "before"),  # a row stored before the Reflex was set
+            sized("acme", 1, "db", kind="StatefulSet", burst=HOT),
+            sized("acme", 1, "nightly", kind="CronJob", burst=HOT),  # never a CronJob's
+            sized("acme", 1, "side", container="sidecar", burst=HOT),  # no rule automates it
+            read("bank"),  # run 2
+            sized("bank", 2, "ledger", burst={"throttled": 0.9, "peak": 2.0}),
+            sized("bank", 2, "api", burst=HOT),  # bank automates only its ledger
+        )
+        mine, old, theirs = pulled(c, **kinds), pulled(c), pulled(c, B_TOKEN, **kinds)
+        sql(database_url, ("insert into kill_switches values ('acme', 't', 1)", ()))
+        killed = pulled(c, **kinds)
+        sql(
+            database_url,
+            ("delete from kill_switches", ()),
+            ("update sizing_runs set at = %s where id = 1", (time.time() - 7300,)),
+        )
+        stale = pulled(c, **kinds)
+    one = {"namespace": "shop", "kind": "Deployment", "container": "app"}
+    none = {"throttled": None, "peak": None}
+    assert mine["burst"] == [
+        {**one, "name": "api", **HOT},
+        {**one, "name": "before", **none},
+        {**one, "name": "calm", "throttled": None, "peak": 0.1},
+        {**one, "name": "learning", "throttled": None, "peak": 0.3},
+        {**one, "kind": "StatefulSet", "name": "db", **HOT},
+    ]
+    assert "nightly" in [w["name"] for w in mine["automated"]]  # its Sizing still goes
+    assert old["burst"] == mine["burst"][:-1]  # an Actuator naming no kinds: Deployments only
+    assert theirs["burst"] == [{**one, "name": "ledger", "throttled": 0.9, "peak": 2.0}]
+    assert (mine["burst_run"], theirs["burst_run"]) == (1, 2)  # a Burst is due once a run
+    assert (killed["burst"], killed["burst_run"]) == ([], None)
+    # a read two hours old: no Burst is due for it, and its peak is not known
+    assert stale["burst"] == [{**b, **none} for b in mine["burst"]] and stale["burst_run"] == 1
+    off = automating("acme", A_TOKEN, AUTO, **OOM)  # the same Contract with the other Reflex only
+    with TestClient(hub(settings, database_url, off)) as c:
+        sql(database_url, ("update sizing_runs set at = %s where id = 1", (time.time() - 60,)))
+        mine = pulled(c, **kinds)
+    assert (mine["burst"], mine["burst_run"]) == ([], None) and len(mine["automated"]) == 5
+
+
+def test_an_actuator_told_of_bursts_changes_and_reports_nothing_yet() -> None:
+    """Slice 13.3b acts on them; until then they are read and left."""
+    core, apps = cluster({"cpu": "2"})
+    seen: list[httpx.Request] = []
+    api = {"namespace": "shop", "kind": "Deployment", "name": "api", "container": "app"}
+    told = {**desired(), "burst": [{**api, "throttled": 1.0001, "peak": 3.0}], "burst_run": 7}
+    a = make(hub_of([told], seen), core, apps)
+    a.step()
+    assert resized(core) == [] and posted(seen) == []
+    assert not core.create_namespaced_event.called
+    got = actuator.Desired.model_validate(told)  # nothing bounded: a share can pass 1 by a hair
+    assert (got.burst[0].throttled, got.burst[0].peak, got.burst_run) == (1.0001, 3.0, 7)
+    older = actuator.Desired.model_validate(desired())  # a Hub from before this
+    assert older.burst == [] and older.burst_run is None

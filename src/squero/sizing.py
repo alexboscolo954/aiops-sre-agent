@@ -40,6 +40,8 @@ PRODUCTION = BUILTIN["production"]
 HALF_LIFE_S = PRODUCTION.half_life
 MIN_CHANGE = {"cpu": 0.010, "memory": 16 * 2**20}
 THROTTLED = 0.10  # share of CFS periods throttled above which CPU demand is hidden
+BURST_OVER = 0.25  # share of the last hour's CFS periods throttled above which a Burst is due
+BURST_FRESH = 7200  # a read older than this triggers no Burst, and its peak is not known
 
 Action = Literal["set", "raise", "lower", "keep"]
 RiskKind = Literal[
@@ -184,6 +186,20 @@ def size(u: ContainerUsage, now: float, policy: Policy = PRODUCTION) -> Sizing:
     return s
 
 
+def bursting(row: dict[str, Any], age: float | None) -> dict[str, float | None]:
+    """What the burst Reflex goes by for a stored row's container (slice 13.3a), its read
+    `age` seconds old: `throttled`, its share of the hour's CPU periods when over
+    `BURST_OVER` (a Burst is due), else None; and `peak`, its highest CPU use (cores, a
+    5-minute rate of one pod) over the Contract's `expires`. Both None from a read older
+    than `BURST_FRESH`, or never made: an hour long past is no reason to raise a limit."""
+    kept = row.get("burst") or {}
+    if age is None or age > BURST_FRESH:
+        return {"throttled": None, "peak": None}
+    share = kept.get("throttled")
+    over = share is not None and share > BURST_OVER
+    return {"throttled": share if over else None, "peak": kept.get("peak")}
+
+
 def pod_times(u: ContainerUsage) -> list[float]:
     """A time per pod per step: Running pods from kube-state-metrics, else (no phase
     series) its CPU samples, which outlive a pod by `rate`'s 5 minutes."""
@@ -237,6 +253,10 @@ def rows(
                 continue
             if policy.window != window:
                 continue
+            if c.actuator.reflexes.burst:  # read by `bursting` (slice 13.3a), whatever its state
+                since = now - c.actuator.reflexes.burst.expires
+                peak = max((v for at, v in u.cpu if at >= since), default=None)
+                row["burst"] = {"throttled": u.throttled_recent, "peak": peak}
             s = size(u, now, policy)
             row |= {
                 "state": s.state,

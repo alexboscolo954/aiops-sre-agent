@@ -233,6 +233,25 @@ class Watched(BaseModel):
     peak: float | None = None
 
 
+class Throttled(BaseModel):
+    """A container the burst Reflex goes by (slice 13.3a), as the Hub's last hourly read
+    has it. Nothing here is bounded: a share of two sums can pass 1 by a hair. A released
+    Actuator drops the Hub's whole answer over an item it can't read: only ever add
+    optional fields here."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    namespace: str
+    kind: str
+    name: str
+    container: str
+    # its share of CPU periods throttled in the hour before that read, when over a quarter:
+    # a Burst is due. None: none is
+    throttled: float | None = None
+    # cores: its highest CPU use over the Contract's term; None: not known
+    peak: float | None = None
+
+
 class Boost(BaseModel):
     """A container whose new pods get a Startup boost (slice 13.4), and its factor."""
 
@@ -264,6 +283,11 @@ class Desired(BaseModel):
     # it is still needed. None, as from a Hub of 13.1b: a Step-up never expires
     oom_expires: float | None = None
     boosts: list[Boost] = []  # slice 13.4; none from an older Hub
+    # slice 13.3a: the automated containers of a Contract with `reflexes.burst`, and the
+    # Sizing run they were read in (a Burst is due once a run). Read by no Actuator yet:
+    # slice 13.3b acts on them
+    burst: list[Throttled] = []
+    burst_run: int | None = None
 
 
 class Actuation(BaseModel):

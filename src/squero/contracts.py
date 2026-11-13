@@ -692,10 +692,20 @@ class OomReflex(Strict):
     expires: Annotated[int, BeforeValidator(_duration("1h", "90d"))] = 7 * 86400
 
 
+class BurstReflex(Strict):
+    """The Reflex for CPU throttling, on by being there (slice 13.3a): each hour the Hub
+    tells the cluster's Actuator which automated containers were throttled in more than a
+    quarter of their CPU periods over the last hour (a Burst is due), and each one's CPU
+    peak over the last `expires`, which is what keeps a Burst past its term."""
+
+    expires: Annotated[int, BeforeValidator(_duration("1h", "7d"))] = 86400
+
+
 class Reflexes(Strict):
     """The Contract's Reflexes (Phase 13), each off unless set."""
 
     oom: OomReflex | None = None
+    burst: BurstReflex | None = None
 
 
 class ActuatorConfig(Strict):
@@ -798,7 +808,7 @@ class Contract(Strict):
                 raise ValueError(f"sizing rule {i + 1} automates: {where} no actuator_token_secret")
         if self.actuator.eviction and not actuated:
             raise ValueError("actuator: eviction, but no cluster has an actuator_token_secret")
-        if self.actuator.reflexes.oom and not actuated:
+        if (self.actuator.reflexes.oom or self.actuator.reflexes.burst) and not actuated:
             raise ValueError("actuator: reflexes, but no cluster has an actuator_token_secret")
         for i, t in enumerate(self.allocation.teams):
             if t.cluster is not None and t.cluster not in groups["cluster"]:

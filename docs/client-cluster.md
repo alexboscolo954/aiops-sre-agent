@@ -169,6 +169,25 @@ A Step-up is not the Workload's new size: it ends by itself.
 - **On the Automation page.** A container's row shows its Step-up's memory limit beside what it holds of a Sizing, and a container with only a Step-up is a row too. Revert is offered for either, and drops both.
 - **In a Triage's thread.** When a Triage ends, the Hub adds one line above its Report for each Step-up made, from an hour before the Triage began, on a Workload its Alerts name (by a `deployment`, `statefulset`, `daemonset`, `rollout` or `cronjob` label, or a `pod` label that begins with the Workload's name, in the same namespace). The Hub writes it from what it stored; the model never sees it (the Hub never reads a thread's messages back). A Triage that ends twice says it twice.
 
+### Burst: CPU throttling, the Hub's side
+
+The third Reflex, a **Burst**, raises the CPU limit of a container that is being throttled. The Actuator can't see throttling (it is in Prometheus, or behind a kubelet permission too wide to grant), so the Hub decides from its hourly read and the Actuator makes the change. Only the Hub's side is built so far: with this set, the Hub reads and tells, and **nothing in the cluster changes yet**.
+
+```yaml
+actuator:
+  reflexes:
+    burst:
+      expires: 24h   # the time a Burst's CPU peak is read over; 24h unless set, 1h to 7d
+```
+
+It needs a cluster with an `actuator_token_secret`. `max` (how far a Burst may go) comes with the Actuator's side and is refused until then.
+
+- **The trigger.** With each hourly Sizing run the Hub also reads every container's share of CPU periods throttled over the last hour (two more Prometheus reads a cluster for each policy window in use). More than a quarter means a Burst is due. A Workload's pods are pooled, so one hot pod among ten quiet ones reads low. A container that ran fewer than 600 periods in the hour, its pods together (a minute's worth at the default 100 ms), is not told at all: one throttled in the only second it ran is no Burst. A container without a CPU limit has no such periods and is never told.
+- **The peak.** Its highest CPU use over the last `expires` (or its policy's window, when that is shorter), from the samples the Sizing already reads. Those are 5-minute rates of one pod (coarser under a policy window of more than a month), so short spikes read well under the limit: the peak says a container is under sustained load, not that it spiked.
+- **What the Actuator is told.** `/actuator/desired`'s `burst` lists the cluster's containers under Automation, as `oom` does but never a CronJob's: each with `throttled` (its share, only when over a quarter) and `peak`, and `burst_run`, the Sizing run they were read in, so that one read is one Burst at most. A read more than two hours old (Prometheus down, the Hub restarted late) gives neither: an hour long past is no reason to raise a limit.
+- **What it needs.** cAdvisor's `container_cpu_cfs_throttled_periods_total` and `container_cpu_cfs_periods_total` in the cluster's Prometheus. They are optional for Sizings (`squero sizing show` names them when missing); without them no Burst is ever due, and nothing else says so.
+- **Where it is kept.** In the container's stored Sizing row, beside its Sizing, only while the Contract sets the Reflex. The console, the digest and the model never read it.
+
 ### The Startup boost
 
 A container that needs more CPU to start than to run (a JVM, a cache to warm) can have a higher CPU limit for its start only. It is a factor on a Sizing rule, beside `automate`, so it needs no `reflexes` block:
@@ -188,7 +207,7 @@ sizing:
 - **The annotation is read as anyone's word.** The Actuator only ever lowers a CPU limit to the value it names, never under the container's request. It can't remove the annotation (it may not edit pods), so it stays on the pod.
 - **Know before you set it.** A JVM, and any runtime that sizes its thread pools from the CPU count it sees at start, sizes them from the boosted limit and keeps them once the limit is back. And a policy engine that caps CPU limits or the limit-to-request ratio (Kyverno, Gatekeeper, a ValidatingAdmissionPolicy) can refuse a boosted pod's creation: the Actuator reads LimitRanges and ResourceQuotas, not those.
 
-An Actuator older than this ignores `boosts`; a Hub older than this sends none.
+An Actuator older than this ignores `boosts` and `burst`; a Hub older than this sends neither.
 
 Upgrade the Hub before its Actuators, and roll Actuators back before the Hub: an Actuator's report with an outcome its Hub doesn't know is refused whole and dropped, the reports beside it too.
 

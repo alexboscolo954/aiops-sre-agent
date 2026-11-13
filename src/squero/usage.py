@@ -25,6 +25,11 @@ from squero.contracts import Cluster, Contract, Prometheus, ksm_label
 from squero.listprices import SAFE
 
 MAX_POINTS = 10_000  # Prometheus refuses a range query over 11,000 points per series
+# the burst Reflex's trigger (slice 13.3a): throttling over the hour before the read, told
+# only of a container that ran this many CFS periods in it (a minute's worth at the
+# default 100 ms), so one throttled in the second it ran all hour is no Burst
+RECENT = 3600
+MIN_PERIODS = 600
 CONTAINERS = 'container!="",container!="POD"'  # cAdvisor's pod-level and pause series
 REQUIRED = {  # metric -> what it gives a Sizing
     "container_cpu_usage_seconds_total": "CPU usage (cAdvisor)",
@@ -265,6 +270,8 @@ class ContainerUsage:
     pods: set[str] = field(default_factory=set)
     oom_killed_pods: int = 0
     throttled: float | None = None  # share of CFS periods throttled, None: no data
+    # the same over the last hour (slice 13.3a); None: not read, or too few periods to tell
+    throttled_recent: float | None = None
     running: list[float] = field(default_factory=list)  # a time per Running pod per step
     labels: dict[str, str] = field(default_factory=dict)  # the allocation's, newest pod's
     live: bool = False  # requests or limits read from pods seen in the last 5 minutes
@@ -284,12 +291,14 @@ def usage(
     end: float | None = None,
     fallback: Callable[[], dict[tuple[str, str], Workload]] | None = None,
     labels: Sequence[str] = (),
+    recent: bool = False,
 ) -> Usage:
     """Every container's pooled usage over the window, and the pods whose Workload
     nobody knows. `fallback` (the Kubernetes API) is asked once, only when a pod with
     usage isn't in kube-state-metrics; kube-state-metrics wins where both know a pod.
     A fallback that fails leaves those pods unknown, never the rest unread. `labels`:
-    the pod label keys each Workload gets from kube_pod_labels, its newest pod's."""
+    the pod label keys each Workload gets from kube_pod_labels, its newest pod's.
+    `recent`: also each container's throttling over the last hour (slice 13.3a)."""
     end = end or time.time()
     start, step = end - window_s, step_for(window_s)
     window = f"{window_s}s"
@@ -352,13 +361,24 @@ def usage(
     for s in at_end(f"max_over_time({oom}[{window}])"):
         if float(s["value"][1]) > 0 and (hit := _known(rows, owners, s["metric"])):
             hit.oom_killed_pods += 1
-    throttled, periods = (
-        _sum_by_row(at_end(f"increase({selector(m, t, CONTAINERS)}[{window}])"), rows, owners)
-        for m in ("container_cpu_cfs_throttled_periods_total", "container_cpu_cfs_periods_total")
-    )
-    for key, total in periods.items():
-        if total > 0:
-            rows[key].throttled = throttled.get(key, 0.0) / total
+
+    def throttling(span: str, least: float) -> dict[tuple[Workload, str], float]:
+        """Each container's share of CFS periods throttled over `span`, its pods pooled,
+        where they ran more than none and at least `least`."""
+        throttled, periods = (
+            _sum_by_row(at_end(f"increase({selector(m, t, CONTAINERS)}[{span}])"), rows, owners)
+            for m in (
+                "container_cpu_cfs_throttled_periods_total",
+                "container_cpu_cfs_periods_total",
+            )
+        )
+        return {k: throttled.get(k, 0.0) / n for k, n in periods.items() if n > 0 and n >= least}
+
+    for key, share in throttling(window, 0).items():
+        rows[key].throttled = share
+    if recent:
+        for key, share in throttling(f"{RECENT}s", MIN_PERIODS).items():
+            rows[key].throttled_recent = share
     # Pods counted from their phase, not from CPU samples: `rate` over 5 minutes
     # outlives a pod by that long, which makes a one-minute Job look like six.
     running: dict[tuple[str, str], set[float]] = defaultdict(set)
@@ -541,6 +561,7 @@ def collect(c: Contract, windows: list[int], end: float | None = None) -> Collec
             )
 
         prom = reader(t)
+        recent = c.actuator.reflexes.burst is not None  # slice 13.3a
         # A Relay's cluster has no Kubernetes API here: its Workloads come from metrics.
         fallback = from_api if t.relay is None else None
         try:
@@ -548,8 +569,7 @@ def collect(c: Contract, windows: list[int], end: float | None = None) -> Collec
             # ponytail: each window queried in full (a 7d and a 14d policy read the 14d
             # range twice), so a policy's OOM kills, throttling and step are its own
             by_window = {
-                w: usage(prom, t, w, end, fallback=fallback, labels=c.allocation.labels)
-                for w in windows
+                w: usage(prom, t, w, end, fallback, c.allocation.labels, recent) for w in windows
             }
         except UsageError as e:
             out.clusters[t.cluster] = str(e)

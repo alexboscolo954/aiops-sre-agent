@@ -549,3 +549,77 @@ def test_a_stored_sizing_carries_its_memory_peak_which_a_step_ups_term_reads() -
     fields = ("namespace", "kind", "name", "container")
     listed = actuator.Watched(**{k: row[k] for k in fields}, peak=row["memory"]["basis"])
     assert listed.peak == 300.0 * 2**20
+
+
+# --- the burst Reflex's numbers (slice 13.3a) ------------------------------------------------
+
+
+def bursting_contract(cid: str = "acme", **burst: Any) -> Contract:
+    """prometheus_contract(), its cluster running an Actuator, with `reflexes.burst`."""
+    data = make_contract(contract_id=cid).model_dump()
+    data["integrations"].append({"name": "prometheus", "url": "http://prometheus"})
+    data["clusters"][0]["actuator_token_secret"] = "act"
+    data["actuator"] = {"reflexes": {"burst": burst}}
+    return contracts.build(data, secrets={"act": SecretStr("a" * 40)})
+
+
+def test_a_row_keeps_the_last_hours_throttling_and_its_cpu_peak_only_with_the_reflex() -> None:
+    u = container(pods=1, hours=48, cores=0.1, throttled_recent=0.4)
+    u.cpu.append((NOW - 30 * H, 0.9))  # a spike 30 hours ago
+    u.cpu.append((NOW - 24 * H, 0.5))  # and one exactly a day ago
+    (row,) = rows_of(u, c=bursting_contract())
+    assert row["burst"] == {"throttled": 0.4, "peak": 0.5}  # over `expires`: a day unless said
+    (row,) = rows_of(u, c=bursting_contract(expires="2d"))
+    assert row["burst"] == {"throttled": 0.4, "peak": 0.9}
+    (row,) = rows_of(u)
+    assert "burst" not in row  # the Reflex off: nothing kept
+    young = container(pods=1, hours=2, cores=0.3)  # still learning, and not throttled
+    (row,) = rows_of(young, c=bursting_contract())
+    assert row["state"] == "learning" and row["burst"] == {"throttled": None, "peak": 0.3}
+    quiet = ContainerUsage(Workload("shop", "Deployment", "api"), "app")
+    quiet.memory = [(NOW - h * H, 80.0 * MI) for h in range(48)]  # no CPU sample at all
+    (row,) = rows_of(quiet, c=bursting_contract())
+    assert row["burst"] == {"throttled": None, "peak": None}
+
+
+@pytest.mark.parametrize(
+    ("share", "age", "told"),
+    [
+        (0.26, 60.0, 0.26),
+        (0.25, 60.0, None),  # a quarter is not more than a quarter
+        (None, 60.0, None),
+        (0.9, sizing.BURST_FRESH, 0.9),
+        (0.9, sizing.BURST_FRESH + 1, None),  # an hour long past is no reason to raise a limit
+        (0.9, None, None),  # never read
+    ],
+)
+def test_a_burst_is_due_over_a_quarter_of_the_periods_of_a_fresh_read(
+    share: float | None, age: float | None, told: float | None
+) -> None:
+    got = sizing.bursting({"burst": {"throttled": share, "peak": 0.7}}, age)
+    fresh = age is not None and age <= sizing.BURST_FRESH
+    assert got == {"throttled": told, "peak": 0.7 if fresh else None}
+    assert sizing.bursting({}, 60.0) == {"throttled": None, "peak": None}  # a row from before
+    assert (sizing.BURST_OVER, sizing.BURST_FRESH) == (0.25, 7200)
+
+
+def test_the_hourly_read_asks_for_the_last_hour_only_with_the_reflex(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = FakePrometheus()
+    lab(fake)
+    for metric, n in (("throttled_periods", 900), ("periods", 1000)):
+        fake.add(f"container_cpu_cfs_{metric}_total", n, namespace="shop", pod="api-7d9f-0",
+                 container="app")  # fmt: skip
+    monkeypatch.setattr(usage, "Prom", lambda t: _prom(fake, t))
+    found = usage.collect(prometheus_contract(), [WEEK], NOW)
+    assert [u.throttled_recent for _, u in found.by_window[WEEK]] == [None] * 4
+    assert not any("[3600s]" in q for q in fake.queries)
+    found = usage.collect(bursting_contract(), [WEEK], NOW)
+    api = next(u for _, u in found.by_window[WEEK] if u.workload.name == "api")
+    assert api.throttled_recent == pytest.approx(0.9)
+    (row,) = [
+        r for r in sizing.rows(bursting_contract(), found.by_window, NOW) if r["name"] == "api"
+    ]
+    # (the fixture's samples are the window's first two days: none in the last one)
+    assert row["burst"] == {"throttled": pytest.approx(0.9), "peak": None}

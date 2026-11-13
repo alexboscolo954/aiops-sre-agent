@@ -416,6 +416,40 @@ def test_requests_limits_oom_and_throttling() -> None:
     assert r.throttled == pytest.approx(0.15)
 
 
+def throttle(fake: FakePrometheus, pod: str, hot: float, periods: float, ago: float = 0) -> None:
+    """`pod`'s app ran `periods` CFS periods, `hot` of them throttled, `ago` seconds ago."""
+    for metric, n in (("throttled_periods", hot), ("periods", periods)):
+        fake.add(f"container_cpu_cfs_{metric}_total", n, ago, namespace="shop", pod=pod,
+                 container="app")  # fmt: skip
+
+
+def test_the_last_hours_throttling_is_read_when_asked_of_a_container_that_ran_enough() -> None:
+    """Slice 13.3a, the burst Reflex's trigger."""
+    fake = FakePrometheus()
+    a, b = deployment(fake)
+    pods = {n: deployment(fake, n, pods=1)[0] for n in ("idle", "edge", "old")}
+    for p in (a, b, *pods.values()):
+        cpu(fake, p, FLAT)
+    throttle(fake, a, 300, 400)
+    throttle(fake, b, 0, 400)  # its pods pooled: 300 of 800
+    throttle(fake, pods["idle"], 500, usage.MIN_PERIODS - 1)  # ran too little to tell
+    throttle(fake, pods["edge"], 300, usage.MIN_PERIODS)
+    throttle(fake, pods["old"], 9000, 10000, ago=2 * 3600)  # the day's, not the hour's
+    rows, _ = run(fake)
+    assert all(r.throttled_recent is None for r in rows.values())
+    assert not any("[3600s]" in q for q in fake.queries)  # two reads nobody asked for
+    rows, _ = run(fake, recent=True)
+    assert rows[("checkout", "app")].throttled_recent == pytest.approx(0.375)
+    assert rows[("edge", "app")].throttled_recent == pytest.approx(0.5)
+    idle, old = rows[("idle", "app")], rows[("old", "app")]
+    assert idle.throttled_recent is None and idle.throttled is not None  # the window's: no floor
+    assert old.throttled_recent is None and old.throttled == pytest.approx(0.9)
+    assert usage.RECENT == 3600 and usage.MIN_PERIODS == 600
+    hour = [q for q in fake.queries if "[3600s]" in q]
+    assert len(hour) == 2 and all(q.startswith("increase(container_cpu_cfs_") for q in hour)
+    assert all('namespace=~"shop"' in q or 'namespace="shop"' in q for q in hour)
+
+
 def test_no_throttling_data_is_none_not_zero() -> None:
     fake = FakePrometheus()
     (p,) = deployment(fake, pods=1)

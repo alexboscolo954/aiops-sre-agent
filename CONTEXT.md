@@ -212,7 +212,11 @@ _Avoid_: bump, boost (that is the Startup boost)
 
 **Startup boost**:
 The Reflex for a slow start: a new pod of an automated container whose Sizing rule sets `startup_boost` starts with its CPU limit times that factor (1.5 to 4), given by the Actuator's webhook at the pod's creation, and gets its own limit back in place once the pod is Ready, the container has run for 5 minutes, or it restarted, whichever is first. The CPU limit only: requests are untouched, so the pod is scheduled, and an HPA or the Cluster Autoscaler reads it, as without the boost. Not for a Guaranteed pod, a container without a CPU limit, or a CronJob's run; a restart never gets one.
-_Avoid_: Step-up (that is the memory Reflex for OOM kills), burst (that is the CPU Reflex for throttling)
+_Avoid_: Step-up (that is the memory Reflex for OOM kills), Burst (that is the CPU Reflex for throttling)
+
+**Burst**:
+The Reflex for CPU throttling: an automated container with a CPU limit, not Guaranteed, that was throttled in more than a quarter of its CPU periods over the hour before the Hub's hourly read gets its CPU limit raised by a quarter of its template's limit, a step each such read, on every pod in place and on new pods; requests untouched, never a CronJob's. It ends `expires` after its last step unless the container's CPU peak over that time stays above 90% of its template's limit. The Hub decides the trigger and reads the peak (the Actuator can't see throttling); the Actuator makes the change.
+_Avoid_: Startup boost (that is for a pod's start), Step-up (that is memory, after an OOM kill)
 
 **List price**:
 What a cloud charges on demand per hour for an instance type in a region, from its public price list (USD unless the Contract asks for another currency, which only Azure's and GCP's catalogs give; no discounts). A cluster with no typed prices gets its nodes' list prices, split into a CPU and a GiB price by one weight, so they add back up to the nodes' price.

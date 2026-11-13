@@ -1791,13 +1791,13 @@ def create_app(
 
     async def automated(
         cid: str, cluster: contracts.Cluster
-    ) -> tuple[list[dict[str, Any]], int | None]:
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         """The containers under Automation on this cluster now, as their newest Sizings'
-        rows, and that run: of a Workload without 3 Rollbacks in 7 days, not reverted
-        since their last approval."""
+        rows, and that run (its `run` and `at`): of a Workload without 3 Rollbacks in 7 days,
+        not reverted since their last approval."""
         c = by_id[cid]
         if not any(r.automate for r in c.sizing.rules):
-            return [], None
+            return [], {}
         rows, status = await store().latest_sizings(cid, {cluster.name})
         ended = actuator.resumes(await rollbacks(cid, cluster.name))
         reverted = await store().reverted(cid, cluster.name)  # until its next approval
@@ -1811,7 +1811,7 @@ def create_app(
                 and c.sizing.automated(cluster.name, *where, r["container"])
             ):
                 out.append(r)
-        return out, (status.get(cluster.name) or {}).get("run")
+        return out, status.get(cluster.name) or {}
 
     def automation(rows: list[dict[str, Any]], run: int | None) -> list[actuator.Wanted]:
         """The Sizings Automation applies (slice 12.5), of the `automated` containers:
@@ -1837,8 +1837,9 @@ def create_app(
         cluster's namespaces, Automation's for the containers no approval covers, the
         Reverts it hasn't done, and whether it may evict now (slice 12.7); nothing while
         the Kill switch is on; where the Contract sets `reflexes.oom`, the automated
-        containers whose OOM kills to report (slice 13.1a); and the automated containers
-        whose rule sets a Startup boost (slice 13.4). Only of the `kinds` it names
+        containers whose OOM kills to report (slice 13.1a); the automated containers
+        whose rule sets a Startup boost (slice 13.4); and, where it sets `reflexes.burst`,
+        what the burst Reflex goes by (slice 13.3a). Only of the `kinds` it names
         that the Hub's knows (slice
         12.8a): an Actuator that names none, 0.43.0 or older, reads every Sizing as a
         Deployment's, so it gets Deployments' only."""
@@ -1856,8 +1857,11 @@ def create_app(
             and (a["namespace"], a["kind"], a["name"], a["container"]) not in reverted
         ]
         mine = {(w.namespace, w.kind, w.name, w.container) for w in approved}
-        rows, run = await automated(cid, cluster)
+        rows, read = await automated(cid, cluster)
+        run = read.get("run")
         reflex = by_id[cid].actuator.reflexes.oom
+        burst = by_id[cid].actuator.reflexes.burst is not None
+        age = None if read.get("at") is None else time.time() - read["at"]
         return actuator.Desired(
             kill_switch=False,
             eviction=by_id[cid].actuator.evicting(datetime.now(UTC)),
@@ -1892,6 +1896,17 @@ def create_app(
                     )
                 )
             ],
+            # slice 13.3a: with the Contract's `reflexes.burst`, the automated containers
+            # (never a CronJob's) with what the last hourly read says of each: throttled
+            # enough for a Burst, and its CPU peak
+            burst=[
+                actuator.Throttled(**r, **sizing.bursting(r, age))
+                for r in rows
+                if r["kind"] in known - {"CronJob"}
+            ]
+            if burst
+            else [],
+            burst_run=run if burst else None,
             reverts=[
                 actuator.Undo.model_validate(r)
                 for r in await store().pending_reverts(cid, cluster.name)
