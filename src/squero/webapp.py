@@ -508,6 +508,7 @@ class Held(BaseModel):
     # it holds requests (its last Actuation that isn't a skip applied or failed) or a Step-up
     revertable: bool
     stepped: float | None = None  # its Step-up's memory limit now, bytes (slice 13.1c)
+    burst: float | None = None  # its Burst's CPU limit now, cores (slice 13.3b)
     outcome: str
     cpu: float | None
     memory: float | None
@@ -537,23 +538,27 @@ class RevertIn(BaseModel):
 Step = dict[tuple[str, ...], dict[str, Any]]
 
 
-async def done(st: Store, contract_id: str) -> tuple[list[dict[str, Any]], Step]:
-    """What the Contract's Actuators did, newest first, in two: with Sizings (their
-    Actuations but the OOM kills they saw, their Step-ups and the ends of those, which
-    are no Sizing's); and each container's Step-up that lasts (slice 13.1c), by cluster,
-    namespace, kind, name and container: its last `stepped_up`, unless its end or a Revert
-    came after."""
+REFLEXES = {"stepped_up": "step_ended", "burst": "burst_ended"}  # each one's making, its end
+
+
+async def done(st: Store, contract_id: str) -> tuple[list[dict[str, Any]], Step, Step]:
+    """What the Contract's Actuators did, newest first, in three: with Sizings (their
+    Actuations but what a Reflex saw, made and ended, which are no Sizing's); each
+    container's Step-up that lasts (slice 13.1c), by cluster, namespace, kind, name and
+    container: its last `stepped_up`, unless its end or a Revert came after; and each
+    one's Burst that lasts (slice 13.3b), the same way."""
     seen = await st.actuations(contract_id, 0.0)
-    stepped: Step = {}
-    decided = set()
-    for a in seen:
-        key = tuple(a[k] for k in ("cluster", "namespace", "kind", "name", "container"))
-        if key not in decided and a["outcome"] in ("stepped_up", "step_ended", "reverted"):
-            decided.add(key)
-            if a["outcome"] == "stepped_up":
-                stepped[key] = a
-    own = ("oom_killed", "stepped_up", "step_ended")
-    return [a for a in seen if a["outcome"] not in own], stepped
+    lasting: dict[str, Step] = {made: {} for made in REFLEXES}
+    for made, ended in REFLEXES.items():
+        decided = set()
+        for a in seen:
+            key = tuple(a[k] for k in ("cluster", "namespace", "kind", "name", "container"))
+            if key not in decided and a["outcome"] in (made, ended, "reverted"):
+                decided.add(key)
+                if a["outcome"] == made:
+                    lasting[made][key] = a
+    own = ("oom_killed", "throttled", *REFLEXES, *REFLEXES.values())
+    return [a for a in seen if a["outcome"] not in own], lasting["stepped_up"], lasting["burst"]
 
 
 async def revert(st: Store, c: Contract, keys: tuple[str, ...], by: str, at: float) -> None:
@@ -566,9 +571,10 @@ async def revert(st: Store, c: Contract, keys: tuple[str, ...], by: str, at: flo
         raise ValueError(f"cluster {keys[0]!r} runs no Actuator: one of {runs}")
     if keys[1] not in cl.namespaces:
         raise ValueError(f"namespace {keys[1]!r} is not one of {sorted(cl.namespaces)}")
-    seen, stepped = await done(st, c.id)
+    seen, stepped, burst = await done(st, c.id)
     fields = ("cluster", "namespace", "kind", "name", "container")
-    if keys not in stepped and not any(tuple(a[k] for k in fields) == keys for a in seen):
+    reflexed = keys in stepped or keys in burst
+    if not reflexed and not any(tuple(a[k] for k in fields) == keys for a in seen):
         raise ValueError("the Actuator has reported nothing of that container: nothing to revert")
     if await st.ask_revert(c.id, keys, by, at) == "killed":
         raise ValueError(
@@ -579,7 +585,7 @@ async def revert(st: Store, c: Contract, keys: tuple[str, ...], by: str, at: flo
 
 async def automation_of(st: Store, c: Contract, now: float) -> AutomationPage:
     """What each Actuator of the Contract last did with each container (90 days)."""
-    seen, stepped = await done(st, c.id)  # newest first
+    seen, stepped, burst = await done(st, c.id)  # newest first
     out = []
     for cl in c.clusters:
         if not cl.actuator_token_secret:
@@ -601,6 +607,9 @@ async def automation_of(st: Store, c: Contract, now: float) -> AutomationPage:
         steps = {k[1:]: a for k, a in stepped.items() if k[0] == cl.name and k[1] in cl.namespaces}
         for where, step in steps.items():  # a container it only stepped up is a row too:
             last.setdefault(where, {**step, "memory": None})  # its limit is `stepped`, no request
+        bursts = {k[1:]: a for k, a in burst.items() if k[0] == cl.name and k[1] in cl.namespaces}
+        for where, made in bursts.items():  # and one it only burst: its `cpu` is a limit
+            last.setdefault(where, {**made, "cpu": None})
         containers = [
             Held(
                 **{k: a[k] for k in Held.model_fields if k in a},
@@ -608,8 +617,9 @@ async def automation_of(st: Store, c: Contract, now: float) -> AutomationPage:
                 resumes=ended.get(key[:3]),
                 stopped=key in stopped,
                 reverting=key in reverting,
-                revertable=held.get(key) in ("applied", "failed") or key in steps,
+                revertable=held.get(key) in ("applied", "failed") or key in steps or key in bursts,
                 stepped=(steps.get(key) or {}).get("memory"),
+                burst=(bursts.get(key) or {}).get("cpu"),
             )
             for key, a in sorted(last.items())
         ]

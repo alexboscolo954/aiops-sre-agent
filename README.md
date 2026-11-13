@@ -64,7 +64,7 @@ The controls that matter sit **outside the model**. The full table is in [docs/s
 - **Clients stay apart.** Every tool checks its cluster and namespace against its own Contract, on top of RBAC.
 - **Secrets never reach the model.** Env var values, tokens and keys are redacted, and a Contract can mask its hostnames, names, emails and IPs.
 - **Prompt injection is tested.** An eval plants an instruction in pod logs and fails if the agent even attempts a write.
-- **The Actuator only resizes.** Requests only, never above the limit, nothing while the Kill switch is on, and its webhook fails open. A limit is raised only by a Reflex the Contract switches on, within its bound: memory after an OOM kill, CPU for a pod's start ([ADR 0005](docs/adr/0005-reflexes-may-raise-limits.md)).
+- **The Actuator only resizes.** Requests only, never above the limit, nothing while the Kill switch is on, and its webhook fails open. A limit is raised only by a Reflex the Contract switches on, within its bound: memory after an OOM kill, CPU for a pod's start or while it is throttled ([ADR 0005](docs/adr/0005-reflexes-may-raise-limits.md)).
 
 ## Quick start
 

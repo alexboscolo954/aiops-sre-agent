@@ -41,7 +41,10 @@ the Hub lists, told as container-limit or node-level. Slice 13.1b (ADR 0005): it
 container-limit one with a Step-up, the container's memory limit and request raised
 together on every pod in place (`step_up`). Slice 13.4: the Startup boost, a new pod's
 CPU limit times its rule's factor from the webhook, back in place once the pod is Ready or
-5 minutes old (`keep_boosts`). Those two are the only times it changes a limit.
+5 minutes old (`keep_boosts`). Slice 13.3b: the Burst, a container's CPU limit raised by a
+quarter of its template's on every pod in place when the Hub's hourly read says it is
+throttled (`burst`), kept and ended each minute (`keep_bursts`). Those three are the only
+times it changes a limit.
 
 Under Automation (slice 12.5) it also applies, unasked, the newest Sizing of each container
 the Contract automates: a change under 10% ignored, an increase at once, a decrease at most
@@ -127,6 +130,18 @@ STEPS_AN_HOUR = 10
 # container at its Step-up's cap is said: what the Hub tells the Operator of (slice 13.1c)
 STEP_SAID = "memory limit "
 AT_CAP = "No Step-up: it is at "
+# the Burst (slice 13.3b): a quarter of its template's CPU limit a step; a container's at
+# least 45 minutes apart (the Hub's reads are an hour apart, and a step lands up to a minute
+# after its read); at most 5 of the cluster's 10 an hour, so that an OOM crash loop's
+# Step-up never waits behind throttling; kept past its term while its CPU peak is above
+# 90% of its template's limit
+BURST_STEP = Decimal("0.25")
+BURST_EVERY = 2700
+BURSTS_AN_HOUR = 5
+BURST_KEEP = Decimal("0.9")
+BURST_SAID = "CPU limit "  # how a Burst made begins its reason, as STEP_SAID
+BURST_CAP = "No Burst: it is at "
+ROLLING = "its Sizing is still rolling out"  # minutes at most: a Burst waits it out
 OOM_REPORTS = 50  # containers reported in one minute, the rest the next: a node out of
 # memory kills many at once, and of its unsent reports only the newest 200 outlive a restart
 # why Kubernetes removed a pod whose node is gone: its taint manager, or its pod garbage
@@ -174,6 +189,9 @@ Outcome = Literal[
     "oom_killed",
     "stepped_up",
     "step_ended",
+    "throttled",  # slice 13.3b: throttled, and no Burst made of it
+    "burst",
+    "burst_ended",
 ]
 # held, never reported: "rolling"
 Ending = Callable[[Outcome, str], "Actuation"]  # how advance() ends a rollout
@@ -288,6 +306,10 @@ class Desired(BaseModel):
     # slice 13.3b acts on them
     burst: list[Throttled] = []
     burst_run: int | None = None
+    # slice 13.3b: how many times its template's CPU limit a Burst may reach (None, as
+    # from a Hub of 13.3a: no Burst is made), and its term in seconds
+    burst_max: float | None = None
+    burst_expires: float | None = None
 
 
 class Actuation(BaseModel):
@@ -317,6 +339,9 @@ def to_tell(outcome: str, reason: str) -> bool:
         outcome == "rolled_back"
         or (outcome == "stepped_up" and reason.startswith(STEP_SAID))
         or (outcome == "oom_killed" and AT_CAP in reason)
+        # slice 13.3b: a Burst made, and a container still throttled at its Burst's cap
+        or (outcome == "burst" and reason.startswith(BURST_SAID))
+        or (outcome == "throttled" and BURST_CAP in reason)
     )
 
 
@@ -651,11 +676,40 @@ def boost_barred(core: Any, ns: str) -> str | None:
         for item in lr.spec.limits or []:
             if "cpu" in (item.max or {}) or "cpu" in (item.max_limit_request_ratio or {}):
                 return f"LimitRange {lr.metadata.name} caps cpu"
+    return counts_cpu_limits(core, ns)
+
+
+def counts_cpu_limits(core: Any, ns: str) -> str | None:
+    """The namespace's ResourceQuota that counts `limits.cpu`, said, or None. With one, a
+    CPU limit raised on new pods (a Startup boost, a Burst) can get a pod's creation
+    refused however much room it leaves now: a rollout or an HPA makes several at once."""
     for rq in core.list_namespaced_resource_quota(ns).items:
         hard = {**((rq.spec.hard if rq.spec else None) or {}), **(rq.status.hard or {})}
         if "limits.cpu" in hard:
             return f"ResourceQuota {rq.metadata.name} counts limits.cpu"
     return None
+
+
+def limit_cpu(
+    core: Any, ns: str, container: str, pods: list[Any], limit: str, up: bool
+) -> tuple[int, int, list[str]]:
+    """Set `container`'s CPU limit to `limit` in place on those of `pods` below it (`up`,
+    a Burst: only ever raised) or above it (its end: only ever lowered): how many took it,
+    how many it was asked of, and each refusal."""
+    body = {"spec": {"containers": [{"name": container, "resources": {"limits": {"cpu": limit}}}]}}
+    done, asked, refused = 0, 0, []
+    for p in pods:
+        spec = next((c for c in p.spec.containers if c.name == container), None)
+        has = limits_of(spec).get("cpu")
+        if not has or (qty(has) >= qty(limit) if up else qty(has) <= qty(limit)):
+            continue
+        asked += 1
+        try:
+            core.patch_namespaced_pod_resize(p.metadata.name, ns, body)
+            done += 1
+        except ApiException as e:
+            refused.append(f"{p.metadata.name}: {why(e)}")
+    return done, asked, refused
 
 
 def resize_state(pod: Any, container: str, set_to: dict[str, str]) -> tuple[str, str]:
@@ -1606,11 +1660,11 @@ def stepped_for(
     return st["limit"], st["request"]
 
 
-def boosted(c: dict[str, Any], factor: float | None, kind: str) -> str | None:
+def boosted(c: dict[str, Any], factor: float | None, kind: str, limit: str | None) -> str | None:
     """The CPU limit a new pod's container `c` starts with under its Startup boost (slice
-    13.4), or None: no boost for it, no CPU limit to raise, a CronJob's run, or a
-    `resizePolicy` that would restart the container when the limit is given back."""
-    limit = ((c.get("resources") or {}).get("limits") or {}).get("cpu")
+    13.4), from `limit` (its own, or its Burst's), or None: no boost for it, no CPU limit
+    to raise, a CronJob's run, or a `resizePolicy` that would restart the container when
+    the limit is given back."""
     restarts = any(
         p.get("resourceName") == "cpu" and p.get("restartPolicy") == "RestartContainer"
         for p in c.get("resizePolicy") or []
@@ -1627,6 +1681,7 @@ def mutation(
     paused: Any = frozenset(),
     stepped: dict[str, dict[str, Any]] | None = None,
     boosts: dict[str, float] | None = None,
+    bursts: dict[str, dict[str, Any]] | None = None,
 ) -> list[Any]:
     """The JSON Patch giving a new pod of a workload the requests applied to it: only
     where its container still asks what the template asked then (a person's change wins),
@@ -1637,7 +1692,8 @@ def mutation(
     `rollouts-pod-template-hash` label (slice 12.8b). A container in `boosts` starts with
     its CPU limit times its factor (the Startup boost, slice 13.4), its own limit kept in
     the pod's `BOOST` annotation; never a pod that already carries one (its template's),
-    nor one with pod-level resources."""
+    nor one with pod-level resources. A container in `bursts` starts at its Burst's CPU
+    limit (slice 13.3b) while its own is still its template's then, a boost on top of it."""
     ns = req.get("namespace") or ""
     if req.get("operation") != "CREATE" or ns == own or ns.startswith("kube-"):
         return []
@@ -1653,8 +1709,10 @@ def mutation(
         return []
     ops: list[Any] = []
     notes = meta.get("annotations")
-    # no boost twice, nor past a pod-level limit (`spec.resources`), which would refuse it
-    unboosted = BOOST in (notes or {}) or bool((pod.get("spec") or {}).get("resources"))
+    # no CPU limit raised past a pod-level one (`spec.resources`), which would refuse the
+    # pod; and no boost twice
+    bounded = bool((pod.get("spec") or {}).get("resources"))
+    unboosted = BOOST in (notes or {}) or bounded
     own_limits: dict[str, str] = {}  # of the containers boosted
     everyone = [
         (
@@ -1701,11 +1759,22 @@ def mutation(
 
         if new and not keeps(new, grown):
             new, up = {}, None  # a pod's QoS class stays its template's (slice 12.3)
-        more = None if unboosted else boosted(c, (boosts or {}).get(key), kind)
         # a Guaranteed pod's limit can't leave its request (a limit alone is its request)
-        if more and not keeps({"cpu": requests.get("cpu", limits["cpu"])}, {**limits, "cpu": more}):
+        asks = {"cpu": requests.get("cpu", limits.get("cpu", ""))}
+        burst = (bursts or {}).get(key)
+        raised = None  # its Burst's limit, while its own is still its template's then
+        if (
+            burst
+            and not bounded
+            and kind != "CronJob"
+            and same(limits.get("cpu"), burst["template"])
+        ):
+            raised = burst["limit"] if keeps(asks, {**limits, "cpu": burst["limit"]}) else None
+        top = raised or limits.get("cpu")
+        more = None if unboosted else boosted(c, (boosts or {}).get(key), kind, top)
+        if more and not keeps(asks, {**limits, "cpu": more}):
             more = None
-        if more and "cpu" not in requests:
+        if (more or raised) and "cpu" not in requests:
             # a limit alone is its request too: said, so the request stays where it was
             new.setdefault("cpu", limits["cpu"])
         at = f"/spec/containers/{i}/resources"
@@ -1719,9 +1788,11 @@ def mutation(
             ops += [{"op": "add", "path": f"{at}/requests/{r}", "value": q} for r, q in new.items()]
         if up:
             ops.append({"op": "add", "path": f"{at}/limits/memory", "value": up[0]})
+        if more or raised:
+            ops.append({"op": "add", "path": f"{at}/limits/cpu", "value": more or raised})
         if more:
-            ops.append({"op": "add", "path": f"{at}/limits/cpu", "value": more})
-            own_limits[mine] = limits["cpu"]
+            assert top is not None
+            own_limits[mine] = top  # what it is given back to: its Burst's while that lasts
     if own_limits:
         value = json.dumps(own_limits, sort_keys=True)
         if notes is None:
@@ -1740,13 +1811,14 @@ def admit(
     paused: Any = frozenset(),
     stepped: dict[str, dict[str, Any]] | None = None,
     boosts: dict[str, float] | None = None,
+    bursts: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """The AdmissionReview answer: always allowed; a patch unless the Kill switch is on."""
     req = review.get("request") if isinstance(review, dict) else None
     req = req if isinstance(req, dict) else {}
     answer: dict[str, Any] = {"uid": req.get("uid", ""), "allowed": True}
     try:
-        ops = [] if killed else mutation(req, held, own, paused, stepped, boosts)
+        ops = [] if killed else mutation(req, held, own, paused, stepped, boosts, bursts)
     except Exception:  # fail open, as the webhook's failurePolicy does
         log.exception("webhook: pod left as it is")
         ops = []
@@ -1804,7 +1876,9 @@ def serve(a: "Actuator", cert: bytes, key: bytes, port: int = WEBHOOK_PORT) -> T
             except ValueError:
                 self.send_error(400)
                 return
-            answer = admit(review, a.held, a.killed, a.namespace, a.paused, a.stepped, a.boosting)
+            answer = admit(
+                review, a.held, a.killed, a.namespace, a.paused, a.stepped, a.boosting, a.bursts
+            )
             body = json.dumps(answer).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -1868,6 +1942,16 @@ class Actuator:
     boosting: dict[str, float] = field(default_factory=dict)
     boost_ns: set[str] = field(default_factory=set)
     boost_bars: dict[str, str] = field(default_factory=dict)
+    # slice 13.3b, the Burst: each container's (its CPU limit, its template's then, when,
+    # how many steps, its term), and the last of the Hub's reads handled for each listed
+    # container, both kept; what the Hub last allowed and said; and, in memory, the "no
+    # Burst" last said of each container, so a standing reason is said once a day
+    bursts: dict[str, dict[str, Any]] = field(default_factory=dict)
+    burst_seen: dict[str, int] = field(default_factory=dict)
+    burst_max: float | None = None
+    burst_expires: float | None = None
+    burst_peaks: dict[str, float | None] = field(default_factory=dict)
+    burst_said: dict[str, tuple[str, float]] = field(default_factory=dict)
 
     def load(self) -> None:
         try:
@@ -1884,6 +1968,8 @@ class Actuator:
             self.steps = [float(t) for t in state.get("steps") or []]
             self.boosts = {k: float(f) for k, f in (state.get("boosts") or {}).items()}
             self.boost_ns = set(state.get("boost_ns") or [])
+            self.bursts = dict(state.get("bursts") or {})
+            self.burst_seen = {k: int(r) for k, r in (state.get("burst_seen") or {}).items()}
             for a in state.get("unsent") or []:
                 try:
                     self.unsent.append(Actuation(**a))
@@ -1900,6 +1986,8 @@ class Actuator:
         more = {"stepped": self.stepped, "steps": self.steps} if self.stepped or self.steps else {}
         if self.boosts or self.boost_ns:
             more |= {"boosts": self.boosts, "boost_ns": sorted(self.boost_ns)}
+        if self.bursts or self.burst_seen:
+            more |= {"bursts": self.bursts, "burst_seen": self.burst_seen}
         return json.dumps({"killed": self.killed, "unsent": unsent, **more}, sort_keys=True)
 
     def save(self) -> None:
@@ -1959,7 +2047,7 @@ class Actuator:
                 for b in desired.boosts
             }
         wanted = (desired.sizings + desired.automated) if desired else []
-        mine = {*self.held, *self.stepped, *self.boosts}
+        mine = {*self.held, *self.stepped, *self.boosts, *self.bursts}
         self.pauses({*mine, *(f"{w.namespace}/{w.kind}/{w.name}" for w in wanted)})
         done: list[Actuation] = []
         undoing = any("unfinished" in h for h in self.held.values())  # saved once finished too
@@ -1972,6 +2060,9 @@ class Actuator:
             "/".join((w.namespace, w.kind, w.name, w.container))
             for w in (desired.oom if desired is not None and self.oom_max is not None else [])
         )
+        # slice 13.3b: no Burst from a Hub of 13.3a (it would refuse the outcome), nor when
+        # it won't look
+        self.burst_max = desired.burst_max if desired is not None and looks else None
         try:
             done += self.hand_back()
             if not self.killed:  # the Actuator undoes its own harm, the Hub reachable or not
@@ -1996,6 +2087,16 @@ class Actuator:
                 done += self.keep_steps()
                 if desired.oom and looks:  # never crowding out what the Hub hasn't
                     done += self.ooms(desired.oom)  # taken yet (slice 13.1a)
+                # slice 13.3b, after the OOM kills: a Step-up takes its place in the
+                # cluster's hour before a Burst does
+                self.burst_expires = desired.burst_expires
+                self.burst_peaks = {
+                    "/".join((t.namespace, t.kind, t.name, t.container)): t.peak
+                    for t in desired.burst
+                }
+                done += self.keep_bursts()
+                if self.burst_max is not None:
+                    done += self.burst_all(desired.burst, desired.burst_run, time.time())
         except Exception:  # its own bug: what it changed before is kept, not done twice
             self.unsent += done
             self.save()
@@ -2418,7 +2519,12 @@ class Actuator:
                 out.append(a)
                 continue
             now = time.time()
-            if self.oom_expires and now - max(st["at"], st.get("renewed", 0.0)) >= self.oom_expires:
+            if self.oom_expires:
+                # kept with it, as a Burst's: with the Reflex switched off the Hub sends no
+                # term, and a Step-up still ends at the one it had
+                st["expires"] = self.oom_expires
+            due = st.get("expires")
+            if due and now - max(st["at"], st.get("renewed", 0.0)) >= due:
                 peak, top = self.peaks.get(k), st["template"]["limit"]
                 if k in self.peaks and (peak is None or peak > float(qty(top))):
                     st["renewed"] = now  # still needed, or not known: another term
@@ -2444,7 +2550,7 @@ class Actuator:
                     )
                 else:
                     del self.stepped[k]
-                    term = f"its term of {span(self.oom_expires)} over"
+                    term = f"its term of {span(due)} over"
                     said = (
                         f"{term}, its memory peak {memory_text(peak)} within its template's "
                         f"limit {top}: {self.step_back(k, st)}"
@@ -2526,6 +2632,252 @@ class Actuator:
                 )
                 log.info("%s: %s", k, said)
         return out
+
+    def burst_all(self, listed: list[Throttled], run: int | None, now: float) -> list[Actuation]:
+        """The Hub's read `run`, once for each container it says is throttled enough (slice
+        13.3b): a Burst, or why not, said as `throttled` (a standing reason once a day). At
+        most 50 containers a minute, as OOM kills; the others the next. One whose Sizing
+        still rolls out is tried again each minute of that read."""
+        if run is None:
+            return []
+        keys = {"/".join((t.namespace, t.kind, t.name, t.container)): t for t in listed}
+        # forgotten by read, never by listing: a container a Revert unlists and an approval
+        # lists again within one read is not burst a second time from it
+        self.burst_seen = {k: r for k, r in self.burst_seen.items() if r == run}
+        out: list[Actuation] = []
+        handled = 0
+        for k, t in sorted(keys.items()):
+            if t.throttled is None or self.burst_seen.get(k) == run:
+                continue
+            if handled == OOM_REPORTS:
+                break
+            handled += 1
+            self.burst_seen[k] = run  # handled, whatever comes of it: never twice a read
+            share = f"throttled in {t.throttled:.0%} of its CPU periods over the last hour"
+            got = self.burst(k, share, now)
+            if got == ROLLING:
+                del self.burst_seen[k]
+            if isinstance(got, str):
+                said = self.burst_said.get(k)
+                if said and said[0] == got and now - said[1] < 86400:
+                    continue
+                self.burst_said[k] = (got, now)
+                got = Actuation(
+                    namespace=t.namespace, kind=t.kind, name=t.name, container=t.container,
+                    run_id=(self.held.get(k) or {}).get("run_id", 0),
+                    outcome="throttled", pods=0, reason=f"{share}. No Burst: {got}"[:1000], at=now,
+                )  # fmt: skip
+            log.warning("%s: %s", k, got.reason)
+            out.append(got)
+        return out
+
+    def burst(self, k: str, share: str, now: float) -> Actuation | str:
+        """One Burst of a container's CPU limit, a quarter of its template's more, on every
+        pod of its Workload in place (slice 13.3b, ADR 0005); or why not. Requests are
+        untouched. Never past `burst_max` times its template's limit; a container's at
+        least 45 minutes apart."""
+        ns, kind, name, container = k.split("/")
+        if kind == "CronJob" or kind not in KINDS:
+            return f"a {kind}'s pods get none"
+        try:
+            d = read(self.apps, kind, name, ns)
+            containers = template_of(d, kind).spec.containers
+            template = next((c for c in containers if c.name == container), None)
+            top = limits_of(template).get("cpu") if template is not None else None
+            if template is None or not top:
+                return "its template sets no CPU limit"
+            if (d.metadata.annotations or {}).get(PAUSE) == "true":
+                return "the Workload is paused"
+            if qos([(requests_of(c), limits_of(c)) for c in containers]) == "Guaranteed":
+                return "it is Guaranteed: its CPU limit can't leave its request"
+            if any(
+                x.restart_policy == "RestartContainer" and x.resource_name == "cpu"
+                for x in template.resize_policy or []
+            ):
+                return "its resizePolicy restarts the container for cpu"
+            mode = vpa_mode(self.custom, ns, kind, name)
+            if mode:
+                return f"a VPA in mode {mode} sizes it"
+            if (self.held.get(k) or {}).get("outcome") == "rolling":
+                return ROLLING
+            st = self.bursts.get(k)
+            if st and not same(st["template"], top):
+                return "its template's CPU limit changed"  # ended this minute, by keep_bursts
+            if st and now - st["at"] < BURST_EVERY:
+                ago = int((now - st["at"]) // 60)
+                return f"burst {ago} minutes ago: one a container every {BURST_EVERY // 60} minutes"
+            limit = qty(st["limit"] if st else top)
+            cap = qty(top) * Decimal(str(self.burst_max))
+            # whole millicores, never past the cap
+            raised = math.floor(min(limit + qty(top) * BURST_STEP, cap) * 1000)
+            new = f"{raised}m"
+            if qty(new) <= limit:
+                return (
+                    f"it is at {self.burst_max:g} times its template's limit "
+                    f"({cpu_text(float(limit))}): raise it in its manifest"
+                )
+            self.steps = [t for t in self.steps if now - t < 3600]
+            if len(self.steps) >= STEPS_AN_HOUR:
+                return f"the cluster's {STEPS_AN_HOUR} Step-ups and Bursts an hour are used"
+            if sum(now - b["at"] < 3600 for b in self.bursts.values()) >= BURSTS_AN_HOUR:
+                return f"the cluster's {BURSTS_AN_HOUR} Bursts an hour are used"
+            asks = requests_of(template).get("cpu") or top
+            breach = (
+                limit_range_breach(self.core, ns, {"cpu": new}, {})
+                or limit_range_breach(self.core, ns, {"cpu": asks}, {"cpu": new})
+                or counts_cpu_limits(self.core, ns)
+            )
+            if breach:
+                return breach
+            pods = [p for p in pods_of(self.core, self.apps, d, kind) if not lost(p)]
+            if not pods:
+                return "no live pods"
+        except ApiException as e:
+            return f"reading it: {why(e)}"
+        # kept before a pod is touched: a restart then brings its pods to it
+        self.steps.append(now)
+        self.bursts[k] = {
+            "limit": new,
+            "template": top,
+            "at": now,
+            "steps": (st or {}).get("steps", 0) + 1,
+            "expires": self.burst_expires or (st or {}).get("expires"),
+        }
+        self.save()
+        done, asked, refused = limit_cpu(self.core, ns, container, pods, new, up=True)
+        if asked and not done:  # a Burst no pod took is none: not kept, not counted
+            self.steps.pop()
+            if st:
+                self.bursts[k] = st
+            else:
+                del self.bursts[k]
+            return "every pod refused it: " + "; ".join(refused[:3])
+        said = (
+            f"{BURST_SAID}{cpu_text(float(limit))} to {new} on {done} of {len(pods)} pods in place"
+        )
+        said += f"; {len(refused)} refused: {'; '.join(refused[:3])}" if refused else ""
+        said += f": {share}"
+        post(self.core, ns, ("apps/v1", kind, name), "CpuBurst", f"{container}: {said}", False)
+        return Actuation(
+            namespace=ns, kind=kind, name=name, container=container,
+            run_id=(self.held.get(k) or {}).get("run_id", 0),
+            outcome="burst", cpu=float(qty(new)), pods=done, reason=said[:1000], at=now,
+        )  # fmt: skip
+
+    def keep_bursts(self) -> list[Actuation]:
+        """Each container's Burst, each minute the Hub answers (slice 13.3b): dropped when a
+        person changed the CPU limit in its Workload's template, or the Workload is gone;
+        at its term kept for another while the Hub's CPU peak is above 90% of that limit
+        (or not known), else ended, its pods back to it in place; and its pods that ask
+        less brought to it (one started from its template with the webhook down). Not a
+        paused Workload's."""
+        out = []
+        for k, st in sorted(self.bursts.items()):
+            ns, kind, name, container = k.split("/")
+            if self.is_paused(k):
+                continue
+
+            def told(outcome: Outcome, pods: int, reason: str, st: Any = st, k: str = k) -> None:
+                ns, kind, name, container = k.split("/")
+                out.append(
+                    Actuation(
+                        namespace=ns,
+                        kind=kind,
+                        name=name,
+                        container=container,
+                        run_id=(self.held.get(k) or {}).get("run_id", 0),
+                        outcome=outcome,
+                        cpu=float(qty(st["limit"])) if outcome == "burst" else None,
+                        pods=pods,
+                        reason=reason[:1000],
+                        at=time.time(),
+                    )
+                )
+                log.info("%s: its Burst %s", k, reason)
+
+            what = ("apps/v1", kind, name)
+            top = st["template"]
+            gone: str | None = None
+            try:
+                d = read(self.apps, kind, name, ns)
+            except ApiException as e:
+                if e.status != 404:
+                    log.warning("reading %s: %s", k, why(e))  # the API server's trouble
+                    continue
+                gone = f"no such {kind}"
+            else:
+                c = next(
+                    (c for c in template_of(d, kind).spec.containers if c.name == container), None
+                )
+                has = limits_of(c).get("cpu")
+                if c is None:
+                    gone = f"no container {container!r} in its template"
+                elif not same(has, top):
+                    gone = f"its template's CPU limit changed: {top} to {has or 'unset'}"
+            if gone:
+                del self.bursts[k]
+                told("burst_ended", 0, f"{gone}: its Burst dropped")
+                post(self.core, ns, what, "HandedBack", f"{container}: {out[-1].reason}", False)
+                continue
+            now = time.time()
+            if self.burst_expires:
+                st["expires"] = self.burst_expires  # the Contract's, as the Hub last said it
+            term = st.get("expires")
+            if term and now - max(st["at"], st.get("renewed", 0.0)) >= term:
+                peak = self.burst_peaks.get(k)
+                bar = float(qty(top) * BURST_KEEP)
+                if k in self.burst_peaks and (peak is None or peak > bar):
+                    st["renewed"] = now  # still needed, or not known: another term
+                    how = "not known" if peak is None else f"{cpu_text(peak)}, above"
+                    told(  # said, so the Hub's page still knows it after 90 days
+                        "burst",
+                        0,
+                        f"kept for another term: its CPU peak is {how} 90% of its "
+                        f"template's limit {top}",
+                    )
+                else:
+                    del self.bursts[k]
+                    why_ = (
+                        f"its CPU peak {cpu_text(peak)} within 90% of its template's limit {top}"
+                        if peak is not None
+                        else "the Hub no longer listing it"
+                    )
+                    back = self.burst_back(k, st)
+                    told("burst_ended", 0, f"its term of {span(term)} over, {why_}: {back}")
+                    post(
+                        self.core, ns, what, "BurstExpired", f"{container}: {out[-1].reason}", False
+                    )
+                    continue
+            try:
+                pods = [p for p in pods_of(self.core, self.apps, d, kind) if not lost(p)]
+            except ApiException as e:
+                log.warning("reading %s's pods: %s", k, why(e))
+                continue
+            done, _, refused = limit_cpu(self.core, ns, container, pods, st["limit"], up=True)
+            for r in refused:
+                log.warning("bringing a pod to %s's Burst: %s", k, r)
+            if done:
+                told(
+                    "burst",
+                    done,
+                    f"brought to its Burst, CPU limit {st['limit']} on {done} of {len(pods)} "
+                    "pods in place",
+                )
+        return out
+
+    def burst_back(self, k: str, st: dict[str, Any]) -> str:
+        """What becomes of the running pods of a Burst that ended: every one above its
+        template's CPU limit back to it in place (lowering a CPU limit needs no room and
+        kills nothing), a pod still boosted on top of the Burst included."""
+        ns, kind, name, container = k.split("/")
+        try:
+            d = read(self.apps, kind, name, ns)
+            pods = [p for p in pods_of(self.core, self.apps, d, kind) if not lost(p)]
+        except ApiException as e:
+            return f"its pods keep their CPU limit until they start again (reading it: {why(e)})"
+        done, asked, refused = limit_cpu(self.core, ns, container, pods, st["template"], up=False)
+        said = f"{done} of {asked} pods back to CPU limit {st['template']} in place"
+        return said + (f"; {len(refused)} refused: {'; '.join(refused[:3])}" if refused else "")
 
     def keep_boosts(self) -> None:
         """The Startup boost's minute (slice 13.4), the Hub reachable or not: which
@@ -2702,6 +3054,9 @@ class Actuator:
             st = self.stepped.pop(key, None)
             if st:  # its memory is a Sizing's again (slice 13.1b); its pods' as 13.1c has it
                 why_ += f"; its Step-up dropped: {self.step_back(key, st)}"
+            burst = self.bursts.pop(key, None)
+            if burst:  # slice 13.3b
+                why_ += f"; its Burst dropped: {self.burst_back(key, burst)}"
             if h.get("outcome") in ("applied", "rolling", "failed") and h.get("requests"):
                 a = put_back(self.core, self.apps, key, h, "reverted", why_, time.time())
             else:

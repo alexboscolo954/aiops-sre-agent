@@ -888,6 +888,8 @@ export interface components {
             at: number;
             /** Automated */
             automated: boolean;
+            /** Burst */
+            burst?: number | null;
             /** Container */
             container: string;
             /** Cpu */

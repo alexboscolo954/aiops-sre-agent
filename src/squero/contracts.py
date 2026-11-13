@@ -696,8 +696,10 @@ class BurstReflex(Strict):
     """The Reflex for CPU throttling, on by being there (slice 13.3a): each hour the Hub
     tells the cluster's Actuator which automated containers were throttled in more than a
     quarter of their CPU periods over the last hour (a Burst is due), and each one's CPU
-    peak over the last `expires`, which is what keeps a Burst past its term."""
+    peak over the last `expires`, which is what keeps a Burst past its term. The Actuator
+    makes it (slice 13.3b), never past `max` times the CPU limit in the Workload's template."""
 
+    max: float = Field(2.0, gt=1, le=4)
     expires: Annotated[int, BeforeValidator(_duration("1h", "7d"))] = 86400
 
 

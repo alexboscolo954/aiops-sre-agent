@@ -887,6 +887,11 @@ def test_a_triages_thread_names_the_step_up_on_its_workload_and_no_other(
         stored("acme", "shop", "checkout", 7200),  # two hours before: not this Triage's
         stored("bank", "shop", "checkout", 550),  # another Contract's
     ]
+    burst = "CPU limit 200m to 250m on 2 of 2 pods in place: throttled in 80% of its CPU periods"
+    made = stored("acme", "shop", "checkout", 540, burst)  # a Burst on it too (slice 13.3b)
+    rows.append((made[0].replace("'stepped_up', null, 1", "'burst', 0.25, null"), made[1]))
+    brought = stored("acme", "shop", "checkout", 530, "brought to its Burst, CPU limit 250m")
+    rows.append((brought[0].replace("'stepped_up', null, 1", "'burst', 0.25, null"), brought[1]))
     with client(
         settings, fake_cluster, call("TriageReport", "c1", **REPORT), slack=slack.transport(),
         acme_channel=ACME,
@@ -899,9 +904,14 @@ def test_a_triages_thread_names_the_step_up_on_its_workload_and_no_other(
         slack.until(4)
     replies = [p["text"] for m, p, _ in slack.calls if m == "chat.postMessage" and "thread_ts" in p]
     when = time.strftime("%H:%M", time.gmtime(now - 600))
-    assert replies[0] == (
+    assert replies[0].split("\n")[1] == (  # newest first: its Burst, then its Step-up
         f":arrow_up: The Actuator stepped up test/shop/Deployment/checkout container app at {when} "
         f"UTC: {step}"
+    )
+    assert len(replies[0].split("\n")) == 2  # one Step-up, one Burst: none only brought to one
+    assert replies[0].split("\n")[0] == (
+        ":arrow_up: The Actuator raised the CPU limit of test/shop/Deployment/checkout container "
+        f"app at {time.strftime('%H:%M', time.gmtime(now - 540))} UTC: {burst}"
     )
     assert len(replies) == 2 and replies[1].startswith("*checkout")  # then the Report, once
     assert slack.channels() == {ACME}

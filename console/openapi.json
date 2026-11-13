@@ -1279,6 +1279,17 @@
             "title": "Automated",
             "type": "boolean"
           },
+          "burst": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Burst"
+          },
           "container": {
             "title": "Container",
             "type": "string"

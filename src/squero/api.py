@@ -338,15 +338,19 @@ def create_app(
         await to_slack(t, await reflexes_of(t) if done else None)
 
     async def reflexes_of(t: Investigation) -> str | None:
-        """The Step-ups the Contract's Actuators made on the Workloads this Triage's Alerts
-        name, from an hour before it began (slice 13.1c): a line the Hub itself adds to the
-        Report's thread. Nothing the model sees, so no Scenario changes."""
+        """The Step-ups and Bursts (slice 13.3b) the Contract's Actuators made on the
+        Workloads this Triage's Alerts name, from an hour before it began (slice 13.1c): a
+        line the Hub itself adds to the Report's thread. Nothing the model sees, so no
+        Scenario changes."""
         group = t.input or {}
         common = group.get("commonLabels") or {}
         named = [{**common, **(a.get("labels") or {})} for a in group.get("alerts") or []]
         lines = []
         for a in await store().actuations(t.contract_id, t.started - 3600):
-            if a["outcome"] != "stepped_up" or not actuator.to_tell(a["outcome"], a["reason"]):
+            made = {"stepped_up": "stepped up", "burst": "raised the CPU limit of"}.get(
+                a["outcome"]
+            )
+            if made is None or not actuator.to_tell(a["outcome"], a["reason"]):
                 continue
             for labels in named or [common]:
                 if labels.get("namespace") != a["namespace"]:
@@ -358,7 +362,7 @@ def create_app(
                     when = datetime.fromtimestamp(a["at"], UTC)
                     where = clean("/".join(a[k] for k in ("cluster", "namespace", "kind", "name")))
                     lines.append(
-                        f":arrow_up: The Actuator stepped up {where} container "
+                        f":arrow_up: The Actuator {made} {where} container "
                         f"{clean(a['container'])} at {when:%H:%M} UTC: {clean(a['reason'])}"
                     )
                     break
@@ -1738,16 +1742,27 @@ def create_app(
                         f"{clean(r['reason'])}. It ends by itself once the need is gone; to "
                         f"keep it, {to} in its manifest."
                     )
-                elif r["outcome"] == "oom_killed":  # at its Step-up's cap: once a day
-                    one = (cid, cluster, *w, r["container"])
+                elif r["outcome"] == "burst":  # slice 13.3b, as a Step-up's
+                    to = "raise its CPU limit"
+                    if r["cpu"]:
+                        to = f"set its CPU limit to {actuator.cpu_text(r['cpu'])}"
+                    text = (
+                        f":arrow_up: {cid}: the Actuator raised the CPU limit of {what}: "
+                        f"{clean(r['reason'])}. It ends by itself once the need is gone; to "
+                        f"keep it, {to} in its manifest."
+                    )
+                elif r["outcome"] in ("oom_killed", "throttled"):  # at its cap: once a day
+                    one = (cid, cluster, *w, r["container"], r["outcome"])
                     if r["at"] - capped.get(one, -86400.0) < 86400:  # by the kills' own time
                         await store().mark_told(cid, [r])
                         continue
                     capped[one] = r["at"]
-                    text = (
-                        f":warning: {cid}: {what} is still OOM-killed at its Step-up's cap: "
-                        f"{clean(r['reason'])}"
+                    still = (
+                        "still OOM-killed at its Step-up's cap"
+                        if r["outcome"] == "oom_killed"
+                        else "still throttled at its Burst's cap"
                     )
+                    text = f":warning: {cid}: {what} is {still}: {clean(r['reason'])}"
                 if at - r["received_at"] >= LATE:
                     when = datetime.fromtimestamp(r["received_at"], UTC)
                     text += f" (reported {when:%Y-%m-%d %H:%M} UTC)"
@@ -1860,7 +1875,8 @@ def create_app(
         rows, read = await automated(cid, cluster)
         run = read.get("run")
         reflex = by_id[cid].actuator.reflexes.oom
-        burst = by_id[cid].actuator.reflexes.burst is not None
+        bursting = by_id[cid].actuator.reflexes.burst
+        burst = bursting is not None
         age = None if read.get("at") is None else time.time() - read["at"]
         return actuator.Desired(
             kill_switch=False,
@@ -1907,6 +1923,9 @@ def create_app(
             if burst
             else [],
             burst_run=run if burst else None,
+            # slice 13.3b: how far a Burst may go, and its term
+            burst_max=bursting.max if bursting else None,
+            burst_expires=bursting.expires if bursting else None,
             reverts=[
                 actuator.Undo.model_validate(r)
                 for r in await store().pending_reverts(cid, cluster.name)

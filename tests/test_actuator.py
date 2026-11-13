@@ -150,6 +150,8 @@ def test_an_actuator_gets_only_its_own_clusters_current_approved_deployments(
         "boosts": [],
         "burst": [],
         "burst_run": None,
+        "burst_max": None,
+        "burst_expires": None,
     }
     assert old.json()["sizings"] == [{**wanted, "name": "api", "cpu": 0.115, "memory": None}]
     known = ("Deployment", "StatefulSet", "DaemonSet")  # what 0.44.0 names
@@ -181,6 +183,8 @@ def test_the_kill_switch_and_a_later_run_leave_nothing_to_apply(
         "boosts": [],
         "burst": [],
         "burst_run": None,
+        "burst_max": None,
+        "burst_expires": None,
     }
     assert superseded == {
         "kill_switch": False,
@@ -194,6 +198,8 @@ def test_the_kill_switch_and_a_later_run_leave_nothing_to_apply(
         "boosts": [],
         "burst": [],
         "burst_run": None,
+        "burst_max": None,
+        "burst_expires": None,
     }
 
 
@@ -1043,6 +1049,8 @@ def test_the_webhook_answers_over_tls_with_its_own_certificate() -> None:
             a.held, a.boosting = {}, {KEY: 2.0}  # its Startup boosts too (slice 13.4)
             boost = new_pod(requests={"cpu": "250m"}, limits={"cpu": "500m"})
             boosted = http.post(f"{url}/mutate", json=boost)
+            a.boosting, a.bursts = {}, {KEY: dict(MADE)}  # and its Bursts (slice 13.3b)
+            burst = http.post(f"{url}/mutate", json=burst_pod())
             a.killed = True
             killed = http.post(f"{url}/mutate", json=new_pod())
             elsewhere = http.post(f"{url}/other", json=new_pod())
@@ -1052,7 +1060,7 @@ def test_the_webhook_answers_over_tls_with_its_own_certificate() -> None:
     finally:
         server.shutdown()
     assert ok.status_code == 200 and "patch" in ok.json()["response"]
-    assert "patch" in boosted.json()["response"]
+    assert "patch" in boosted.json()["response"] and "patch" in burst.json()["response"]
     assert "patch" not in killed.json()["response"]
     assert (elsewhere.status_code, garbage.status_code) == (404, 400)
 
@@ -1506,6 +1514,8 @@ def test_an_actuator_gets_the_newest_sizings_of_what_its_contract_automates(
         "boosts": [],
         "burst": [],
         "burst_run": None,
+        "burst_max": None,
+        "burst_expires": None,
     }
 
 
@@ -5607,6 +5617,20 @@ def aged(core: Any, apps: Any, peak: Any = "unlisted", days: float = 7.0) -> act
     return a
 
 
+def test_a_step_up_still_ends_at_its_term_once_the_reflex_is_switched_off() -> None:
+    core, apps = limited()
+    a = aged(core, apps, days=6.0)
+    assert a.keep_steps() == [] and a.stepped[KEY]["expires"] == WEEK  # its term, kept with it
+    a.oom_expires = None  # the Reflex off: the Hub sends no term, and lists no container
+    a.stepped[KEY]["at"] -= 86400
+    (end,) = a.keep_steps()
+    assert end.outcome == "step_ended" and a.stepped == {}
+    assert end.reason.startswith("its term of 7 days over, the Hub no longer listing it")
+    b = kept(*limited())  # one that never heard a term (a Hub of 13.1b): it never expires
+    b.stepped[KEY]["at"] = 0.0
+    assert b.keep_steps() == [] and KEY in b.stepped
+
+
 @pytest.mark.parametrize(
     ("peak", "days", "kept_"),
     [
@@ -6338,8 +6362,12 @@ def test_the_burst_reflex_needs_an_actuator_and_takes_its_term() -> None:
             automating("acme", A_TOKEN, AUTO, actuator={"reflexes": {"burst": {"expires": bad}}})
     week = automating("acme", A_TOKEN, AUTO, actuator={"reflexes": {"burst": {"expires": "7d"}}})
     assert week.actuator.reflexes.burst.expires == 7 * 86400
-    with pytest.raises(ValueError, match="Extra inputs are not permitted"):  # slice 13.3b's
-        automating("acme", A_TOKEN, AUTO, actuator={"reflexes": {"burst": {"max": 2}}})
+    assert on.burst.max == 2.0  # slice 13.3b: how far a Burst may go
+    for bad in (1.0, 4.5):  # never no step at all, nor past 4 times its template's limit
+        with pytest.raises(ValueError, match="max"):
+            automating("acme", A_TOKEN, AUTO, actuator={"reflexes": {"burst": {"max": bad}}})
+    three = automating("acme", A_TOKEN, AUTO, actuator={"reflexes": {"burst": {"max": 3}}})
+    assert three.actuator.reflexes.burst.max == 3.0
 
 
 def read(cid: str, ago: float = 60.0) -> Any:
@@ -6399,6 +6427,9 @@ def test_the_hub_tells_an_actuator_which_of_its_own_containers_a_burst_is_due(
     assert old["burst"] == mine["burst"][:-1]  # an Actuator naming no kinds: Deployments only
     assert theirs["burst"] == [{**one, "name": "ledger", "throttled": 0.9, "peak": 2.0}]
     assert (mine["burst_run"], theirs["burst_run"]) == (1, 2)  # a Burst is due once a run
+    # slice 13.3b: how far a Burst may go and its term, the Contract's; none when off
+    assert (mine["burst_max"], mine["burst_expires"]) == (2.0, 86400)
+    assert (killed["burst_max"], killed["burst_expires"]) == (None, None)
     assert (killed["burst"], killed["burst_run"]) == ([], None)
     # a read two hours old: no Burst is due for it, and its peak is not known
     assert stale["burst"] == [{**b, **none} for b in mine["burst"]] and stale["burst_run"] == 1
@@ -6407,19 +6438,748 @@ def test_the_hub_tells_an_actuator_which_of_its_own_containers_a_burst_is_due(
         sql(database_url, ("update sizing_runs set at = %s where id = 1", (time.time() - 60,)))
         mine = pulled(c, **kinds)
     assert (mine["burst"], mine["burst_run"]) == ([], None) and len(mine["automated"]) == 5
+    assert (mine["burst_max"], mine["burst_expires"]) == (None, None)
+    own = {"reflexes": {"burst": {"max": 3, "expires": "36h"}}}
+    with TestClient(
+        hub(settings, database_url, automating("acme", A_TOKEN, AUTO, actuator=own))
+    ) as c:
+        mine = pulled(c, **kinds)
+    assert (mine["burst_max"], mine["burst_expires"]) == (3.0, 36 * 3600)
 
 
-def test_an_actuator_told_of_bursts_changes_and_reports_nothing_yet() -> None:
-    """Slice 13.3b acts on them; until then they are read and left."""
-    core, apps = cluster({"cpu": "2"})
+def test_an_actuator_makes_no_burst_for_a_hub_that_sends_no_cap() -> None:
+    """A Hub of slice 13.3a lists the throttled and knows none of the outcomes."""
+    core, apps = capped()
     seen: list[httpx.Request] = []
-    api = {"namespace": "shop", "kind": "Deployment", "name": "api", "container": "app"}
-    told = {**desired(), "burst": [{**api, "throttled": 1.0001, "peak": 3.0}], "burst_run": 7}
+    told = {**desired(), "burst": [{**SHOP_API, "throttled": 1.0001, "peak": 3.0}], "burst_run": 7}
     a = make(hub_of([told], seen), core, apps)
     a.step()
-    assert resized(core) == [] and posted(seen) == []
+    assert resized(core) == [] and posted(seen) == [] and a.bursts == {} == a.burst_seen
     assert not core.create_namespaced_event.called
     got = actuator.Desired.model_validate(told)  # nothing bounded: a share can pass 1 by a hair
     assert (got.burst[0].throttled, got.burst[0].peak, got.burst_run) == (1.0001, 3.0, 7)
     older = actuator.Desired.model_validate(desired())  # a Hub from before this
-    assert older.burst == [] and older.burst_run is None
+    assert older.burst == [] and (older.burst_run, older.burst_max, older.burst_expires) == (
+        None,
+        None,
+        None,
+    )
+
+
+# --- slice 13.3b: the Burst, the Actuator's side (ADR 0005) -----------------------------------
+
+SHOP_API = {"namespace": "shop", "kind": "Deployment", "name": "api", "container": "app"}
+SHARE = "throttled in 80% of its CPU periods over the last hour"
+DAY_S = 86400
+
+
+def capped(limit: str | None = "200m", request: str | None = "100m", **kw: Any) -> tuple[Any, Any]:
+    """api with a CPU limit (and request) in its template and on its two pods."""
+    requests = {"cpu": request} if request else {}
+    limits = {"cpu": limit} if limit else None
+    core, apps = cluster(limits=limits, requests=requests, **kw)
+    for p in core.list_namespaced_pod.return_value.items[:2]:
+        p.spec.containers[0].resources = k.V1ResourceRequirements(
+            requests=dict(requests), limits=dict(limits) if limits else None
+        )
+    return core, apps
+
+
+def bursting(core: Any, apps: Any, top: float = 2.0, **kw: Any) -> actuator.Actuator:
+    """An Actuator the Hub lets make Bursts, to `top` times a template's limit, a day long."""
+    a = make(hub_of([], []), core, apps, **kw)
+    a.burst_max, a.burst_expires = top, DAY_S
+    return a
+
+
+def cpu_body(limit: str) -> Any:
+    return {"spec": {"containers": [{"name": "app", "resources": {"limits": {"cpu": limit}}}]}}
+
+
+def throttling(run: int = 1, share: float | None = 0.8, **more: Any) -> dict[str, Any]:
+    """The Hub's answer: api's `app` throttled `share` in read `run`, Bursts to twice."""
+    listed = [{**SHOP_API, "throttled": share, "peak": more.pop("peak", None)}]
+    cap = {"burst_max": 2.0, "burst_expires": DAY_S}
+    return {**desired(), "burst": listed, "burst_run": run, **cap, **more}
+
+
+def test_a_burst_raises_the_cpu_limit_by_a_quarter_of_its_templates_on_every_pod() -> None:
+    core, apps = capped()
+    a = bursting(core, apps)
+    a.held[KEY] = {"run_id": 7, "outcome": "applied", "requests": {"cpu": "100m"}}
+    up = a.burst(KEY, SHARE, 1000.0)
+    assert isinstance(up, actuator.Actuation)
+    assert (up.outcome, up.cpu, up.pods, up.run_id, up.memory) == ("burst", 0.25, 2, 7, None)
+    assert up.reason == f"CPU limit 200m to 250m on 2 of 2 pods in place: {SHARE}"
+    assert up.reason.startswith(actuator.BURST_SAID)
+    # the limit only: no request is touched, on the two live pods of its own ReplicaSet
+    assert resized(core) == [("api-1-a", cpu_body("250m")), ("api-1-b", cpu_body("250m"))]
+    assert a.bursts == {
+        KEY: {"limit": "250m", "template": "200m", "at": 1000.0, "steps": 1, "expires": DAY_S}
+    }
+    assert a.steps == [1000.0] and a.held[KEY]["requests"] == {"cpu": "100m"}
+    event = core.create_namespaced_event.call_args.args[1]
+    assert (event.reason, event.type, event.involved_object.kind) == (
+        "CpuBurst",
+        "Normal",
+        "Deployment",
+    )
+    assert event.message == f"app: {up.reason}"
+    saved = json.loads(core.replace_namespaced_config_map.call_args.args[2].data[actuator.STATE])
+    assert saved["bursts"] == a.bursts  # kept, so a restart brings its pods to it
+    b = make(hub_of([], []), core, apps)
+    core.read_namespaced_config_map.return_value = k.V1ConfigMap(
+        data=core.replace_namespaced_config_map.call_args.args[2].data
+    )
+    b.load()
+    assert b.bursts == a.bursts and b.steps == [1000.0]
+
+
+@pytest.mark.parametrize(
+    ("top", "limits"),
+    [(2.0, ["250m", "300m", "350m", "400m"]), (1.6, ["250m", "300m", "320m"]), (1.1, ["220m"])],
+)
+def test_a_burst_goes_a_step_a_read_never_past_its_cap_nor_twice_in_45_minutes(
+    top: float, limits: list[str]
+) -> None:
+    core, apps = capped()
+    a = bursting(core, apps, top)
+    now = 1000.0
+    for i, limit in enumerate(limits):
+        up = a.burst(KEY, SHARE, now)
+        assert isinstance(up, actuator.Actuation) and up.cpu == float(actuator.qty(limit))
+        assert cpu_limit(core, "api-1-a") == limit and a.bursts[KEY]["steps"] == i + 1
+        early = a.burst(KEY, SHARE, now + actuator.BURST_EVERY - 1)
+        assert early == "burst 44 minutes ago: one a container every 45 minutes"
+        now += actuator.BURST_EVERY
+    assert a.burst(KEY, SHARE, now) == (
+        f"it is at {top:g} times its template's limit ({limits[-1]}): raise it in its manifest"
+    )
+    assert cpu_limit(core, "api-1-a") == limits[-1] and a.bursts[KEY]["steps"] == len(limits)
+    assert float(actuator.BURST_STEP) == 0.25 and actuator.BURST_EVERY == 2700
+
+
+def vpa(mode: str = "Auto") -> dict[str, Any]:
+    target = {"kind": "Deployment", "name": "api"}
+    return {"items": [{"spec": {"targetRef": target, "updatePolicy": {"updateMode": mode}}}]}
+
+
+RESTARTS = [k.V1ContainerResizePolicy(resource_name="cpu", restart_policy="RestartContainer")]
+
+
+@pytest.mark.parametrize(
+    ("setup", "why"),
+    [
+        ("no limit", "its template sets no CPU limit"),
+        ("paused", "the Workload is paused"),
+        ("guaranteed", "it is Guaranteed: its CPU limit can't leave its request"),
+        ("restarts", "its resizePolicy restarts the container for cpu"),
+        ("vpa", "a VPA in mode Auto sizes it"),
+        ("rolling", "its Sizing is still rolling out"),
+        ("max", "cpu 250m is over its LimitRange's maximum 240m"),
+        ("ratio", "cpu 100m under limit 250m passes its LimitRange's ratio 2"),
+        ("quota", "ResourceQuota team counts limits.cpu"),
+        ("no pods", "no live pods"),
+        ("forbidden", "reading it: 403: Forbidden"),
+        ("cron", "a CronJob's pods get none"),
+        ("job", "a Job's pods get none"),
+        ("budget", "the cluster's 10 Step-ups and Bursts an hour are used"),
+        ("bursts", "the cluster's 5 Bursts an hour are used"),
+        ("changed", "its template's CPU limit changed"),
+    ],
+)
+def test_a_burst_it_does_not_make_and_why(setup: str, why: str) -> None:
+    core, apps = capped(
+        limit=None if setup == "no limit" else "200m",
+        request="200m" if setup == "guaranteed" else "100m",
+        policy=RESTARTS if setup == "restarts" else None,
+    )
+    a = bursting(core, apps)
+    key, now = KEY, 5000.0
+    if setup == "paused":
+        apps.read_namespaced_deployment.return_value.metadata.annotations = {actuator.PAUSE: "true"}
+    if setup == "guaranteed":  # its memory too: every container asks what it may use
+        c = apps.read_namespaced_deployment.return_value.spec.template.spec.containers[0]
+        c.resources = k.V1ResourceRequirements(
+            requests={"cpu": "200m", "memory": "64Mi"}, limits={"cpu": "200m", "memory": "64Mi"}
+        )
+    if setup == "vpa":
+        a.custom.list_namespaced_custom_object.return_value = vpa()
+    if setup == "rolling":
+        a.held[KEY] = {"run_id": 1, "outcome": "rolling", "requests": {"cpu": "100m"}}
+    if setup == "max":
+        core.list_namespaced_limit_range.return_value = limit_range(max={"cpu": "240m"})
+    if setup == "ratio":
+        ratio = limit_range(max_limit_request_ratio={"cpu": "2"})
+        core.list_namespaced_limit_range.return_value = ratio
+    if setup == "quota":  # however much room it leaves now
+        core.list_namespaced_resource_quota.return_value = quota({"limits.cpu": "100"}, {})
+    if setup == "no pods":
+        core.list_namespaced_pod.return_value = k.V1PodList(items=[])
+    if setup == "forbidden":
+        apps.read_namespaced_deployment.side_effect = refusal(403, "Forbidden")
+    if setup in ("cron", "job"):
+        key = f"shop/{'CronJob' if setup == 'cron' else 'Job'}/api/app"
+    if setup == "budget":
+        a.steps = [now - 3599 + i for i in range(actuator.STEPS_AN_HOUR)]
+    if setup == "bursts":
+        a.bursts = {
+            f"shop/Deployment/w{i}/app": {"limit": "250m", "template": "200m", "at": now - 3599}
+            for i in range(actuator.BURSTS_AN_HOUR)
+        }
+    if setup == "changed":
+        a.bursts[KEY] = {"limit": "250m", "template": "150m", "at": 0.0, "steps": 1}
+    before = dict(a.bursts)
+    assert a.burst(key, SHARE, now) == why
+    assert resized(core) == [] and a.bursts == before and not core.create_namespaced_event.called
+    assert len(a.steps) == (actuator.STEPS_AN_HOUR if setup == "budget" else 0)
+
+
+def test_what_does_not_hold_a_burst_back() -> None:
+    core, apps = capped()
+    a = bursting(core, apps)
+    a.custom.list_namespaced_custom_object.return_value = vpa("Off")
+    core.list_namespaced_limit_range.return_value = limit_range(
+        max={"cpu": "250m"}, max_limit_request_ratio={"cpu": "2.5"}
+    )
+    core.list_namespaced_resource_quota.return_value = quota({"requests.cpu": "1"}, {})
+    a.held[KEY] = {"run_id": 1, "outcome": "applied", "requests": {"cpu": "100m"}}
+    a.steps = [1.0] * actuator.STEPS_AN_HOUR  # an hour and more ago: not this hour's
+    a.bursts = {  # four this hour, and one that isn't
+        f"shop/Deployment/w{i}/app": {"limit": "250m", "template": "200m", "at": 5000.0 - 60 * i}
+        for i in (1, 2, 3, 4, 61)
+    }
+    a.autoscaling.list_namespaced_horizontal_pod_autoscaler.return_value = MagicMock(
+        items=[hpa()]  # on cpu: its requests are untouched, so nothing it divides by moves
+    )
+    up = a.burst(KEY, SHARE, 5000.0)
+    assert isinstance(up, actuator.Actuation) and up.pods == 2 and a.steps == [5000.0]
+    assert (actuator.STEPS_AN_HOUR, actuator.BURSTS_AN_HOUR) == (10, 5)
+
+
+def test_a_limit_alone_is_its_request_for_a_limit_ranges_ratio() -> None:
+    core, apps = capped(request=None)  # its pods ask their limit: 250m over 200m
+    a = bursting(core, apps)
+    core.list_namespaced_limit_range.return_value = limit_range(
+        max_limit_request_ratio={"cpu": "1.2"}
+    )
+    assert a.burst(KEY, SHARE, 1.0) == "cpu 200m under limit 250m passes its LimitRange's ratio 1.2"
+
+
+def test_a_burst_no_pod_took_is_none_and_one_some_refused_is_said() -> None:
+    core, apps = capped()
+    a = bursting(core, apps)
+    patch = core.patch_namespaced_pod_resize.side_effect
+    core.patch_namespaced_pod_resize.side_effect = refusal(422, "no")
+    assert a.burst(KEY, SHARE, 1.0) == ("every pod refused it: api-1-a: 422: no; api-1-b: 422: no")
+    assert a.bursts == {} and a.steps == []  # not kept, not counted
+
+    def one(name: str, ns: str, body: Any) -> None:
+        if name == "api-1-b":
+            raise refusal(422, "no")
+        patch(name, ns, body)
+
+    core.patch_namespaced_pod_resize.side_effect = one
+    up = a.burst(KEY, SHARE, 2.0)
+    assert isinstance(up, actuator.Actuation) and up.pods == 1
+    assert up.reason == (
+        f"CPU limit 200m to 250m on 1 of 2 pods in place; 1 refused: api-1-b: 422: no: {SHARE}"
+    )
+    core.patch_namespaced_pod_resize.side_effect = refusal(422, "no")
+    assert str(a.burst(KEY, SHARE, 2.0 + actuator.BURST_EVERY)).startswith("every pod refused")
+    assert a.bursts[KEY]["limit"] == "250m" and a.steps == [2.0]  # the one before is kept
+    high = capped()
+    for p in high[0].list_namespaced_pod.return_value.items[:2]:
+        p.spec.containers[0].resources.limits = {"cpu": "500m"}  # boosted above it meanwhile
+    b = bursting(*high)
+    up = b.burst(KEY, SHARE, 3.0)  # none to raise is none refused: it stands, for new pods
+    assert isinstance(up, actuator.Actuation) and up.pods == 0 and resized(high[0]) == []
+    assert b.bursts[KEY]["limit"] == "250m"
+
+
+def listed(share: float | None = 0.8, name: str = "api", **more: Any) -> actuator.Throttled:
+    return actuator.Throttled(**{**SHOP_API, "name": name}, throttled=share, **more)
+
+
+def test_one_read_is_one_burst_and_a_reason_not_to_is_said_once_a_day() -> None:
+    core, apps = capped()
+    a = bursting(core, apps)
+    assert a.burst_all([listed(None)], 1, 100.0) == []  # not throttled enough: nothing due
+    assert a.burst_all([listed()], None, 100.0) == [] and a.burst_seen == {}  # no read named
+    (up,) = a.burst_all([listed()], 1, 100.0)
+    assert up.outcome == "burst" and up.reason.endswith(f": {SHARE}") and a.burst_seen == {KEY: 1}
+    assert a.burst_all([listed()], 1, 100.0 + actuator.BURST_EVERY) == []  # that read: handled
+    assert a.burst_all([listed()], None, 100.0 + actuator.BURST_EVERY) == []  # nor one unnamed
+    assert a.burst_seen == {KEY: 1}
+    # a Revert meanwhile: the Hub lists it no more, its Burst is dropped, and an approval
+    # lists it again within that read, which makes no second Burst
+    assert a.burst_all([], 1, 110.0) == [] and a.burst_seen == {KEY: 1}
+    was = a.bursts.pop(KEY)
+    assert a.burst_all([listed()], 1, 120.0 + actuator.BURST_EVERY) == []
+    assert a.bursts == {} and len(resized(core)) == 2
+    a.bursts[KEY] = was
+    (no,) = a.burst_all([listed(0.5)], 2, 200.0)  # a `sizing refresh` minutes later
+    assert (no.outcome, no.cpu, no.pods) == ("throttled", None, 0)
+    assert no.reason == (
+        "throttled in 50% of its CPU periods over the last hour. No Burst: burst 1 minutes "
+        "ago: one a container every 45 minutes"
+    )
+    assert a.burst_seen == {KEY: 2} and len(resized(core)) == 2
+    a.burst_max = 1.25  # at its cap from here on: a standing reason
+    at = 200.0 + actuator.BURST_EVERY
+    (cap,) = a.burst_all([listed()], 3, at)
+    assert actuator.BURST_CAP in cap.reason and actuator.to_tell(cap.outcome, cap.reason)
+    assert a.burst_all([listed()], 4, at + 3600) == [] and a.burst_seen == {KEY: 4}
+    assert a.burst_all([listed()], 5, at + 86399) == []  # the same reason: once a day
+    (again,) = a.burst_all([listed()], 6, at + 86400)
+    assert again.reason == cap.reason
+    apps.read_namespaced_deployment.return_value.metadata.annotations = {actuator.PAUSE: "true"}
+    (other,) = a.burst_all([listed()], 7, at + 86500)  # another reason: said at once
+    assert other.reason.endswith("No Burst: the Workload is paused")
+    a.burst_all([listed(name="web")], 8, at + 86600)  # a new read: the last one's forgotten
+    assert a.burst_seen == {"shop/Deployment/web/app": 8}
+
+
+def test_a_burst_waits_out_a_sizing_that_still_rolls_and_is_made_in_that_read() -> None:
+    core, apps = capped()
+    a = bursting(core, apps)
+    a.held[KEY] = {"run_id": 3, "outcome": "rolling", "requests": {"cpu": "100m"}}
+    (no,) = a.burst_all([listed()], 1, 100.0)  # the Sizing and the read came in one answer
+    assert no.reason.endswith("No Burst: its Sizing is still rolling out") and no.run_id == 3
+    assert a.burst_seen == {}  # not handled: tried again the next minute
+    assert a.burst_all([listed()], 1, 160.0) == []  # said once
+    a.held[KEY]["outcome"] = "applied"
+    (up,) = a.burst_all([listed()], 1, 220.0)
+    assert up.outcome == "burst" and a.burst_seen == {KEY: 1}
+
+
+def test_a_read_handled_is_kept_across_a_restart_and_fifty_containers_a_minute() -> None:
+    core, apps = capped()
+    a = bursting(core, apps)
+    a.burst_max = 1.25
+    a.burst_all([listed()], 1, 100.0)
+    a.burst_all([listed(0.5)], 2, 200.0)  # declined: 45 minutes
+    a.save()
+    core.read_namespaced_config_map.return_value = k.V1ConfigMap(
+        data=core.replace_namespaced_config_map.call_args.args[2].data
+    )
+    b = bursting(core, apps)
+    b.load()
+    assert b.burst_seen == {KEY: 2} and b.bursts == a.bursts
+    assert b.burst_all([listed(0.5)], 2, 200.0 + actuator.BURST_EVERY) == []  # never twice a read
+    many = [listed(name=f"w{i:02}") for i in range(60)]
+    apps.read_namespaced_deployment.side_effect = refusal(404, "Not Found")
+    first = b.burst_all(many, 3, 1.0)
+    assert len(first) == actuator.OOM_REPORTS == 50 and first[0].reason.endswith(
+        "No Burst: reading it: 404: Not Found"
+    )
+    assert [x.name for x in b.burst_all(many, 3, 1.0)] == [f"w{i}" for i in range(50, 60)]
+    assert b.burst_all(many, 3, 1.0) == []
+    # the next read, the same standing reason: nothing to say, and still 50 looked at a minute
+    reads = apps.read_namespaced_deployment.call_count
+    assert b.burst_all(many, 4, 2.0) == [] and len(b.burst_seen) == 50
+    assert apps.read_namespaced_deployment.call_count == reads + 50
+    assert b.burst_all(many, 4, 2.0) == [] and len(b.burst_seen) == 60
+
+
+def test_a_minute_makes_a_burst_only_when_the_hub_caps_it_and_took_its_reports() -> None:
+    core, apps = capped()
+    seen: list[httpx.Request] = []
+    waiting = actuation(9)
+    answers = [throttling(), throttling(), throttling(), throttling(killed=True), throttling(2)]
+    a = make(hub_of(answers, seen), core, apps, unsent=[waiting])
+    a.http.reports.append(httpx.Response(503))  # type: ignore[attr-defined]
+    a.step()  # a report the Hub hasn't taken: no Burst behind it
+    assert a.bursts == {} and resized(core) == [] and a.burst_max is None
+    a.step()  # taken at this minute's end: still none
+    assert posted(seen)[-1] == ["applied"] and a.bursts == {}
+    a.step()
+    assert posted(seen)[-1] == ["burst"] and cpu_limit(core, "api-1-a") == "250m"
+    assert a.burst_expires == DAY_S and a.burst_peaks == {KEY: None}
+    assert not apps.list_namespaced_deployment.called  # made on its template's own word
+    a.bursts[KEY]["at"] -= 2 * DAY_S  # long past its term, and the Kill switch is on
+    a.step()
+    apps.list_namespaced_deployment.assert_called_with("shop")  # its pause is read from now
+    assert KEY in a.bursts and cpu_limit(core, "api-1-a") == "250m"  # nothing ended
+    a.bursts[KEY]["at"] = time.time() - actuator.BURST_EVERY
+    a.step()  # the next read, the switch off again
+    assert posted(seen)[-1] == ["burst"] and cpu_limit(core, "api-1-a") == "300m"
+
+
+def test_a_step_up_takes_its_place_in_the_hour_before_a_burst(monkeypatch: Any) -> None:
+    core, apps = capped()
+    a = make(hub_of([{**throttling(), **reflexing()}], []), core, apps)
+    order: list[str] = []
+    monkeypatch.setattr(a, "ooms", lambda w: order.append("ooms") or [])
+    monkeypatch.setattr(a, "burst_all", lambda *x: order.append("bursts") or [])
+    a.step()
+    assert order == ["ooms", "bursts"]
+
+
+MADE = {"limit": "250m", "template": "200m", "at": 0.0, "steps": 1, "expires": DAY_S}
+
+
+def burst_pod(**resources: Any) -> dict[str, Any]:
+    """A new pod of api, its `app` asking 100m of cpu under a limit of 200m unless said."""
+    return new_pod(**(resources or {"requests": {"cpu": "100m"}, "limits": {"cpu": "200m"}}))
+
+
+def test_a_new_pod_starts_at_its_containers_burst_and_a_boost_goes_on_top_of_it() -> None:
+    bursts = {KEY: dict(MADE)}
+    ops = actuator.mutation(burst_pod()["request"], {}, "x", bursts=bursts)
+    assert ops == [{"op": "add", "path": CPU, "value": "250m"}]  # the limit only, no annotation
+    both = actuator.mutation(burst_pod()["request"], {}, "x", boosts={KEY: 2.0}, bursts=bursts)
+    assert both == [
+        {"op": "add", "path": CPU, "value": "500m"},  # twice its Burst's
+        # given back to its Burst's limit, not its template's
+        {"op": "add", "path": NOTE, "value": {actuator.BOOST: own("250m")}},
+    ]
+    alone = actuator.mutation(burst_pod(limits={"cpu": "200m"})["request"], {}, "x", bursts=bursts)
+    assert alone == [  # a limit alone is its request too: said, so the request stays
+        {"op": "add", "path": "/spec/containers/1/resources/requests", "value": {"cpu": "200m"}},
+        {"op": "add", "path": CPU, "value": "250m"},
+    ]
+    review = burst_pod()
+    answer = actuator.admit(review, {}, False, "x", bursts=bursts)["response"]
+    assert json.loads(base64.b64decode(answer["patch"])) == ops
+    assert actuator.admit(review, {}, True, "x", bursts=bursts)["response"].get("patch") is None
+    paused = frozenset({"shop/Deployment/api"})
+    assert actuator.mutation(review["request"], {}, "x", paused, bursts=bursts) == []
+    noted = burst_pod()  # one that carries the annotation gets no boost, and its Burst still
+    noted["request"]["object"]["metadata"]["annotations"] = {actuator.BOOST: own("100m")}
+    assert actuator.mutation(noted["request"], {}, "x", boosts={KEY: 2.0}, bursts=bursts) == ops
+
+
+@pytest.mark.parametrize(
+    "review",
+    [
+        burst_pod(requests={"cpu": "100m"}, limits={"cpu": "300m"}),  # no longer its template's
+        burst_pod(requests={"cpu": "100m"}, limits={"memory": "1Gi"}),  # no CPU limit now
+        burst_pod(none=True),
+        new_pod(  # Guaranteed since
+            sidecar={"resources": {"limits": {"cpu": "200m", "memory": "1Gi"}}},
+            limits={"cpu": "200m", "memory": "1Gi"},
+        ),
+        owned_by("Job", run_of("api"), requests={"cpu": "100m"}, limits={"cpu": "200m"}),
+        pod_level(),
+    ],
+)
+def test_a_new_pod_that_does_not_start_at_a_burst(review: Any) -> None:
+    bursts = {KEY: dict(MADE), CRON: dict(MADE)}
+    if (review["request"]["object"]["spec"].get("resources") or {}).get("limits"):
+        review["request"]["object"]["spec"]["containers"][1]["resources"]["limits"] = {
+            "cpu": "200m"
+        }
+        review["request"]["object"]["spec"]["containers"][1]["resources"]["requests"] = {
+            "cpu": "100m"
+        }
+    assert actuator.mutation(review["request"], {}, "squero-actuator", bursts=bursts) == []
+
+
+def burst_at(core: Any, apps: Any, ago: float = 60.0, **kw: Any) -> actuator.Actuator:
+    """An Actuator holding api's Burst to 250m, made `ago` seconds ago, its pods at it."""
+    a = bursting(core, apps, **kw)
+    a.bursts[KEY] = {**MADE, "at": time.time() - ago}
+    for p in core.list_namespaced_pod.return_value.items[:2]:
+        p.spec.containers[0].resources.limits = {"cpu": "250m"}
+    return a
+
+
+def test_each_minute_a_pod_below_its_burst_is_brought_to_it_and_none_is_lowered() -> None:
+    core, apps = capped()
+    a = burst_at(core, apps)
+    assert a.keep_bursts() == [] and resized(core) == []  # every pod at it
+    low, high = core.list_namespaced_pod.return_value.items[:2]
+    low.spec.containers[0].resources.limits = {"cpu": "200m"}  # the webhook was down
+    high.spec.containers[0].resources.limits = {"cpu": "500m"}  # boosted for its start
+    (up,) = a.keep_bursts()
+    assert (up.outcome, up.pods, up.cpu) == ("burst", 1, 0.25)
+    assert up.reason == "brought to its Burst, CPU limit 250m on 1 of 2 pods in place"
+    assert not actuator.to_tell(up.outcome, up.reason)
+    assert resized(core) == [("api-1-a", cpu_body("250m"))] and KEY in a.bursts
+    a.paused = frozenset({"shop/Deployment/api"})
+    low.spec.containers[0].resources.limits = {"cpu": "200m"}
+    assert a.keep_bursts() == [] and cpu_limit(core, "api-1-a") == "200m"  # paused: left
+    a.paused = frozenset()
+    core.patch_namespaced_pod_resize.side_effect = refusal(500, "busy")
+    assert a.keep_bursts() == [] and KEY in a.bursts  # tried again next minute
+    apps.read_namespaced_deployment.side_effect = refusal(500, "busy")
+    assert a.keep_bursts() == [] and KEY in a.bursts  # the API server's trouble: kept
+
+
+@pytest.mark.parametrize(
+    ("change", "why"),
+    [
+        ("raised", "its template's CPU limit changed: 200m to 250m: its Burst dropped"),
+        ("unset", "its template's CPU limit changed: 200m to unset: its Burst dropped"),
+        ("renamed", "no container 'app' in its template: its Burst dropped"),
+        ("gone", "no such Deployment: its Burst dropped"),
+    ],
+)
+def test_a_person_changing_the_templates_cpu_limit_gets_the_container_back(
+    change: str, why: str
+) -> None:
+    core, apps = capped()
+    a = burst_at(core, apps)
+    c = apps.read_namespaced_deployment.return_value.spec.template.spec.containers[0]
+    if change == "raised":  # the limit Slack named: theirs from here on
+        c.resources.limits = {"cpu": "250m"}
+    if change == "unset":
+        c.resources.limits = None
+    if change == "renamed":
+        c.name = "web"
+    if change == "gone":
+        apps.read_namespaced_deployment.side_effect = refusal(404, "Not Found")
+    (end,) = a.keep_bursts()
+    assert (end.outcome, end.pods, end.cpu, end.reason) == ("burst_ended", 0, None, why)
+    assert a.bursts == {} and resized(core) == []  # its pods are the rollout's, not touched
+    event = core.create_namespaced_event.call_args.args[1]
+    assert (event.reason, event.message) == ("HandedBack", f"app: {why}")
+    same = apps.read_namespaced_deployment.return_value.spec.template.spec.containers[0]
+    if change == "raised":
+        same.resources.limits = {"cpu": "0.25"}  # the same quantity, written otherwise
+        b = burst_at(core, apps)
+        b.bursts[KEY]["template"] = "250m"
+        assert b.keep_bursts() == [] and KEY in b.bursts
+
+
+@pytest.mark.parametrize(
+    ("peak", "kept"),
+    [(0.181, True), (None, True), (0.18, False), (0.05, False), ("unlisted", False)],
+)
+def test_a_burst_ends_at_its_term_unless_its_cpu_peak_says_it_is_still_needed(
+    peak: Any, kept: bool
+) -> None:
+    core, apps = capped()
+    a = burst_at(core, apps, ago=DAY_S)
+    boosted_ = core.list_namespaced_pod.return_value.items[1]
+    boosted_.spec.containers[0].resources.limits = {"cpu": "500m"}  # on top of its Burst
+    if peak != "unlisted":
+        a.burst_peaks = {KEY: peak}
+    (said,) = a.keep_bursts()
+    if kept:
+        how = "not known" if peak is None else "181m, above"
+        assert (said.outcome, said.pods, said.cpu) == ("burst", 0, 0.25)
+        assert said.reason == (
+            f"kept for another term: its CPU peak is {how} 90% of its template's limit 200m"
+        )
+        assert not actuator.to_tell(said.outcome, said.reason)
+        assert KEY in a.bursts and resized(core) == []
+        assert a.keep_bursts() == []  # a term from now
+        a.bursts[KEY]["renewed"] -= DAY_S - 1
+        assert a.keep_bursts() == []
+        a.bursts[KEY]["renewed"] -= 1
+        assert len(a.keep_bursts()) == 1
+        return
+    why = (
+        "the Hub no longer listing it"
+        if peak == "unlisted"
+        else f"its CPU peak {actuator.cpu_text(peak)} within 90% of its template's limit 200m"
+    )
+    assert (said.outcome, said.cpu) == ("burst_ended", None) and a.bursts == {}
+    assert said.reason == (
+        f"its term of 24 hours over, {why}: 2 of 2 pods back to CPU limit 200m in place"
+    )
+    # every pod above its template's limit, one still boosted on top of the Burst too
+    assert resized(core) == [("api-1-a", cpu_body("200m")), ("api-1-b", cpu_body("200m"))]
+    event = core.create_namespaced_event.call_args.args[1]
+    assert (event.reason, event.message) == ("BurstExpired", f"app: {said.reason}")
+    assert float(actuator.BURST_KEEP) == 0.9
+
+
+def test_a_bursts_term_is_its_own_and_not_yet_over_a_second_before() -> None:
+    core, apps = capped()
+    a = burst_at(core, apps, ago=DAY_S - 5)
+    assert a.keep_bursts() == [] and KEY in a.bursts
+    a.burst_expires = None  # the Reflex switched off: the Hub sends no term, and lists none
+    a.bursts[KEY]["at"] -= 10
+    (end,) = a.keep_bursts()  # it still ends, at the term it was made with
+    assert end.outcome == "burst_ended" and "the Hub no longer listing it" in end.reason
+    b = burst_at(*capped(), ago=3 * 3600)
+    b.burst_expires = 2 * 3600  # the Contract's term shortened since: its own from then on
+    (end,) = b.keep_bursts()
+    assert end.reason.startswith("its term of 2 hours over") and b.bursts == {}
+    c = burst_at(*capped(), ago=DAY_S)
+    c.burst_peaks = {KEY: 0.05}
+    c.apps.list_namespaced_replica_set.side_effect = refusal(500, "busy")
+    (end,) = c.keep_bursts()
+    assert end.reason.endswith(
+        "its pods keep their CPU limit until they start again (reading it: 500: busy)"
+    )
+    d = burst_at(*capped(), ago=DAY_S)
+    d.burst_peaks = {KEY: 0.05}
+    d.core.patch_namespaced_pod_resize.side_effect = refusal(422, "no")
+    (end,) = d.keep_bursts()
+    assert end.reason.endswith(
+        "0 of 2 pods back to CPU limit 200m in place; 2 refused: api-1-a: 422: no; api-1-b: 422: no"
+    )
+
+
+def test_each_minute_the_hub_answers_a_burst_is_kept_and_ended_by_the_peak_it_sends() -> None:
+    core, apps = capped()
+    a = burst_at(core, apps, ago=DAY_S)
+    low = core.list_namespaced_pod.return_value.items[0]
+    seen: list[httpx.Request] = []
+    answers = [throttling(share=None, peak=0.19), throttling(share=None, peak=0.05)]
+    a.http = hub_of(answers, seen)
+    low.spec.containers[0].resources.limits = {"cpu": "200m"}  # started with the webhook down
+    a.step()  # a peak above 90% of its template's limit: another term, and its pod brought up
+    assert posted(seen) == [["burst", "burst"]] and cpu_limit(core, "api-1-a") == "250m"
+    assert a.burst_peaks == {KEY: 0.19} and "renewed" in a.bursts[KEY]
+    a.bursts[KEY]["renewed"] -= DAY_S
+    a.step()  # a peak within it: over
+    assert posted(seen)[-1] == ["burst_ended"] and a.bursts == {}
+    assert cpu_limit(core, "api-1-a") == cpu_limit(core, "api-1-b") == "200m"
+
+
+def test_a_revert_drops_a_burst_and_lowers_its_pods() -> None:
+    core, apps = capped()
+    a = burst_at(core, apps)
+    undo = {"id": 4, **SHOP_API}
+    seen: list[httpx.Request] = []
+    a.http = hub_of([{**throttling(share=None), "reverts": [undo]}], seen)
+    a.step()
+    assert posted(seen) == [["reverted"]] and a.bursts == {}
+    assert cpu_limit(core, "api-1-a") == cpu_limit(core, "api-1-b") == "200m"
+    reason = json.loads(seen[-1].content)[0]["reason"]
+    assert reason == (
+        "reverted by the Operator (4); its Burst dropped: 2 of 2 pods back to CPU limit "
+        "200m in place: nothing held"
+    )
+
+
+# --- slice 13.3b: the Burst, the Hub's side ---------------------------------------------------
+
+MADE_SAID = f"CPU limit 200m to 250m on 2 of 2 pods in place: {SHARE}"
+CAP_SAID = (
+    f"{SHARE}. No Burst: it is at 2 times its template's limit (400m): raise it in its manifest"
+)
+
+
+def test_what_of_a_burst_the_operator_is_told() -> None:
+    assert actuator.to_tell("burst", MADE_SAID)
+    assert not actuator.to_tell("burst", "brought to its Burst, CPU limit 250m on 1 of 2 pods")
+    assert not actuator.to_tell("burst", "kept for another term: its CPU peak is not known")
+    assert actuator.to_tell("throttled", CAP_SAID)
+    assert not actuator.to_tell("throttled", f"{SHARE}. No Burst: the Workload is paused")
+    assert not actuator.to_tell("burst_ended", "its term of 24 hours over")
+    assert not actuator.to_tell("stepped_up", MADE_SAID)  # each Reflex's own words only
+    assert not actuator.to_tell("oom_killed", CAP_SAID)
+
+
+def test_a_burst_and_a_container_throttled_at_its_cap_reach_the_operators_channel_and_no_other(
+    settings: Settings, database_url: str
+) -> None:
+    app, slack = slacked(settings, database_url)
+    now = time.time()
+    none = {"run_id": 0, "memory": None}
+    oom_cap = "OOM-killed: api-1-a. No Step-up: it is at 2 times its template's limit (256Mi)"
+    sent = [
+        report(**none, outcome="throttled", cpu=None, pods=0, at=now - 90000, reason=CAP_SAID),
+        report(**none, outcome="burst", cpu=0.25, at=now - 50, reason=MADE_SAID),
+        report(**none, outcome="burst", cpu=0.25, at=now - 40, pods=1)
+        | {"reason": "brought to its Burst, CPU limit 250m on 1 of 2 pods in place"},
+        report(**none, outcome="throttled", cpu=None, pods=0, at=now - 30)
+        | {"reason": f"{SHARE}. No Burst: the Workload is paused"},
+        report(**none, outcome="burst_ended", cpu=None, pods=0, at=now - 20, reason="expired"),
+        # the same container at its Step-up's cap the same day: its own line, not this one's
+        report(run_id=0, cpu=None, outcome="oom_killed", memory=1.0, at=now - 10, reason=oom_cap),
+    ]
+    with TestClient(app) as c:
+        taken = c.post("/actuator/reports", json=sent, headers=as_actuator(A_TOKEN))
+        assert taken.status_code == 204  # the Hub knows the three outcomes (migration 0033)
+        tell(c)
+        where = "test/shop/Deployment/api container app"
+        assert posts(slack) == [  # in the order they happened
+            (
+                ACME_CHANNEL,
+                f":warning: acme: {where} is still throttled at its Burst's cap: {CAP_SAID}",
+            ),
+            (
+                ACME_CHANNEL,
+                f":arrow_up: acme: the Actuator raised the CPU limit of {where}: {MADE_SAID}. "
+                "It ends by itself once the need is gone; to keep it, set its CPU limit to "
+                "250m in its manifest.",
+            ),
+            (
+                ACME_CHANNEL,
+                f":warning: acme: {where} is still OOM-killed at its Step-up's cap: {oom_cap}",
+            ),
+        ]
+        assert untold(database_url) == []
+        again = {**sent[0], "at": now - 80000}  # throttled again at its cap: said once a day
+        c.post("/actuator/reports", json=[again], headers=as_actuator(A_TOKEN))
+        tell(c)
+        assert len(posts(slack)) == 3 and untold(database_url) == []
+        odd = {**sent[1], "cpu": None, "at": now - 5}  # a Burst reported without its limit
+        c.post(
+            "/actuator/reports",
+            json=[{**again, "at": now - 3000}, odd],
+            headers=as_actuator(A_TOKEN),
+        )
+        tell(c)  # a day after the one that was said
+    said = [text for _, text in posts(slack)]
+    assert len(said) == 5 and said[3].startswith(":warning: acme:")
+    assert said[4].endswith("to keep it, raise its CPU limit in its manifest.")
+    assert slack.channels() == {ACME_CHANNEL}  # never bank's
+
+
+def test_the_automation_view_shows_a_burst_and_reverts_a_container_with_only_one(
+    settings: Settings, database_url: str
+) -> None:
+    from tests.test_console import OPERATOR, VIEW
+
+    settings.console_operators = {OPERATOR}
+    app, _ = slacked(settings, database_url)
+    now = time.time()
+    path, same = "/api/v1/contracts/acme/automation", {**VIEW, "Sec-Fetch-Site": "same-origin"}
+    burst = {"run_id": 0, "memory": None, "outcome": "burst", "cpu": 0.25}
+    step = {"run_id": 0, "cpu": None, "outcome": "stepped_up", "memory": 228.0 * MI}
+
+    def of(name: str, ago: float, **more: Any) -> dict[str, Any]:
+        return report(name=name, at=now - ago, **{"reason": MADE_SAID, **more})
+
+    sent = [
+        of("api", 900, reason="2 of 2 pods resized in place"),  # a Sizing held, then burst
+        of("api", 800, **burst),
+        of("api", 700, **{**burst, "cpu": 0.3}),  # twice: its last one counts
+        of("api", 650, **step),  # and a Step-up beside it: each its own
+        of("api", 640, outcome="throttled", cpu=None, pods=0, memory=None),  # no row of its own
+        of("lone", 600, **burst),  # nothing held of it but its Burst
+        of("ended", 500, **burst),
+        of("ended", 400, **{**burst, "outcome": "burst_ended", "cpu": None}, pods=0),
+        of("stepped", 350, **step),
+        of("stepped", 340, **{**burst, "outcome": "burst_ended", "cpu": None}, pods=0),
+        of("undone", 300, reason="2 of 2 pods resized in place"),
+        of("undone", 200, **burst),
+        of("undone", 100, outcome="reverted", cpu=None, reason="reverted by the Operator (3)"),
+    ]
+    with TestClient(app) as c:
+        c.post("/actuator/reports", json=sent, headers=as_actuator(A_TOKEN))
+        c.post("/actuator/reports", json=[of("ledger", 50, **burst)], headers=as_actuator(B_TOKEN))
+        # acme's other cluster, which runs no Actuator: never a row of this one's
+        sql(database_url, rolled_back("acme", now - 60, "edge", "edgy", "burst"))
+        page = c.get(path, headers=VIEW).json()
+        theirs = c.get("/api/v1/contracts/bank/automation", headers=VIEW).json()
+        what = {"cluster": "test", "namespace": "shop", "container": "app", "kind": "Deployment"}
+        lone = c.post(f"{path}/revert", json={**what, "name": "lone"}, headers=same)
+        ended_ = c.post(f"{path}/revert", json={**what, "name": "ended"}, headers=same)
+        other = c.post(f"{path}/revert", json={**what, "name": "ledger"}, headers=same)
+    shown_ = {h["name"]: h for h in page["clusters"][0]["containers"]}
+    assert list(shown_) == ["api", "lone", "stepped", "undone"]  # `ended` holds nothing: no row
+    assert [(n, h["burst"], h["stepped"]) for n, h in shown_.items()] == [
+        ("api", 0.3, 228.0 * MI),
+        ("lone", 0.25, None),
+        ("stepped", None, 228.0 * MI),  # a Burst's end ends no Step-up
+        ("undone", None, None),  # a Revert dropped it
+    ]
+    assert shown_["api"]["outcome"] == "applied" and shown_["api"]["revertable"]
+    assert shown_["api"]["cpu"] == 0.115  # its Sizing's request, never the Burst's limit
+    assert shown_["lone"]["outcome"] == "burst" and shown_["lone"]["revertable"]
+    assert shown_["lone"]["cpu"] is None  # its limit is `burst`: it holds no request
+    assert not shown_["undone"]["revertable"]
+    assert [h["name"] for h in theirs["clusters"][0]["containers"]] == ["ledger"]  # bank's own
+    assert lone.status_code == 200 and (ended_.status_code, other.status_code) == (409, 409)
+    assert next(h for h in lone.json()["clusters"][0]["containers"] if h["name"] == "lone")[
+        "reverting"
+    ]
