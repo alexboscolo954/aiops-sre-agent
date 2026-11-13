@@ -1670,6 +1670,23 @@ def test_automation_applies_unasked_and_waits_while_its_container_rolls(
     assert [(x["run_id"], x["outcome"]) for x in posted] == [(2, "applied")]
 
 
+def test_a_sizing_automation_no_longer_lists_keeps_what_the_actuator_holds() -> None:
+    """Slice 9.7: a Sizing learning again (a gap in Prometheus) leaves the Hub's answer.
+    What the Actuator applied stays held: nothing resized, handed back or said."""
+    core, apps = cluster()
+    h = applied(core, apps, wanted())
+    h["automated"] = True
+    seen: list[httpx.Request] = []
+    a = make(hub_of([wants(), wants()], seen), core, apps)
+    a.held = {KEY: h}
+    had, done = dict(h["requests"]), len(resized(core))
+    a.step()
+    a.step()
+    assert a.held[KEY]["outcome"] == "applied" and a.held[KEY]["requests"] == had
+    assert len(resized(core)) == done
+    assert not [r for r in seen if r.method == "POST"]
+
+
 def test_automation_says_a_skip_once_keeps_its_hold_and_backs_off_unsaid() -> None:
     core, apps = cluster()
     h = applied(core, apps, wanted())

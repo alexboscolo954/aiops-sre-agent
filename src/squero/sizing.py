@@ -14,7 +14,8 @@ policy (contracts.py; the numbers below are `production`'s):
   is flagged as risk. Then rounding up to a millicore or a MiB.
 - A request changes only when the difference is at least 10% and at least 10m CPU or
   16 MiB; a container without one always gets one.
-- Under 24 hours of history a container is still learning and gets no Sizing.
+- Under 24 hours of history a container is still learning and gets no Sizing. Its
+  history is covered time (slice 9.7): a gap in Prometheus counts for nothing.
 
 Each risk has a kind, for counting and ranking (slice 9.4). Waste is the request
 above the Sizing, times the average pods over the container's history. Each week the
@@ -73,7 +74,7 @@ class Sizing:
     workload: Workload
     container: str
     state: Literal["ready", "learning"]
-    history_s: float  # oldest to newest pooled sample
+    history_s: float  # covered time, oldest to newest pooled sample (slice 9.7)
     cpu: Resource | None = None
     memory: Resource | None = None
     risks: list[Risk] = field(default_factory=list)
@@ -147,10 +148,15 @@ def _resource(
     return Resource(current, target, "raise" if target > current else "lower", basis)
 
 
-def size(u: ContainerUsage, now: float, policy: Policy = PRODUCTION) -> Sizing:
-    """The Sizing for one container, or `learning` under the policy's history."""
+def size(
+    u: ContainerUsage, now: float, policy: Policy = PRODUCTION, history: float | None = None
+) -> Sizing:
+    """The Sizing for one container, or `learning` under the policy's history:
+    `history` as its cluster covers it (slice 9.7), else the container's own span, a
+    container on its own having no cluster to tell a gap by."""
     times = [t for t, _ in u.cpu + u.memory]
-    history = max(times) - min(times) if times else 0.0
+    if history is None:
+        history = max(times) - min(times) if times else 0.0
     s = Sizing(u.workload, u.container, "learning", history)
     if history < policy.history:
         return s
@@ -218,6 +224,19 @@ def avg_pods(u: ContainerUsage, seen: list[float]) -> float:
     return len(times) / steps
 
 
+def history(u: ContainerUsage, seen: list[float], step: int) -> float:
+    """A container's history (slice 9.7): the covered time from its first usage sample
+    to its last, a `step` for each time its cluster has any container's usage (`seen`,
+    sorted). A gap in Prometheus counts for nothing, so an hour of data after three
+    days without is an hour; a CronJob between its runs still counts. One step fewer
+    than the times: with no gap, the span between the two."""
+    times = [t for t, _ in u.cpu + u.memory]
+    if not times:
+        return 0.0
+    steps = bisect.bisect_right(seen, max(times)) - bisect.bisect_left(seen, min(times))
+    return (steps - 1) * step
+
+
 def rows(
     c: Contract, by_window: dict[int, list[tuple[str, ContainerUsage]]], now: float
 ) -> list[dict[str, Any]]:
@@ -226,9 +245,12 @@ def rows(
     out: dict[str, dict[str, Any]] = {}
     for window, found in by_window.items():
         seen: dict[str, set[float]] = {}
+        used: dict[str, set[float]] = {}  # usage, not Running pods: history is of usage
         for cluster, u in found:
             seen.setdefault(cluster, set()).update(pod_times(u))
+            used.setdefault(cluster, set()).update(t for t, _ in u.cpu + u.memory)
         steps = {cluster: sorted(times) for cluster, times in seen.items()}
+        covered = {cluster: sorted(times) for cluster, times in used.items()}
         for cluster, u in found:
             w = u.workload
             row: dict[str, Any] = {
@@ -257,7 +279,7 @@ def rows(
                 since = now - c.actuator.reflexes.burst.expires
                 peak = max((v for at, v in u.cpu if at >= since), default=None)
                 row["burst"] = {"throttled": u.throttled_recent, "peak": peak}
-            s = size(u, now, policy)
+            s = size(u, now, policy, history(u, covered[cluster], usage.step_for(window)))
             row |= {
                 "state": s.state,
                 "history_h": round(s.history_s / 3600, 1),

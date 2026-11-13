@@ -10,6 +10,7 @@ shorter `[...s]` window doesn't see it.
 """
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -39,7 +40,10 @@ class FakePrometheus:
     queries: list[str] = field(default_factory=list)
     status: int = 200
 
-    def add(self, metric: str, values: list[float] | float, ago: float = 0, **labels: str) -> None:
+    def add(
+        self, metric: str, values: Sequence[float | None] | float, ago: float = 0, **labels: str
+    ) -> None:
+        """A series from the window's start, a value a step; None: no sample then."""
         self.series.append({"__name__": metric, **labels, "_values": values, "_ago": ago})
 
     def select(self, promql: str) -> list[dict[str, Any]]:
@@ -69,7 +73,11 @@ class FakePrometheus:
             result: list[dict[str, Any]] = [
                 {
                     "metric": labels(s),
-                    "values": [[start + i * step, str(v)] for i, v in enumerate(s["_values"])],
+                    "values": [
+                        [start + i * step, str(v)]
+                        for i, v in enumerate(s["_values"])
+                        if v is not None
+                    ],
                 }
                 for s in found
             ]

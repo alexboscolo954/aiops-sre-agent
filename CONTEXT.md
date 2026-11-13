@@ -162,7 +162,7 @@ Knowledge the Operator writes that holds no client data, such as general SRE les
 What a Sizing is for: a Deployment, StatefulSet, DaemonSet, CronJob, Job or Rollout (or a pod with no owner), found by following each pod's owners. Its pods' usage is pooled per container, never summed, so a Sizing is per replica whatever the replica count.
 
 **Sizing**:
-The CPU and memory requests the Hub computes for one container of a Workload from its usage under a Sizing policy, with the risks it can't fix (a limit too low, throttling or OOM kills hiding real demand). Limits are kept. A container with less usage than its policy's history (a day under production) is still *learning* and has none. Read-only unless the Operator approves it or the Workload is under Automation.
+The CPU and memory requests the Hub computes for one container of a Workload from its usage under a Sizing policy, with the risks it can't fix (a limit too low, throttling or OOM kills hiding real demand). Limits are kept. A container with less *history* than its policy needs (a day under production) is still *learning* and has none; its history is the time its cluster's Prometheus has usage for, from the container's first sample to its last in the policy's window, so a gap in Prometheus counts for nothing and a CronJob between its runs still counts. A Sizing whose history falls under what its policy needs (after a long gap) is learning again. Read-only unless the Operator approves it or the Workload is under Automation.
 _Avoid_: Recommendation (that is advice for a human), rightsizing recommendation
 
 **Approved Sizing**:

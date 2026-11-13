@@ -97,6 +97,7 @@ def test_a_cronjob_averages_its_pods_over_its_history() -> None:
     always = container(pods=1, hours=72, step=step)
     (row,) = rows_of(u, always, window=window)  # always: production, another window
     assert row["name"] == "report" and row["policy"] == "batch" and row["state"] == "ready"
+    assert row["history_h"] == 49  # slice 9.7: between its runs counts, at batch's step
     steps = 2 * DAY / step + int(H / step) + 1
     assert row["pods"] == round(len(u.cpu) / steps, 1) == 0.1
     assert row["waste"]["cpu"] == pytest.approx((1.0 - 0.11) * len(u.cpu) / steps)
@@ -118,6 +119,97 @@ def test_a_gap_in_prometheus_counts_for_no_one() -> None:
     """Every pod missed six hours of scrapes: still three pods."""
     (row,) = rows_of(container(gap=(30, 24)))
     assert row["pods"] == 3
+
+
+# --- history is covered time (slice 9.7) ---------------------------------------------
+
+
+def test_with_no_gap_history_is_the_span_from_the_first_sample_to_the_last() -> None:
+    """One step fewer than the times: a day of samples is a day, so ready; a step short
+    of a day is still learning."""
+    (day,) = rows_of(container(hours=24))
+    assert (day["state"], day["history_h"]) == ("ready", 24)
+    u = container(hours=24)
+    u.cpu, u.memory = ([s for s in ss if s[0] > NOW - DAY] for ss in (u.cpu, u.memory))
+    (short,) = rows_of(u)
+    assert (short["state"], short["history_h"]) == ("learning", 24)  # 23.97 h
+    assert sizing.history(u, sorted({t for t, _ in u.cpu}), STEP) == DAY - STEP
+    assert sizing.history(ContainerUsage(u.workload, "none"), [], STEP) == 0
+
+
+def test_a_gap_in_prometheus_is_no_history() -> None:
+    """The lab's case: an hour of data, 70 hours with no scrape at all, an hour of data.
+    Two hours of history, not three days: still learning."""
+    (row,) = rows_of(container(hours=72, gap=(71, 1)))
+    assert (row["state"], row["history_h"]) == ("learning", 2)
+    assert "cpu" not in row and "waste" not in row
+
+
+def test_a_container_away_while_its_cluster_has_usage_keeps_its_history() -> None:
+    """Scaled to zero for 70 hours next to a container that ran: three days."""
+    away, web = container(hours=72, gap=(71, 1)), container(hours=72)
+    web.workload = Workload("shop", "Deployment", "web")
+    api, _web = rows_of(away, web)
+    assert (api["state"], api["history_h"]) == ("ready", 72)
+
+
+def test_an_excluded_container_that_ran_through_keeps_the_others_history() -> None:
+    """`off` gives it no Sizing; its usage still says the cluster had data."""
+    away, idle = container(hours=72, gap=(71, 1)), container(hours=72)
+    idle.workload = Workload("shop", "Deployment", "idle")
+    data = prometheus_contract().model_dump()
+    data["sizing"] = {"rules": [{"name": "idle", "policy": "off"}]}
+    api, off = rows_of(away, idle, c=contracts.build(data))
+    assert off["state"] == "excluded"
+    assert (api["state"], api["history_h"]) == ("ready", 72)
+
+
+def test_history_starts_at_the_containers_own_first_sample() -> None:
+    """Two hours old next to one that ran three days: two hours, whatever its cluster has."""
+    young, web = container(hours=2), container(hours=72)
+    web.workload = Workload("shop", "Deployment", "web")
+    api, _web = rows_of(young, web)
+    assert (api["state"], api["history_h"]) == ("learning", 2)
+
+
+def test_history_counts_memory_samples_as_well_as_cpu() -> None:
+    """A container whose CPU series ends a day before its memory's, and one with memory
+    only: both have their two days."""
+    u, only = container(hours=48), container(hours=48)
+    u.cpu = [s for s in u.cpu if s[0] < NOW - DAY]
+    only.cpu = []
+    for one in (u, only):
+        (row,) = rows_of(one)
+        assert (row["state"], row["history_h"]) == ("ready", 48)
+
+
+def test_only_periodic_workloads_count_their_run_times() -> None:
+    """The known limit: with nothing else in the Contract's namespaces there, a CronJob's
+    hour a day for three days is three hours."""
+    u = ContainerUsage(Workload("shop", "CronJob", "report"), "app")
+    window = BUILTIN["batch"].window
+    step = step_for(window)
+    for day in (2, 1, 0):
+        u.cpu += [(NOW - day * DAY + i * step, 0.1) for i in range(int(H / step) + 1)]
+    (row,) = rows_of(u, window=window)
+    assert (row["state"], row["history_h"]) == ("learning", 3.1)
+
+
+def test_another_clusters_usage_covers_no_gap_here() -> None:
+    gapped, full = container(hours=72, gap=(71, 1)), container(hours=72)
+    found = {WEEK: [("test", gapped), ("other", full)]}
+    out = {r["cluster"]: r for r in sizing.rows(prometheus_contract(), found, NOW)}
+    assert (out["test"]["state"], out["test"]["history_h"]) == ("learning", 2)
+    assert (out["other"]["state"], out["other"]["history_h"]) == ("ready", 72)
+
+
+def test_running_pods_without_usage_are_no_history() -> None:
+    """kube-state-metrics scraped through a gap in the kubelet's: pods counted Running
+    all along, no usage to size by."""
+    u, full = container(pods=1, hours=72, gap=(71, 1)), container(hours=72)
+    u.running = sorted({t for t, _ in full.cpu})
+    (row,) = rows_of(u)
+    assert (row["state"], row["history_h"], row["pods"]) == ("learning", 2, 1)
 
 
 def test_a_raise_or_a_kept_request_wastes_nothing() -> None:
@@ -343,6 +435,41 @@ def test_each_demo_contract_stores_only_its_own_sizings(
     assert found["demo-shop"] and found["demo-bank"]
     for cid, names in found.items():
         assert names == {f"{cid}-api"}
+
+
+def test_another_contracts_usage_covers_no_gap_of_this_one(
+    two_contracts: dict[str, Contract], database_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Slice 9.7 on one Prometheus both demo Contracts read: demo-bank's container has
+    usage through the 70 hours demo-shop's has none. Shop's history is its two hours:
+    bank's samples never count as shop's cluster having data."""
+    fake = FakePrometheus()
+    hour = int(H / STEP)
+    for c in two_contracts.values():
+        gap = [None if c.id == "demo-shop" else 1.0] * (70 * hour - 1)
+        for cl in c.clusters:
+            for ns in cl.namespaces:
+                (p,) = deployment(fake, f"{c.id}-api", pods=1, ns=ns)
+                for add, v in ((cpu, 0.1), (mem, 80.0 * MI)):
+                    edge = [1.0] * (hour + 1)  # an hour, both ends sampled
+                    add(fake, p, [x and v for x in edge + gap + edge], ns=ns)
+    monkeypatch.setattr(usage, "Prom", lambda t: _prom(fake, t))
+
+    async def go() -> dict[str, set[tuple[str, float]]]:
+        async with connect(database_url) as pool:
+            store = Store(pool)
+            await store.migrate()
+            out = {}
+            for c in two_contracts.values():
+                c = c.model_copy(update={"integrations": [*c.integrations, PROM]})
+                assert await sizing.store_run(store, c, NOW) is not None
+                rows, _ = await store.latest_sizings(c.id, {cl.name for cl in c.clusters})
+                out[c.id] = {(r["state"], r["history_h"]) for r in rows}
+            return out
+
+    found = asyncio.run(go())
+    assert found["demo-shop"] == {("learning", 2)}
+    assert found["demo-bank"] == {("ready", 72)}
 
 
 PROM = contracts.Prometheus(name="prometheus", url="http://prometheus")
