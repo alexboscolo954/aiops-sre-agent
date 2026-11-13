@@ -167,6 +167,29 @@ def test_workloads_are_the_latest_runs_ranked(
     assert unknown.status_code == 404
 
 
+def test_a_stored_held_request_reaches_the_workloads_route_with_its_change(
+    settings: Settings, fake_cluster: Any, database_url: str, app_dir: Path
+) -> None:
+    """Slice 14.3: what the hourly run stored of a request its HPA divides by is what
+    the console reads, the other resource without it."""
+    held = {
+        "hpa": "api",
+        "percent": 50.0,
+        "average": 0.5,
+        "change": "target:\n  type: AverageValue",
+    }
+    sized = {"action": "lower", "current": 1.0, "target": 0.115, "basis": 0.1}
+    stored = row(
+        "api", waste={"cpu": 0.9, "memory": 0.0}, cpu={**sized, "held": held}, memory=sized
+    )
+    seed(database_url, ("acme", NOW, stored))
+    with hub(settings, fake_cluster, database_url) as c:
+        body = c.get("/api/v1/contracts/acme/workloads", headers=VIEW).json()
+    (app,) = body["workloads"][0]["containers"]
+    assert app["cpu"]["held"] == held and app["memory"]["held"] is None
+    assert body["workloads"][0]["waste"]["cpu"] == 0.9  # its Waste still counts
+
+
 RISK = {"kind": "oom_killed", "text": "<img src=x onerror=alert(1)>"}
 
 

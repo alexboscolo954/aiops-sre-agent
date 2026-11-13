@@ -71,11 +71,21 @@ class Risk(BaseModel):
     container: str | None = None
 
 
+class HeldByHpa(BaseModel):
+    """A request its HPA divides by (slice 14.3): the Actuator leaves it alone."""
+
+    hpa: str
+    percent: float  # the HPA's Utilization target
+    average: float | None  # the same threshold in cores or bytes; None: no request to go by
+    change: str | None  # the manifest change that frees it
+
+
 class Resource(BaseModel):
     action: str
     current: float | None
     target: float
     basis: float
+    held: HeldByHpa | None = None
 
 
 class Waste(BaseModel):

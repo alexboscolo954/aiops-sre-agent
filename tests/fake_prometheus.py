@@ -75,7 +75,9 @@ class FakePrometheus:
                     "metric": labels(s),
                     "values": [
                         [start + i * step, str(v)]
-                        for i, v in enumerate(s["_values"])
+                        for i, v in enumerate(
+                            s["_values"] if isinstance(s["_values"], Sequence) else [s["_values"]]
+                        )
                         if v is not None
                     ],
                 }

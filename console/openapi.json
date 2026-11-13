@@ -1395,6 +1395,49 @@
         "title": "Held",
         "type": "object"
       },
+      "HeldByHpa": {
+        "description": "A request its HPA divides by (slice 14.3): the Actuator leaves it alone.",
+        "properties": {
+          "average": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Average"
+          },
+          "change": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Change"
+          },
+          "hpa": {
+            "title": "Hpa",
+            "type": "string"
+          },
+          "percent": {
+            "title": "Percent",
+            "type": "number"
+          }
+        },
+        "required": [
+          "hpa",
+          "percent",
+          "average",
+          "change"
+        ],
+        "title": "HeldByHpa",
+        "type": "object"
+      },
       "HeldCluster": {
         "properties": {
           "cluster": {
@@ -2036,6 +2079,16 @@
               }
             ],
             "title": "Current"
+          },
+          "held": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HeldByHpa"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "target": {
             "title": "Target",

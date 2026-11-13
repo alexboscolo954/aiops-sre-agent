@@ -504,6 +504,23 @@ function ContainerDetail({ contract, c }: { contract: string; c: Container }) {
         CPU {c.cpu?.action ?? "-"} {cpu(c.cpu?.current)} → {cpu(c.cpu?.target)}; memory{" "}
         {c.memory?.action ?? "-"} {memory(c.memory?.current)} → {memory(c.memory?.target)}
       </p>
+      {(
+        [
+          ["CPU", c.cpu?.held],
+          ["Memory", c.memory?.held],
+        ] as const
+      ).map(
+        ([name, held]) =>
+          held && (
+            <details key={name} open>
+              <summary>
+                {name} is held by its HPA {held.hpa} ({held.percent}% of requests): the Actuator leaves this request
+                alone{held.change ? ". The change that frees it:" : "."}
+              </summary>
+              {held.change && <pre>{held.change}</pre>}
+            </details>
+          ),
+      )}
       {c.risks.length > 0 && (
         <ul className="risks">
           {c.risks.map((r, i) => (

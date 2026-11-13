@@ -919,6 +919,20 @@ export interface components {
             /** Stopped */
             stopped: boolean;
         };
+        /**
+         * HeldByHpa
+         * @description A request its HPA divides by (slice 14.3): the Actuator leaves it alone.
+         */
+        HeldByHpa: {
+            /** Average */
+            average: number | null;
+            /** Change */
+            change: string | null;
+            /** Hpa */
+            hpa: string;
+            /** Percent */
+            percent: number;
+        };
         /** HeldCluster */
         HeldCluster: {
             /** Cluster */
@@ -1104,6 +1118,7 @@ export interface components {
             basis: number;
             /** Current */
             current: number | null;
+            held?: components["schemas"]["HeldByHpa"] | null;
             /** Target */
             target: number;
         };

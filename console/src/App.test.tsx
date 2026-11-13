@@ -76,6 +76,23 @@ test("model and Hub text renders as text, never as markup", async () => {
   expect(page.querySelector("img")).toBeNull();
 });
 
+test("a request its HPA divides by shows as held, with the change that frees it as text", async () => {
+  const change = "# HorizontalPodAutoscaler lab/api, its cpu metric:\ntarget:\n  type: AverageValue\n  averageValue: 500m <b>";
+  const held = workload("held", 1, 0, []);
+  held.containers[0].cpu = { ...container.cpu, held: { hpa: "api", percent: 50, average: 0.5, change } } as typeof container.cpu;
+  answer({
+    "/api/v1/contracts": [200, [{ id: "demo-shop", name: "demo-shop" }]],
+    "/api/v1/contracts/demo-shop/workloads": [200, { ...DATA, workloads: [held, workload("free", 0.5, 0, [])] }],
+    "/api/v1/contracts/demo-shop/history": [200, { points: [] }],
+  });
+  const { container: page } = render(<App />);
+  fireEvent.click(await screen.findByText("Deployment/held"));
+  expect(await screen.findByText(/CPU is held by its HPA api \(50% of requests\)/)).toBeTruthy();
+  expect(page.querySelector("pre")?.textContent).toBe(change);
+  expect(page.querySelector("pre b")).toBeNull();
+  expect(screen.queryByText(/Memory is held/)).toBeNull();
+});
+
 test("Workloads rank by waste, a core like 4 GiB", async () => {
   answer({
     "/api/v1/contracts": [200, [{ id: "demo-shop", name: "demo-shop" }]],

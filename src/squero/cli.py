@@ -172,7 +172,7 @@ def sizing_show(contract_id: str, as_json: bool) -> int:
 
     c = contract(Settings(), contract_id)
     collected, status = collect_usage(c, c.sizing.windows())
-    out = sizing.rows(c, collected.by_window, time.time())
+    out = sizing.rows(c, collected.by_window, time.time(), collected.scaled)
     if as_json:
         print(json.dumps(out, indent=2))
         return status
@@ -190,7 +190,12 @@ def sizing_show(contract_id: str, as_json: bool) -> int:
                 r = row[res_name]
                 now_s = "unset" if r["current"] is None else sizing.show(res_name, r["current"])
                 target = sizing.show(res_name, r["target"])
-                parts.append(f"{res_name} {r['action']} {now_s} -> {target}")
+                note = ""
+                if by := r.get("held"):  # slice 14.3
+                    free = by["average"] and sizing.show(res_name, by["average"])
+                    note = f" (held by its HPA {by['hpa']}"
+                    note += f": free as AverageValue {free})" if free else ")"
+                parts.append(f"{res_name} {r['action']} {now_s} -> {target}{note}")
         days, of = row["history_h"] / 24, row["window_h"] / 24
         short = f" | history {days:.1f}d of {of:g}d" if round(days, 1) < of else ""
         texts = [r["text"] for r in row["risks"] if r["kind"] not in sizing.DERIVED]

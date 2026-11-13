@@ -258,7 +258,7 @@ def test_needs_are_read_only_when_asked_from_each_clusters_hour_at_most_8_weeks_
     monkeypatch.setattr(usage, "Prom", lambda t: _prom(fake, t))
     c = prometheus_contract()
     found = usage.collect(c, [86400], NOW)
-    assert found.needs == {} and not [q for q in fake.queries if HPA in q]
+    assert found.needs == {} and not [q for q in fake.queries if "current_replicas" in q]
     starts: list[float] = []
     real = usage.needs
 

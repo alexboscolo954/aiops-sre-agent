@@ -32,7 +32,7 @@ from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 from squero import listprices, usage
 from squero.contracts import BUILTIN, ClusterPrices, Contract, Policy
 from squero.slack import clean
-from squero.usage import ContainerUsage, Workload
+from squero.usage import ContainerUsage, Divides, Workload
 
 if TYPE_CHECKING:
     from squero.store import Store
@@ -237,12 +237,62 @@ def history(u: ContainerUsage, seen: list[float], step: int) -> float:
     return (steps - 1) * step
 
 
+def held(
+    res: str,
+    w: Workload,
+    container: str,
+    divides: list[Divides],
+    asked: dict[str, dict[str, float]],
+) -> dict[str, Any] | None:
+    """A request its HPA divides by (slice 14.3): the HPA, its percentage, the same
+    threshold as an absolute value (the percentage of the pod's requests as they are
+    now, every container's summed; of one container's for a per-container metric) and
+    the manifest change that frees the request, or None when no HPA divides by it.
+    `asked`: each container of the Workload's requests. A `container` label that names
+    none of them is the scrape target's own, and the metric the whole pod's."""
+    for d in divides:
+        own = d.container if d.container in asked else ""
+        if d.resource != res or own not in ("", container):
+            continue
+        of = sum(r.get(res) or 0.0 for name, r in asked.items() if own in ("", name))
+        average = d.percent / 100 * of if of else None
+        change = None
+        if average is not None:
+            whose = f"container {own}'s {res} request" if own else f"the pod's {res} requests"
+            why = [
+                f"# {d.percent:g}% of {whose} now ({show(res, of)}), as a value.",
+                "# Apply it before any request changes: a request cut first scales it out.",
+            ]
+            if d.hpa.startswith("keda-hpa-"):  # KEDA's name for the HPA of a ScaledObject
+                what = f"# ScaledObject {w.namespace}/{d.hpa.removeprefix('keda-hpa-')} (KEDA)"
+                lines = [f"{what}, its {res} trigger:", *why, f"- type: {res}"]
+                lines += ["  metricType: AverageValue", "  metadata:"]
+                lines += [f'    value: "{show(res, average)}"']
+                lines += [f'    containerName: "{own}"'] if own else []
+            else:
+                what = f"# HorizontalPodAutoscaler {w.namespace}/{d.hpa}, its {res} metric"
+                lines = [what + (f" of container {own}:" if own else ":"), *why, "target:"]
+                lines += ["  type: AverageValue", f"  averageValue: {show(res, average)}"]
+            change = "\n".join(lines)
+        return {"hpa": d.hpa, "percent": d.percent, "average": average, "change": change}
+    return None
+
+
 def rows(
-    c: Contract, by_window: dict[int, list[tuple[str, ContainerUsage]]], now: float
+    c: Contract,
+    by_window: dict[int, list[tuple[str, ContainerUsage]]],
+    now: float,
+    scaled: dict[str, dict[Workload, list[Divides]]] | None = None,
 ) -> list[dict[str, Any]]:
     """Every container's Sizing under its policy, as `sizing show`, the stored runs and
-    `sizing waste` see it, sorted by name. `off` gives an excluded row."""
+    `sizing waste` see it, sorted by name. `off` gives an excluded row. `scaled`: per
+    cluster, the HPA targets that divide by a request (slice 14.3): a Sizing that would
+    change such a request is `held`."""
     out: dict[str, dict[str, Any]] = {}
+    asked: dict[tuple[str, Workload], dict[str, dict[str, float]]] = {}  # per container
+    for found in by_window.values():
+        for cluster, u in found:
+            asked.setdefault((cluster, u.workload), {})[u.container] = u.requests
     for window, found in by_window.items():
         seen: dict[str, set[float]] = {}
         used: dict[str, set[float]] = {}  # usage, not Running pods: history is of usage
@@ -299,6 +349,11 @@ def rows(
                     "basis": res.basis,
                     "limit": u.limits.get(name),  # None: no limit (stored since 9.6)
                 }
+                divides = (scaled or {}).get(cluster, {}).get(w, [])
+                if res.action != "keep" and divides:
+                    by = held(name, w, u.container, divides, asked[cluster, w])
+                    if by:
+                        row[name]["held"] = by
                 if res.action == "set":
                     risks.append(Risk("request_unset", f"{name} has no request"))
                 if res.action == "raise" and res.current is not None:
@@ -647,7 +702,7 @@ async def store_run(
     # Each cluster's last good run, read before this one finishes (it would compare
     # with itself)
     before, status = await store.latest_sizings(c.id, set(found.clusters))
-    now = rows(c, found.by_window, at)
+    now = rows(c, found.by_window, at, found.scaled)
     await store.finish_sizing_run(run_id, c.id, found.clusters, now)
     for cluster, facts in found.nodes.items():
         await store.save_nodes(c.id, cluster, at, facts)

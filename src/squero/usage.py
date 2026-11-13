@@ -615,6 +615,41 @@ def needs(prom: Prom, t: Target, start: float, end: float) -> dict[Workload, dic
     return out
 
 
+@dataclass(frozen=True, order=True)
+class Divides:
+    """An HPA target that divides by a request (slice 14.3): a `Utilization` of cpu or
+    memory, of the whole pod or of one container."""
+
+    hpa: str
+    resource: str  # cpu or memory
+    container: str  # the series' own `container` label: a container's name, or not one
+    percent: float
+
+
+def scaled(prom: Prom, t: Target, at: float) -> dict[Workload, list[Divides]]:
+    """Each Workload's HPA targets that divide by a request (slice 14.3), as
+    kube-state-metrics has them at `at`: plain selectors, so a target changed since
+    (to an `AverageValue`) is gone at once, not five minutes later."""
+    of = {}
+    for s in prom.instant(selector(f"{HPA}_info", t), at):
+        m = s["metric"]
+        hpa = (label(m, "namespace"), m.get("horizontalpodautoscaler", ""))
+        of[hpa] = Workload(
+            hpa[0], m.get("scaletargetref_kind", ""), m.get("scaletargetref_name", "")
+        )
+    if not of:
+        return {}
+    out: dict[Workload, list[Divides]] = {}
+    targets = selector(f"{HPA}_spec_target_metric", t, 'metric_target_type="utilization"')
+    for s in prom.instant(targets, at):
+        m = s["metric"]
+        hpa = (label(m, "namespace"), m.get("horizontalpodautoscaler", ""))
+        if hpa in of and m.get("metric_name") in ("cpu", "memory"):
+            found = Divides(hpa[1], m["metric_name"], label(m, "container"), float(s["value"][1]))
+            out.setdefault(of[hpa], []).append(found)
+    return {w: sorted(found) for w, found in out.items()}
+
+
 @dataclass
 class Collected:
     """A Contract's usage per window, (cluster, usage) pairs, and per cluster None when
@@ -626,6 +661,8 @@ class Collected:
     nodes: dict[str, dict[str, Any]] = field(default_factory=dict)  # per cluster, 10.4
     # per cluster, each Workload's Need by hour (slice 14.1a); a cluster not read has none
     needs: dict[str, dict[Workload, dict[float, float]]] = field(default_factory=dict)
+    # per cluster, the HPA targets that divide by a request (slice 14.3)
+    scaled: dict[str, dict[Workload, list[Divides]]] = field(default_factory=dict)
 
 
 def collect(
@@ -637,7 +674,8 @@ def collect(
     """Every cluster's container usage over each window, ending at `end`. A cluster
     that fails is named in `clusters` and never stops the others. `needs_since`: also
     each cluster's Needs (slice 14.1a) from the hour given for it, 8 weeks back for
-    one it doesn't name and never further; a read of them that fails stops nothing."""
+    one it doesn't name and never further; a read of them that fails stops nothing,
+    nor one of the HPAs' targets (slice 14.3)."""
     from kubernetes import client as k
 
     from squero.servers import kubernetes
@@ -676,6 +714,10 @@ def collect(
                 out.needs[t.cluster] = needs(prom, t, start, end)
             except UsageError as e:
                 log.warning("%s/%s: its Needs not read: %s", c.id, t.cluster, e)
+        try:
+            out.scaled[t.cluster] = scaled(prom, t, end)
+        except UsageError as e:
+            log.warning("%s/%s: its HPAs' targets not read: %s", c.id, t.cluster, e)
         if c.list_prices:
             if t.cluster in c._shared_stores and not t.labels:
                 out.nodes[t.cluster] = {

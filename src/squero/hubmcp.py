@@ -95,7 +95,10 @@ def _resource(res: str, r: webapp.Resource | None) -> dict[str, Any] | None:
     if r is None:
         return None
     now = None if r.current is None else show(res, r.current)
-    return {"request": now, "sizing": show(res, r.target), "action": r.action}
+    out = {"request": now, "sizing": show(res, r.target), "action": r.action}
+    if r.held:  # slice 14.3
+        out["held"] = r.held.change or f"by its HPA {r.held.hpa}"
+    return out
 
 
 def _workload(w: webapp.Workload, approved: dict[str, Any]) -> dict[str, Any]:
@@ -194,8 +197,10 @@ def build(
     ) -> dict[str, Any]:
         """The Contract's Workloads ranked by what their waste costs (by the waste
         itself when the Contract has no prices), from the Hub's latest Sizing run: each
-        one's requests now and its Sizing per container, its waste and risks. risky:
-        only Workloads with a risk (an OOM kill, throttling, restarts)."""
+        one's requests now and its Sizing per container, its waste and risks. held: a
+        request its HPA divides by, which the Actuator leaves alone, with the manifest
+        change that frees it. risky: only Workloads with a risk (an OOM kill,
+        throttling, restarts)."""
         c = resolve(contract)
 
         async def work() -> dict[str, Any]:

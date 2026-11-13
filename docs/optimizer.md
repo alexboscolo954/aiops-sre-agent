@@ -148,6 +148,26 @@ For every Workload with an HPA (a KEDA ScaledObject's `keda-hpa-<name>` is one) 
 - **Unknown**, so nothing is stored for that time: an HPA whose target or current value kube-state-metrics doesn't have (a metric the HPA can't read, or a kube-state-metrics that doesn't export `_spec_target_metric`), a target of zero, and a Workload two HPAs scale.
 - **Stored** as each UTC hour's peak per Workload, for 8 weeks. The first read goes back over the 8 weeks Prometheus still has, sampled every 9 minutes; after that each run reads on from the newest hour stored, every minute, so a Hub that was down catches up. An hour read twice keeps the larger figure. A peak between two samples is missed. A failed read is logged and never fails the Sizing run.
 
+## Sizings held by an HPA
+
+An HPA with a `Utilization` target on cpu or memory divides the pods' usage by their requests. Changing such a request changes the percentage and so the replica count, which is why the Actuator leaves it alone ([the pre-checks](client-cluster.md#running-an-actuator)). The Hub marks a Sizing that would change such a request as **held by its HPA**: in `squero sizing show`, in the console's Workloads page under the container, and in the Hub MCP's `sizings`. Its Waste still counts, because one manifest change frees it.
+
+- **The change.** The HPA's target as an `AverageValue`: the same threshold in absolute terms. 50% of pods that ask 1200m of CPU in all is 600m per pod. After it the HPA reads no requests, the replica count follows usage as before, and the Actuator resizes that request like any other. The Hub shows it ready to copy:
+
+  ```yaml
+  # HorizontalPodAutoscaler shop/api, its cpu metric:
+  # 50% of the pod's cpu requests now (1200m), as a value.
+  # Apply it before any request changes: a request cut first scales it out.
+  target:
+    type: AverageValue
+    averageValue: 600m
+  ```
+
+- **Whose requests.** For a metric of the whole pod, every container's request summed (sidecars too, sized or not), and every container whose Sizing would change it is held. For a per-container metric, that container's own request, and only it is held. The value is computed from the requests as they are now, so apply it before any of them changes: with a request already cut, the HPA has scaled out and the value shown is smaller.
+- **KEDA.** An HPA named `keda-hpa-<name>` is taken for the ScaledObject `<name>`'s, and the change is given for its trigger (`metricType: AverageValue`, `value` as a quantity, `containerName` for a per-container trigger). A wrong guess only shows the wrong form.
+- **Read from** kube-state-metrics as it is at the run (`kube_horizontalpodautoscaler_info` and `_spec_target_metric`), in the Contract's namespaces; a failed read marks nothing and fails nothing. A target switched to `AverageValue` stops holding at the next hourly run.
+- **Limits.** A kube-state-metrics before 2.19 doesn't say which container a per-container metric is of: it reads as the whole pod's, and the comment above the change says which requests the value was taken from. Where a container of the pod has no request for that resource, the HPA's `Utilization` target isn't working at all, so the value shown (from the requests there are, or none) is no equivalent of it. With two HPAs on one Workload the first by name is shown. Nothing is ever written to an HPA or a ScaledObject: the client's GitOps applies the change.
+
 ## The optimizer lab
 
 `make lab` turns the kind cluster into a persistent lab: kube-prometheus-stack (chart pinned in the Makefile, the setup most client clusters run; Prometheus keeps 30 days, Grafana via `make lab-grafana`) and, in namespace `lab`, Workloads with the usage shapes a Sizing must get right: a 24-hour diurnal Deployment with two replicas, an over-requested one, a spiky one, a slow memory leak that its limit OOM-kills about hourly, a CPU-throttled one, an idle one, a StatefulSet, a DaemonSet, a CronJob, and `weekly`, a Deployment under an HPA (CPU at 50%, 2 to 5 replicas; metrics-server is installed for it) whose load follows the week and is shared by its pods: it needs 1 replica at night and at weekends, 3 on weekdays from 08:00 to 18:00 UTC and 7 on Mondays from 09:00 to 12:00, so its Need reads below the minimum and above the maximum. Prometheus is reachable from the Hub on kind's Docker network at `http://squero-control-plane:30090`, so a Contract's cluster can set it as `prometheus_url` with `lab` in its namespaces. Leave the lab running: real history builds up. Its history lives inside the kind node container, so `kind delete cluster` erases it.
