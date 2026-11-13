@@ -1348,6 +1348,17 @@
             "title": "Reverting",
             "type": "boolean"
           },
+          "stepped": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stepped"
+          },
           "stopped": {
             "title": "Stopped",
             "type": "boolean"

@@ -128,7 +128,7 @@ actuator:
   reflexes:
     oom:
       max: 2       # a Step-up never goes past this many times the memory limit in the Workload's template; 2 unless set, more than 1, 4 at most
-                   # `expires` comes with slice 13.1c and is refused until then
+      expires: 7d  # a Step-up ends this long after its last step unless it is still needed; 7d unless set, 1h to 90d
 ```
 
 It needs a cluster with an `actuator_token_secret`. The Actuator tells each OOM kill of an automated container apart, reports it, and answers one at a memory limit with a **Step-up** ([ADR 0005](adr/0005-reflexes-may-raise-limits.md)): the only time it changes a limit.
@@ -159,7 +159,17 @@ A container-limit kill of a pod is answered within the minute: the container's m
 
 Each Step-up is an Actuation `stepped_up` (its `memory` the new limit) and an Event `MemorySteppedUp` on the Workload; pods brought to one later are a `stepped_up` too, which says so. Its values and the hour's count are kept in the Actuator's ConfigMap, so a restart forgets neither.
 
-Not yet (slice 13.1c): a Step-up does not expire; nothing is posted to Slack, and the Automation page doesn't show it; a Revert, a hand-back and the Reflex being switched off leave running pods their memory until they start again. Until then it should not run on a real cluster.
+### How a Step-up ends, and where it shows
+
+A Step-up is not the Workload's new size: it ends by itself.
+
+- **Its term.** `expires` after its last step (7 days unless the Contract says; an hour to 90 days), the Actuator asks whether it is still needed. The Hub sends, with each listed container, its memory peak over its Sizing's window. A peak above the limit in the Workload's template: the Step-up is kept for another term (said in an Actuation, so the Automation page still knows a Step-up that outlives the 90 days the Hub keeps Actuations). A peak the Hub doesn't know: kept too. A peak within that limit, or a container the Hub no longer lists (its Automation ended, or the Reflex was switched off): it ends, with an Actuation `step_ended` and an Event `StepUpExpired`.
+- **Its pods, then.** New pods start from the template again. Running pods are put back to the template's memory limit and request in place only where the Hub's peak says they fit under it, so that no resize is left hanging above what a pod uses and no pod is killed for it; otherwise they keep theirs until they start again. The peak is the Hub's last hourly reading, sampled, and the lowering is tried once: a pod that grew since keeps its resize in progress (Kubernetes 1.34 on) until it fits, and a pod that refused is not asked again. Kubernetes 1.33 refuses to lower a memory limit in place: said pod by pod, and those pods keep theirs. A Revert does the same with the Step-up it drops. A person's change to the template rolls the pods anyway.
+- **In Slack.** Each Step-up made is one line in the Contract's operator channel, with what to write in the manifest to keep it ("set its memory limit to 228Mi"); a container still OOM-killed at its cap is one line a day. Both go through the same teller as Rollbacks: after the Actuator is answered, again until Slack takes them, and under the same 20 posts a cluster an hour. Pods only brought to a Step-up, an OOM kill only seen, and a Step-up's end are stored and not posted.
+- **On the Automation page.** A container's row shows its Step-up's memory limit beside what it holds of a Sizing, and a container with only a Step-up is a row too. Revert is offered for either, and drops both.
+- **In a Triage's thread.** When a Triage ends, the Hub adds one line above its Report for each Step-up made, from an hour before the Triage began, on a Workload its Alerts name (by a `deployment`, `statefulset`, `daemonset`, `rollout` or `cronjob` label, or a `pod` label that begins with the Workload's name, in the same namespace). The Hub writes it from what it stored; the model never sees it (the Hub never reads a thread's messages back). A Triage that ends twice says it twice.
+
+Upgrade the Hub before its Actuators, and roll Actuators back before the Hub: an Actuator's report with an outcome its Hub doesn't know is refused whole and dropped, the reports beside it too.
 
 ## Automation
 

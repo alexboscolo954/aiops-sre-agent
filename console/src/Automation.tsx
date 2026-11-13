@@ -70,6 +70,7 @@ export function AutomationPage({ contract }: { contract: string }) {
                       <td>
                         {h.cpu != null && `cpu ${cpu(h.cpu)} `}
                         {h.memory != null && `memory ${memory(h.memory)}`}
+                        {h.stepped != null && <div className="hint">Step-up: memory limit {memory(h.stepped)}</div>}
                       </td>
                       <td className="text">{h.reason}</td>
                       <td>

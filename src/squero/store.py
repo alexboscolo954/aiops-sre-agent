@@ -8,7 +8,7 @@ Migrations are numbered .sql files in migrations/, applied once each at startup.
 import json
 import re
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -774,10 +774,16 @@ class Store:
         return {(r["namespace"], r["kind"], r["name"], r["container"]) for r in rows}
 
     async def record_actuations(
-        self, contract_id: str, cluster: str, rows: list[dict[str, Any]], at: float
+        self,
+        contract_id: str,
+        cluster: str,
+        rows: list[dict[str, Any]],
+        at: float,
+        tell: Callable[[dict[str, Any]], bool] = lambda r: r["outcome"] == "rolled_back",
     ) -> list[dict[str, Any]]:
         """Store what an Actuator reported (slice 12.1); a row it sends again is kept once.
-        The rows new to the Hub: what it tells the Operator about (slice 12.4)."""
+        The rows new to the Hub: what it tells the Operator about (slice 12.4), those
+        `tell` says (a Rollback; a Step-up too, slice 13.1c) kept as still to tell."""
         new = []
         for r in rows:
             stored = await self._one(
@@ -788,7 +794,7 @@ class Store:
                     cluster,
                     *(r[k] for k in ACTUATION_FIELDS),
                     at,
-                    r["outcome"] != "rolled_back",  # told: a Rollback is still to tell
+                    not tell(r),  # told: one to tell the Operator of is still to tell
                 ),
             )
             if stored:

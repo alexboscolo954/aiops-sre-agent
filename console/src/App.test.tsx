@@ -868,6 +868,7 @@ const AUTOMATION = {
         { ...HELD, name: "cache", resumes: 1_700_604_800, outcome: "failed" },
         { ...HELD, name: "kept", outcome: "skipped" }, // a skip leaves the earlier hold: still to revert
         { ...HELD, name: "idle", outcome: "skipped", revertable: false },
+        { ...HELD, name: "grown", stepped: 228 * 2 ** 20 }, // a Step-up beside its Sizing (slice 13.1c)
       ],
     },
   ],
@@ -909,7 +910,9 @@ test("Automation lists each container's last Actuation as text, and Revert posts
   expect(screen.getByLabelText("Revert shop/Deployment/cache/app")).toBeTruthy(); // failed: pods may hold it
   expect(screen.getByLabelText("Revert shop/Deployment/kept/app")).toBeTruthy(); // by revertable, not its outcome
   expect(screen.queryByLabelText("Revert shop/Deployment/idle/app")).toBeNull();
-  expect(screen.getAllByText(/cpu 115m memory 96Mi/).length).toBe(6);
+  expect(screen.getAllByText(/cpu 115m memory 96Mi/).length).toBe(7);
+  expect(screen.getByText("Step-up: memory limit 228Mi")).toBeTruthy();
+  expect(screen.getAllByText(/Step-up/).length).toBe(1); // only where there is one
   fireEvent.click(screen.getByLabelText("Revert shop/Deployment/api/app"));
   await waitFor(() => expect(screen.queryByLabelText("Revert shop/Deployment/api/app")).toBeNull());
   expect(sent).toEqual([

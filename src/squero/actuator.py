@@ -121,6 +121,10 @@ STEP_FACTOR = Decimal("1.2")
 STEP_MORE = 100 * 1024 * 1024
 STEP_EVERY = 600
 STEPS_AN_HOUR = 10
+# how a Step-up made begins its reason (pods only brought to one: "brought to"), and how a
+# container at its Step-up's cap is said: what the Hub tells the Operator of (slice 13.1c)
+STEP_SAID = "memory limit "
+AT_CAP = "No Step-up: it is at "
 OOM_REPORTS = 50  # containers reported in one minute, the rest the next: a node out of
 # memory kills many at once, and of its unsent reports only the newest 200 outlive a restart
 # why Kubernetes removed a pod whose node is gone: its taint manager, or its pod garbage
@@ -219,6 +223,8 @@ class Watched(BaseModel):
     kind: str
     name: str
     container: str
+    # slice 13.1c: its memory peak (bytes) over its Sizing's window, None when not known
+    peak: float | None = None
 
 
 class Desired(BaseModel):
@@ -236,6 +242,9 @@ class Desired(BaseModel):
     # slice 13.1b: how many times its template's memory limit a Step-up may reach. None, as
     # from a Hub of 13.1a: OOM kills are reported and nothing is stepped up
     oom_max: float | None = None
+    # slice 13.1c: seconds after its last step that a Step-up ends, unless the peak says
+    # it is still needed. None, as from a Hub of 13.1b: a Step-up never expires
+    oom_expires: float | None = None
 
 
 class Actuation(BaseModel):
@@ -254,6 +263,18 @@ class Actuation(BaseModel):
     pods: int = Field(ge=0)
     reason: str = Field(max_length=1000)
     at: float
+
+
+def to_tell(outcome: str, reason: str) -> bool:
+    """Whether the Hub tells the Operator of such an Actuation in Slack: a Rollback (slice
+    12.4), a Step-up made, and a container still OOM-killed at its Step-up's cap, which a
+    person must answer (slice 13.1c). Not an OOM kill only seen, pods only brought to a
+    Step-up, or its end."""
+    return (
+        outcome == "rolled_back"
+        or (outcome == "stepped_up" and reason.startswith(STEP_SAID))
+        or (outcome == "oom_killed" and AT_CAP in reason)
+    )
 
 
 def unreal(a: Actuation) -> str | None:
@@ -1105,6 +1126,19 @@ def next_step(limit: Decimal, request: Decimal, top: Decimal) -> tuple[str, str]
     return f"{new}Mi", f"{asked}Mi"
 
 
+def span(seconds: float) -> str:
+    """A term as a person says it: days from two on, else hours, else minutes."""
+    if seconds >= 2 * 86400:
+        return f"{round(seconds / 86400)} days"
+    if seconds >= 2 * 3600:
+        return f"{round(seconds / 3600)} hours"
+    return f"{round(seconds / 60)} minutes"
+
+
+def body_text(had: dict[str, Any]) -> str:
+    return f"{had['limit']}, request {had['request'] or had['limit']}"
+
+
 def step_body(container: str, limit: str, request: str) -> dict[str, Any]:
     """The resize that gives a pod's container a Step-up's memory limit and request."""
     resources = {"limits": {"memory": limit}, "requests": {"memory": request}}
@@ -1700,6 +1734,10 @@ class Actuator:
     steps: list[float] = field(default_factory=list)
     oom_max: float | None = None
     reflexed: frozenset[str] = frozenset()  # containers whose OOM kills it answers this minute
+    # slice 13.1c: the Step-up's term, and each listed container's memory peak, as the Hub
+    # last said them
+    oom_expires: float | None = None
+    peaks: dict[str, float | None] = field(default_factory=dict)
     events_unread: bool = False  # said once: it may not read Node Events
 
     def load(self) -> None:
@@ -1811,6 +1849,11 @@ class Actuator:
                 done += self.revert(desired.reverts) + self.advance(desired.eviction)
                 done += self.act(desired.sizings, desired.automated)
                 done += self.catch_up()
+                self.oom_expires = desired.oom_expires
+                self.peaks = {
+                    "/".join((w.namespace, w.kind, w.name, w.container)): w.peak
+                    for w in desired.oom
+                }
                 done += self.keep_steps()
                 if desired.oom and looks:  # never crowding out what the Hub hasn't
                     done += self.ooms(desired.oom)  # taken yet (slice 13.1a)
@@ -2156,7 +2199,7 @@ class Actuator:
             del h["requests"]["memory"]
             (h.get("template") or {}).pop("memory", None)
         said = (
-            f"memory limit {was[0]} to {target[0]}, request {was[1]} to {target[1]}"
+            f"{STEP_SAID}{was[0]} to {target[0]}, request {was[1]} to {target[1]}"
             if earned
             else f"brought to its Step-up, memory limit {target[0]}, request {target[1]}"
         )
@@ -2235,6 +2278,50 @@ class Actuator:
                 )
                 out.append(a)
                 continue
+            now = time.time()
+            if self.oom_expires and now - max(st["at"], st.get("renewed", 0.0)) >= self.oom_expires:
+                peak, top = self.peaks.get(k), st["template"]["limit"]
+                if k in self.peaks and (peak is None or peak > float(qty(top))):
+                    st["renewed"] = now  # still needed, or not known: another term
+                    how = f"{memory_text(peak)} above" if peak is not None else "not known against"
+                    said = (
+                        f"kept for another term: its memory peak is {how} its template's "
+                        f"limit {top}"
+                    )
+                    log.info("%s: its Step-up %s", k, said)
+                    out.append(  # said, so the Hub's page still knows it after 90 days
+                        Actuation(
+                            namespace=ns,
+                            kind=kind,
+                            name=name,
+                            container=container,
+                            run_id=(self.held.get(k) or {}).get("run_id", 0),
+                            outcome="stepped_up",
+                            memory=float(qty(st["limit"])),
+                            pods=0,
+                            reason=said,
+                            at=now,
+                        )
+                    )
+                else:
+                    del self.stepped[k]
+                    term = f"its term of {span(self.oom_expires)} over"
+                    said = (
+                        f"{term}, its memory peak {memory_text(peak)} within its template's "
+                        f"limit {top}: {self.step_back(k, st)}"
+                        if peak is not None
+                        else f"{term}, the Hub no longer listing it: {self.step_back(k, st)}"
+                    )
+                    a = Actuation(
+                        namespace=ns, kind=kind, name=name, container=container,
+                        run_id=(self.held.get(k) or {}).get("run_id", 0),
+                        outcome="step_ended", pods=0, reason=said[:1000], at=now,
+                    )  # fmt: skip
+                    log.info("%s: its Step-up %s", k, said)
+                    what = ("apps/v1", kind, name)
+                    post(self.core, ns, what, "StepUpExpired", f"{container}: {said}", False)
+                    out.append(a)
+                    continue
             try:  # a CronJob has none to bring: its next runs' start at it
                 pods = [p for p in pods_of(self.core, self.apps, d, kind) if not lost(p)]
             except ApiException as e:
@@ -2301,6 +2388,41 @@ class Actuator:
                 log.info("%s: %s", k, said)
         return out
 
+    def step_back(self, k: str, st: dict[str, Any]) -> str:
+        """What becomes of the running pods of a Step-up that ended (slice 13.1c): back to
+        their template's memory limit and request in place, where the Hub's peak says they
+        fit under it; else left with theirs until they start again, so that no resize is
+        left hanging above what a pod uses (Kubernetes 1.34 on) and no pod is killed for
+        it. Kubernetes 1.33 refuses to lower a memory limit in place: said, pod by pod."""
+        ns, kind, name, container = k.split("/")
+        peak, had = self.peaks.get(k), st["template"]
+        if kind == "CronJob":
+            return "its next runs' pods start from its template"
+        if peak is None or peak > float(qty(had["limit"])):
+            return (
+                "its pods keep their memory until they start again, its memory peak not "
+                "known to be within its template's limit"
+            )
+        body = step_body(container, had["limit"], had["request"] or had["limit"])
+        done, refused, high = 0, [], 0
+        try:
+            d = read(self.apps, kind, name, ns)
+            for p in pods_of(self.core, self.apps, d, kind):
+                spec = next((c for c in p.spec.containers if c.name == container), None)
+                asks = limits_of(spec).get("memory")
+                if lost(p) or not asks or qty(asks) <= qty(had["limit"]):
+                    continue
+                high += 1
+                try:
+                    self.core.patch_namespaced_pod_resize(p.metadata.name, ns, body)
+                    done += 1
+                except ApiException as e:
+                    refused.append(f"{p.metadata.name}: {why(e)}")
+        except ApiException as e:
+            return f"its pods keep their memory until they start again (reading it: {why(e)})"
+        said = f"{done} of {high} pods back to memory limit {body_text(had)} in place"
+        return said + (f"; {len(refused)} refused: {'; '.join(refused[:3])}" if refused else "")
+
     def is_paused(self, key: str) -> bool:
         return "/".join(key.split("/")[:3]) in self.paused
 
@@ -2342,8 +2464,9 @@ class Actuator:
                 continue
             h["revert"] = u.id
             why_ = f"reverted by the Operator ({u.id})"
-            if self.stepped.pop(key, None):  # slice 13.1b: its memory is a Sizing's again
-                why_ += "; its Step-up dropped, its pods keep their memory until they start again"
+            st = self.stepped.pop(key, None)
+            if st:  # its memory is a Sizing's again (slice 13.1b); its pods' as 13.1c has it
+                why_ += f"; its Step-up dropped: {self.step_back(key, st)}"
             if h.get("outcome") in ("applied", "rolling", "failed") and h.get("requests"):
                 a = put_back(self.core, self.apps, key, h, "reverted", why_, time.time())
             else:

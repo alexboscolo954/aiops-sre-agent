@@ -671,9 +671,11 @@ class OomReflex(Strict):
     """The Reflex for OOM kills, on by being there (slice 13.1a): the Actuator tells each
     OOM kill of an automated container as container-limit or node-level, reports it, and
     answers a container-limit one with a Step-up (slice 13.1b, ADR 0005), never past `max`
-    times the memory limit in the Workload's template. Its `expires` comes with slice 13.1c."""
+    times the memory limit in the Workload's template. A Step-up ends `expires` after its
+    last step, unless the container's memory peak is still above that limit (slice 13.1c)."""
 
     max: float = Field(2.0, gt=1, le=4)
+    expires: Annotated[int, BeforeValidator(_duration("1h", "90d"))] = 7 * 86400
 
 
 class Reflexes(Strict):

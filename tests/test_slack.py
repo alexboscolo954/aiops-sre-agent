@@ -861,3 +861,47 @@ def test_model_written_urls_reach_slack_as_text_never_as_links() -> None:
     text = reply_text(t) or ""
     assert f"`{evil}`" in text and f"({kept})" in text and f"`{kept}`" not in text
     assert f"`{evil}`" in client_text(t)
+
+
+def test_a_triages_thread_names_the_step_up_on_its_workload_and_no_other(
+    settings: Settings, fake_cluster: Any, database_url: str
+) -> None:
+    """Slice 13.1c: the Hub's own line, before the Report; nothing the model was shown."""
+    slack = FakeSlack()
+    now = time.time()
+    step = "memory limit 128Mi to 228Mi, request 64Mi to 114Mi on 2 of 2 pods in place"
+
+    def stored(cid: str, ns: str, name: str, ago: float, reason: str = step) -> Any:
+        sql = (
+            "insert into actuations values (%s, 'test', %s, 'Deployment', %s, 'app', 0, "
+            "'stepped_up', null, 1, 2, %s, %s, %s, true)"
+        )
+        return sql, (cid, ns, name, reason, now - ago, now - ago)
+
+    rows = [
+        stored("acme", "shop", "checkout", 600),  # the Alert's pod is checkout-7d9f-abc
+        stored("acme", "shop", "check", 590),  # a name its pod's only begins like
+        stored("acme", "shop", "cart", 580),  # another Workload
+        stored("acme", "bank", "checkout", 570),  # another namespace
+        stored("acme", "shop", "checkout", 560, "brought to its Step-up, memory limit 228Mi"),
+        stored("acme", "shop", "checkout", 7200),  # two hours before: not this Triage's
+        stored("bank", "shop", "checkout", 550),  # another Contract's
+    ]
+    with client(
+        settings, fake_cluster, call("TriageReport", "c1", **REPORT), slack=slack.transport(),
+        acme_channel=ACME,
+    ) as c:  # fmt: skip
+        with psycopg.connect(database_url) as conn:
+            for sql, args in rows:
+                conn.execute(sql, args)
+        tid = c.post(URL, json=ALERT, headers=HOOK).json()["investigation"]
+        wait_for(c, tid, "done")
+        slack.until(4)
+    replies = [p["text"] for m, p, _ in slack.calls if m == "chat.postMessage" and "thread_ts" in p]
+    when = time.strftime("%H:%M", time.gmtime(now - 600))
+    assert replies[0] == (
+        f":arrow_up: The Actuator stepped up test/shop/Deployment/checkout container app at {when} "
+        f"UTC: {step}"
+    )
+    assert len(replies) == 2 and replies[1].startswith("*checkout")  # then the Report, once
+    assert slack.channels() == {ACME}

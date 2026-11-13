@@ -912,6 +912,8 @@ export interface components {
             revertable: boolean;
             /** Reverting */
             reverting: boolean;
+            /** Stepped */
+            stepped?: number | null;
             /** Stopped */
             stopped: boolean;
         };

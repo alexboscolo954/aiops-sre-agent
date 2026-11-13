@@ -334,7 +334,35 @@ def create_app(
         if t.status in ("done", "failed"):
             TRIAGES.labels(t.status).inc()
             TRIAGE_SECONDS.observe(now() - t.started)
-        await to_slack(t)
+        done = t.kind == "triage" and t.status == "done"
+        await to_slack(t, await reflexes_of(t) if done else None)
+
+    async def reflexes_of(t: Investigation) -> str | None:
+        """The Step-ups the Contract's Actuators made on the Workloads this Triage's Alerts
+        name, from an hour before it began (slice 13.1c): a line the Hub itself adds to the
+        Report's thread. Nothing the model sees, so no Scenario changes."""
+        group = t.input or {}
+        common = group.get("commonLabels") or {}
+        named = [{**common, **(a.get("labels") or {})} for a in group.get("alerts") or []]
+        lines = []
+        for a in await store().actuations(t.contract_id, t.started - 3600):
+            if a["outcome"] != "stepped_up" or not actuator.to_tell(a["outcome"], a["reason"]):
+                continue
+            for labels in named or [common]:
+                if labels.get("namespace") != a["namespace"]:
+                    continue
+                if labels.get("cluster", a["cluster"]) != a["cluster"]:
+                    continue
+                pod = labels.get("pod") or ""
+                if labels.get(a["kind"].lower()) == a["name"] or pod.startswith(a["name"] + "-"):
+                    when = datetime.fromtimestamp(a["at"], UTC)
+                    where = clean("/".join(a[k] for k in ("cluster", "namespace", "kind", "name")))
+                    lines.append(
+                        f":arrow_up: The Actuator stepped up {where} container "
+                        f"{clean(a['container'])} at {when:%H:%M} UTC: {clean(a['reason'])}"
+                    )
+                    break
+        return "\n".join(lines[:3]) or None
 
     async def to_slack(t: Investigation, note: str | None = None) -> None:
         """The Investigation's thread in its own Contract's channel: start it if it has
@@ -1636,6 +1664,11 @@ def create_app(
     posted: dict[tuple[str, str], list[float]] = {}  # a cluster's Rollback posts, last hour
     summed: dict[tuple[str, str], float] = {}  # when its "N more" line was last posted
     resting: dict[str, tuple[float, float]] = {}  # a Contract Slack refused: until, how long
+    capped: dict[tuple[str, ...], float] = {}  # when a container at its cap was last said
+
+    def told(r: dict[str, Any]) -> bool:
+        """Whether the Operator is told of this Actuation in Slack (slices 12.4, 13.1c)."""
+        return actuator.to_tell(r["outcome"], r["reason"])
 
     async def tell(only: str | None = None, at: float | None = None) -> None:
         """Tell each Contract's Operator of its Rollbacks not told yet (slice 12.9c): from
@@ -1692,10 +1725,29 @@ def create_app(
                 # what an Actuator sent, as text: its names and its reason (an API server's
                 # message among them) never ping a channel or make a link
                 where = f"{cluster}/{clean('/'.join(w))}"
-                text = (
-                    f":rewind: {cid}: the Actuator rolled back {where} container "
-                    f"{clean(r['container'])}: {clean(r['reason'])}"
-                )
+                what = f"{where} container {clean(r['container'])}"
+                text = f":rewind: {cid}: the Actuator rolled back {what}: {clean(r['reason'])}"
+                if r["outcome"] == "stepped_up":  # slice 13.1c: what to change in the manifest
+                    # a report without its limit is still said: never one that stops the
+                    # Rollbacks behind it from being told
+                    to = "raise its memory limit"
+                    if r["memory"]:
+                        to = f"set its memory limit to {actuator.memory_text(r['memory'])}"
+                    text = (
+                        f":arrow_up: {cid}: the Actuator stepped up {what}: "
+                        f"{clean(r['reason'])}. It ends by itself once the need is gone; to "
+                        f"keep it, {to} in its manifest."
+                    )
+                elif r["outcome"] == "oom_killed":  # at its Step-up's cap: once a day
+                    one = (cid, cluster, *w, r["container"])
+                    if r["at"] - capped.get(one, -86400.0) < 86400:  # by the kills' own time
+                        await store().mark_told(cid, [r])
+                        continue
+                    capped[one] = r["at"]
+                    text = (
+                        f":warning: {cid}: {what} is still OOM-killed at its Step-up's cap: "
+                        f"{clean(r['reason'])}"
+                    )
                 if at - r["received_at"] >= LATE:
                     when = datetime.fromtimestamp(r["received_at"], UTC)
                     text += f" (reported {when:%Y-%m-%d %H:%M} UTC)"
@@ -1711,7 +1763,7 @@ def create_app(
                 # the Rollback that ends its Workload's Automation (slice 12.5): its third
                 # in 7 days, said with it, from what is stored, so a retry says it too
                 third = sum(order(x) <= order(r) for x in mine) == actuator.ENDING
-                if third and (cluster, *w) in automated:
+                if r["outcome"] == "rolled_back" and third and (cluster, *w) in automated:
                     ts = [x["at"] for x in mine]
                     until = datetime.fromtimestamp(actuator.resumes({w: ts})[w], UTC)
                     text += (
@@ -1727,7 +1779,8 @@ def create_app(
             if rest <= 0 or at - summed.get(key, 0.0) < 3600:
                 continue  # none over its hour's posts; or said within the hour: counted next
             text = (
-                f":warning: {cid}: {rest} more Rollbacks reported by {cluster}'s Actuator "
+                f":warning: {cid}: {rest} more Rollbacks or Step-ups reported by {cluster}'s "
+                "Actuator "
                 f"are not posted here ({ROLLBACK_POSTS} in the last hour already): see the "
                 "Automation page."
             )
@@ -1815,10 +1868,17 @@ def create_app(
             ],
             # slice 13.1a: with the Contract's `reflexes.oom`, the containers whose OOM
             # kills its Actuator reports, a Sizing ready or not
-            oom=[actuator.Watched.model_validate(r) for r in rows if r["kind"] in known]
+            # and each one's memory peak over its Sizing's window (slice 13.1c): a
+            # Step-up is kept past its term while that is above its template's limit
+            oom=[
+                actuator.Watched(**r, peak=(r.get("memory") or {}).get("basis"))
+                for r in rows
+                if r["kind"] in known
+            ]
             if reflex
             else [],
             oom_max=reflex.max if reflex else None,  # slice 13.1b: how far a Step-up may go
+            oom_expires=reflex.expires if reflex else None,
             reverts=[
                 actuator.Undo.model_validate(r)
                 for r in await store().pending_reverts(cid, cluster.name)
@@ -1844,9 +1904,9 @@ def create_app(
         if unreal:  # said without the value: a NaN can't be said in JSON
             raise HTTPException(422, f"not a number an Actuator sends: {unreal}")
         new = await store().record_actuations(
-            cid, cluster.name, [r.model_dump() for r in reports], time.time()
+            cid, cluster.name, [r.model_dump() for r in reports], time.time(), told
         )
-        if any(n["outcome"] == "rolled_back" for n in new):
+        if any(told(n) for n in new):
             spawn(tell(cid))  # not in its request: Slack may be slow, or down
         for r in reports:
             log.info(

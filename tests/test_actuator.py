@@ -146,6 +146,7 @@ def test_an_actuator_gets_only_its_own_clusters_current_approved_deployments(
         "eviction": "off",
         "oom": [],
         "oom_max": None,
+        "oom_expires": None,
     }
     assert old.json()["sizings"] == [{**wanted, "name": "api", "cpu": 0.115, "memory": None}]
     known = ("Deployment", "StatefulSet", "DaemonSet")  # what 0.44.0 names
@@ -173,6 +174,7 @@ def test_the_kill_switch_and_a_later_run_leave_nothing_to_apply(
         "eviction": "off",
         "oom": [],
         "oom_max": None,
+        "oom_expires": None,
     }
     assert superseded == {
         "kill_switch": False,
@@ -182,6 +184,7 @@ def test_the_kill_switch_and_a_later_run_leave_nothing_to_apply(
         "eviction": "off",
         "oom": [],
         "oom_max": None,
+        "oom_expires": None,
     }
 
 
@@ -1486,6 +1489,7 @@ def test_an_actuator_gets_the_newest_sizings_of_what_its_contract_automates(
         "eviction": "off",
         "oom": [],
         "oom_max": None,
+        "oom_expires": None,
     }
 
 
@@ -3767,8 +3771,8 @@ def test_a_flood_of_rollbacks_is_capped_and_never_spends_another_contracts_posts
         assert api.ROLLBACK_POSTS == 20 and len(posts(slack)) == 21
         assert posts(slack)[-1] == (
             ACME_CHANNEL,
-            ":warning: acme: 5 more Rollbacks reported by test's Actuator are not posted here "
-            "(20 in the last hour already): see the Automation page.",
+            ":warning: acme: 5 more Rollbacks or Step-ups reported by test's Actuator are not "
+            "posted here (20 in the last hour already): see the Automation page.",
         )
         assert untold(database_url) == []  # said, in that line
         c.post("/actuator/reports", json=[back(now + 100 + i) for i in range(3)],
@@ -4295,9 +4299,12 @@ def test_the_oom_reflex_needs_an_actuator_and_takes_how_far_a_step_up_may_go() -
     data["clusters"][0].pop("actuator_token_secret")  # no cluster runs an Actuator
     with pytest.raises(ValueError, match="actuator: reflexes, but no cluster has an actuator"):
         contracts.build({**data, **OOM}, secrets={"r": SecretStr("r" * 40)})
-    for bad in ({"oom": {"expires": "7d"}}, {"burst": {}}):  # those of later slices
-        with pytest.raises(ValueError, match="Extra inputs are not permitted"):
-            automating("acme", A_TOKEN, AUTO, actuator={"reflexes": bad})
+    with pytest.raises(ValueError, match="Extra inputs are not permitted"):  # a later slice's
+        automating("acme", A_TOKEN, AUTO, actuator={"reflexes": {"burst": {}}})
+    assert automating("acme", A_TOKEN, AUTO, **OOM).actuator.reflexes.oom.expires == 7 * 86400
+    for bad in ("30m", "91d"):  # an hour at least, 90 days at most
+        with pytest.raises(ValueError, match="must be from 1h to 90d"):
+            automating("acme", A_TOKEN, AUTO, actuator={"reflexes": {"oom": {"expires": bad}}})
     for bad in (1.0, 4.5):  # never no step at all, nor past 4 times its template's limit
         with pytest.raises(ValueError, match="max"):
             automating("acme", A_TOKEN, AUTO, actuator={"reflexes": {"oom": {"max": bad}}})
@@ -4316,9 +4323,9 @@ def test_the_hub_lists_a_contracts_automated_containers_only_with_its_oom_reflex
             database_url,
             run("acme", '{"test": null}'),
             sized("acme", 1),
-            sized("acme", 1, "learning", state="learning"),  # no Sizing yet: still watched
+            sized("acme", 1, "learning", state="learning", memory=None),  # no Sizing yet
             sized("acme", 1, "steady", cpu={"action": "keep", "current": 1.0, "target": 1.0}),
-            sized("acme", 1, "db", kind="StatefulSet"),
+            sized("acme", 1, "db", kind="StatefulSet", memory={**KEEP, "basis": 3.0 * MI}),
             sized("acme", 1, "side", container="sidecar"),  # no rule automates it
             sized("acme", 1, "broken"),
             sized("acme", 1, "undone"),
@@ -4335,12 +4342,15 @@ def test_the_hub_lists_a_contracts_automated_containers_only_with_its_oom_reflex
         theirs = c.get("/actuator/desired", headers=as_actuator(B_TOKEN), params=kinds).json()
         sql(database_url, ("insert into kill_switches values ('acme', 't', 1)", ()))
         killed = c.get("/actuator/desired", headers=as_actuator(A_TOKEN), params=kinds).json()
-    one = {"namespace": "shop", "kind": "Deployment", "container": "app"}
+    # each with its memory peak over its Sizing's window (slice 13.1c), None when not known
+    one = {"namespace": "shop", "kind": "Deployment", "container": "app", "peak": None}
     assert mine["oom"] == [{**one, "name": n} for n in ("api", "learning", "steady")] + [
-        {**one, "kind": "StatefulSet", "name": "db"}
+        {**one, "kind": "StatefulSet", "name": "db", "peak": 3.0 * MI}
     ]
     assert old["oom"] == mine["oom"][:-1]  # an Actuator naming no kinds: Deployments only
     assert theirs["oom"] == [{**one, "name": "ledger"}] and killed["oom"] == []
+    week = 7 * 86400  # a Step-up's term (slice 13.1c): the Contract's, 7 days unless it says
+    assert (mine["oom_expires"], theirs["oom_expires"], killed["oom_expires"]) == (week, week, None)
     # how far a Step-up may go (slice 13.1b): the Contract's, 2 unless it says; none when off
     assert (mine["oom_max"], theirs["oom_max"], killed["oom_max"]) == (2.0, 2.0, None)
     off = automating("acme", A_TOKEN, AUTO)  # the same Contract without the Reflex
@@ -4348,11 +4358,16 @@ def test_the_hub_lists_a_contracts_automated_containers_only_with_its_oom_reflex
         sql(database_url, ("delete from kill_switches", ()))
         mine = c.get("/actuator/desired", headers=as_actuator(A_TOKEN), params=kinds).json()
     assert mine["oom"] == [] and [w["name"] for w in mine["automated"]] == ["api", "db"]
-    assert mine["oom_max"] is None
-    three = automating("acme", A_TOKEN, AUTO, actuator={"reflexes": {"oom": {"max": 3}}})
-    with TestClient(hub(settings, database_url, three)) as c:
+    assert mine["oom_max"] is None and mine["oom_expires"] is None
+    own = {"reflexes": {"oom": {"max": 3, "expires": "36h"}}}
+    with TestClient(
+        hub(settings, database_url, automating("acme", A_TOKEN, AUTO, actuator=own))
+    ) as c:
         mine = c.get("/actuator/desired", headers=as_actuator(A_TOKEN), params=kinds).json()
-    assert mine["oom_max"] == 3.0
+    assert (mine["oom_max"], mine["oom_expires"]) == (3.0, 36 * 3600)
+
+
+KEEP = {"action": "keep", "current": 1.0, "target": 1.0}
 
 
 def seen_kill(**more: Any) -> dict[str, Any]:
@@ -4764,6 +4779,7 @@ def test_a_kill_at_its_limit_steps_every_pods_limit_and_request_up_in_place() ->
     assert st["template"] == {"limit": "256Mi", "request": "128Mi"} and a.steps == [st["at"]]
     said = core.create_namespaced_event.call_args.args[1]
     assert (said.reason, said.type) == ("MemorySteppedUp", "Normal")
+    assert actuator.to_tell(up.outcome, up.reason)  # one the Operator hears of (slice 13.1c)
     assert said.message.startswith("app: memory limit 256Mi to 356Mi, request 128Mi to 178Mi")
 
 
@@ -4811,6 +4827,8 @@ def test_a_further_step_needs_a_kill_at_the_step_ten_minutes_on_and_stops_at_its
         "or look for a leak"
     )
     assert memory(core, "api-1-a") == ("512Mi", "256Mi") and len(resized(core)) == 6
+    assert actuator.to_tell(capped.outcome, capped.reason)  # a person's to answer: told
+    assert not actuator.to_tell(soon.outcome, soon.reason)  # another reason: only stored
 
 
 def test_a_pod_killed_below_the_step_is_brought_to_it_never_a_further_step() -> None:
@@ -4832,6 +4850,7 @@ def test_a_pod_killed_below_the_step_is_brought_to_it_never_a_further_step() -> 
     )
     assert memory(core, "api-1-c") == ("356Mi", "178Mi")
     assert a.stepped[KEY] == before and len(a.steps) == 1  # no step, none of the hour's budget
+    assert not actuator.to_tell(level.outcome, level.reason)  # nor one the Operator is told of
 
 
 @pytest.mark.parametrize(
@@ -5213,7 +5232,22 @@ def test_a_revert_drops_the_containers_step_up_with_its_sizing(
     undo = actuator.Undo(id=4, namespace="shop", kind="Deployment", name="api", container="app")
     (done,) = a.revert([undo])
     assert done.outcome == "reverted" and a.stepped == {}
-    assert "its Step-up dropped, its pods keep their memory until they start again" in done.reason
+    assert (
+        "; its Step-up dropped: its pods keep their memory until they start again, its memory "
+        "peak not known to be within its template's limit"
+    ) in done.reason
+    a.stepped[KEY] = dict(STEP)  # reverted again, the Hub's peak within its template's 256Mi
+    a.peaks = {KEY: 200.0 * MI}
+    for p in core.list_namespaced_pod.return_value.items[:2]:
+        p.spec.containers[0].resources.limits = {"memory": "356Mi"}
+    before = len(resized(core))
+    (done,) = a.revert([undo.model_copy(update={"id": 5})])
+    assert (
+        "; its Step-up dropped: 2 of 2 pods back to memory limit 256Mi, request 128Mi in place"
+    ) in done.reason
+    assert [b for _, b in resized(core)[before:]] == [
+        actuator.step_body("app", "256Mi", "128Mi")
+    ] * 2
 
 
 def test_only_a_kill_since_it_got_its_requests_is_the_reflexes_an_old_one_excuses_nothing() -> None:
@@ -5541,3 +5575,296 @@ def test_a_resize_its_node_cant_fit_is_put_back_and_the_pod_left_never_tried_aga
     assert a.stepped[KEY]["left"] == ["api-1-b"] and a.stepped[KEY]["limit"] == "456Mi"
     core.list_namespaced_pod.return_value.items.remove(b)  # gone: forgotten
     assert a.keep_steps() == [] and "left" not in a.stepped[KEY]
+
+
+# --- slice 13.1c: a Step-up's term ----------------------------------------------------------
+
+WEEK = 7 * 86400.0
+
+
+def aged(core: Any, apps: Any, peak: Any = "unlisted", days: float = 7.0) -> actuator.Actuator:
+    """kept(), its Step-up `days` old, the Hub saying a week's term and this memory peak."""
+    a = kept(core, apps)
+    a.stepped[KEY]["at"] = time.time() - days * 86400
+    a.oom_expires = WEEK
+    a.peaks = {} if peak == "unlisted" else {KEY: peak}
+    return a
+
+
+@pytest.mark.parametrize(
+    ("peak", "days", "kept_"),
+    [
+        (100.0 * MI, 6.9, True),  # its term not over
+        (300.0 * MI, 7.0, True),  # over, and still needed: above its template's 256Mi
+        (None, 7.0, True),  # over, and the Hub doesn't know: kept
+        (256.0 * MI, 7.0, False),  # at its template's limit: no longer needed
+        ("unlisted", 7.0, False),  # no longer under Automation, or the Reflex off
+    ],
+)
+def test_a_step_up_ends_a_term_after_its_last_step_unless_its_peak_says_it_is_needed(
+    peak: Any, days: float, kept_: bool
+) -> None:
+    core, apps = limited()
+    a = aged(core, apps, peak, days)
+    got = a.keep_steps()
+    assert (KEY in a.stepped) is kept_ and len(got) == (0 if days < 7 else 1)
+    if kept_ and days >= 7:
+        assert time.time() - a.stepped[KEY]["renewed"] < 5 and resized(core) == []
+        (kept_on,) = got  # said, so the Hub still knows of it past its 90 days of Actuations
+        assert (kept_on.outcome, kept_on.pods, kept_on.memory) == ("stepped_up", 0, 356.0 * MI)
+        assert kept_on.reason == "kept for another term: its memory peak is " + (
+            "not known against its template's limit 256Mi"
+            if peak is None
+            else "300Mi above its template's limit 256Mi"
+        )
+        assert not actuator.to_tell(kept_on.outcome, kept_on.reason)  # nor posted to Slack
+        a.peaks = {KEY: 1.0}  # no longer needed: but its next term counts from the renewal
+        assert a.keep_steps() == [] and KEY in a.stepped
+        a.stepped[KEY]["renewed"] -= WEEK
+        assert [x.outcome for x in a.keep_steps()] == ["step_ended"]
+    if not kept_:
+        (ended_,) = got
+        assert (ended_.outcome, ended_.pods) == ("step_ended", 0)
+        said = core.create_namespaced_event.call_args.args[1]
+        assert said.reason == "StepUpExpired" and said.message == f"app: {ended_.reason}"
+
+
+def test_an_expired_step_ups_pods_go_back_in_place_only_where_the_peak_says_they_fit() -> None:
+    core, apps = limited()
+    a = aged(core, apps, 200.0 * MI)
+    low = pod("api-1-c", "api-1", cpu="1", memory="128Mi")  # one left at its template's
+    low.metadata.namespace = "shop"
+    low.spec.containers[0].resources.limits = {"memory": "256Mi"}
+    gone = pod("api-1-d", "api-1", cpu="1", memory="178Mi")  # one whose node is gone
+    gone.metadata.namespace = "shop"
+    gone.spec.containers[0].resources.limits = {"memory": "356Mi"}
+    core.list_namespaced_pod.return_value.items += [low, shown(gone, NODE_GONE)]
+    grow = core.patch_namespaced_pod_resize.side_effect
+
+    def refusing(name: str, ns: str, body_: Any) -> None:
+        if name == "api-1-a":  # Kubernetes 1.33: a memory limit is not lowered in place
+            raise ApiException(status=422, reason="memory limits cannot be decreased")
+        grow(name, ns, body_)
+
+    core.patch_namespaced_pod_resize.side_effect = refusing
+    (ended_,) = a.keep_steps()
+    assert ended_.reason == (
+        "its term of 7 days over, its memory peak 200Mi within its template's "
+        "limit 256Mi: 1 of 2 pods back to memory limit 256Mi, request 128Mi in place; 1 refused: "
+        "api-1-a: 422: memory limits cannot be decreased"
+    )
+    assert [n for n, _ in resized(core)] == ["api-1-a", "api-1-b"]  # not api-1-c, nor api-1-d
+    assert resized(core)[0][1] == actuator.step_body("app", "256Mi", "128Mi")
+    assert memory(core, "api-1-b") == ("256Mi", "128Mi") and a.stepped == {}
+    # no longer listed: its usage unknown, so its pods keep theirs
+    core, apps = limited()
+    a = aged(core, apps)
+    (ended_,) = a.keep_steps()
+    assert ended_.reason == (
+        "its term of 7 days over, the Hub no longer listing it: its pods keep "
+        "their memory until they start again, its memory peak not known to be within its "
+        "template's limit"
+    )
+    assert resized(core) == [] and memory(core, "api-1-a") == ("356Mi", "178Mi")
+
+
+def test_a_step_up_without_a_term_never_ends_and_a_cronjobs_runs_just_start_from_its_template() -> (
+    None
+):
+    core, apps = limited()
+    a = aged(core, apps, 1.0, days=400)
+    a.oom_expires = None  # a Hub of 13.1b
+    assert a.keep_steps() == [] and KEY in a.stepped
+    core, apps, _ = nightly()
+    a = stepping(core, apps)
+    a.stepped[RUNS] = {**STEP, "at": time.time() - 8 * 86400}
+    a.oom_expires, a.peaks = WEEK, {RUNS: 1.0}
+    (ended_,) = a.keep_steps()
+    assert ended_.kind == "CronJob" and ended_.reason.endswith(
+        "its template's limit 256Mi: its next runs' pods start from its template"
+    )
+    assert resized(core) == []
+
+
+def test_a_minute_takes_the_term_and_the_peaks_from_the_hub() -> None:
+    core, apps = limited()
+    a = kept(core, apps)
+    a.stepped[KEY]["at"] = time.time() - 2 * 3600
+    listing = {**reflexing(), "oom": [{**API.model_dump(), "peak": 100.0 * MI}]}
+    seen: list[httpx.Request] = []
+    a.http = hub_of([listing, {**listing, "oom_expires": 3600}], seen)
+    a.step()  # no term from the Hub: kept
+    assert KEY in a.stepped and posted(seen) == []
+    a.step()
+    assert a.stepped == {} and posted(seen) == [["step_ended"]]
+    assert memory(core, "api-1-a") == ("256Mi", "128Mi")
+    assert json.loads(seen[-1].content)[0]["reason"].startswith("its term of 60 minutes over, ")
+    assert [actuator.span(x) for x in (150, 7200, 36 * 3600, 2 * 86400, 7 * 86400)] == [
+        "2 minutes",
+        "2 hours",
+        "36 hours",
+        "2 days",
+        "7 days",
+    ]
+
+
+def test_a_step_up_and_a_container_at_its_cap_reach_the_operators_channel_and_no_other(
+    settings: Settings, database_url: str
+) -> None:
+    app, slack = slacked(settings, database_url)
+    now = time.time()
+    none = {"run_id": 0, "cpu": None}
+    stepped = "memory limit 128Mi to 228Mi, request 64Mi to 114Mi on 2 of 2 pods in place"
+    at_cap = (
+        "OOM-killed: api-1-a with a memory limit of 256Mi (container-limit). No Step-up: it is "
+        "at 2 times its template's limit (256Mi): raise it in its manifest, or look for a leak"
+    )
+    sent = [
+        report(**none, outcome="stepped_up", memory=228.0 * MI, at=now - 50, reason=stepped),
+        report(**none, outcome="stepped_up", memory=228.0 * MI, at=now - 40, pods=1)
+        | {"reason": "brought to its Step-up, memory limit 228Mi, request 114Mi on 1 of 2 pods"},
+        report(**none, outcome="oom_killed", memory=256.0 * MI, at=now - 90000, reason=at_cap),
+        seen_kill(at=now - 20, reason="OOM-killed: api-1-a. Nothing changed"),
+        report(**none, outcome="step_ended", memory=None, pods=0, at=now - 10, reason="expired"),
+    ]
+    with TestClient(app) as c:
+        c.post("/actuator/reports", json=sent, headers=as_actuator(A_TOKEN))
+        tell(c)
+        assert posts(slack) == [  # in the order they happened
+            (
+                ACME_CHANNEL,
+                ":warning: acme: test/shop/Deployment/api container app is still OOM-killed at "
+                f"its Step-up's cap: {at_cap}",
+            ),
+            (
+                ACME_CHANNEL,
+                ":arrow_up: acme: the Actuator stepped up test/shop/Deployment/api container app: "
+                f"{stepped}. It ends by itself once the need is gone; to keep it, set its memory "
+                "limit to 228Mi in its manifest.",
+            ),
+        ]
+        assert untold(database_url) == []
+        again = {**sent[2], "at": now - 80000}  # killed again at its cap: said once a day
+        c.post("/actuator/reports", json=[again], headers=as_actuator(A_TOKEN))
+        tell(c)
+        assert len(posts(slack)) == 2 and untold(database_url) == []
+        c.post(
+            "/actuator/reports", json=[{**again, "at": now - 3000}], headers=as_actuator(A_TOKEN)
+        )
+        tell(c)  # a day after the one that was said
+        assert len(posts(slack)) == 3 and posts(slack)[-1][1].startswith(":warning: acme: test/")
+        # bank's Step-up: its own channel, and its own day for a container of the same name
+        c.post("/actuator/reports", json=sent[:3], headers=as_actuator(B_TOKEN))
+        tell(c)
+    assert [ch for ch, _ in posts(slack)[3:]] == [BANK_CHANNEL] * 2
+    assert all(text.split(": ", 1)[1].startswith("bank: ") for _, text in posts(slack)[3:])
+
+
+def test_a_step_up_after_three_rollbacks_never_says_automation_ended_again(
+    settings: Settings, database_url: str
+) -> None:
+    app, slack = slacked(settings, database_url)
+    now = time.time()
+    step = "memory limit 128Mi to 228Mi, request 64Mi to 114Mi on 2 of 2 pods in place"
+    up = report(run_id=0, cpu=None, outcome="stepped_up", memory=228.0 * MI, at=now - 10)
+    with TestClient(app) as c:
+        sql(database_url, run("acme", '{"test": null}'), sized("acme", 1))
+        thrice = [back(now - 300 + i) for i in range(3)]
+        c.post("/actuator/reports", json=thrice, headers=as_actuator(A_TOKEN))
+        tell(c)
+        c.post("/actuator/reports", json=[{**up, "reason": step}], headers=as_actuator(A_TOKEN))
+        tell(c)
+    said = [text for _, text in posts(slack)]
+    assert len(said) == 4 and said[-1].startswith(":arrow_up: acme: the Actuator stepped up")
+    assert ["Automation of" in text for text in said] == [False, False, True, False]
+
+
+def test_the_automation_view_shows_a_step_up_and_reverts_a_container_with_only_one(
+    settings: Settings, database_url: str
+) -> None:
+    from tests.test_console import OPERATOR, VIEW
+
+    settings.console_operators = {OPERATOR}
+    app, _ = slacked(settings, database_url)
+    now = time.time()
+    path, same = "/api/v1/contracts/acme/automation", {**VIEW, "Sec-Fetch-Site": "same-origin"}
+    step = {"run_id": 0, "cpu": None, "outcome": "stepped_up", "memory": 228.0 * MI}
+    stepped = "memory limit 128Mi to 228Mi, request 64Mi to 114Mi on 2 of 2 pods in place"
+
+    def of(name: str, ago: float, **more: Any) -> dict[str, Any]:
+        return report(name=name, at=now - ago, **{"reason": stepped, **more})
+
+    sent = [
+        of("api", 900, reason="2 of 2 pods resized in place"),  # a Sizing held, then stepped up
+        of("api", 800, **step),
+        of("api", 700, **{**step, "memory": 328.0 * MI}),  # twice: its last one counts
+        of("lone", 600, **step),  # nothing held of it but its Step-up
+        of("ended", 500, **step),
+        of("ended", 400, **{**step, "outcome": "step_ended", "memory": None}, pods=0),
+        of("undone", 300, reason="2 of 2 pods resized in place"),
+        of("undone", 200, **step),
+        of("undone", 100, outcome="reverted", cpu=None, reason="reverted by the Operator (3)"),
+    ]
+    with TestClient(app) as c:
+        c.post("/actuator/reports", json=sent, headers=as_actuator(A_TOKEN))
+        c.post("/actuator/reports", json=[of("ledger", 50, **step)], headers=as_actuator(B_TOKEN))
+        # acme's other cluster, which runs no Actuator: never a row of this one's
+        sql(database_url, rolled_back("acme", now - 60, "edge", "edgy", "stepped_up"))
+        page = c.get(path, headers=VIEW).json()
+        theirs = c.get("/api/v1/contracts/bank/automation", headers=VIEW).json()
+        what = {"cluster": "test", "namespace": "shop", "container": "app", "kind": "Deployment"}
+        lone = c.post(f"{path}/revert", json={**what, "name": "lone"}, headers=same)
+        ended_ = c.post(f"{path}/revert", json={**what, "name": "ended"}, headers=same)
+        other = c.post(f"{path}/revert", json={**what, "name": "ledger"}, headers=same)
+    shown_ = {h["name"]: h for h in page["clusters"][0]["containers"]}
+    assert list(shown_) == ["api", "lone", "undone"]  # `ended` holds nothing any more: no row
+    assert [(n, h["stepped"]) for n, h in shown_.items()] == [
+        ("api", 328.0 * MI),
+        ("lone", 228.0 * MI),
+        ("undone", None),  # a Revert dropped it
+    ]
+    assert shown_["api"]["outcome"] == "applied" and shown_["api"]["revertable"]
+    assert shown_["lone"]["outcome"] == "stepped_up" and shown_["lone"]["revertable"]
+    assert shown_["lone"]["memory"] is None  # its limit is `stepped`: it holds no request
+    assert not shown_["undone"]["revertable"]
+    assert [h["name"] for h in theirs["clusters"][0]["containers"]] == ["ledger"]  # bank's own
+    assert lone.status_code == 200 and (ended_.status_code, other.status_code) == (409, 409)
+    assert next(h for h in lone.json()["clusters"][0]["containers"] if h["name"] == "lone")[
+        "reverting"
+    ]
+
+
+def test_a_revert_lowers_a_step_ups_pods_by_the_peaks_of_the_minute_before(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Hub stops listing a reverted container in the very answer that asks the Revert."""
+    core, apps = limited()
+    a = kept(core, apps)
+    listing = {**reflexing(), "oom": [{**API.model_dump(), "peak": 200.0 * MI}]}
+    undo = {"id": 4, "namespace": "shop", "kind": "Deployment", "name": "api", "container": "app"}
+    seen: list[httpx.Request] = []
+    a.http = hub_of([listing, {**reflexing(), "oom": [], "reverts": [undo]}], seen)
+    a.step()
+    assert a.peaks == {KEY: 200.0 * MI} and posted(seen) == []
+    a.step()
+    assert posted(seen) == [["reverted"]] and a.stepped == {}
+    assert memory(core, "api-1-a") == memory(core, "api-1-b") == ("256Mi", "128Mi")
+    assert "2 of 2 pods back to memory limit 256Mi, request 128Mi in place" in str(
+        json.loads(seen[-1].content)[0]["reason"]
+    )
+
+
+def test_a_step_up_reported_without_its_limit_never_stops_the_rollbacks_behind_it(
+    settings: Settings, database_url: str
+) -> None:
+    app, slack = slacked(settings, database_url)
+    now = time.time()
+    odd = report(run_id=0, cpu=None, outcome="stepped_up", memory=None, at=now - 20)
+    odd["reason"] = "memory limit 128Mi to 228Mi, request 64Mi to 114Mi on 2 of 2 pods in place"
+    with TestClient(app) as c:
+        c.post("/actuator/reports", json=[odd, back(now - 10)], headers=as_actuator(A_TOKEN))
+        tell(c)
+    said = [text for _, text in posts(slack)]
+    assert len(said) == 2 and untold(database_url) == []
+    assert said[0].endswith("to keep it, raise its memory limit in its manifest.")
+    assert said[1].startswith(":rewind: acme: the Actuator rolled back")

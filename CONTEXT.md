@@ -193,7 +193,7 @@ The Actuator's own undo of a Sizing that made pods unhealthy within an hour of i
 _Avoid_: Revert (that is the Operator's undo)
 
 **Revert**:
-The Operator's undo of what the Actuator holds for a container, asked from the console's Automation page or the Hub MCP server (`revert_sizing`): its pods go back to their template's requests, in place, and the Actuator stops holding it. Automation of that container stops until the Operator approves one of its Sizings. Refused while the Kill switch is on.
+The Operator's undo of what the Actuator holds for a container, asked from the console's Automation page or the Hub MCP server (`revert_sizing`): its pods go back to their template's requests, in place, and the Actuator stops holding it. Automation of that container stops until the Operator approves one of its Sizings. Refused while the Kill switch is on. It drops the container's Step-up with it, and is offered for a container that has only a Step-up.
 _Avoid_: Rollback (that is the Actuator's own undo of a Sizing that made pods unhealthy)
 
 **Eviction window**:
@@ -207,7 +207,7 @@ A bounded, expiring change the Actuator makes on its own under Automation: memor
 A container ended by the kernel for want of memory, of two kinds the pod itself doesn't tell apart (`OOMKilled`, exit code 137 in both). *Node-level*: its node ran out of memory, whatever the container's limit (the kubelet says so in a `SystemOOM` Event on the node), or the container has no memory limit. *Container-limit*: any other, of a container with a memory limit: it reached its own limit or, which nothing on a pod or in an Event tells apart, one above it (its pod's, or the node's allocatable memory that all pods share). Where the Contract sets `reflexes.oom`, the Actuator tells which each kill of an automated container was and reports it as an Actuation, changing nothing; the memory step-up acts on it.
 
 **Step-up**:
-The Reflex for OOM kills: after a container-limit OOM kill of an automated container, the Actuator raises its memory limit and its memory request together, by one step (to the larger of 1.2 times and 100 MiB more, the same factor for both, so the pod's QoS class stays) on every pod of the Workload in place. Never past `max` times the limit in the Workload's template; one step a container every 10 minutes; a pod killed below the current step gets that step, not a further one. It takes the container's memory from any Sizing held for it, and a Sizing never undoes it. The only time the Actuator changes a limit ([ADR 0005](docs/adr/0005-reflexes-may-raise-limits.md)).
+The Reflex for OOM kills: after a container-limit OOM kill of an automated container, the Actuator raises its memory limit and its memory request together, by one step (to the larger of 1.2 times and 100 MiB more, the same factor for both, so the pod's QoS class stays) on every pod of the Workload in place. Never past `max` times the limit in the Workload's template; one step a container every 10 minutes; a pod killed below the current step gets that step, not a further one. It takes the container's memory from any Sizing held for it, and a Sizing never undoes it. It ends by itself: `expires` after its last step unless the container's memory peak is still above its template's limit; or by a Revert, or a person's change to the template's memory. The only time the Actuator changes a limit ([ADR 0005](docs/adr/0005-reflexes-may-raise-limits.md)).
 _Avoid_: bump, boost (that is the startup CPU boost)
 
 **List price**:

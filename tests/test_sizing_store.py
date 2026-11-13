@@ -537,3 +537,15 @@ async def test_no_sizing_is_approved_while_the_kill_switch_is_on(store: Store) -
     assert await store.approve_sizing("acme", run, lowered, "mcp:op", NOW) == "killed"
     await store.turn_off_kill_switch("acme")
     assert await store.approve_sizing("acme", run, lowered, "mcp:op", NOW) == "approved"
+
+
+def test_a_stored_sizing_carries_its_memory_peak_which_a_step_ups_term_reads() -> None:
+    """Slice 13.1c: the Hub sends an Actuator each automated container's `memory.basis` as
+    its peak; were the key renamed, no Step-up would ever end."""
+    from squero import actuator
+
+    (row,) = rows_of(container(peak=300.0 * 2**20))
+    assert row["memory"]["basis"] == 300.0 * 2**20
+    fields = ("namespace", "kind", "name", "container")
+    listed = actuator.Watched(**{k: row[k] for k in fields}, peak=row["memory"]["basis"])
+    assert listed.peak == 300.0 * 2**20
