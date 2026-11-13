@@ -131,7 +131,7 @@ actuator:
       expires: 7d  # a Step-up ends this long after its last step unless it is still needed; 7d unless set, 1h to 90d
 ```
 
-It needs a cluster with an `actuator_token_secret`. The Actuator tells each OOM kill of an automated container apart, reports it, and answers one at a memory limit with a **Step-up** ([ADR 0005](adr/0005-reflexes-may-raise-limits.md)): the only time it changes a limit.
+It needs a cluster with an `actuator_token_secret`. The Actuator tells each OOM kill of an automated container apart, reports it, and answers one at a memory limit with a **Step-up** ([ADR 0005](adr/0005-reflexes-may-raise-limits.md)): with the [Startup boost](#the-startup-boost), the only times it changes a limit.
 
 The Hub lists, in `/actuator/desired`'s `oom`, the cluster's containers under Automation (a Sizing ready or not; not of a Workload whose Automation three Rollbacks ended, nor of a container reverted since its last approval; none under the Kill switch). Each minute the Hub answers, the Actuator reads the pods of those namespaces once and tells each OOM kill of the last 10 minutes of a listed container, once:
 
@@ -168,6 +168,27 @@ A Step-up is not the Workload's new size: it ends by itself.
 - **In Slack.** Each Step-up made is one line in the Contract's operator channel, with what to write in the manifest to keep it ("set its memory limit to 228Mi"); a container still OOM-killed at its cap is one line a day. Both go through the same teller as Rollbacks: after the Actuator is answered, again until Slack takes them, and under the same 20 posts a cluster an hour. Pods only brought to a Step-up, an OOM kill only seen, and a Step-up's end are stored and not posted.
 - **On the Automation page.** A container's row shows its Step-up's memory limit beside what it holds of a Sizing, and a container with only a Step-up is a row too. Revert is offered for either, and drops both.
 - **In a Triage's thread.** When a Triage ends, the Hub adds one line above its Report for each Step-up made, from an hour before the Triage began, on a Workload its Alerts name (by a `deployment`, `statefulset`, `daemonset`, `rollout` or `cronjob` label, or a `pod` label that begins with the Workload's name, in the same namespace). The Hub writes it from what it stored; the model never sees it (the Hub never reads a thread's messages back). A Triage that ends twice says it twice.
+
+### The Startup boost
+
+A container that needs more CPU to start than to run (a JVM, a cache to warm) can have a higher CPU limit for its start only. It is a factor on a Sizing rule, beside `automate`, so it needs no `reflexes` block:
+
+```yaml
+sizing:
+  rules:
+    - {namespace: shop, name: "checkout-*", policy: production, automate: true, startup_boost: 2}   # 1.5 to 4
+```
+
+- **What it does.** The webhook starts each new pod of the rule's containers with its CPU limit times the factor and writes the container's own limit in the pod's annotation `squero-actuator/startup-boost`. Each minute the Actuator gives a boosted container its own limit back in place, once its pod is Ready, the container has run for 5 minutes, or it restarted, whichever is first (so up to a minute after), with an Event `StartupBoostEnded` on the pod. The 5 minutes count from the container's own start, so pulling its image and its init containers take none of them. A restart never gets a boost: a container that restarts while boosted loses it, and one that restarts later starts from its own limit.
+- **Requests untouched.** Only the CPU limit changes, so the pod is scheduled as without the boost and an HPA or the Cluster Autoscaler reads the same requests. A container that sets a CPU limit and no request gets that limit written as its request, which is what Kubernetes makes of it anyway.
+- **Which containers.** The Hub lists, in `/actuator/desired`'s `boosts`, the cluster's containers under Automation whose rule sets the factor: those it has stored a Sizing for, ready or still learning; not of a Workload whose Automation three Rollbacks ended, nor of a container reverted since its last approval. The Actuator keeps the list in its ConfigMap, so boosts go on while the Hub is unreachable and after its restart. Remove the factor from the rule and they stop the minute the Hub answers.
+- **Not boosted.** A Guaranteed pod (its limit can't leave its request); a container without a CPU limit (it needs none); a CronJob's run; a container whose `resizePolicy` restarts it for cpu (giving the limit back would restart it); a paused Workload; a Workload under a VPA in any mode but `Off`; a pod that already carries the annotation; a pod with pod-level resources (`spec.resources`), whose limit a container's may not pass. And every pod of a namespace whose LimitRange sets a cpu maximum or limit-to-request ratio, or whose ResourceQuota counts `limits.cpu`: either could refuse the boosted pod's creation, so the whole namespace gets none, whatever room they leave. A VPA or such a namespace is said once in the Actuator's log (`no startup boost in ...`).
+- **The Kill switch and a pause.** No pod is boosted, and a pod boosted before keeps its higher limit until the switch is off or the pause lifted: the Actuator resizes nothing meanwhile.
+- **Where it shows.** On the pod only: the annotation and the Event. It happens at every start, so it is no Actuation, is not posted to Slack, is not on the Automation page, and does not count in the 10 Step-ups a cluster an hour.
+- **The annotation is read as anyone's word.** The Actuator only ever lowers a CPU limit to the value it names, never under the container's request. It can't remove the annotation (it may not edit pods), so it stays on the pod.
+- **Know before you set it.** A JVM, and any runtime that sizes its thread pools from the CPU count it sees at start, sizes them from the boosted limit and keeps them once the limit is back. And a policy engine that caps CPU limits or the limit-to-request ratio (Kyverno, Gatekeeper, a ValidatingAdmissionPolicy) can refuse a boosted pod's creation: the Actuator reads LimitRanges and ResourceQuotas, not those.
+
+An Actuator older than this ignores `boosts`; a Hub older than this sends none.
 
 Upgrade the Hub before its Actuators, and roll Actuators back before the Hub: an Actuator's report with an outcome its Hub doesn't know is refused whole and dropped, the reports beside it too.
 

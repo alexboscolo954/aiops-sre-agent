@@ -39,7 +39,9 @@ node's own restart started again (`rebooted`).
 Slice 13.1a: with the Contract's `reflexes.oom` it reports the OOM kills of the containers
 the Hub lists, told as container-limit or node-level. Slice 13.1b (ADR 0005): it answers a
 container-limit one with a Step-up, the container's memory limit and request raised
-together on every pod in place (`step_up`), the only time it changes a limit.
+together on every pod in place (`step_up`). Slice 13.4: the Startup boost, a new pod's
+CPU limit times its rule's factor from the webhook, back in place once the pod is Ready or
+5 minutes old (`keep_boosts`). Those two are the only times it changes a limit.
 
 Under Automation (slice 12.5) it also applies, unasked, the newest Sizing of each container
 the Contract automates: a change under 10% ignored, an increase at once, a decrease at most
@@ -135,6 +137,10 @@ CHURN = Decimal("0.10")  # under Automation, a change smaller than this is ignor
 LOWER_EVERY = 86400  # under Automation, a container's requests go down at most this often
 UNREACHABLE_SECONDS = 900  # the Hub unanswered this long: an Event says so
 PAUSE = "squero-actuator/pause"  # a workload annotated "true" is left alone
+# the Startup boost (slice 13.4): on a pod the webhook boosted, each boosted container's own
+# CPU limit (JSON, name to quantity), given back once the pod is Ready or this long started
+BOOST = "squero-actuator/startup-boost"
+BOOST_SECONDS = 300
 # the kinds it resizes (StatefulSet and DaemonSet from slice 12.8a, Argo Rollouts from 12.8b),
 # as named in its API calls (a Rollout's through `Apps`)
 KINDS = {
@@ -227,6 +233,18 @@ class Watched(BaseModel):
     peak: float | None = None
 
 
+class Boost(BaseModel):
+    """A container whose new pods get a Startup boost (slice 13.4), and its factor."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    namespace: str
+    kind: str
+    name: str
+    container: str
+    factor: float = Field(ge=1.5, le=4)
+
+
 class Desired(BaseModel):
     kill_switch: bool
     sizings: list[Wanted]  # Approved Sizings
@@ -245,6 +263,7 @@ class Desired(BaseModel):
     # slice 13.1c: seconds after its last step that a Step-up ends, unless the peak says
     # it is still needed. None, as from a Hub of 13.1b: a Step-up never expires
     oom_expires: float | None = None
+    boosts: list[Boost] = []  # slice 13.4; none from an older Hub
 
 
 class Actuation(BaseModel):
@@ -511,17 +530,25 @@ def qos_change(
     return f"it would turn its pods from {was} to {would}"
 
 
-def vpa_mode(custom: Any, ns: str, kind: str, name: str) -> str | None:
-    """The mode of a VPA that changes this workload's pods, or None (none, or `Off`)."""
+def vpas(custom: Any, ns: str) -> list[Any]:
+    """The namespace's VPAs; none where no VPA is installed."""
     try:
         found = custom.list_namespaced_custom_object(
             "autoscaling.k8s.io", "v1", ns, "verticalpodautoscalers"
         )
     except ApiException as e:
-        if e.status == 404:  # no VPA installed
-            return None
+        if e.status == 404:
+            return []
         raise
-    for v in found.get("items") or []:
+    return found.get("items") or []
+
+
+def vpa_mode(
+    custom: Any, ns: str, kind: str, name: str, found: list[Any] | None = None
+) -> str | None:
+    """The mode of a VPA that changes this workload's pods, or None (none, or `Off`);
+    among `found`, the namespace's VPAs already read, or reading them."""
+    for v in vpas(custom, ns) if found is None else found:
         spec = v.get("spec") or {}
         ref = spec.get("targetRef") or {}
         if ref.get("kind") == kind and ref.get("name") == name:
@@ -586,6 +613,24 @@ def quota_breach(
                 if more > 0 and key in hard and qty(used.get(key) or "0") + more > qty(hard[key]):
                     quota = f"ResourceQuota {rq.metadata.name}'s {key} {hard[key]}"
                     return f"{pods} pods at {r} {q} would pass {quota}"
+    return None
+
+
+def boost_barred(core: Any, ns: str) -> str | None:
+    """Why no pod of `ns` gets a Startup boost (slice 13.4), or None: a LimitRange that
+    caps cpu (a maximum, or a limit-to-request ratio: the request stays while the limit
+    grows) or a ResourceQuota that counts `limits.cpu` could refuse the boosted pod's
+    creation, which its own limit would have passed.
+    ponytail: the whole namespace, whatever room they leave; compare each pod's boosted
+    limit with the LimitRange (a rollout's pods at once can still pass a quota) if needed."""
+    for lr in core.list_namespaced_limit_range(ns).items:
+        for item in lr.spec.limits or []:
+            if "cpu" in (item.max or {}) or "cpu" in (item.max_limit_request_ratio or {}):
+                return f"LimitRange {lr.metadata.name} caps cpu"
+    for rq in core.list_namespaced_resource_quota(ns).items:
+        hard = {**((rq.spec.hard if rq.spec else None) or {}), **(rq.status.hard or {})}
+        if "limits.cpu" in hard:
+            return f"ResourceQuota {rq.metadata.name} counts limits.cpu"
     return None
 
 
@@ -1431,7 +1476,13 @@ def event(core: Any, a: Actuation, h: dict[str, Any] | None = None) -> None:
 
 
 def post(
-    core: Any, ns: str, what: tuple[str, str, str], reason: str, message: str, warning: bool
+    core: Any,
+    ns: str,
+    what: tuple[str, str, str],
+    reason: str,
+    message: str,
+    warning: bool,
+    uid: str | None = None,
 ) -> None:
     """An Event on `what` (api version, kind, name) in `ns`; a refused one is only logged."""
     now = datetime.now(UTC)
@@ -1440,7 +1491,7 @@ def post(
     body = client.CoreV1Event(
         metadata=client.V1ObjectMeta(name=f"{name}.{uuid.uuid4().hex[:16]}"),
         involved_object=client.V1ObjectReference(
-            api_version=api_version, kind=kind, name=name, namespace=ns
+            api_version=api_version, kind=kind, name=name, namespace=ns, uid=uid
         ),
         reason=reason,
         message=message[:1024],
@@ -1531,12 +1582,27 @@ def stepped_for(
     return st["limit"], st["request"]
 
 
+def boosted(c: dict[str, Any], factor: float | None, kind: str) -> str | None:
+    """The CPU limit a new pod's container `c` starts with under its Startup boost (slice
+    13.4), or None: no boost for it, no CPU limit to raise, a CronJob's run, or a
+    `resizePolicy` that would restart the container when the limit is given back."""
+    limit = ((c.get("resources") or {}).get("limits") or {}).get("cpu")
+    restarts = any(
+        p.get("resourceName") == "cpu" and p.get("restartPolicy") == "RestartContainer"
+        for p in c.get("resizePolicy") or []
+    )
+    if not factor or not limit or kind == "CronJob" or restarts:
+        return None
+    return cpu_text(float(qty(limit)) * factor)
+
+
 def mutation(
     req: dict[str, Any],
     held: dict[str, dict[str, Any]],
     own: str,
     paused: Any = frozenset(),
     stepped: dict[str, dict[str, Any]] | None = None,
+    boosts: dict[str, float] | None = None,
 ) -> list[Any]:
     """The JSON Patch giving a new pod of a workload the requests applied to it: only
     where its container still asks what the template asked then (a person's change wins),
@@ -1544,7 +1610,10 @@ def mutation(
     paused workload (`ns/kind/name` in `paused`). A DaemonSet's pod gets only requests
     lower than its template's (slice 12.8a): it must fit on whatever node it starts; a raise
     reaches it in place, where its node has room. An Argo Rollout's pod is told by its
-    `rollouts-pod-template-hash` label (slice 12.8b)."""
+    `rollouts-pod-template-hash` label (slice 12.8b). A container in `boosts` starts with
+    its CPU limit times its factor (the Startup boost, slice 13.4), its own limit kept in
+    the pod's `BOOST` annotation; never a pod that already carries one (its template's),
+    nor one with pod-level resources."""
     ns = req.get("namespace") or ""
     if req.get("operation") != "CREATE" or ns == own or ns.startswith("kube-"):
         return []
@@ -1559,6 +1628,10 @@ def mutation(
     if f"{ns}/{kind}/{name}" in paused:
         return []
     ops: list[Any] = []
+    notes = meta.get("annotations")
+    # no boost twice, nor past a pod-level limit (`spec.resources`), which would refuse it
+    unboosted = BOOST in (notes or {}) or bool((pod.get("spec") or {}).get("resources"))
+    own_limits: dict[str, str] = {}  # of the containers boosted
     everyone = [
         (
             x.get("name", ""),
@@ -1594,14 +1667,27 @@ def mutation(
         if up:  # its memory is its Step-up's (slice 13.1b), whatever a Sizing holds
             new["memory"] = up[1]
         mine = c.get("name", "")
-        after = [
-            ({**r, **new} if n == mine else r, grown if n == mine else lim)
-            for n, r, lim in everyone
-        ]
-        if not new or qos([(r, lim) for _, r, lim in everyone]) != qos(after):
-            continue  # a pod's QoS class stays its template's (slice 12.3)
+
+        def keeps(asks: dict[str, str], lims: dict[str, str], mine: str = mine) -> bool:
+            after = [
+                ({**r, **asks} if n == mine else r, lims if n == mine else lim)
+                for n, r, lim in everyone
+            ]
+            return qos([(r, lim) for _, r, lim in everyone]) == qos(after)
+
+        if new and not keeps(new, grown):
+            new, up = {}, None  # a pod's QoS class stays its template's (slice 12.3)
+        more = None if unboosted else boosted(c, (boosts or {}).get(key), kind)
+        # a Guaranteed pod's limit can't leave its request (a limit alone is its request)
+        if more and not keeps({"cpu": requests.get("cpu", limits["cpu"])}, {**limits, "cpu": more}):
+            more = None
+        if more and "cpu" not in requests:
+            # a limit alone is its request too: said, so the request stays where it was
+            new.setdefault("cpu", limits["cpu"])
         at = f"/spec/containers/{i}/resources"
-        if "resources" not in c:
+        if not new:
+            pass
+        elif "resources" not in c:
             ops.append({"op": "add", "path": at, "value": {"requests": new}})
         elif "requests" not in resources:
             ops.append({"op": "add", "path": f"{at}/requests", "value": new})
@@ -1609,6 +1695,16 @@ def mutation(
             ops += [{"op": "add", "path": f"{at}/requests/{r}", "value": q} for r, q in new.items()]
         if up:
             ops.append({"op": "add", "path": f"{at}/limits/memory", "value": up[0]})
+        if more:
+            ops.append({"op": "add", "path": f"{at}/limits/cpu", "value": more})
+            own_limits[mine] = limits["cpu"]
+    if own_limits:
+        value = json.dumps(own_limits, sort_keys=True)
+        if notes is None:
+            ops.append({"op": "add", "path": "/metadata/annotations", "value": {BOOST: value}})
+        else:
+            at = "/metadata/annotations/" + BOOST.replace("/", "~1")
+            ops.append({"op": "add", "path": at, "value": value})
     return ops
 
 
@@ -1619,13 +1715,14 @@ def admit(
     own: str,
     paused: Any = frozenset(),
     stepped: dict[str, dict[str, Any]] | None = None,
+    boosts: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     """The AdmissionReview answer: always allowed; a patch unless the Kill switch is on."""
     req = review.get("request") if isinstance(review, dict) else None
     req = req if isinstance(req, dict) else {}
     answer: dict[str, Any] = {"uid": req.get("uid", ""), "allowed": True}
     try:
-        ops = [] if killed else mutation(req, held, own, paused, stepped)
+        ops = [] if killed else mutation(req, held, own, paused, stepped, boosts)
     except Exception:  # fail open, as the webhook's failurePolicy does
         log.exception("webhook: pod left as it is")
         ops = []
@@ -1683,7 +1780,7 @@ def serve(a: "Actuator", cert: bytes, key: bytes, port: int = WEBHOOK_PORT) -> T
             except ValueError:
                 self.send_error(400)
                 return
-            answer = admit(review, a.held, a.killed, a.namespace, a.paused, a.stepped)
+            answer = admit(review, a.held, a.killed, a.namespace, a.paused, a.stepped, a.boosting)
             body = json.dumps(answer).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -1739,6 +1836,14 @@ class Actuator:
     oom_expires: float | None = None
     peaks: dict[str, float | None] = field(default_factory=dict)
     events_unread: bool = False  # said once: it may not read Node Events
+    # slice 13.4, the Startup boost: each container's factor as the Hub last said it (kept,
+    # so it goes on while the Hub is unreachable); those the webhook boosts now (`boosting`:
+    # no VPA, nothing in its namespace that would refuse the pod); the namespaces whose
+    # pods may still carry a boost to end; and why not, said once
+    boosts: dict[str, float] = field(default_factory=dict)
+    boosting: dict[str, float] = field(default_factory=dict)
+    boost_ns: set[str] = field(default_factory=set)
+    boost_bars: dict[str, str] = field(default_factory=dict)
 
     def load(self) -> None:
         try:
@@ -1753,6 +1858,8 @@ class Actuator:
             self.killed = bool(state.get("killed", False))
             self.stepped = dict(state.get("stepped") or {})
             self.steps = [float(t) for t in state.get("steps") or []]
+            self.boosts = {k: float(f) for k, f in (state.get("boosts") or {}).items()}
+            self.boost_ns = set(state.get("boost_ns") or [])
             for a in state.get("unsent") or []:
                 try:
                     self.unsent.append(Actuation(**a))
@@ -1767,6 +1874,8 @@ class Actuator:
         the Hub last said it (the Hub may be unreachable then), and the reports not yet taken."""
         unsent = [a.model_dump() for a in self.unsent[-KEPT_REPORTS:]]
         more = {"stepped": self.stepped, "steps": self.steps} if self.stepped or self.steps else {}
+        if self.boosts or self.boost_ns:
+            more |= {"boosts": self.boosts, "boost_ns": sorted(self.boost_ns)}
         return json.dumps({"killed": self.killed, "unsent": unsent, **more}, sort_keys=True)
 
     def save(self) -> None:
@@ -1820,8 +1929,13 @@ class Actuator:
         if desired is not None and desired.kill_switch != self.killed:
             self.killed = desired.kill_switch
             log.warning("the Kill switch is %s", "on" if self.killed else "off")
+        if desired is not None and not desired.kill_switch:  # else kept as last said
+            self.boosts = {
+                "/".join((b.namespace, b.kind, b.name, b.container)): b.factor
+                for b in desired.boosts
+            }
         wanted = (desired.sizings + desired.automated) if desired else []
-        mine = {*self.held, *self.stepped}
+        mine = {*self.held, *self.stepped, *self.boosts}
         self.pauses({*mine, *(f"{w.namespace}/{w.kind}/{w.name}" for w in wanted)})
         done: list[Actuation] = []
         undoing = any("unfinished" in h for h in self.held.values())  # saved once finished too
@@ -1841,6 +1955,7 @@ class Actuator:
                 for key, h in self.held.items():
                     if h.get("unfinished"):
                         finish(self.core, self.apps, key, h)
+                self.keep_boosts()
             if desired is not None and not self.killed:  # the Hub's word: rollouts go on
                 self.eviction = desired.eviction
                 self.reverting = {
@@ -2387,6 +2502,102 @@ class Actuator:
                 )
                 log.info("%s: %s", k, said)
         return out
+
+    def keep_boosts(self) -> None:
+        """The Startup boost's minute (slice 13.4), the Hub reachable or not: which
+        containers the webhook boosts now (`boosting`: not under a VPA, nor in a namespace
+        that `boost_barred`; one it can't read gets none), and each boosted pod's limit
+        given back when due. A namespace is read one minute more after its last boost was
+        wanted, then until no pod of it still carries one."""
+        now = time.time()
+        wanted: dict[str, list[str]] = {}
+        for key in self.boosts:
+            wanted.setdefault(key.split("/")[0], []).append(key)
+        was = {key.split("/")[0] for key in self.boosting}
+        allowed: dict[str, float] = {}
+        bars: dict[str, str] = {}
+        unended: set[str] = set()
+        for ns in sorted({*wanted, *self.boost_ns}):
+            try:
+                if ns in wanted:
+                    bars[ns] = boost_barred(self.core, ns) or ""
+                    found = [] if bars[ns] else vpas(self.custom, ns)
+                    for key in [] if bars[ns] else wanted[ns]:
+                        _, kind, name, _ = key.split("/")
+                        mode = vpa_mode(self.custom, ns, kind, name, found)
+                        if mode:
+                            bars[f"{ns}/{kind}/{name}"] = f"a VPA in mode {mode} sizes it"
+                        else:
+                            allowed[key] = self.boosts[key]
+                pods = self.core.list_namespaced_pod(ns).items
+            except ApiException as e:  # the other namespaces still go on
+                bars[ns] = f"reading it: {why(e)}"
+                allowed = {k: f for k, f in allowed.items() if k.split("/")[0] != ns}
+                unended.add(ns)
+                continue
+            if [p for p in pods if self.end_boost(p, now)]:
+                unended.add(ns)
+        bars = {where: reason for where, reason in bars.items() if reason}
+        for where, reason in sorted(bars.items()):
+            if self.boost_bars.get(where) != reason:
+                log.warning("no startup boost in %s: %s", where, reason)
+        self.boost_bars, self.boosting = bars, allowed
+        self.boost_ns = {*wanted, *unended, *(self.boost_ns & was)}
+
+    def end_boost(self, p: Any, now: float) -> bool:
+        """Give a boosted pod's containers their own CPU limit back in place, once the pod
+        is Ready, the container has run for `BOOST_SECONDS` (its own start: not its image's
+        pull nor its init containers) or it restarted (a restart gets no boost); whether a
+        boost is still on the pod afterwards. Its annotation is read as anyone's word: only
+        ever a limit lowered, never under the container's request. Not on a paused
+        Workload, as any resize."""
+        try:
+            own = json.loads((p.metadata.annotations or {}).get(BOOST) or "{}")
+        except ValueError:
+            return False
+        if not isinstance(own, dict) or lost(p) or p.metadata.deletion_timestamp:
+            return False
+        if (p.status.phase if p.status else None) in ("Succeeded", "Failed"):
+            return False
+        ns, ready = p.metadata.namespace, is_ready(p)
+        owners = {o.kind: o.name for o in p.metadata.owner_references or []}
+        of = workload_of(owners, p.metadata.labels or {})
+        left = False
+        for c in p.spec.containers:
+            back, has = own.get(c.name), limits_of(c).get("cpu")
+            try:
+                floor = qty(requests_of(c).get("cpu") or "0")
+                if not isinstance(back, str) or not has or not floor <= qty(back) < qty(has):
+                    continue  # given back already, or not a boost
+            except (ValueError, ArithmeticError):
+                continue
+            st = container_status(p, c.name)
+            run = st.state.running if st and st.state else None
+            long = bool(run and now - run.started_at.timestamp() >= BOOST_SECONDS)
+            again = bool(st and st.restart_count)
+            if not (ready or long or again) or (of and "/".join((ns, *of)) in self.paused):
+                left = True
+                continue
+            body = {
+                "spec": {"containers": [{"name": c.name, "resources": {"limits": {"cpu": back}}}]}
+            }
+            try:
+                self.core.patch_namespaced_pod_resize(p.metadata.name, ns, body)
+            except ApiException as e:  # tried again next minute
+                log.warning("ending %s/%s's startup boost: %s", ns, p.metadata.name, why(e))
+                left = True
+                continue
+            when = (
+                "its pod is Ready"
+                if ready
+                else "it restarted"
+                if again
+                else f"{BOOST_SECONDS // 60} minutes after its start"
+            )
+            message = f"{c.name}: startup boost over, CPU limit {has} back to {back}: {when}"
+            what = ("v1", "Pod", p.metadata.name)
+            post(self.core, ns, what, "StartupBoostEnded", message, False, p.metadata.uid)
+        return left
 
     def step_back(self, k: str, st: dict[str, Any]) -> str:
         """What becomes of the running pods of a Step-up that ended (slice 13.1c): back to

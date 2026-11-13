@@ -450,6 +450,9 @@ class SizingRule(Strict):
     policy: PolicyName
     # Automation (slice 12.5, ADR 0004): the Actuator applies this rule's Sizings unasked
     automate: bool = False
+    # the Startup boost (slice 13.4): its containers' new pods start with their CPU limit
+    # times this, until the pod is Ready
+    startup_boost: float | None = Field(None, ge=1.5, le=4)
 
     @model_validator(mode="after")
     def _matches_something(self) -> "SizingRule":
@@ -457,6 +460,8 @@ class SizingRule(Strict):
             raise ValueError("a rule needs cluster, namespace, kind, name or container")
         if self.automate and self.policy == OFF:
             raise ValueError("automate: a rule with policy off has no Sizings to apply")
+        if self.startup_boost and not self.automate:
+            raise ValueError("startup_boost: only on a rule with automate")
         return self
 
     def matches(self, cluster: str, namespace: str, kind: str, name: str, container: str) -> bool:
@@ -539,6 +544,15 @@ class SizingConfig(Strict):
             (r for r in self.rules if r.matches(cluster, namespace, kind, name, container)), None
         )
         return rule is not None and rule.automate
+
+    def startup_boost(
+        self, cluster: str, namespace: str, kind: str, name: str, container: str
+    ) -> float | None:
+        """The Startup boost of the rule that picks this container's policy (slice 13.4)."""
+        rule = next(
+            (r for r in self.rules if r.matches(cluster, namespace, kind, name, container)), None
+        )
+        return rule.startup_boost if rule else None
 
     def policy(self, name: str) -> Policy | None:
         """The settings for a policy name; None for `off`."""

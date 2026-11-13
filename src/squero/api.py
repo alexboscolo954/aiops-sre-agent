@@ -1836,8 +1836,9 @@ def create_app(
         """What an Actuator should apply now: its cluster's current Approved Sizings in the
         cluster's namespaces, Automation's for the containers no approval covers, the
         Reverts it hasn't done, and whether it may evict now (slice 12.7); nothing while
-        the Kill switch is on; and, where the Contract sets `reflexes.oom`, the automated
-        containers whose OOM kills to report (slice 13.1a). Only of the `kinds` it names
+        the Kill switch is on; where the Contract sets `reflexes.oom`, the automated
+        containers whose OOM kills to report (slice 13.1a); and the automated containers
+        whose rule sets a Startup boost (slice 13.4). Only of the `kinds` it names
         that the Hub's knows (slice
         12.8a): an Actuator that names none, 0.43.0 or older, reads every Sizing as a
         Deployment's, so it gets Deployments' only."""
@@ -1879,6 +1880,18 @@ def create_app(
             else [],
             oom_max=reflex.max if reflex else None,  # slice 13.1b: how far a Step-up may go
             oom_expires=reflex.expires if reflex else None,
+            # slice 13.4: the Startup boost of each automated container's rule; never a
+            # CronJob's run
+            boosts=[
+                actuator.Boost(**r, factor=factor)
+                for r in rows
+                if r["kind"] in known - {"CronJob"}
+                and (
+                    factor := by_id[cid].sizing.startup_boost(
+                        cluster.name, r["namespace"], r["kind"], r["name"], r["container"]
+                    )
+                )
+            ],
             reverts=[
                 actuator.Undo.model_validate(r)
                 for r in await store().pending_reverts(cid, cluster.name)

@@ -147,6 +147,7 @@ def test_an_actuator_gets_only_its_own_clusters_current_approved_deployments(
         "oom": [],
         "oom_max": None,
         "oom_expires": None,
+        "boosts": [],
     }
     assert old.json()["sizings"] == [{**wanted, "name": "api", "cpu": 0.115, "memory": None}]
     known = ("Deployment", "StatefulSet", "DaemonSet")  # what 0.44.0 names
@@ -175,6 +176,7 @@ def test_the_kill_switch_and_a_later_run_leave_nothing_to_apply(
         "oom": [],
         "oom_max": None,
         "oom_expires": None,
+        "boosts": [],
     }
     assert superseded == {
         "kill_switch": False,
@@ -185,6 +187,7 @@ def test_the_kill_switch_and_a_later_run_leave_nothing_to_apply(
         "oom": [],
         "oom_max": None,
         "oom_expires": None,
+        "boosts": [],
     }
 
 
@@ -1031,6 +1034,9 @@ def test_the_webhook_answers_over_tls_with_its_own_certificate() -> None:
         trusted = ssl.create_default_context(cadata=cert.decode())
         with httpx.Client(verify=trusted) as http:
             ok = http.post(f"{url}/mutate?timeout=2s", json=new_pod())  # as the API server calls
+            a.held, a.boosting = {}, {KEY: 2.0}  # its Startup boosts too (slice 13.4)
+            boost = new_pod(requests={"cpu": "250m"}, limits={"cpu": "500m"})
+            boosted = http.post(f"{url}/mutate", json=boost)
             a.killed = True
             killed = http.post(f"{url}/mutate", json=new_pod())
             elsewhere = http.post(f"{url}/other", json=new_pod())
@@ -1040,6 +1046,7 @@ def test_the_webhook_answers_over_tls_with_its_own_certificate() -> None:
     finally:
         server.shutdown()
     assert ok.status_code == 200 and "patch" in ok.json()["response"]
+    assert "patch" in boosted.json()["response"]
     assert "patch" not in killed.json()["response"]
     assert (elsewhere.status_code, garbage.status_code) == (404, 400)
 
@@ -1490,6 +1497,7 @@ def test_an_actuator_gets_the_newest_sizings_of_what_its_contract_automates(
         "oom": [],
         "oom_max": None,
         "oom_expires": None,
+        "boosts": [],
     }
 
 
@@ -5868,3 +5876,436 @@ def test_a_step_up_reported_without_its_limit_never_stops_the_rollbacks_behind_i
     assert len(said) == 2 and untold(database_url) == []
     assert said[0].endswith("to keep it, raise its memory limit in its manifest.")
     assert said[1].startswith(":rewind: acme: the Actuator rolled back")
+
+
+# --- the Startup boost (slice 13.4) -------------------------------------------------------
+
+BOOSTING = {**AUTO, "startup_boost": 2}
+NOTE = "/metadata/annotations"
+CPU = "/spec/containers/1/resources/limits/cpu"
+
+
+def test_a_startup_boost_is_a_factor_from_one_and_a_half_to_four_on_an_automated_rule() -> None:
+    c = automating("acme", A_TOKEN, {**AUTO, "name": "db"}, BOOSTING)
+    assert c.sizing.startup_boost("test", "shop", "Deployment", "api", "app") == 2.0
+    # the rule that picks its policy decides, as for `automate`; none without a rule
+    assert c.sizing.startup_boost("test", "shop", "Deployment", "db", "app") is None
+    assert c.sizing.startup_boost("test", "shop", "Deployment", "api", "sidecar") is None
+    for ok in (1.5, 4):
+        automating("acme", A_TOKEN, {**AUTO, "startup_boost": ok})
+    for bad in (1.4, 4.1):
+        with pytest.raises(ValueError, match="startup_boost"):
+            automating("acme", A_TOKEN, {**AUTO, "startup_boost": bad})
+    with pytest.raises(ValueError, match="startup_boost: only on a rule with automate"):
+        automating("acme", A_TOKEN, {**AUTO, "automate": False, "startup_boost": 2})
+
+
+def test_the_hub_lists_the_boosts_of_a_contracts_own_automated_containers(
+    settings: Settings, database_url: str
+) -> None:
+    now = time.time()
+    acme = automating("acme", A_TOKEN, {**AUTO, "name": "plain"}, BOOSTING)
+    bank = automating("bank", B_TOKEN, {**AUTO, "name": "ledger", "startup_boost": 3})
+    with TestClient(hub(settings, database_url, acme, bank)) as c:
+        sql(
+            database_url,
+            run("acme", '{"test": null}'),
+            sized("acme", 1),
+            sized("acme", 1, "learning", state="learning", memory=None),  # no Sizing yet
+            sized("acme", 1, "plain"),  # automated by a rule without a boost
+            sized("acme", 1, "db", kind="StatefulSet"),
+            sized("acme", 1, "nightly", kind="CronJob"),  # never a CronJob's run
+            sized("acme", 1, "side", container="sidecar"),  # no rule automates it
+            sized("acme", 1, "broken"),
+            *(rolled_back("acme", now - d * 86400, name="broken") for d in (1, 2, 3)),  # ended
+            run("bank", '{"test": null}'),
+            sized("bank", 2, "ledger"),
+            sized("bank", 2, "api"),  # bank boosts only its ledger
+        )
+        kinds = {"kinds": ",".join(actuator.KINDS)}
+        mine = c.get("/actuator/desired", headers=as_actuator(A_TOKEN), params=kinds).json()
+        old = c.get("/actuator/desired", headers=as_actuator(A_TOKEN)).json()
+        theirs = c.get("/actuator/desired", headers=as_actuator(B_TOKEN), params=kinds).json()
+        sql(database_url, ("insert into kill_switches values ('acme', 't', 1)", ()))
+        killed = c.get("/actuator/desired", headers=as_actuator(A_TOKEN), params=kinds).json()
+    one = {"namespace": "shop", "kind": "Deployment", "container": "app", "factor": 2.0}
+    assert "nightly" in [w["name"] for w in mine["automated"]]  # its Sizing still goes
+    assert mine["boosts"] == [{**one, "name": n} for n in ("api", "learning")] + [
+        {**one, "kind": "StatefulSet", "name": "db"}
+    ]
+    assert old["boosts"] == mine["boosts"][:-1]  # an Actuator naming no kinds: Deployments only
+    assert theirs["boosts"] == [{**one, "name": "ledger", "factor": 3.0}]
+    assert killed["boosts"] == []
+
+
+def starting(review: Any = None, factor: float = 2.0, **kw: Any) -> list[Any]:
+    """What the webhook does to a new pod of api (its `app` asks 250m of cpu under a limit
+    of 500m unless `review` says) with a Startup boost of `factor`."""
+    review = review or new_pod(requests={"cpu": "250m"}, limits={"cpu": "500m"})
+    return actuator.mutation(review["request"], {}, "squero-actuator", boosts={KEY: factor}, **kw)
+
+
+def own(limit: str = "500m") -> str:
+    return json.dumps({"app": limit})
+
+
+def test_a_new_pod_starts_with_its_cpu_limit_boosted_and_its_own_kept_in_an_annotation() -> None:
+    assert starting() == [
+        {"op": "add", "path": CPU, "value": "1000m"},
+        {"op": "add", "path": NOTE, "value": {actuator.BOOST: own()}},
+    ]
+    noted = new_pod(requests={"cpu": "250m"}, limits={"cpu": "1", "memory": "1Gi"})
+    noted["request"]["object"]["metadata"]["annotations"] = {"team": "shop"}
+    assert starting(noted, 1.5) == [
+        {"op": "add", "path": CPU, "value": "1500m"},
+        {"op": "add", "path": f"{NOTE}/squero-actuator~1startup-boost", "value": own("1")},
+    ]
+    # a limit alone is its request too: said, so that the request stays where it was
+    alone = starting(new_pod(limits={"cpu": "500m"}))
+    assert alone[0] == {
+        "op": "add",
+        "path": "/spec/containers/1/resources/requests",
+        "value": {"cpu": "500m"},
+    }
+    assert alone[1:] == starting()
+    for kind in ("StatefulSet", "DaemonSet"):  # the limit only: it fits whatever node it starts on
+        review = owned_by(kind, "api", requests={"cpu": "250m"}, limits={"cpu": "500m"})
+        key = f"shop/{kind}/api/app"
+        assert actuator.mutation(review["request"], {}, "x", boosts={key: 2.0}) == starting()
+    answer = actuator.admit(noted, {}, False, "x", boosts={KEY: 2.0})["response"]
+    assert json.loads(base64.b64decode(answer["patch"])) == starting(noted)
+
+
+def test_a_boost_goes_beside_a_sizings_requests_and_a_step_up() -> None:
+    held = {KEY: {"outcome": "applied", "requests": {"cpu": "900m"}, "template": {"cpu": "250m"}}}
+    review = new_pod(requests={"cpu": "250m"}, limits={"cpu": "500m"})
+    ops = actuator.mutation(review["request"], held, "squero-actuator", boosts={KEY: 2.0})
+    at = "/spec/containers/1/resources"
+    # its request never above its own limit, whatever the boost makes of it meanwhile
+    assert ops[0] == {"op": "add", "path": f"{at}/requests/cpu", "value": "500m"}
+    assert ops[1:] == starting()
+    alone = new_pod(limits={"cpu": "500m"})["request"]  # a limit alone: the Sizing's request
+    held[KEY] = {"outcome": "applied", "requests": {"cpu": "115m"}, "template": {"cpu": None}}
+    ops = actuator.mutation(alone, held, "squero-actuator", boosts={KEY: 2.0})
+    assert ops[0] == {"op": "add", "path": f"{at}/requests", "value": {"cpu": "115m"}}
+    assert ops[1:] == starting()
+    asks = {"requests": {"cpu": "1", "memory": "128Mi"}, "limits": {"cpu": "2", "memory": "256Mi"}}
+    ops = starting(new_pod(**asks), stepped={KEY: dict(STEP)})
+    assert [(o["path"].removeprefix(at), o["value"]) for o in ops[:3]] == [
+        ("/requests/memory", "178Mi"),
+        ("/limits/memory", "356Mi"),
+        ("/limits/cpu", "4000m"),
+    ]
+
+
+GUARANTEED = {"requests": {"cpu": "1", "memory": "1Gi"}, "limits": {"cpu": "1", "memory": "1Gi"}}
+
+
+def pod_level() -> dict[str, Any]:
+    review = new_pod(requests={"cpu": "250m"}, limits={"cpu": "500m"})
+    review["request"]["object"]["spec"]["resources"] = {"limits": {"cpu": "600m"}}
+    return review
+
+
+@pytest.mark.parametrize(
+    "review",
+    [
+        new_pod(requests={"cpu": "250m"}, limits={"memory": "1Gi"}),  # no CPU limit: none needed
+        new_pod(none=True),
+        new_pod(sidecar={"resources": GUARANTEED}, **GUARANTEED),  # a Guaranteed pod
+        new_pod(  # Guaranteed by its limits alone
+            sidecar={"resources": {"limits": GUARANTEED["limits"]}}, limits=GUARANTEED["limits"]
+        ),
+        owned_by("Job", run_of("api"), requests={"cpu": "250m"}, limits={"cpu": "500m"}),
+        new_pod(ns="kube-system", requests={"cpu": "250m"}, limits={"cpu": "500m"}),
+        pod_level(),  # a pod-level limit, which a container's may not pass
+        new_pod(operation="UPDATE", requests={"cpu": "250m"}, limits={"cpu": "500m"}),
+    ],
+)
+def test_a_pod_that_gets_no_startup_boost(review: Any) -> None:
+    boosts = {KEY: 2.0, CRON: 2.0}
+    assert actuator.mutation(review["request"], {}, "squero-actuator", boosts=boosts) == []
+
+
+def test_no_boost_twice_nor_where_the_limit_could_not_be_given_back_in_place() -> None:
+    assert starting(factor=0) == []
+    other = new_pod(requests={"cpu": "250m"}, limits={"cpu": "500m"})
+    assert actuator.mutation(other["request"], {}, "x", boosts={"shop/Deployment/web/app": 2}) == []
+    assert starting(paused=frozenset({"shop/Deployment/api"})) == []
+    assert actuator.admit(other, {}, True, "x", boosts={KEY: 2.0})["response"].get("patch") is None
+    restarting = new_pod(requests={"cpu": "250m"}, limits={"cpu": "500m"})
+    app = restarting["request"]["object"]["spec"]["containers"][1]
+    app["resizePolicy"] = [{"resourceName": "cpu", "restartPolicy": "RestartContainer"}]
+    assert starting(restarting) == []  # giving it back would restart the container
+    app["resizePolicy"] = [
+        {"resourceName": "cpu", "restartPolicy": "NotRequired"},
+        {"resourceName": "memory", "restartPolicy": "RestartContainer"},
+    ]
+    assert starting(restarting) == starting()
+    # a pod that already carries the annotation (its template's, or the webhook asked
+    # again): its limit is not multiplied a second time
+    restarting["request"]["object"]["metadata"]["annotations"] = {actuator.BOOST: own("250m")}
+    assert starting(restarting) == []
+
+
+def started(
+    core: Any,
+    name: str = "api-1-a",
+    ready: bool = False,
+    age: float | None = 30.0,
+    limit: str = "1000m",
+    was: Any = "500m",
+    restarts: int = 0,
+) -> Any:
+    """api's pod `name` as the webhook boosted it, its `app` running for `age` seconds
+    (None: not started yet) under a CPU limit of `limit`, its own (`was`) in its annotation.
+    The pod itself is an hour old: its image's pull and init containers took that long."""
+    p = next(p for p in core.list_namespaced_pod.return_value.items if p.metadata.name == name)
+    p.metadata.labels = {"app": "api", "pod-template-hash": "1"}
+    p.metadata.uid = f"uid-{name}"
+    note = was if isinstance(was, str) and was.startswith(("{", "[", "!")) else own(was)
+    p.metadata.annotations = {actuator.BOOST: note}
+    p.spec.containers[0].resources = k.V1ResourceRequirements(
+        requests={"cpu": "250m"}, limits={"cpu": limit}
+    )
+    p.status.start_time = datetime.fromtimestamp(time.time() - 3600, UTC)
+    st = status("app", None)
+    st.restart_count = restarts
+    st.state = k.V1ContainerState(waiting=k.V1ContainerStateWaiting(reason="PodInitializing"))
+    if age is not None:
+        at = datetime.fromtimestamp(time.time() - age, UTC)
+        st.state = k.V1ContainerState(running=k.V1ContainerStateRunning(started_at=at))
+    p.status.container_statuses = [st]
+    return shown(p, {"Ready": "True", "ContainersReady": "True"} if ready else PROBE_FAILS)
+
+
+def cpu_limit(core: Any, name: str) -> str | None:
+    p = next(p for p in core.list_namespaced_pod.return_value.items if p.metadata.name == name)
+    return (p.spec.containers[0].resources.limits or {}).get("cpu")
+
+
+def boosting(core: Any, apps: Any, **kw: Any) -> actuator.Actuator:
+    """An Actuator the Hub last told to boost api's `app` (or `boosts`)."""
+    return make(hub_of([], []), core, apps, **{"boosts": {KEY: 2.0}, **kw})
+
+
+def test_a_boost_ends_when_its_pod_is_ready_or_five_minutes_after_its_start() -> None:
+    core, apps = cluster()
+    a = boosting(core, apps)
+    started(core, "api-1-a", age=30)  # still starting
+    started(core, "api-1-b", ready=True, age=30)
+    a.keep_boosts()
+    assert (cpu_limit(core, "api-1-a"), cpu_limit(core, "api-1-b")) == ("1000m", "500m")
+    body = {"spec": {"containers": [{"name": "app", "resources": {"limits": {"cpu": "500m"}}}]}}
+    assert resized(core) == [("api-1-b", body)]  # the limit only: its request untouched
+    event = core.create_namespaced_event.call_args.args[1]
+    assert (event.reason, event.type) == ("StartupBoostEnded", "Normal")
+    assert (event.involved_object.kind, event.involved_object.name) == ("Pod", "api-1-b")
+    assert event.involved_object.uid == "uid-api-1-b"
+    assert event.message == (
+        "app: startup boost over, CPU limit 1000m back to 500m: its pod is Ready"
+    )
+    assert a.boost_ns == {"shop"} and a.boosting == {KEY: 2.0}
+    a.keep_boosts()  # given back: said once
+    assert len(resized(core)) == 1 and core.create_namespaced_event.call_count == 1
+    started(core, "api-1-a", age=actuator.BOOST_SECONDS - 5)
+    a.keep_boosts()
+    assert cpu_limit(core, "api-1-a") == "1000m"
+    started(core, "api-1-a", age=actuator.BOOST_SECONDS)  # never Ready: 5 minutes all the same
+    a.keep_boosts()
+    assert cpu_limit(core, "api-1-a") == "500m" and actuator.BOOST_SECONDS == 300
+    assert core.create_namespaced_event.call_args.args[1].message.endswith(
+        "back to 500m: 5 minutes after its start"
+    )
+
+
+def test_a_container_that_restarts_loses_its_boost_at_once() -> None:
+    core, apps = cluster()
+    a = boosting(core, apps)
+    started(core, age=5, restarts=1)  # a restart gets no boost, crash-looping or not
+    a.keep_boosts()
+    assert cpu_limit(core, "api-1-a") == "500m"
+    assert core.create_namespaced_event.call_args.args[1].message.endswith(
+        "back to 500m: it restarted"
+    )
+    p = started(core, "api-1-b", age=None, restarts=1)  # between two runs
+    a.keep_boosts()
+    assert cpu_limit(core, "api-1-b") == "500m"
+    p = started(core, "api-1-b")
+    p.status.container_statuses = None  # no status yet: nothing to count from
+    a.keep_boosts()
+    assert cpu_limit(core, "api-1-b") == "1000m" and a.boost_ns == {"shop"}
+
+
+def test_an_annotation_is_anyones_word_a_limit_is_only_ever_lowered_to_it() -> None:
+    core, apps = cluster()
+    a = boosting(core, apps)
+    for was in ("2", "1000m", "100m", 0.5, "!", "[1]", '{"other": "500m"}', '{"app": "x"}'):
+        # above its limit or at it; under its request of 250m; a number, not the quantity it
+        # wrote; no JSON; no object; no such container; no quantity
+        started(core, ready=True, was=was)
+        a.keep_boosts()
+        assert resized(core) == [] and a.boost_ns == {"shop"}, was
+    for p in core.list_namespaced_pod.return_value.items[2:4]:  # Succeeded; being deleted
+        started(core, p.metadata.name, ready=True)
+        p.status.phase = "Succeeded" if p.metadata.name == "api-1-done" else "Running"
+    gone = started(core, "api-1-b", age=600)
+    shown(gone, NODE_GONE)  # its node is gone: no kubelet to resize it
+    a.keep_boosts()
+    assert resized(core) == []
+    started(core, "api-1-b", age=None)  # its image still pulled: no start to count from
+    a.keep_boosts()
+    assert resized(core) == []
+    started(core, "api-x-a", ready=True)  # another Workload's, boosted before its rule went
+    a.keep_boosts()
+    assert [n for n, _ in resized(core)] == ["api-x-a"]
+
+
+def test_a_paused_workloads_boost_waits_and_a_refused_resize_is_tried_again(
+    caplog: Any,
+) -> None:
+    core, apps = cluster()
+    a = boosting(core, apps, paused=frozenset({"shop/Deployment/api"}))
+    started(core, ready=True)
+    a.keep_boosts()
+    assert resized(core) == [] and a.boost_ns == {"shop"}
+    a.paused, a.boosts = frozenset(), {}  # its rule gone meanwhile
+    patch = core.patch_namespaced_pod_resize.side_effect
+    core.patch_namespaced_pod_resize.side_effect = refusal(500, "the kubelet is busy")
+    a.keep_boosts()
+    a.keep_boosts()
+    assert a.boost_ns == {"shop"}  # still read: a boost is left there
+    assert cpu_limit(core, "api-1-a") == "1000m" and not core.create_namespaced_event.called
+    assert "ending shop/api-1-a's startup boost: 500" in caplog.text
+    core.patch_namespaced_pod_resize.side_effect = patch
+    a.keep_boosts()
+    assert cpu_limit(core, "api-1-a") == "500m" and a.boost_ns == set()
+
+
+def capping(**item: Any) -> Any:
+    """A LimitRange `caps` with this one item, a Container's unless `type` says."""
+    ranges = limit_range(**{f: v for f, v in item.items() if f != "type"})
+    ranges.items[0].metadata = k.V1ObjectMeta(name="caps")
+    ranges.items[0].spec.limits[0].type = item.get("type", "Container")
+    return ranges
+
+
+@pytest.mark.parametrize(
+    ("ranges", "quotas", "vpa", "why"),
+    [
+        (capping(max={"cpu": "4"}), None, None, "shop: LimitRange caps caps cpu"),
+        (capping(max_limit_request_ratio={"cpu": "2"}), None, None, "LimitRange caps caps cpu"),
+        (capping(type="Pod", max={"cpu": "8"}), None, None, "LimitRange caps caps cpu"),
+        (None, quota({"limits.cpu": "10"}, {}), None, "ResourceQuota team counts limits.cpu"),
+        (None, None, "Auto", "shop/Deployment/api: a VPA in mode Auto sizes it"),
+    ],
+)
+def test_no_boost_where_it_could_get_a_pod_refused_or_a_vpa_sizes_it(
+    ranges: Any, quotas: Any, vpa: Any, why: str, caplog: Any
+) -> None:
+    core, apps = cluster()
+    if ranges:
+        core.list_namespaced_limit_range.return_value = ranges
+    if quotas:
+        core.list_namespaced_resource_quota.return_value = quotas
+    a = boosting(core, apps)
+    if vpa:
+        target = {"kind": "Deployment", "name": "api"}
+        a.custom.list_namespaced_custom_object.return_value = {
+            "items": [{"spec": {"targetRef": target, "updatePolicy": {"updateMode": vpa}}}]
+        }
+    started(core, ready=True)
+    a.keep_boosts()
+    a.keep_boosts()
+    assert a.boosting == {} and caplog.text.count("no startup boost in") == 1  # said once
+    assert why in caplog.text
+    assert cpu_limit(core, "api-1-a") == "500m"  # a boost given before is still ended
+
+
+def test_what_caps_nothing_bars_no_boost() -> None:
+    core, apps = cluster()
+    core.list_namespaced_limit_range.return_value = capping(
+        min={"cpu": "10m"}, max={"memory": "8Gi"}, default={"cpu": "1"}
+    )
+    core.list_namespaced_resource_quota.return_value = quota({"requests.cpu": "10"}, {})
+    a = boosting(core, apps, boosts={KEY: 2.0, "shop/Deployment/web/app": 3.0})
+    target = {"kind": "Deployment", "name": "api"}
+    a.custom.list_namespaced_custom_object.return_value = {
+        "items": [{"spec": {"targetRef": target, "updatePolicy": {"updateMode": "Off"}}}]
+    }
+    a.keep_boosts()
+    assert a.boosting == {KEY: 2.0, "shop/Deployment/web/app": 3.0}
+    assert a.custom.list_namespaced_custom_object.call_count == 1  # its VPAs read once
+
+
+def test_a_namespace_it_cannot_read_gets_no_boost_and_the_others_still_do(caplog: Any) -> None:
+    core, apps = cluster()
+    pods = core.list_namespaced_pod.return_value
+
+    def listed(ns: str) -> Any:
+        if ns == "bar":
+            raise refusal(403, "Forbidden")
+        return pods
+
+    core.list_namespaced_pod.side_effect = listed
+    a = boosting(core, apps, boosts={KEY: 2.0, "bar/Deployment/api/app": 2.0})
+    started(core, ready=True)
+    a.keep_boosts()
+    assert a.boosting == {KEY: 2.0} and a.boost_ns == {"bar", "shop"}
+    assert "no startup boost in bar: reading it: 403" in caplog.text
+    assert cpu_limit(core, "api-1-a") == "500m"
+    a.boosts = {KEY: 2.0}  # bar's rule gone: still read until it can be, for a boost left there
+    a.keep_boosts()
+    a.keep_boosts()
+    assert a.boost_ns == {"bar", "shop"}
+
+
+def test_a_namespace_is_read_until_its_last_boost_is_over(monkeypatch: pytest.MonkeyPatch) -> None:
+    core, apps = cluster()
+    seen: list[httpx.Request] = []
+    boost = {"namespace": "shop", "kind": "Deployment", "name": "api", "container": "app"}
+    with_ = {**desired(), "boosts": [{**boost, "factor": 2.5}]}
+    a = make(hub_of([with_, desired(), desired(), desired(), desired()], seen), core, apps)
+    a.step()
+    assert a.boosts == a.boosting == {KEY: 2.5} and a.boost_ns == {"shop"}
+    apps.list_namespaced_deployment.assert_called_with("shop")  # its pause is read
+    state = json.loads(core.replace_namespaced_config_map.call_args.args[2].data[actuator.STATE])
+    assert (state["boosts"], state["boost_ns"]) == ({KEY: 2.5}, ["shop"])
+    a.step()  # its rule dropped: nothing more to boost
+    assert a.boosts == a.boosting == {} and a.boost_ns == {"shop"}  # one minute more
+    started(core, age=30)  # a pod the webhook boosted in between
+    a.step()
+    assert a.boost_ns == {"shop"} and cpu_limit(core, "api-1-a") == "1000m"
+    started(core, ready=True)
+    a.step()
+    assert a.boost_ns == set() and cpu_limit(core, "api-1-a") == "500m"
+    lists = core.list_namespaced_pod.call_count
+    a.step()
+    assert core.list_namespaced_pod.call_count == lists  # read no more
+    state = json.loads(core.replace_namespaced_config_map.call_args.args[2].data[actuator.STATE])
+    assert "boosts" not in state and "boost_ns" not in state
+
+
+def test_boosts_go_on_while_the_hub_is_unreachable_and_stop_under_the_kill_switch() -> None:
+    core, apps = cluster()
+    boost = {"namespace": "shop", "kind": "Deployment", "name": "api", "container": "app"}
+    with_ = {**desired(), "boosts": [{**boost, "factor": 2.0}]}
+    down = httpx.Response(503)
+    a = make(hub_of([with_, down, desired(killed=True), with_], []), core, apps)
+    a.step()
+    saved = core.replace_namespaced_config_map.call_args.args[2].data
+    core.read_namespaced_config_map.return_value = k.V1ConfigMap(data=saved)
+    b = make(a.http, core, apps)  # the Actuator restarts, the Hub unreachable
+    b.load()
+    assert b.boosts == {KEY: 2.0} and b.boosting == {} and b.boost_ns == {"shop"}
+    started(core, ready=True)
+    b.step()
+    assert b.boosting == {KEY: 2.0} and cpu_limit(core, "api-1-a") == "500m"
+    started(core, "api-1-b", ready=True)
+    b.step()  # the Kill switch: its word on boosts is kept, and nothing is resized
+    assert b.killed and b.boosts == {KEY: 2.0} and cpu_limit(core, "api-1-b") == "1000m"
+    review = new_pod(requests={"cpu": "250m"}, limits={"cpu": "500m"})
+    answer = actuator.admit(review, b.held, b.killed, "x", b.paused, b.stepped, b.boosting)
+    assert answer["response"].get("patch") is None
+    b.step()
+    assert not b.killed and cpu_limit(core, "api-1-b") == "500m"
