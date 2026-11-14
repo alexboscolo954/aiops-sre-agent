@@ -626,10 +626,19 @@ class Divides:
     percent: float
 
 
-def scaled(prom: Prom, t: Target, at: float) -> dict[Workload, list[Divides]]:
-    """Each Workload's HPA targets that divide by a request (slice 14.3), as
-    kube-state-metrics has them at `at`: plain selectors, so a target changed since
-    (to an `AverageValue`) is gone at once, not five minutes later."""
+@dataclass(frozen=True, order=True)
+class Bounds:
+    """An HPA's minimum and maximum replicas (slice 14.1b); None: not known. `zero`:
+    its replicas were 0 at some time in the lookback, so its Workload scales to zero."""
+
+    hpa: str
+    minimum: float | None
+    maximum: float | None
+    zero: bool = False
+
+
+def _hpas(prom: Prom, t: Target, at: float) -> dict[tuple[str, str], Workload]:
+    """Each HPA (namespace, name) there is at `at`, with the Workload it scales."""
     of = {}
     for s in prom.instant(selector(f"{HPA}_info", t), at):
         m = s["metric"]
@@ -637,6 +646,42 @@ def scaled(prom: Prom, t: Target, at: float) -> dict[Workload, list[Divides]]:
         of[hpa] = Workload(
             hpa[0], m.get("scaletargetref_kind", ""), m.get("scaletargetref_name", "")
         )
+    return of
+
+
+def bounds(prom: Prom, t: Target, at: float, back: int) -> dict[Workload, list[Bounds]]:
+    """Each Workload's HPAs with their minimum and maximum replicas as they are at `at`
+    (slice 14.1b), from kube-state-metrics, and whether its replicas were 0 at some time
+    in the `back` seconds before. That, not the minimum, says a Workload scales to
+    zero: KEDA gives its HPA a minimum of 1 and scales to zero itself. Nor does a Need
+    of 0: an idle Workload held at its minimum has one too."""
+    of = _hpas(prom, t, at)
+    if not of:
+        return {}
+    found: dict[tuple[str, str], dict[str, float]] = {}
+    for which in ("min", "max"):
+        for s in prom.instant(selector(f"{HPA}_spec_{which}_replicas", t), at):
+            m = s["metric"]
+            hpa = (label(m, "namespace"), m.get("horizontalpodautoscaler", ""))
+            found.setdefault(hpa, {})[which] = float(s["value"][1])
+    replicas = selector(f"{HPA}_status_current_replicas", t)
+    for s in prom.instant(f"min_over_time({replicas}[{back}s])", at):
+        m = s["metric"]
+        hpa = (label(m, "namespace"), m.get("horizontalpodautoscaler", ""))
+        found.setdefault(hpa, {})["least"] = float(s["value"][1])
+    out: dict[Workload, list[Bounds]] = {}
+    for hpa, w in sorted(of.items()):
+        has = found.get(hpa, {})
+        zero = has.get("least") == 0
+        out.setdefault(w, []).append(Bounds(hpa[1], has.get("min"), has.get("max"), zero))
+    return out
+
+
+def scaled(prom: Prom, t: Target, at: float) -> dict[Workload, list[Divides]]:
+    """Each Workload's HPA targets that divide by a request (slice 14.3), as
+    kube-state-metrics has them at `at`: plain selectors, so a target changed since
+    (to an `AverageValue`) is gone at once, not five minutes later."""
+    of = _hpas(prom, t, at)
     if not of:
         return {}
     out: dict[Workload, list[Divides]] = {}
@@ -663,6 +708,8 @@ class Collected:
     needs: dict[str, dict[Workload, dict[float, float]]] = field(default_factory=dict)
     # per cluster, the HPA targets that divide by a request (slice 14.3)
     scaled: dict[str, dict[Workload, list[Divides]]] = field(default_factory=dict)
+    # per cluster read, each Workload's HPAs' minimum and maximum (slice 14.1b)
+    bounds: dict[str, dict[Workload, list[Bounds]]] = field(default_factory=dict)
 
 
 def collect(
@@ -675,7 +722,7 @@ def collect(
     that fails is named in `clusters` and never stops the others. `needs_since`: also
     each cluster's Needs (slice 14.1a) from the hour given for it, 8 weeks back for
     one it doesn't name and never further; a read of them that fails stops nothing,
-    nor one of the HPAs' targets (slice 14.3)."""
+    nor one of the HPAs' targets (slice 14.3) or bounds (slice 14.1b)."""
     from kubernetes import client as k
 
     from squero.servers import kubernetes
@@ -718,6 +765,10 @@ def collect(
             out.scaled[t.cluster] = scaled(prom, t, end)
         except UsageError as e:
             log.warning("%s/%s: its HPAs' targets not read: %s", c.id, t.cluster, e)
+        try:
+            out.bounds[t.cluster] = bounds(prom, t, end, min(max(windows), NEEDS_FOR))
+        except UsageError as e:
+            log.warning("%s/%s: its HPAs' bounds not read: %s", c.id, t.cluster, e)
         if c.list_prices:
             if t.cluster in c._shared_stores and not t.labels:
                 out.nodes[t.cluster] = {

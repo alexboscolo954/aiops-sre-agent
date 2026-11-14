@@ -45,6 +45,7 @@ const DATA: Workloads = {
   workloads: [workload("cpu-heavy", 1, 0, []), workload("memory-heavy", 0, 5 * GI)],
   learning: [{ ...container, name: "db", workload: "kind/lab/StatefulSet/db/app", state: "learning", history_h: 24, needs_h: 72 }],
   excluded: [],
+  floors: [],
 };
 
 function answer(routes: Record<string, [number, unknown]>) {
@@ -91,6 +92,46 @@ test("a request its HPA divides by shows as held, with the change that frees it 
   expect(page.querySelector("pre")?.textContent).toBe(change);
   expect(page.querySelector("pre b")).toBeNull();
   expect(screen.queryByText(/Memory is held/)).toBeNull();
+});
+
+test("autoscaled Workloads show their Floor, its saving and its risks as text", async () => {
+  const where = { cluster: "kind", namespace: "lab", kind: "Deployment", hpa: "h", policy: "production", percentile: 0.1, risks: [], at: 1 };
+  const floors = [
+    { ...where, workload: "kind/lab/Deployment/api", name: "api", minimum: 4, maximum: 9, state: "ready", history_h: 120, needs_h: 24, floor: 2, replicas: 1.5, saving: { cpu: 0.3, memory: GI }, cost: 12.5 },
+    { ...where, workload: "kind/lab/Deployment/web", name: "web", minimum: 2, maximum: 5, state: "ready", history_h: 48, needs_h: 24, floor: 3, risks: [{ kind: "minimum_below_floor", text: "its minimum of 2 is <b>low</b>" }] },
+    { ...where, workload: "kind/lab/Deployment/new", name: "new", minimum: 2, maximum: 5, state: "learning", history_h: 3, needs_h: 24 },
+    { ...where, workload: "kind/lab/Deployment/queue", name: "queue", minimum: 1, maximum: 5, state: "none", why: "it scales to zero: left alone" },
+    { ...where, workload: "kind/other/Deployment/far", namespace: "other", name: "far", minimum: 1, maximum: 5, state: "none", why: "elsewhere" },
+  ];
+  const floors_total = { workloads: 1, replicas: 1.5, saving: { cpu: 0.3, memory: GI }, cost: 12.5 };
+  answer({
+    "/api/v1/contracts": [200, [{ id: "demo-shop", name: "demo-shop" }]],
+    "/api/v1/contracts/demo-shop/workloads": [200, { ...DATA, currency: "EUR", cost: { waste: 1, requests: 2 }, floors, floors_total }],
+  });
+  history.replaceState(null, "", "/app/?namespace=lab");
+  const { container: page } = render(<App />);
+  await screen.findByText("Autoscaled Workloads");
+  const lines = [...page.querySelectorAll(".floors li")].map((li) => li.textContent);
+  expect(lines).toHaveLength(4); // the other namespace's is filtered out with the Workloads
+  expect(lines[0]).toContain("Deployment/api kind/lab: Floor 2; its HPA h has a minimum of 4 and a maximum of 9");
+  expect(lines[0]).toContain("1.5 replicas fewer on average, 12.50 EUR/month");
+  expect(lines[0]).toContain("(production: the lowest 10% of 120 h of Needs)");
+  expect(lines[1]).toContain("Floor 3; its HPA h has a minimum of 2");
+  expect(lines[1]).toContain("minimum_below_floor its minimum of 2 is <b>low</b>");
+  expect(lines[2]).toContain("Floor learning (3 h of 24 h of Needs)");
+  expect(lines[3]).toContain("no Floor: it scales to zero: left alone");
+  expect(page.querySelector(".floors b")).toBeNull();
+  expect(page.querySelector(".floors .total")?.textContent).toContain("Floors: 1 can lower their HPA minimum, 1.5 replicas fewer on average: 12.50 EUR/month");
+});
+
+test("a Contract without an autoscaled Workload shows no Floors", async () => {
+  answer({
+    "/api/v1/contracts": [200, [{ id: "demo-shop", name: "demo-shop" }]],
+    "/api/v1/contracts/demo-shop/workloads": [200, DATA],
+  });
+  render(<App />);
+  await screen.findByText("Deployment/memory-heavy");
+  expect(screen.queryByText("Autoscaled Workloads")).toBeNull();
 });
 
 test("Workloads rank by waste, a core like 4 GiB", async () => {

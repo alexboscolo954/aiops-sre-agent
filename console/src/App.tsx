@@ -241,6 +241,68 @@ function AgendaPanel({ contract }: { contract: string }) {
   );
 }
 
+// Workloads with an autoscaler (slice 14.1b): each one's Floor against its HPA's minimum
+// today, a saving when the Floor is lower, a risk when it is higher.
+function Floors({ data, cluster, namespace }: { data: Workloads; cluster: string; namespace: string }) {
+  const floors = (data.floors ?? []).filter(
+    (f) => (!cluster || f.cluster === cluster) && (!namespace || f.namespace === namespace),
+  );
+  if (floors.length === 0) return null;
+  const total = data.floors_total;
+  return (
+    <section className="floors">
+      <h3>Autoscaled Workloads</h3>
+      {total && total.workloads > 0 && (
+        <p className="total">
+          Floors: {total.workloads} can lower their HPA minimum, {total.replicas.toFixed(1)} replicas fewer on average
+          {": "}
+          <strong>
+            {data.currency && total.cost != null
+              ? money(total.cost, data.currency)
+              : `${cores(total.saving.cpu ?? 0)}, ${gib(total.saving.memory ?? 0)}`}
+          </strong>{" "}
+          <span className="hint">(at their Sizings, on top of the waste)</span>
+        </p>
+      )}
+      <ul>
+        {floors.map((f) => (
+          <li key={f.workload}>
+            <strong>
+              {f.kind}/{f.name}
+            </strong>{" "}
+            <span className="hint">
+              {f.cluster}/{f.namespace}
+            </span>
+            {": "}
+            {f.state === "none" && `no Floor: ${f.why ?? ""}`}
+            {f.state === "learning" && `Floor learning (${f.history_h ?? 0} h of ${f.needs_h ?? 0} h of Needs)`}
+            {f.state === "ready" && (
+              <>
+                Floor <strong>{f.floor}</strong>; its HPA {f.hpa} has a minimum of {f.minimum}
+                {f.maximum != null && ` and a maximum of ${f.maximum}`}
+                {f.saving &&
+                  `. At the Floor: ${f.replicas} ${f.replicas === 1 ? "replica" : "replicas"} fewer on average, ${
+                    data.currency && f.cost != null
+                      ? money(f.cost, data.currency)
+                      : `${cores(f.saving.cpu ?? 0)}, ${gib(f.saving.memory ?? 0)}`
+                  }`}{" "}
+                <span className="hint">
+                  ({f.policy}: the lowest {Math.round(f.percentile * 100)}% of {f.history_h} h of Needs)
+                </span>
+              </>
+            )}
+            {f.risks.map((r, i) => (
+              <div key={i}>
+                <span className="chip">{r.kind}</span> {r.text}
+              </div>
+            ))}
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 function Page({ contract, data }: { contract: string; data: Workloads }) {
   const [cluster, setCluster] = useParam("cluster");
   const [namespace, setNamespace] = useParam("namespace");
@@ -338,6 +400,7 @@ function Page({ contract, data }: { contract: string; data: Workloads }) {
         </tbody>
       </table>
       {selected && <Detail contract={contract} workload={selected} />}
+      <Floors data={data} cluster={cluster} namespace={namespace} />
       {data.learning.length > 0 && (
         <p>
           Learning:{" "}

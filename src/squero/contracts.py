@@ -384,6 +384,12 @@ class CpuPolicy(ResourcePolicy):
     percentile: float = Field(ge=0.5, le=1.0)  # of the decay-weighted samples
 
 
+class ReplicasPolicy(Strict):
+    """Of a Workload with an autoscaler (slice 14.1b)."""
+
+    percentile: float = Field(ge=0, le=0.5)  # of its hourly Needs: its Floor
+
+
 class Policy(Strict):
     """How a Sizing is computed (CONTEXT.md, Sizing policy). Memory is always the peak:
     a maximum can't be weighted. The safety holds (throttling, OOM kills) are not here:
@@ -397,6 +403,7 @@ class Policy(Strict):
     limits: Literal["keep"] = "keep"  # other strategies when the Actuator writes (Phase 12)
     cpu: CpuPolicy
     memory: ResourcePolicy
+    replicas: ReplicasPolicy = ReplicasPolicy(percentile=0.10)
 
     @model_validator(mode="after")
     def _consistent(self) -> "Policy":
@@ -420,6 +427,7 @@ BUILTIN = {
         window=14 * D, half_life=72 * H, history=72 * H, threshold=0.10,
         cpu=CpuPolicy(percentile=0.99, headroom=0.30, floor=0.050),
         memory=ResourcePolicy(headroom=0.35, floor=64 * MI),
+        replicas=ReplicasPolicy(percentile=0.25),
     ),
     "batch": Policy(
         window=14 * D, half_life=24 * H, history=24 * H, threshold=0.10,
@@ -513,7 +521,7 @@ class SizingConfig(Strict):
                 raise ValueError(f"policy {name}: base must be one of {', '.join(BUILTIN)}")
             out = BUILTIN[p["base"]].model_dump()
             for key, value in p.items():
-                if key in ("cpu", "memory") and isinstance(value, dict):
+                if key in ("cpu", "memory", "replicas") and isinstance(value, dict):
                     out[key] = {**out[key], **value}
                 else:
                     out[key] = value

@@ -113,10 +113,12 @@ def window_seconds(text: str) -> int:
         raise SystemExit(f"window {e}") from None
 
 
-def collect_usage(c: contracts.Contract, windows: list[int]) -> tuple[usage.Collected, int]:
+def collect_usage(
+    c: contracts.Contract, windows: list[int], needs_since: dict[str, float] | None = None
+) -> tuple[usage.Collected, int]:
     """usage.collect, with missing metrics, Workload-less pods and failed clusters on
     stderr, and an exit status."""
-    found = usage.collect(c, windows)
+    found = usage.collect(c, windows, None, needs_since)
     if not found.clusters:
         print(f"{c.id}: no cluster has a Prometheus (prometheus integration or prometheus_url)")
         return found, 1
@@ -171,8 +173,10 @@ def sizing_show(contract_id: str, as_json: bool) -> int:
     import time
 
     c = contract(Settings(), contract_id)
-    collected, status = collect_usage(c, c.sizing.windows())
-    out = sizing.rows(c, collected.by_window, time.time(), collected.scaled)
+    # the Needs too, as far back as they are kept, for the Floors (slice 14.1b)
+    collected, status = collect_usage(c, c.sizing.windows(), None if as_json else {})
+    now = time.time()
+    out = sizing.rows(c, collected.by_window, now, collected.scaled)
     if as_json:
         print(json.dumps(out, indent=2))
         return status
@@ -201,6 +205,13 @@ def sizing_show(contract_id: str, as_json: bool) -> int:
         texts = [r["text"] for r in row["risks"] if r["kind"] not in sizing.DERIVED]
         risks = f" | risk: {'; '.join(texts)}" if texts else ""
         print(f"{head}: {', '.join(parts)}{short}{risks}")
+    needs = {
+        cluster: {(w.namespace, w.kind, w.name): hours for w, hours in found.items()}
+        for cluster, found in collected.needs.items()
+    }
+    for computed in sizing.floors(c, out, needs, collected.bounds, now).values():
+        for f in computed:
+            print(sizing.floor_text(f))
     return status
 
 

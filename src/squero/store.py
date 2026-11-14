@@ -579,6 +579,28 @@ class Store:
             (contract_id, sorted(clusters), since),
         )
 
+    async def save_floors(
+        self, contract_id: str, cluster: str, at: float, floors: list[dict[str, Any]]
+    ) -> None:
+        """A cluster's Floors as the latest run computed them (slice 14.1b), replacing the
+        last: an HPA gone since takes its Floor with it."""
+        await self._exec(
+            "insert into floors (contract_id, cluster, at, floors) values (%s, %s, %s, %s) "
+            "on conflict (contract_id, cluster) do update set at = excluded.at, "
+            "floors = excluded.floors",
+            (contract_id, cluster, at, Jsonb(floors)),
+        )
+
+    async def latest_floors(self, contract_id: str, clusters: set[str]) -> list[dict[str, Any]]:
+        """The Contract's Floors of `clusters` (its clusters now), each with the time of
+        the run that computed it (`at`), by Workload."""
+        rows = await self._all(
+            "select at, floors from floors where contract_id = %s and cluster = any(%s)",
+            (contract_id, sorted(clusters)),
+        )
+        found = [{**f, "at": r["at"]} for r in rows for f in r["floors"]]
+        return sorted(found, key=lambda f: f["workload"])
+
     async def save_nodes(
         self, contract_id: str, cluster: str, at: float, facts: dict[str, Any]
     ) -> None:

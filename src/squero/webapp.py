@@ -240,6 +240,38 @@ class ClusterStatus(BaseModel):
     since: float | None
 
 
+class Floor(BaseModel):
+    """A Workload with an autoscaler (slice 14.1b): its Floor against its HPA's minimum."""
+
+    workload: str
+    cluster: str
+    namespace: str
+    kind: str
+    name: str
+    hpa: str
+    policy: str
+    percentile: float
+    minimum: float | None
+    maximum: float | None
+    state: Literal["ready", "learning", "none"]
+    why: str | None = None  # of `none`
+    history_h: float | None = None  # hours of stored Needs it goes by
+    needs_h: float | None = None
+    floor: int | None = None
+    replicas: float | None = None  # fewer on average at the Floor, when it is below the minimum
+    saving: Waste | None = None  # those replicas at their Sizings
+    cost: float | None = None  # monthly, with prices
+    risks: list[Risk] = []
+    at: float  # the run that computed it
+
+
+class FloorsTotal(BaseModel):
+    workloads: int  # that can lower their HPA's minimum
+    replicas: float
+    saving: Waste
+    cost: float | None = None
+
+
 class Workloads(BaseModel):
     contract: str
     clusters: dict[str, ClusterStatus]
@@ -250,6 +282,8 @@ class Workloads(BaseModel):
     learning: list[Container]
     excluded: list[Container]
     prices: list[PriceNote] = []
+    floors: list[Floor] = []
+    floors_total: FloorsTotal | None = None
 
 
 class Point(BaseModel):
@@ -649,8 +683,12 @@ async def workloads_of(st: Store, c: Contract, now: float) -> Workloads:
     """The Contract's latest Sizings, ranked: the Workloads page's and the Hub MCP
     server's (slice 11.1a)."""
     c = await listprices.effective(st, c, now)
-    rows, clusters = await st.latest_sizings(c.id, {t.cluster for t in usage.targets(c)})
-    return Workloads.model_validate({"contract": c.id, **sizing.report(rows, clusters, c)})
+    names = {t.cluster for t in usage.targets(c)}
+    rows, clusters = await st.latest_sizings(c.id, names)
+    floors = sizing.floors_report(await st.latest_floors(c.id, names), c)
+    return Workloads.model_validate(
+        {"contract": c.id, **sizing.report(rows, clusters, c), **floors}
+    )
 
 
 async def allocation_of(

@@ -256,6 +256,48 @@ def test_sizings_rank_filter_and_mask_and_take_the_placeholder_back(
     assert "shop" not in json.dumps([ranked, risky, in_shop]) and "acme" not in json.dumps(ranked)
 
 
+def test_sizings_list_each_autoscaled_workloads_floor_masked_and_filtered(
+    settings: Settings, fake_cluster: Any, database_url: str
+) -> None:
+    """Slice 14.1b: a line per stored Floor of the Contract, in the namespace asked for,
+    its names masked like the rest; never another Contract's."""
+    where = {"cluster": "test", "kind": "Deployment", "hpa": "api", "policy": "production"}
+    ready = {"percentile": 0.1, "minimum": 4.0, "maximum": 9.0, "risks": [], "state": "ready"}
+    ready |= {"history_h": 30.0, "needs_h": 24.0, "floor": 2, "replicas": 2.0}
+    ready |= {"saving": {"cpu": 0.2, "memory": 256.0 * 2**20}}
+    floor = {
+        **where,
+        **ready,
+        "workload": "test/shop/Deployment/api",
+        "namespace": "shop",
+        "name": "api",
+    }
+    other = {**floor, "workload": "test/other/Deployment/far", "namespace": "other", "name": "far"}
+    seed_run(database_url, "acme", row("api"))
+
+    async def go() -> None:
+        async with connect(database_url) as pool:
+            store = Store(pool)
+            await store.save_floors("acme", "test", NOW, [floor, other])
+            await store.save_floors("bank", "test", NOW, [{**floor, "floor": 9}])
+            far = {**floor, "workload": "edge/shop/Deployment/api", "cluster": "edge", "floor": 7}
+            await store.save_floors("bank", "edge", NOW, [far])
+
+    asyncio.run(go())
+    with hub(settings, fake_cluster, database_url, clusters_of_bank=True) as c:
+        every = call(c, "sizings", contract="acme")
+        edge = call(c, "sizings", contract="bank", cluster="edge")["floors"]
+        in_shop = call(c, "sizings", contract="acme", namespace=mask("shop"))
+        elsewhere = call(c, "sizings", contract="acme", cluster="test", namespace="nowhere")
+    line = (
+        f"test/{mask('shop')}/Deployment/api: Floor 2 (HPA api: minimum 4, maximum 9; production: "
+        "10% of 30 h of Needs) | 2 replicas fewer on average: 0.20 cores, 0.25 GiB"
+    )
+    assert in_shop["floors"] == [line] and elsewhere["floors"] == []
+    assert len(every["floors"]) == 2 and line in every["floors"]
+    assert len(edge) == 1 and "Floor 7 " in edge[0]  # one cluster of the Contract's two
+
+
 def test_sizings_filter_by_cluster(
     settings: Settings, fake_cluster: Any, database_url: str
 ) -> None:

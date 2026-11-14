@@ -839,6 +839,67 @@ export interface components {
              */
             correction: string;
         };
+        /**
+         * Floor
+         * @description A Workload with an autoscaler (slice 14.1b): its Floor against its HPA's minimum.
+         */
+        Floor: {
+            /** At */
+            at: number;
+            /** Cluster */
+            cluster: string;
+            /** Cost */
+            cost?: number | null;
+            /** Floor */
+            floor?: number | null;
+            /** History H */
+            history_h?: number | null;
+            /** Hpa */
+            hpa: string;
+            /** Kind */
+            kind: string;
+            /** Maximum */
+            maximum: number | null;
+            /** Minimum */
+            minimum: number | null;
+            /** Name */
+            name: string;
+            /** Namespace */
+            namespace: string;
+            /** Needs H */
+            needs_h?: number | null;
+            /** Percentile */
+            percentile: number;
+            /** Policy */
+            policy: string;
+            /** Replicas */
+            replicas?: number | null;
+            /**
+             * Risks
+             * @default []
+             */
+            risks: components["schemas"]["Risk"][];
+            saving?: components["schemas"]["Waste"] | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "ready" | "learning" | "none";
+            /** Why */
+            why?: string | null;
+            /** Workload */
+            workload: string;
+        };
+        /** FloorsTotal */
+        FloorsTotal: {
+            /** Cost */
+            cost?: number | null;
+            /** Replicas */
+            replicas: number;
+            saving: components["schemas"]["Waste"];
+            /** Workloads */
+            workloads: number;
+        };
         /** Group */
         Group: {
             change?: components["schemas"]["Change"] | null;
@@ -1388,6 +1449,12 @@ export interface components {
             currency?: string | null;
             /** Excluded */
             excluded: components["schemas"]["Container"][];
+            /**
+             * Floors
+             * @default []
+             */
+            floors: components["schemas"]["Floor"][];
+            floors_total?: components["schemas"]["FloorsTotal"] | null;
             /** Learning */
             learning: components["schemas"]["Container"][];
             /**

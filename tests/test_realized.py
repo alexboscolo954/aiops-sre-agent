@@ -289,7 +289,7 @@ async def test_store_run_compares_with_the_previous_run_not_itself(
     runs = iter([[sized(1.0, 0.115)], [sized(0.115, 0.115)]])
     monkeypatch.setattr(sizing, "rows", lambda c, by_window, at, scaled: next(runs))
     found = SimpleNamespace(
-        clusters={"test": None}, by_window={}, notes=[], nodes={}, needs={}, scaled={}
+        clusters={"test": None}, by_window={}, notes=[], nodes={}, needs={}, scaled={}, bounds={}
     )
     monkeypatch.setattr(sizing.usage, "collect", lambda c, windows, at, since: found)
     await sizing.store_run(store, c, NOW, every=0)

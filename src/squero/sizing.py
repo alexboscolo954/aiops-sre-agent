@@ -32,7 +32,7 @@ from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 from squero import listprices, usage
 from squero.contracts import BUILTIN, ClusterPrices, Contract, Policy
 from squero.slack import clean
-from squero.usage import ContainerUsage, Divides, Workload
+from squero.usage import NEEDS_FOR, Bounds, ContainerUsage, Divides, Workload
 
 if TYPE_CHECKING:
     from squero.store import Store
@@ -373,6 +373,179 @@ def rows(
     return [out[k] for k in sorted(out)]
 
 
+FLOOR_MIN = 2  # a Floor never goes below it, unless the HPA's minimum already is
+FLOOR_HISTORY = NEEDS_FOR // 2  # the most history a Floor asks for: Needs are kept 8 weeks
+Needs = dict[tuple[str, str, str], dict[float, float]]  # per Workload: namespace, kind, name
+
+
+def _share(part: int, of: int) -> str:
+    return "under 1%" if part / of < 0.005 else f"{part / of:.0%}"
+
+
+def floors(
+    c: Contract,
+    rows: list[dict[str, Any]],
+    needs: dict[str, Needs],
+    bounds: dict[str, dict[Workload, list[Bounds]]],
+    now: float,
+) -> dict[str, list[dict[str, Any]]]:
+    """The Floor of each Workload with an autoscaler (slice 14.1b), per cluster in
+    `bounds` (the clusters whose HPAs this run read; one without an HPA gets none).
+
+    Under the policy with the highest `replicas.percentile` among the Workload's
+    containers (none when all are `off`): that percentile of its hourly Needs over the
+    policy's window, rounded up, never below 2 unless the HPA's minimum already is.
+    Only its own stored hours count, each an hour of history (one never read is unknown,
+    not idle), and never the hour under way, whose peak is partial. `learning` under the
+    policy's history (at most 4 of the 8 weeks kept); `none` with two HPAs, a minimum not
+    known, or a Workload that scales to zero (a minimum of 0, or replicas at 0 in the
+    lookback: KEDA's HPA keeps a minimum of 1), which is left alone. A Need of 0 is an
+    idle hour like any other: a Workload held at its minimum with nothing to do has one.
+
+    Against the HPA's minimum today: lower, its `saving` is the replicas it would no
+    longer hold (per hour, the minimum less the larger of the Floor and that hour's Need
+    rounded up, averaged), each at its containers' Sizings, or requests where one has no
+    Sizing, so it adds to Waste; higher, a risk. Another risk where the Need went above
+    the HPA's maximum. `rows`: this run's (sizing.rows)."""
+    of: dict[tuple[str, tuple[str, str, str]], list[dict[str, Any]]] = {}
+    for r in rows:
+        of.setdefault((r["cluster"], (r["namespace"], r["kind"], r["name"])), []).append(r)
+    out: dict[str, list[dict[str, Any]]] = {}
+    for cluster, found in bounds.items():
+        out[cluster] = []
+        for w, hpas in sorted(found.items(), key=lambda x: (x[0].namespace, x[0].kind, x[0].name)):
+            key = (w.namespace, w.kind, w.name)
+            containers = of.get((cluster, key), [])
+            policies = [
+                (p.replicas.percentile, name, p)
+                for name in sorted({r["policy"] for r in containers})
+                if (p := c.sizing.policy(name))
+            ]
+            if not policies:
+                continue  # `off`, or no container of it read: nothing to go by
+            q, name, policy = max(policies, key=lambda x: x[0])
+            f: dict[str, Any] = {
+                "workload": f"{cluster}/{w.namespace}/{w.kind}/{w.name}",
+                **{"cluster": cluster, "namespace": w.namespace, "kind": w.kind, "name": w.name},
+                **{"hpa": hpas[0].hpa, "policy": name, "percentile": q},
+                **{"minimum": hpas[0].minimum, "maximum": hpas[0].maximum, "risks": []},
+            }
+            out[cluster].append(f)
+            window = min(policy.window, NEEDS_FOR)
+            values = [
+                n
+                for hour, n in needs.get(cluster, {}).get(key, {}).items()
+                if hour >= now - window and hour + 3600 <= now
+            ]
+            minimum, maximum = hpas[0].minimum, hpas[0].maximum
+            if len(hpas) > 1:
+                f |= {"state": "none", "why": f"{len(hpas)} HPAs scale it"}
+            elif minimum is None:
+                f |= {"state": "none", "why": "its HPA's minimum is not known"}
+            elif minimum == 0 or hpas[0].zero:
+                f |= {"state": "none", "why": "it scales to zero: left alone"}
+            else:
+                wanted = min(policy.history, FLOOR_HISTORY)
+                f |= {"history_h": float(len(values)), "needs_h": round(wanted / 3600, 1)}
+                if len(values) * 3600 < wanted:
+                    f["state"] = "learning"
+                    continue
+                low = weighted_percentile([(now, n) for n in values], q, now)
+                floor = max(math.ceil(low - 1e-9), min(FLOOR_MIN, int(minimum)))
+                f |= {"state": "ready", "floor": floor}
+                up = [math.ceil(n - 1e-9) for n in values]
+                if floor < minimum:
+                    held = sum(max(0.0, minimum - max(floor, n)) for n in up) / len(up)
+                    pod = {"cpu": 0.0, "memory": 0.0}
+                    for r in containers:
+                        for res in pod:
+                            sized = r.get(res) if r["state"] == "ready" else None
+                            asks = (r.get("requests") or {}).get(res) or 0.0
+                            pod[res] += sized["target"] if sized else asks
+                    f["replicas"] = round(held, 2)
+                    f["saving"] = {res: held * v for res, v in pod.items()}
+                elif floor > minimum:
+                    often = _share(sum(1 for n in up if n >= floor), len(up))
+                    text = (
+                        f"its minimum of {minimum:g} is below the {floor} replicas it "
+                        f"needed in {often} of hours"
+                    )
+                    f["risks"].append({"kind": "minimum_below_floor", "text": text})
+                over = sum(1 for n in values if maximum is not None and n > maximum + 1e-9)
+                if over:
+                    text = (
+                        f"needed more than its maximum of {maximum:g} in "
+                        f"{_share(over, len(values))} of hours"
+                    )
+                    f["risks"].append({"kind": "needed_above_maximum", "text": text})
+    return out
+
+
+def floors_report(found: list[dict[str, Any]], contract: Contract) -> dict[str, Any]:
+    """Stored Floors as the console, `sizings` and the digest show them: each saving's
+    monthly cost with a priced Contract, and their total (the Workloads that can lower
+    their HPA's minimum)."""
+    priced = contract.prices is not None
+    total: dict[str, Any] = {"workloads": 0, "replicas": 0.0, "saving": {"cpu": 0.0, "memory": 0.0}}
+    if priced:
+        total["cost"] = 0.0
+    out = []
+    for f in found:
+        f = dict(f)
+        if saving := f.get("saving"):
+            total["workloads"] += 1
+            total["replicas"] += f["replicas"]
+            for res in ("cpu", "memory"):
+                total["saving"][res] += saving[res]
+            if priced:
+                p = contract.price(f["cluster"])
+                assert p is not None  # the Contract's prices back every cluster
+                f["cost"] = monthly(p, **saving)
+                total["cost"] += f["cost"]
+        out.append(f)
+    return {"floors": out, "floors_total": total}
+
+
+def floor_text(f: dict[str, Any], currency: str | None = None) -> str:
+    """One Floor in a line, as `sizing show` and the Hub MCP's `sizings` give it."""
+    head = f"{f['workload']}: "
+    if f["state"] == "none":
+        return f"{head}no Floor: {f['why']}"
+    if f["state"] == "learning":
+        return f"{head}Floor learning ({f['history_h']:g} h of {f['needs_h']:g} h of Needs)"
+    top = "" if f.get("maximum") is None else f", maximum {f['maximum']:g}"
+    text = (
+        f"{head}Floor {f['floor']} (HPA {f['hpa']}: minimum {f['minimum']:g}{top}; "
+        f"{f['policy']}: {f['percentile']:.0%} of {f['history_h']:g} h of Needs)"
+    )
+    if f.get("saving"):
+        priced = currency and f.get("cost") is not None
+        worth = money(f["cost"], currency) if priced and currency else quantities(f["saving"])
+        one = "replica" if f["replicas"] == 1 else "replicas"
+        text += f" | {f['replicas']:g} {one} fewer on average: {worth}"
+    if f["risks"]:
+        text += " | risk: " + "; ".join(r["text"] for r in f["risks"])
+    return text
+
+
+def floors_line(found: dict[str, Any], currency: str | None) -> str | None:
+    """The digest's one line on Floors (floors_report), or None with nothing to say."""
+    total = found["floors_total"]
+    below = sum(
+        1 for f in found["floors"] if any(r["kind"] == "minimum_below_floor" for r in f["risks"])
+    )
+    parts = []
+    if total["workloads"]:
+        worth = money(total["cost"], currency) if currency else quantities(total["saving"])
+        parts.append(
+            f"{total['workloads']} can lower their HPA minimum "
+            f"({total['replicas']:.1f} replicas fewer on average, {worth})"
+        )
+    if below:
+        parts.append(f"{below} with a minimum below their Floor")
+    return f"Floors: {'; '.join(parts)}." if parts else None
+
+
 GIB = 2**30
 MONTH = 730.0  # hours in a month, as cloud price sheets count them
 
@@ -709,6 +882,13 @@ async def store_run(
     for cluster, needs in found.needs.items():
         by = {(w.namespace, w.kind, w.name): hours for w, hours in needs.items()}
         await store.save_needs(c.id, cluster, by)
+    if found.bounds:  # slice 14.1b: the Floors of the clusters whose HPAs were read
+        kept: dict[str, Needs] = {}
+        for n in await store.needs(c.id, set(found.bounds), at - NEEDS_FOR):
+            key = (n["namespace"], n["kind"], n["name"])
+            kept.setdefault(n["cluster"], {}).setdefault(key, {})[n["hour"]] = n["need"]
+        for cluster, computed in floors(c, now, kept, found.bounds, at).items():
+            await store.save_floors(c.id, cluster, at, computed)
     await realize(store, c, at, before, status, now, found.clusters)
     await store.prune_sizings(c.id, at)
     return found
@@ -879,9 +1059,11 @@ def digest_text(
     week: dict[str, Any],
     link: str | None = None,
     realized: dict[str, Any] | None = None,
+    floors: dict[str, Any] | None = None,
 ) -> str:
     """The weekly digest (Slack mrkdwn) from report() now and as of a week ago: total
-    waste and its change, the realized Savings (10.3b), the top Workloads by waste,
+    waste and its change, the realized Savings (10.3b), the Floors' line (14.1b,
+    floors_report), the top Workloads by waste,
     risk kinds a Workload didn't have a week ago, stale clusters, the containers still
     learning, then the link."""
     total = now["total"]
@@ -913,6 +1095,8 @@ def digest_text(
         if currency:
             lines.append(f"Requests cost {money(now['cost']['requests'], currency)}.")
         if realized and (line := realized_line(realized)):
+            lines.append(line)
+        if floors and (line := floors_line(floors, currency)):
             lines.append(line)
         top = [w for w in now["workloads"] if rank(w) > 0][:TOP]
         if top:
@@ -957,4 +1141,5 @@ async def digest(store: "Store", c: Contract, at: float, console_url: str | None
     now = report(*await store.latest_sizings(c.id, clusters, before=at), c)
     week = report(*await store.latest_sizings(c.id, clusters, before=at - WEEK), c)
     link = f"{console_url.rstrip('/')}/app/?contract={c.id}" if console_url else None
-    return digest_text(c.id, now, week, link, await savings(store, c, at))
+    stored = floors_report(await store.latest_floors(c.id, clusters), c)
+    return digest_text(c.id, now, week, link, await savings(store, c, at), stored)

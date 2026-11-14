@@ -38,7 +38,7 @@ from squero.contracts import Contract
 from squero.models import Investigation
 from squero.observability import AuditMiddleware
 from squero.servers.sizing import allowed, workload
-from squero.sizing import show
+from squero.sizing import floor_text, show
 from squero.store import Store
 
 READ = ToolAnnotations(read_only_hint=True, open_world_hint=False)
@@ -199,8 +199,9 @@ def build(
         itself when the Contract has no prices), from the Hub's latest Sizing run: each
         one's requests now and its Sizing per container, its waste and risks. held: a
         request its HPA divides by, which the Actuator leaves alone, with the manifest
-        change that frees it. risky: only Workloads with a risk (an OOM kill,
-        throttling, restarts)."""
+        change that frees it. floors: for each Workload with an HPA, the minimum
+        replicas its stored Needs support, against the HPA's minimum today. risky:
+        only Workloads with a risk (an OOM kill, throttling, restarts)."""
         c = resolve(contract)
 
         async def work() -> dict[str, Any]:
@@ -233,6 +234,12 @@ def build(
                 ],
                 "matching": len(found),
                 "workloads": [_workload(x, approved) for x in found[:top]],
+                # slice 14.1b: each autoscaled Workload's Floor against its HPA's minimum
+                "floors": [
+                    floor_text(f.model_dump(exclude_none=True), w.currency)
+                    for f in w.floors
+                    if wanted in (None, f.cluster) and space in (None, f.namespace)
+                ],
                 "learning": len(w.learning),
                 "excluded": len(w.excluded),
             }

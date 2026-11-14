@@ -60,6 +60,7 @@ sizing:
       cpu: {headroom: 0.10, max: "2"}  # percentile 0.5 to 1, headroom 0 to 3, floor, max
       memory: {floor: 64Mi, max: 4Gi}  # Kubernetes quantities
       threshold: 0.05                  # 0 to 0.5
+      replicas: {percentile: 0.25}     # 0 to 0.5: the Floor of a Workload with an HPA
   rules:                               # top to bottom, the first match wins
     - {namespace: payments, policy: high-availability}
     - {namespace: "team-*", name: "checkout-*", policy: lean-agent}   # globs: namespace, name
@@ -147,6 +148,17 @@ For every Workload with an HPA (a KEDA ScaledObject's `keda-hpa-<name>` is one) 
 - **Read from** kube-state-metrics, in the Contract's namespaces only, like every other read: `kube_horizontalpodautoscaler_info` (the Workload an HPA scales), `_status_current_replicas`, `_spec_target_metric` and `_status_target_metric`. No new permission and no Kubernetes API call. A cluster without an HPA costs one query an hour.
 - **Unknown**, so nothing is stored for that time: an HPA whose target or current value kube-state-metrics doesn't have (a metric the HPA can't read, or a kube-state-metrics that doesn't export `_spec_target_metric`), a target of zero, and a Workload two HPAs scale.
 - **Stored** as each UTC hour's peak per Workload, for 8 weeks. The first read goes back over the 8 weeks Prometheus still has, sampled every 9 minutes; after that each run reads on from the newest hour stored, every minute, so a Hub that was down catches up. An hour read twice keeps the larger figure. A peak between two samples is missed. A failed read is logged and never fails the Sizing run.
+
+## Floors
+
+A **Floor** is the minimum replicas the Hub computes for a Workload with an HPA, from its stored Needs. Each hourly run reads the HPA's minimum and maximum as they are (`kube_horizontalpodautoscaler_spec_min_replicas` and `_spec_max_replicas`) and stores each cluster's Floors, replacing the last. `squero sizing show`, the console's Workloads page (Autoscaled Workloads), the Hub MCP's `sizings` and one line of the weekly digest show them. Nothing is written to an HPA: lowering a minimum is the client's manifest change.
+
+- **The Floor.** A low percentile of the Workload's hourly Needs over its Sizing policy's window, rounded up as an HPA rounds: the 10th under `production` and `batch`, the 25th under `high-availability`, a policy's `replicas: {percentile: 0.10}` (0 to 0.5). Never below 2, unless the HPA's minimum already is. With containers under different policies the highest percentile decides, with that policy's window and history; a Workload whose containers are all `off` gets none.
+- **History.** Only the Workload's own stored hours count, each an hour, never the hour under way. Under the policy's `history` (24 hours under `production`) the Floor is learning. Needs are kept 8 weeks, so a Floor looks back 8 weeks at most and never asks for more than 4 weeks of history, whatever the policy says.
+- **Against the HPA's minimum.** A Floor below it is a saving: for each stored hour, the replicas the lower minimum would have dropped (the minimum less the larger of the Floor and that hour's Need rounded up, when positive), averaged, each replica at its containers' Sizings (at its request for a container without one). It is its own figure, on top of the Waste: Waste is what every pod asks above its Sizing, this is the pods no longer held. With prices it has a monthly cost. A Floor above the minimum is a risk (`minimum_below_floor`): the Workload needed more in most hours than its minimum guarantees. Equal, nothing is said.
+- **The maximum.** No maximum is recommended. Where the Need went above it, one risk says how often: `needed more than its maximum of 5 in 6% of hours`.
+- **No Floor**, with the reason shown: two HPAs on the Workload; a minimum kube-state-metrics doesn't have; and a Workload that scales to zero, which is left alone. KEDA gives its HPA a minimum of 1 and scales to zero itself, so scaling to zero is read from the HPA's replicas: 0 at some time in the Contract's longest policy window (8 weeks at most), or an HPA minimum of 0. A Need of 0 is not that: an idle Workload held at its minimum has one, and it is where a Floor saves most. One scaled to zero by hand in that time reads the same and gets no Floor until it is out of the window.
+- **Not yet.** The saving is available only: it is not counted as realized when the minimum is lowered (slice 14.1c), and it is not in the Cost page's groups.
 
 ## Sizings held by an HPA
 
