@@ -494,6 +494,24 @@ class Digest(Strict):
         return self
 
 
+def _lead(v: Any) -> Any:
+    """`15m` in YAML (a number: seconds), whole minutes from 0 to 2h."""
+    if isinstance(v, str):
+        v = duration_s(v)
+    if isinstance(v, int) and not isinstance(v, bool) and not (0 <= v <= 7200 and v % 60 == 0):
+        raise ValueError("must be whole minutes from 0 to 2h")
+    return v
+
+
+def _timezone(v: Any) -> Any:
+    if isinstance(v, str):
+        try:
+            ZoneInfo(v)
+        except (ZoneInfoNotFoundError, ValueError) as e:
+            raise ValueError(f"{v!r} is not an IANA time zone like Europe/Rome") from e
+    return v
+
+
 class SizingConfig(Strict):
     """Sizing policies: your own, each a built-in (`base:`) with changes, and the
     rules that pick one per container. The rules first, top to bottom, then a Job or
@@ -505,6 +523,10 @@ class SizingConfig(Strict):
     rules: list[SizingRule] = []
     # To the operator channel only, when the Contract has one and a Prometheus.
     digest: Annotated[Digest | Literal["off"], BeforeValidator(_off)] = Digest()
+    # The Weekly profile (slice 14.2): the zone its hours are shown and scheduled in,
+    # and how early a block that asks for more starts.
+    timezone: Annotated[str, BeforeValidator(_timezone)] = "UTC"
+    lead_time: Annotated[int, BeforeValidator(_lead)] = 900
 
     @model_validator(mode="before")
     @classmethod

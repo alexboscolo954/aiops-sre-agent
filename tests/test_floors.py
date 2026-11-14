@@ -125,6 +125,13 @@ def test_a_floor_is_a_low_percentile_of_the_hourly_needs_rounded_up() -> None:
         "floor": 3,
         "replicas": 0.1,
         "saving": {"cpu": pytest.approx(0.01), "memory": pytest.approx(12.8 * MI)},
+        "profile": {  # slice 14.2: three weeks of Needs before one
+            "timezone": "UTC",
+            "lead_time": 900,
+            "history_h": 100.0,
+            "needs_h": 504.0,
+            "state": "learning",
+        },
     }
     assert floor_of([5.0] * 91 + [2.2] * 9, minimum=4.0)["floor"] == 5  # the 10th is a 5
     assert floor_of([3.0000000001] * 30, minimum=4.0)["floor"] == 3  # not 4 for a rounding
@@ -480,7 +487,8 @@ def test_show_prints_each_autoscaled_workloads_floor(
         "168 h of Needs) | risk: its minimum of 2 is below the 6 replicas it needed in 100% of "
         "hours; needed more than its maximum of 5 in 100% of hours" in out.splitlines()
     )
-    assert len([line for line in out.splitlines() if "Floor" in line]) == 1
+    assert "  no weekly pattern: its Floor holds all week" in out.splitlines()  # slice 14.2
+    assert len([line for line in out.splitlines() if "Floor " in line]) == 2
     fake = scaled_fake()
     as_json = run_show(monkeypatch, capsys, fake, as_json=True)
     assert "Floor" not in as_json and not [q for q in fake.queries if "status_target" in q]

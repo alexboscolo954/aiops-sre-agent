@@ -97,8 +97,12 @@ test("a request its HPA divides by shows as held, with the change that frees it 
 test("autoscaled Workloads show their Floor, its saving and its risks as text", async () => {
   const where = { cluster: "kind", namespace: "lab", kind: "Deployment", hpa: "h", policy: "production", percentile: 0.1, risks: [], at: 1 };
   const floors = [
-    { ...where, workload: "kind/lab/Deployment/api", name: "api", minimum: 4, maximum: 9, state: "ready", history_h: 120, needs_h: 24, floor: 2, replicas: 1.5, saving: { cpu: 0.3, memory: GI }, cost: 12.5 },
-    { ...where, workload: "kind/lab/Deployment/web", name: "web", minimum: 2, maximum: 5, state: "ready", history_h: 48, needs_h: 24, floor: 3, risks: [{ kind: "minimum_below_floor", text: "its minimum of 2 is <b>low</b>" }] },
+    { ...where, workload: "kind/lab/Deployment/api", name: "api", minimum: 4, maximum: 9, state: "ready", history_h: 120, needs_h: 24, floor: 2, replicas: 1.5, saving: { cpu: 0.3, memory: GI }, cost: 12.5,
+      profile: { state: "ready", timezone: "Europe/Rome", lead_time: 900, history_h: 600, needs_h: 504, note: null,
+        blocks: [{ since: "Mon 08:45", until: "Mon 12:00", replicas: 7, start: "45 8 * * 1", end: "0 12 * * 1" }],
+        triggers: "- type: cron\n  metadata: <i>x</i>" } },
+    { ...where, workload: "kind/lab/Deployment/web", name: "web", minimum: 2, maximum: 5, state: "ready", history_h: 48, needs_h: 24, floor: 3, risks: [{ kind: "minimum_below_floor", text: "its minimum of 2 is <b>low</b>" }],
+      profile: { state: "flat", timezone: "UTC", lead_time: 900, history_h: 600, needs_h: 504, blocks: [], triggers: null, note: null } },
     { ...where, workload: "kind/lab/Deployment/new", name: "new", minimum: 2, maximum: 5, state: "learning", history_h: 3, needs_h: 24 },
     { ...where, workload: "kind/lab/Deployment/queue", name: "queue", minimum: 1, maximum: 5, state: "none", why: "it scales to zero: left alone" },
     { ...where, workload: "kind/other/Deployment/far", namespace: "other", name: "far", minimum: 1, maximum: 5, state: "none", why: "elsewhere" },
@@ -111,7 +115,7 @@ test("autoscaled Workloads show their Floor, its saving and its risks as text", 
   history.replaceState(null, "", "/app/?namespace=lab");
   const { container: page } = render(<App />);
   await screen.findByText("Autoscaled Workloads");
-  const lines = [...page.querySelectorAll(".floors li")].map((li) => li.textContent);
+  const lines = [...page.querySelectorAll(".floors > ul > li")].map((li) => li.textContent);
   expect(lines).toHaveLength(4); // the other namespace's is filtered out with the Workloads
   expect(lines[0]).toContain("Deployment/api kind/lab: Floor 2; its HPA h has a minimum of 4 and a maximum of 9");
   expect(lines[0]).toContain("1.5 replicas fewer on average, 12.50 EUR/month");
@@ -121,6 +125,12 @@ test("autoscaled Workloads show their Floor, its saving and its risks as text", 
   expect(lines[2]).toContain("Floor learning (3 h of 24 h of Needs)");
   expect(lines[3]).toContain("no Floor: it scales to zero: left alone");
   expect(page.querySelector(".floors b")).toBeNull();
+  expect(lines[0]).toContain("Weekly profile (Europe/Rome, each rise 15 min early):");
+  expect(lines[0]).toContain("Mon 08:45 to Mon 12:00: 7 replicas");
+  expect(page.querySelector(".floors pre")?.textContent).toBe("- type: cron\n  metadata: <i>x</i>");
+  expect(page.querySelector(".floors pre i")).toBeNull();
+  expect(lines[1]).toContain("No weekly pattern: its Floor holds all week.");
+  expect(lines[2]).not.toContain("Weekly profile");
   expect(page.querySelector(".floors .total")?.textContent).toContain("Floors: 1 can lower their HPA minimum, 1.5 replicas fewer on average: 12.50 EUR/month");
 });
 

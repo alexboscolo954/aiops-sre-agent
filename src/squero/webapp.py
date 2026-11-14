@@ -254,6 +254,29 @@ class ClusterStatus(BaseModel):
     since: float | None
 
 
+class Block(BaseModel):
+    """Hours of the week that need more than the Floor (slice 14.2)."""
+
+    since: str  # Mon 07:45, in the profile's time zone
+    until: str
+    replicas: int
+    start: str  # both as cron expressions
+    end: str
+
+
+class Profile(BaseModel):
+    """A Workload's Weekly profile (slice 14.2)."""
+
+    state: Literal["ready", "learning", "flat"]
+    timezone: str
+    lead_time: int  # seconds a block that asks more starts early
+    history_h: float
+    needs_h: float
+    blocks: list[Block] = []
+    triggers: str | None = None  # KEDA: cron triggers to paste into its ScaledObject
+    note: str | None = None  # a plain HPA: why there is none
+
+
 class Floor(BaseModel):
     """A Workload with an autoscaler (slice 14.1b): its Floor against its HPA's minimum."""
 
@@ -276,6 +299,7 @@ class Floor(BaseModel):
     saving: Waste | None = None  # those replicas at their Sizings
     cost: float | None = None  # monthly, with prices
     risks: list[Risk] = []
+    profile: Profile | None = None
     at: float  # the run that computed it
 
 

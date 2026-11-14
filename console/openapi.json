@@ -307,6 +307,40 @@
         "title": "Bills",
         "type": "object"
       },
+      "Block": {
+        "description": "Hours of the week that need more than the Floor (slice 14.2).",
+        "properties": {
+          "end": {
+            "title": "End",
+            "type": "string"
+          },
+          "replicas": {
+            "title": "Replicas",
+            "type": "integer"
+          },
+          "since": {
+            "title": "Since",
+            "type": "string"
+          },
+          "start": {
+            "title": "Start",
+            "type": "string"
+          },
+          "until": {
+            "title": "Until",
+            "type": "string"
+          }
+        },
+        "required": [
+          "since",
+          "until",
+          "replicas",
+          "start",
+          "end"
+        ],
+        "title": "Block",
+        "type": "object"
+      },
       "Brief": {
         "description": "An Investigation in a list (slice 11.5a).",
         "properties": {
@@ -1246,6 +1280,16 @@
           "policy": {
             "title": "Policy",
             "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Profile"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "replicas": {
             "anyOf": [
@@ -2210,6 +2254,75 @@
           "detail"
         ],
         "title": "Probe",
+        "type": "object"
+      },
+      "Profile": {
+        "description": "A Workload's Weekly profile (slice 14.2).",
+        "properties": {
+          "blocks": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/Block"
+            },
+            "title": "Blocks",
+            "type": "array"
+          },
+          "history_h": {
+            "title": "History H",
+            "type": "number"
+          },
+          "lead_time": {
+            "title": "Lead Time",
+            "type": "integer"
+          },
+          "needs_h": {
+            "title": "Needs H",
+            "type": "number"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "state": {
+            "enum": [
+              "ready",
+              "learning",
+              "flat"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "timezone": {
+            "title": "Timezone",
+            "type": "string"
+          },
+          "triggers": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Triggers"
+          }
+        },
+        "required": [
+          "state",
+          "timezone",
+          "lead_time",
+          "history_h",
+          "needs_h"
+        ],
+        "title": "Profile",
         "type": "object"
       },
       "QuestionIn": {

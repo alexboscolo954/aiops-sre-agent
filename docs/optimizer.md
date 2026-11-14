@@ -161,6 +161,36 @@ A **Floor** is the minimum replicas the Hub computes for a Workload with an HPA,
 - **Realized.** Each hourly run compares every HPA's minimum with the Floor the last run showed. A minimum lowered while that Floor was below it is stored as a drop, down to the new minimum and never below that Floor: lower is not the Hub's advice, and shows as the `minimum_below_floor` risk. It counts in the [Realized Savings](#realized-savings) with the request drops, listed apart: worth the replicas no longer held (per stored hour since the drop, over the last 7 days at most, the old minimum less the larger of what it counts down to and that hour's Need rounded up, averaged) times the pod's requests as they are now, every container's, at today's prices, as a monthly rate, and accrued as that rate × the hours since. Here a replica counts at what it really asked, not at its Sizing as in the available saving. A minimum raised again takes the drop back, the newest first, and at the old minimum it is gone; an HPA gone, or a second HPA on the Workload, ends it; a failed read or an unknown minimum ends nothing. It is worth nothing until an hour since the drop is stored. No backfill: only a lowering between two runs of 0.49.0 or later counts.
 - **Not yet.** The available saving is not in the Cost page's groups.
 
+## Weekly profiles
+
+A Workload with a Floor also gets a **Weekly profile**: its Floors by hour of the week, for load that follows the week. It is shown under the Floor in the console, in `squero sizing show` and in the Hub MCP's `sizings`, and it is stored with the Floor by each hourly run.
+
+- **Each hour of the week** is the median of that hour's Need across the weeks stored, rounded up, never below the Floor. With three weeks, one odd week changes nothing. An hour of the week stored in fewer than three weeks (a gap in Prometheus at that hour in the others) is at the Floor, since one week would decide it; a block can be split there.
+- **Three weeks first.** The Workload's own complete stored hours count, over the 8 weeks Needs are kept; under 504 of them the profile is learning.
+- **Blocks.** Each run of hours that asks the same, above the Floor, is a block: `Mon 08:45 to Mon 12:00: 7 replicas`. The Floor is the baseline and not listed. A block that asks more than the hour before it starts `sizing.lead_time` early, so the replicas are there when the load is; a block after a higher one starts on the hour. All end on the hour. A week that asks the same in every hour has no pattern, and says so. Blocks are not smoothed, so a noisy week gives many, and a block is not capped at the HPA's maximum: where it asks more, the maximum holds it down, and the Floor's risk line already says the maximum was too low.
+- **Settings**, per Contract: `sizing.timezone`, an IANA name the hours are shown and scheduled in (UTC by default), and `sizing.lead_time`, whole minutes from 0 to 2h (15 minutes by default).
+
+  ```yaml
+  sizing:
+    timezone: Europe/Rome
+    lead_time: 30m
+  ```
+
+- **KEDA.** For an HPA named `keda-hpa-<name>` each block comes as a `cron` trigger for the ScaledObject `<name>`, to paste beside its other triggers. KEDA holds at least `desiredReplicas` in each window and takes the trigger that asks for most:
+
+  ```yaml
+  - type: cron
+    metadata:
+      timezone: Europe/Rome
+      start: 45 8 * * 1
+      end: 0 12 * * 1
+      desiredReplicas: "7"
+  ```
+
+  One trigger per block, each with a single weekday (Sunday is 0): KEDA's docs don't say that the weekday field takes lists or ranges.
+- **A plain HPA** has no schedule of its own. It gets the profile with a note saying so: something else has to hold those replicas. The Hub writes nothing and generates no CronJobs.
+- **Limits.** In a zone with daylight saving the hours of the two weeks around a change are an hour off against the rest. There is no backtest yet (slice 14.4): the profile says what the last weeks' median was, not how well it would have held.
+
 ## Sizings held by an HPA
 
 An HPA with a `Utilization` target on cpu or memory divides the pods' usage by their requests. Changing such a request changes the percentage and so the replica count, which is why the Actuator leaves it alone ([the pre-checks](client-cluster.md#running-an-actuator)). The Hub marks a Sizing that would change such a request as **held by its HPA**: in `squero sizing show`, in the console's Workloads page under the container, and in the Hub MCP's `sizings`. Its Waste still counts, because one manifest change frees it.

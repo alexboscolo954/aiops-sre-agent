@@ -25,6 +25,8 @@ Operator gets a digest of it (slice 9.5b).
 import asyncio
 import bisect
 import math
+import statistics
+import zoneinfo
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple
@@ -453,6 +455,11 @@ def floors(
                 low = weighted_percentile([(now, n) for n in values], q, now)
                 floor = max(math.ceil(low - 1e-9), min(FLOOR_MIN, int(minimum)))
                 f |= {"state": "ready", "floor": floor}
+                own = needs.get(cluster, {}).get(key, {})
+                weekly = profile(own, floor, c.sizing.timezone, c.sizing.lead_time, now)
+                if weekly["state"] == "ready":
+                    weekly |= scheduled(f, weekly)
+                f["profile"] = weekly
                 up = [math.ceil(n - 1e-9) for n in values]
                 if floor < minimum:
                     held = sum(max(0.0, minimum - max(floor, n)) for n in up) / len(up)
@@ -479,6 +486,109 @@ def floors(
                     )
                     f["risks"].append({"kind": "needed_above_maximum", "text": text})
     return out
+
+
+PROFILE_WEEKS = 3  # weeks of stored Needs before a Weekly profile: a median ignores one odd
+DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+
+
+def _when(minute: int) -> tuple[str, str]:
+    """A minute of the week (Monday 00:00 is 0, past either end wraps) as `Mon 07:45`
+    and as a cron expression (minute, hour, any day, any month, weekday: Sunday is 0)."""
+    day, rest = divmod(minute % (7 * 1440), 1440)
+    hour, m = divmod(rest, 60)
+    return f"{DAYS[day]} {hour:02d}:{m:02d}", f"{m} {hour} * * {(day + 1) % 7}"
+
+
+def profile(
+    needs: dict[float, float], floor: int, timezone: str, lead: int, now: float
+) -> dict[str, Any]:
+    """A Workload's Weekly profile (slice 14.2) from its stored Needs: for each hour of
+    the week in `timezone`, the median of that hour's Needs across the weeks stored,
+    rounded up, never below its Floor (an hour stored in fewer than 3 weeks is at the
+    Floor: one odd week would decide it). Only its
+    own complete hours of the 8 weeks kept count; `learning` under 3 weeks of them.
+
+    `blocks`: each run of hours asking the same, above the Floor (the Floor is the
+    baseline, not a block), `since` `Mon 07:45` `until` `Mon 18:00`, with the cron
+    expressions of both (`start`, `end`). One that asks more than the hour before it
+    starts `lead` seconds early; it ends on the hour. `flat` when every hour asks the
+    same: there is no weekly pattern."""
+    known = {h: n for h, n in needs.items() if h >= now - NEEDS_FOR and h + 3600 <= now}
+    out: dict[str, Any] = {"timezone": timezone, "lead_time": lead}
+    out |= {"history_h": float(len(known)), "needs_h": float(PROFILE_WEEKS * 168)}
+    if len(known) < PROFILE_WEEKS * 168:
+        return {**out, "state": "learning"}
+    zone = zoneinfo.ZoneInfo(timezone)
+    by: dict[int, list[float]] = {}
+    past = 0  # minutes past the hour a stored hour starts at there (30 in Asia/Kolkata)
+    for hour, need in known.items():
+        local = datetime.fromtimestamp(hour, zone)
+        past = local.minute
+        by.setdefault(local.weekday() * 24 + local.hour, []).append(need)
+    slots = [
+        max(floor, math.ceil(statistics.median(by[s]) - 1e-9))
+        if len(by.get(s, [])) >= PROFILE_WEEKS  # fewer: one odd week would decide it
+        else floor
+        for s in range(168)
+    ]
+    if len(set(slots)) == 1:
+        return {**out, "state": "flat", "blocks": []}
+    first = next(s for s in range(168) if slots[s] != slots[s - 1])  # where a run starts
+    blocks = []
+    done = 0
+    while done < 168:
+        s = (first + done) % 168
+        length = 1
+        while done + length < 168 and slots[(s + length) % 168] == slots[s]:
+            length += 1
+        if slots[s] > floor:
+            early = lead // 60 if slots[s - 1] < slots[s] else 0
+            begin, end = s * 60 + past - early, (s + length) * 60 + past
+            (since, start), (until, stop) = _when(begin), _when(end)
+            block = {"since": since, "until": until, "replicas": slots[s]}
+            block |= {"start": start, "end": stop}
+            blocks.append((begin % (7 * 1440), block))
+        done += length
+    return {**out, "state": "ready", "blocks": [b for _, b in sorted(blocks, key=lambda x: x[0])]}
+
+
+def scheduled(f: dict[str, Any], p: dict[str, Any]) -> dict[str, Any]:
+    """How a ready Weekly profile gets applied: for KEDA's HPA (`keda-hpa-<name>`), a
+    `cron` trigger per block for its ScaledObject, as text to paste; else a note, an HPA
+    having no schedule of its own."""
+    if not f["hpa"].startswith("keda-hpa-"):
+        note = "an HPA has no schedule of its own: something else has to hold these replicas"
+        return {"note": f"{note} (KEDA's cron trigger does)"}
+    name = f["hpa"].removeprefix("keda-hpa-")
+    lines = [
+        f"# ScaledObject {f['namespace']}/{name} (KEDA): cron triggers, beside its others.",
+        "# Each holds at least that many replicas in its window; the most asked for wins.",
+    ]
+    for b in p["blocks"]:
+        lines += ["- type: cron", "  metadata:", f"    timezone: {p['timezone']}"]
+        lines += [f"    start: {b['start']}", f"    end: {b['end']}"]
+        lines += [f'    desiredReplicas: "{b["replicas"]}"']
+    return {"triggers": "\n".join(lines)}
+
+
+def profile_lines(f: dict[str, Any]) -> list[str]:
+    """A Floor's Weekly profile as indented lines under its own (floor_text)."""
+    p = f.get("profile")
+    if not p:
+        return []
+    if p["state"] == "learning":
+        return [f"  Weekly profile learning ({p['history_h']:g} h of {p['needs_h']:g} h of Needs)"]
+    if p["state"] == "flat":
+        return ["  no weekly pattern: its Floor holds all week"]
+    early = f", each rise {p['lead_time'] // 60} min early" if p["lead_time"] else ""
+    lines = [f"  Weekly profile ({p['timezone']}{early}):"]
+    lines += [f"    {b['since']} to {b['until']}: {b['replicas']} replicas" for b in p["blocks"]]
+    if p.get("note"):
+        lines.append(f"    {p['note']}")
+    if p.get("triggers"):
+        lines += [f"    {line}" for line in p["triggers"].splitlines()]
+    return lines
 
 
 def floors_report(found: list[dict[str, Any]], contract: Contract) -> dict[str, Any]:

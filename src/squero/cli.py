@@ -212,6 +212,8 @@ def sizing_show(contract_id: str, as_json: bool) -> int:
     for computed in sizing.floors(c, out, needs, collected.bounds, now).values():
         for f in computed:
             print(sizing.floor_text(f))
+            for line in sizing.profile_lines(f):  # slice 14.2
+                print(line)
     return status
 
 

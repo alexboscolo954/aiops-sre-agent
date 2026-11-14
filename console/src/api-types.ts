@@ -559,6 +559,22 @@ export interface components {
             tolerance: number;
         };
         /**
+         * Block
+         * @description Hours of the week that need more than the Floor (slice 14.2).
+         */
+        Block: {
+            /** End */
+            end: string;
+            /** Replicas */
+            replicas: number;
+            /** Since */
+            since: string;
+            /** Start */
+            start: string;
+            /** Until */
+            until: string;
+        };
+        /**
          * Brief
          * @description An Investigation in a list (slice 11.5a).
          */
@@ -872,6 +888,7 @@ export interface components {
             percentile: number;
             /** Policy */
             policy: string;
+            profile?: components["schemas"]["Profile"] | null;
             /** Replicas */
             replicas?: number | null;
             /**
@@ -1159,6 +1176,34 @@ export interface components {
             name: string;
             /** Ok */
             ok: boolean;
+        };
+        /**
+         * Profile
+         * @description A Workload's Weekly profile (slice 14.2).
+         */
+        Profile: {
+            /**
+             * Blocks
+             * @default []
+             */
+            blocks: components["schemas"]["Block"][];
+            /** History H */
+            history_h: number;
+            /** Lead Time */
+            lead_time: number;
+            /** Needs H */
+            needs_h: number;
+            /** Note */
+            note?: string | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "ready" | "learning" | "flat";
+            /** Timezone */
+            timezone: string;
+            /** Triggers */
+            triggers?: string | null;
         };
         /** QuestionIn */
         QuestionIn: {

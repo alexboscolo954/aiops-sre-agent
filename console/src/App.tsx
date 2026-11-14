@@ -296,6 +296,32 @@ function Floors({ data, cluster, namespace }: { data: Workloads; cluster: string
                 <span className="chip">{r.kind}</span> {r.text}
               </div>
             ))}
+            {f.profile?.state === "learning" && (
+              <div className="hint">
+                Weekly profile: learning ({f.profile.history_h} h of {f.profile.needs_h} h of Needs)
+              </div>
+            )}
+            {f.profile?.state === "flat" && <div className="hint">No weekly pattern: its Floor holds all week.</div>}
+            {f.profile?.state === "ready" && (
+              <div className="profile">
+                Weekly profile ({f.profile.timezone}
+                {f.profile.lead_time > 0 && `, each rise ${f.profile.lead_time / 60} min early`}):
+                <ul>
+                  {f.profile.blocks.map((b, i) => (
+                    <li key={i}>
+                      {b.since} to {b.until}: {b.replicas} replicas
+                    </li>
+                  ))}
+                </ul>
+                {f.profile.note && <div className="hint">{f.profile.note}</div>}
+                {f.profile.triggers && (
+                  <details>
+                    <summary>The cron triggers for its ScaledObject</summary>
+                    <pre>{f.profile.triggers}</pre>
+                  </details>
+                )}
+              </div>
+            )}
           </li>
         ))}
       </ul>

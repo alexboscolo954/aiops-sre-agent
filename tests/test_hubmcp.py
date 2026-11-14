@@ -273,6 +273,8 @@ def test_sizings_list_each_autoscaled_workloads_floor_masked_and_filtered(
         "name": "api",
     }
     other = {**floor, "workload": "test/other/Deployment/far", "namespace": "other", "name": "far"}
+    weekly = {"state": "learning", "timezone": "UTC", "lead_time": 900}
+    other["profile"] = {**weekly, "history_h": 100.0, "needs_h": 504.0}  # slice 14.2
     seed_run(database_url, "acme", row("api"))
 
     async def go() -> None:
@@ -295,6 +297,8 @@ def test_sizings_list_each_autoscaled_workloads_floor_masked_and_filtered(
     )
     assert in_shop["floors"] == [line] and elsewhere["floors"] == []
     assert len(every["floors"]) == 2 and line in every["floors"]
+    (far,) = [f for f in every["floors"] if f != line]
+    assert far.splitlines()[1] == "  Weekly profile learning (100 h of 504 h of Needs)"
     assert len(edge) == 1 and "Floor 7 " in edge[0]  # one cluster of the Contract's two
 
 
