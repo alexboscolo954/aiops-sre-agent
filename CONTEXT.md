@@ -166,7 +166,7 @@ The replicas a Workload with an autoscaler (an HPA, KEDA's included) needed at a
 _Avoid_: Demand, desired replicas (that is the HPA's own figure, never below its minimum)
 
 **Floor**:
-The minimum replicas the Hub computes for a Workload with an autoscaler: a low percentile of its hourly Needs over its Sizing policy's window (the 10th under production), rounded up, never below 2 unless the HPA's minimum already is. Shown against the HPA's minimum today: a saving when lower (the replicas it would no longer hold, at their Sizings), a risk when higher. A Workload that scales to zero gets none. Advice for the client's manifests: the Hub never writes an HPA.
+The minimum replicas the Hub computes for a Workload with an autoscaler: a low percentile of its hourly Needs over its Sizing policy's window (the 10th under production), rounded up, never below 2 unless the HPA's minimum already is. Shown against the HPA's minimum today: a saving when lower (the replicas it would no longer hold, at their Sizings), a risk when higher. A Workload that scales to zero gets none. Advice for the client's manifests: the Hub never writes an HPA. Once the client lowers the minimum toward a Floor the Hub showed, what it no longer holds is realized Savings, down to that Floor and no further.
 _Avoid_: minReplicas (that is the HPA's own setting), baseline
 
 **Sizing**:

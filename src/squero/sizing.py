@@ -887,11 +887,64 @@ async def store_run(
         for n in await store.needs(c.id, set(found.bounds), at - NEEDS_FOR):
             key = (n["namespace"], n["kind"], n["name"])
             kept.setdefault(n["cluster"], {}).setdefault(key, {})[n["hour"]] = n["need"]
+        # slice 14.1c: against the Floors the last run showed, before they are replaced
+        shown = await store.latest_floors(c.id, set(found.bounds))
+        await realize_floors(store, c, at, shown, found.bounds)
         for cluster, computed in floors(c, now, kept, found.bounds, at).items():
             await store.save_floors(c.id, cluster, at, computed)
     await realize(store, c, at, before, status, now, found.clusters)
     await store.prune_sizings(c.id, at)
     return found
+
+
+async def realize_floors(
+    store: "Store",
+    c: Contract,
+    at: float,
+    shown: list[dict[str, Any]],
+    bounds: dict[str, dict[Workload, list[Bounds]]],
+) -> None:
+    """Realized Floor savings (slice 14.1c), per Workload of the clusters whose HPAs this
+    run read (`bounds`), against the Floors the last run showed (`shown`): an HPA's
+    minimum lower than it was then, where a Floor below that minimum was shown, is
+    stored as a drop. It counts down to the new minimum, never below that Floor: lower
+    is not the Hub's advice. A minimum raised again raises the drops' `after` back
+    toward their `before` (never past it) and a drop back at `before` is deleted, as is
+    every drop of a Workload whose HPA is gone or that a second HPA now scales. A
+    minimum not known ends nothing, nor does a cluster not read."""
+    was = {(f["cluster"], f["namespace"], f["kind"], f["name"]): f for f in shown}
+    lone: dict[tuple[str, str, str, str], Bounds] = {}  # the Workloads one HPA scales
+    for cluster, found in bounds.items():
+        for w, hpas in found.items():
+            if len(hpas) == 1:
+                lone[cluster, w.namespace, w.kind, w.name] = hpas[0]
+    raised: dict[int, float] = {}
+    ended: set[int] = set()
+    for e in await store.floor_drops(c.id):
+        if e["cluster"] not in bounds:
+            continue  # not read: ends nothing
+        hpa = lone.get((e["cluster"], e["namespace"], e["kind"], e["name"]))
+        if hpa is None:
+            ended.add(e["id"])
+        elif hpa.minimum is not None:
+            after = max(e["after"], hpa.minimum)
+            if after >= e["before"]:
+                ended.add(e["id"])
+            elif after != e["after"]:
+                raised[e["id"]] = after
+    added = []
+    for key, hpa in lone.items():
+        f = was.get(key)
+        if f is None or f["state"] != "ready" or hpa.minimum is None:
+            continue
+        if f["floor"] < f["minimum"] and hpa.minimum < f["minimum"]:
+            where = dict(zip(("cluster", "namespace", "kind", "name"), key, strict=True))
+            after = max(hpa.minimum, float(f["floor"]))
+            added.append(
+                {**where, "at": at, "before": f["minimum"], "after": after, "floor": f["floor"]}
+            )
+    if added or raised or ended:
+        await store.save_floor_drops(c.id, added, raised, ended)
 
 
 MATCH = 0.10  # a lowered request within 10% of a Sizing followed it
@@ -982,7 +1035,13 @@ async def savings(
     (cores and GiB without them), as a monthly run rate and accrued since the drop
     (that rate x the hours since, so a later partial rise lowers it too), and the rate
     of the drops of the last 7 days. The pods are the latest run's average, as its
-    waste's. Only the Contract's current clusters count."""
+    waste's. Only the Contract's current clusters count.
+
+    With them, each HPA minimum lowered toward its Floor (slice 14.1c, `floors`): worth
+    the replicas it no longer holds (per stored hour since the drop, the last 7 days
+    at most: the old minimum less the larger of what it counts down to and that
+    hour's Need rounded up, averaged) times the pod's requests as they are now, every
+    container's. None until an hour since the drop is stored."""
     c = await listprices.effective(store, c, now)
     if rows is None:  # else the latest rows, already read
         clusters = {t.cluster for t in usage.targets(c)}
@@ -997,6 +1056,7 @@ async def savings(
         "week": dict(zero),
         "cost": {"rate": 0.0, "accrued": 0.0, "week": 0.0} if priced else None,
         "drops": [],
+        "floors": [],
     }
     for e in await store.realized(c.id):
         r = latest.get(_key(e))
@@ -1025,6 +1085,51 @@ async def savings(
                 out["cost"]["week"] += rate
         out["drops"].append(drop)
     out["drops"].sort(key=lambda d: (-(d["cost"] or {}).get("rate", d["saved"]), d["workload"]))
+    lowered = [e for e in await store.floor_drops(c.id) if e["at"] <= now]
+    if lowered:
+        names = {e["cluster"] for e in lowered}
+        needs: dict[tuple[str, ...], dict[float, float]] = {}
+        for n in await store.needs(c.id, names, now - WEEK):  # the last 7 days' hours
+            key = (n["cluster"], n["namespace"], n["kind"], n["name"])
+            needs.setdefault(key, {})[n["hour"]] = n["need"]
+        pod: dict[tuple[str, ...], dict[str, float]] = {}  # a replica's requests now
+        for r in rows:
+            asks = pod.setdefault(_key(r)[:4], dict(zero))
+            for res in zero:
+                asks[res] += (r.get("requests") or {}).get(res) or 0.0
+    for e in lowered:
+        key = (e["cluster"], e["namespace"], e["kind"], e["name"])
+        if key not in pod:  # gone, or its cluster no longer the Contract's
+            continue
+        since = e["at"] - e["at"] % 3600  # the hour the drop was seen in
+        fewer = [
+            max(0.0, e["before"] - max(e["after"], math.ceil(n - 1e-9)))
+            for hour, n in needs.get(key, {}).items()
+            if hour >= since and hour + 3600 <= now
+        ]
+        replicas = sum(fewer) / len(fewer) if fewer else 0.0
+        saved = {res: replicas * pod[key][res] for res in zero}
+        hours = (now - e["at"]) / 3600
+        drop = {
+            "workload": "/".join(key),
+            **{k: e[k] for k in ("at", "before", "after", "floor")},
+            "replicas": round(replicas, 2),
+            "saved": saved,
+            "cost": None,
+        }
+        for res in zero:
+            out["rate"][res] += saved[res]
+            out["accrued"][res] += saved[res] * hours
+            if e["at"] >= now - WEEK:
+                out["week"][res] += saved[res]
+        if p := c.price(e["cluster"]):
+            rate = monthly(p, **saved)
+            drop["cost"] = {"rate": rate, "accrued": rate / MONTH * hours}
+            out["cost"]["rate"] += rate
+            out["cost"]["accrued"] += drop["cost"]["accrued"]
+            if e["at"] >= now - WEEK:
+                out["cost"]["week"] += rate
+        out["floors"].append(drop)
     return out
 
 

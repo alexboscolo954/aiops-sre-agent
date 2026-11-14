@@ -389,8 +389,9 @@ def build(
         compare_days: Annotated[int | None, Field(ge=1, le=400)] = None,
     ) -> dict[str, Any]:
         """The Contract's Savings: available (the waste in its requests, a month) and
-        realized (requests lowered since: held less now, accrued since each drop, and
-        the last 7 days' drops, by what they save), and the change since `compare_days`
+        realized (requests lowered since, and under `floors` the HPA minimums lowered
+        toward their Floors: held less now, accrued since each drop, and the last 7
+        days' drops, by what they save), and the change since `compare_days`
         ago when given. cpu in cores, memory in bytes, money in `currency`."""
         c = resolve(contract)
 

@@ -181,6 +181,19 @@ class Drop(BaseModel):
     cost: SpentCost | None = None
 
 
+class FloorDrop(BaseModel):
+    """An HPA's minimum lowered toward its Floor (slice 14.1c)."""
+
+    workload: str  # cluster/namespace/kind/name
+    at: float  # the run that saw it
+    before: float  # the HPA's minimum
+    after: float  # what it counts down to: never below the Floor shown then
+    floor: float
+    replicas: float  # no longer held, on average over the last 7 days
+    saved: Waste  # those replicas at the pod's requests now
+    cost: SpentCost | None = None
+
+
 class Realized(BaseModel):
     currency: str | None = None
     rate: Waste  # cores and bytes held less, now
@@ -188,6 +201,7 @@ class Realized(BaseModel):
     week: Waste
     cost: SavingsCost | None = None  # None: the Contract has no prices
     drops: list[Drop]  # by what they save
+    floors: list[FloorDrop] = []  # counted in the totals above
 
 
 class Bill(BaseModel):

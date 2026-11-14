@@ -246,6 +246,26 @@ test("the Cost page groups by team on request, with no Workloads links and the H
   expect(options).toEqual(["namespace", "team", "label team"]);
 });
 
+test("an HPA minimum lowered toward its Floor counts in the realized Savings", async () => {
+  history.replaceState(null, "", "/app/?view=cost");
+  const zero = { cpu: 0, memory: 0 };
+  const total = { requests: zero, waste: zero, cost: null };
+  const saved = { cpu: 3.6, memory: 3 * GI };
+  const lowered = { workload: "kind/lab/Deployment/api", at: 0, before: 6, after: 3, floor: 3, replicas: 3, saved, cost: null };
+  const realized = { currency: null, rate: saved, accrued: zero, week: saved, cost: null, drops: [], floors: [lowered] };
+  answer({
+    "/api/v1/contracts": [200, [{ id: "demo-shop", name: "demo-shop" }]],
+    "/api/v1/contracts/demo-shop/cost": [
+      200,
+      { contract: "demo-shop", by: "namespace", currency: null, groups: [], groupings: ["namespace"], warnings: [], total, realized, prices: [] },
+    ],
+  });
+  render(<App />);
+  expect(await screen.findByText(/0 requests lowered to their Sizings, 1 HPA minimum lowered toward its Floor/)).toBeTruthy();
+  expect(screen.getByText("3.60 cores, 3.00 GiB")).toBeTruthy();
+  expect(screen.queryByText(/none yet/)).toBeNull();
+});
+
 test("the Cost page says where each cluster's price comes from, as text", async () => {
   history.replaceState(null, "", "/app/?view=cost");
   const zero = { cpu: 0, memory: 0 };

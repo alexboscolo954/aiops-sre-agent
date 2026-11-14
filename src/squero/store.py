@@ -971,6 +971,46 @@ class Store:
                     (contract_id, sorted(ended)),
                 )
 
+    async def floor_drops(self, contract_id: str) -> list[dict[str, Any]]:
+        """The Contract's HPA minimums lowered toward a Floor and still saving (14.1c)."""
+        return await self._all(
+            "select id, cluster, namespace, kind, name, at, before, after, floor "
+            "from floor_drops where contract_id = %s order by at, id",
+            (contract_id,),
+        )
+
+    async def save_floor_drops(
+        self,
+        contract_id: str,
+        added: list[dict[str, Any]],
+        raised: dict[int, float],
+        ended: set[int],
+    ) -> None:
+        """New drops (one already stored for the same run is kept as it was), `after`
+        raised by a later rise of the minimum, and those no longer saving deleted."""
+        async with self.pool.connection() as conn, conn.transaction():
+            for e in added:
+                await conn.execute(
+                    "insert into floor_drops (contract_id, cluster, namespace, kind, name, at, "
+                    "before, after, floor) values (%s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                    "on conflict do nothing",
+                    (
+                        contract_id,
+                        *(e[k] for k in ("cluster", "namespace", "kind", "name")),
+                        *(e[k] for k in ("at", "before", "after", "floor")),
+                    ),
+                )
+            for drop_id, after in raised.items():
+                await conn.execute(
+                    "update floor_drops set after = %s where id = %s and contract_id = %s",
+                    (after, drop_id, contract_id),
+                )
+            if ended:
+                await conn.execute(
+                    "delete from floor_drops where contract_id = %s and id = any(%s)",
+                    (contract_id, sorted(ended)),
+                )
+
     async def sizing_history(
         self, contract_id: str, workload: tuple[str, str, str, str, str], since: float
     ) -> list[tuple[float, dict[str, Any]]]:

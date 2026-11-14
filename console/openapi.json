@@ -1318,6 +1318,59 @@
         "title": "Floor",
         "type": "object"
       },
+      "FloorDrop": {
+        "description": "An HPA's minimum lowered toward its Floor (slice 14.1c).",
+        "properties": {
+          "after": {
+            "title": "After",
+            "type": "number"
+          },
+          "at": {
+            "title": "At",
+            "type": "number"
+          },
+          "before": {
+            "title": "Before",
+            "type": "number"
+          },
+          "cost": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SpentCost"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "floor": {
+            "title": "Floor",
+            "type": "number"
+          },
+          "replicas": {
+            "title": "Replicas",
+            "type": "number"
+          },
+          "saved": {
+            "$ref": "#/components/schemas/Waste"
+          },
+          "workload": {
+            "title": "Workload",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workload",
+          "at",
+          "before",
+          "after",
+          "floor",
+          "replicas",
+          "saved"
+        ],
+        "title": "FloorDrop",
+        "type": "object"
+      },
       "FloorsTotal": {
         "properties": {
           "cost": {
@@ -2203,6 +2256,14 @@
               "$ref": "#/components/schemas/Drop"
             },
             "title": "Drops",
+            "type": "array"
+          },
+          "floors": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/FloorDrop"
+            },
+            "title": "Floors",
             "type": "array"
           },
           "rate": {

@@ -325,7 +325,7 @@ async def sizing_savings(contract_id: str, as_json: bool) -> int:
     if as_json:
         print(json.dumps(out, indent=2))
         return 0
-    if not out["drops"]:
+    if not out["drops"] and not out["floors"]:
         print(f"{c.id}: no realized Savings: a request lowered to its Sizing shows the next run")
         return 0
     currency = out["currency"]
@@ -355,6 +355,18 @@ async def sizing_savings(contract_id: str, as_json: bool) -> int:
             f"{d['workload']} {res}: {sizing.show(res, d['before'])} to "
             f"{sizing.show(res, d['after'])} (Sizing {sizing.show(res, d['sizing'])}) "
             f"since {_utc(d['at'])}, {d['pods']:g} pods: {worth}"
+        )
+    for d in out["floors"]:  # slice 14.1c
+        worth = (
+            f"{sizing.money(d['cost']['rate'], currency)}, "
+            f"{d['cost']['accrued']:,.2f} {currency} so far"
+            if d["cost"]
+            else sizing.quantities(d["saved"])
+        )
+        print(
+            f"{d['workload']} HPA minimum: {d['before']:g} to {d['after']:g} "
+            f"(Floor {d['floor']:g}) since {_utc(d['at'])}, "
+            f"{d['replicas']:g} replicas fewer on average: {worth}"
         )
     return 0
 

@@ -516,7 +516,8 @@ function CostPage({
 }
 
 function Realized({ data }: { data: Allocation["realized"] }) {
-  if (data.drops.length === 0)
+  const lowered = data.floors ?? [];
+  if (data.drops.length === 0 && lowered.length === 0)
     return <p className="hint">Savings realized: none yet. A request lowered to its Sizing shows after the next hourly run.</p>;
   const cur = data.currency;
   return (
@@ -535,7 +536,10 @@ function Realized({ data }: { data: Allocation["realized"] }) {
           , {cores(data.week.cpu ?? 0)}, {gib(data.week.memory ?? 0)} from this week's
         </>
       )}{" "}
-      ({data.drops.length} {data.drops.length === 1 ? "request" : "requests"} lowered to {data.drops.length === 1 ? "its Sizing" : "their Sizings"})
+      ({data.drops.length} {data.drops.length === 1 ? "request" : "requests"} lowered to {data.drops.length === 1 ? "its Sizing" : "their Sizings"}
+      {lowered.length > 0 &&
+        `, ${lowered.length} HPA ${lowered.length === 1 ? "minimum" : "minimums"} lowered toward ${lowered.length === 1 ? "its Floor" : "their Floors"}`}
+      )
     </p>
   );
 }

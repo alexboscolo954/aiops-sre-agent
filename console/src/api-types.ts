@@ -890,6 +890,26 @@ export interface components {
             /** Workload */
             workload: string;
         };
+        /**
+         * FloorDrop
+         * @description An HPA's minimum lowered toward its Floor (slice 14.1c).
+         */
+        FloorDrop: {
+            /** After */
+            after: number;
+            /** At */
+            at: number;
+            /** Before */
+            before: number;
+            cost?: components["schemas"]["SpentCost"] | null;
+            /** Floor */
+            floor: number;
+            /** Replicas */
+            replicas: number;
+            saved: components["schemas"]["Waste"];
+            /** Workload */
+            workload: string;
+        };
         /** FloorsTotal */
         FloorsTotal: {
             /** Cost */
@@ -1153,6 +1173,11 @@ export interface components {
             currency?: string | null;
             /** Drops */
             drops: components["schemas"]["Drop"][];
+            /**
+             * Floors
+             * @default []
+             */
+            floors: components["schemas"]["FloorDrop"][];
             rate: components["schemas"]["Waste"];
             week: components["schemas"]["Waste"];
         };

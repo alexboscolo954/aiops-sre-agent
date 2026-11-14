@@ -507,6 +507,29 @@ def test_cost_and_savings_group_the_contracts_own_workloads_masked(
     assert "shop" not in json.dumps([by_ns, saved])
 
 
+def test_savings_list_the_hpa_minimums_lowered_toward_their_floors_masked(
+    settings: Settings, fake_cluster: Any, database_url: str
+) -> None:
+    """Slice 14.1c: in the realized Savings, the Contract's own, its names masked."""
+    seed_run(database_url, "acme", row("api"))
+    where = {"cluster": "test", "namespace": "shop", "kind": "Deployment", "name": "api"}
+    drop = {**where, "at": NOW, "before": 6.0, "after": 3.0, "floor": 3}
+
+    async def go() -> None:
+        async with connect(database_url) as pool:
+            store = Store(pool)
+            await store.save_floor_drops("acme", [drop], {}, set())
+            await store.save_floor_drops("bank", [{**drop, "before": 9.0}], {}, set())
+
+    asyncio.run(go())
+    with hub(settings, fake_cluster, database_url) as c:
+        saved = call(c, "savings", contract="acme")
+    (lowered,) = saved["realized"]["floors"]
+    assert lowered["workload"] == f"test/{mask('shop')}/Deployment/api"
+    assert (lowered["before"], lowered["after"], lowered["floor"]) == (6.0, 3.0, 3.0)
+    assert "shop" not in json.dumps(saved)
+
+
 def test_a_bill_is_the_contracts_own(
     settings: Settings, fake_cluster: Any, database_url: str
 ) -> None:
