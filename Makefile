@@ -39,6 +39,13 @@ lgtm: ## Grafana LGTM + synthetic logs and traces (Grafana Scenarios; not in CI)
 
 KPS := 92.11.0
 METRICS_SERVER := 3.14.0
+# LAB=small: the lab for a host with 4 CPUs (demo/lab/small). On another host:
+#   make lab-remote LAB_HOST=<ssh name> LAB_ADDR=<its private address>
+#   make lab LAB=small CLUSTER=lab KUBECONFIG=$(LAB_KUBECONFIG)
+LAB := full
+LAB_KUBECONFIG := $(HOME)/k8s_clusters/lab.yaml
+LAB_CPUS := 2.5
+LAB_MEMORY := 6g
 
 lab: ## persistent optimizer lab: kube-prometheus-stack, metrics-server (the HPA's) + load generators in namespace lab. Its 30 days of history live in the kind node: `kind delete cluster` erases them
 	for i in 1 2 3 4 5; do helm upgrade --install kps kube-prometheus-stack \
@@ -53,8 +60,21 @@ lab: ## persistent optimizer lab: kube-prometheus-stack, metrics-server (the HPA
 	  | kubectl --context $(CTX) apply -f -
 	kubectl --context $(CTX) -n lab create configmap load --from-file=demo/lab/load.py \
 	  --dry-run=client -o yaml | kubectl --context $(CTX) apply -f -
+ifeq ($(LAB),small)
+	kubectl kustomize --load-restrictor LoadRestrictionsNone demo/lab/small \
+	  | kubectl --context $(CTX) apply -f -
+else
 	kubectl --context $(CTX) apply -f demo/lab/workloads.yaml
+endif
 	kubectl --context $(CTX) -n lab rollout status deploy/web deploy/api deploy/spiky deploy/idle --timeout=5m
+
+lab-remote: ## a kind cluster `lab` on another host that never sleeps (ssh name LAB_HOST, with kind and Docker), its API server and Prometheus on LAB_ADDR only (the host's private address), its node capped at LAB_CPUS and LAB_MEMORY so the host's own services keep theirs; the kubeconfig lands in LAB_KUBECONFIG
+	test -n "$(LAB_HOST)" && test -n "$(LAB_ADDR)"
+	sed 's/LAB_ADDR/$(LAB_ADDR)/' demo/lab/kind-remote.yaml \
+	  | ssh $(LAB_HOST) 'PATH=$$HOME/.local/bin:$$PATH kind create cluster --config -'
+	ssh $(LAB_HOST) 'docker update --cpus $(LAB_CPUS) --memory $(LAB_MEMORY) --memory-swap $(LAB_MEMORY) --restart unless-stopped lab-control-plane'
+	ssh $(LAB_HOST) 'PATH=$$HOME/.local/bin:$$PATH kind get kubeconfig --name lab' > $(LAB_KUBECONFIG)
+	chmod 600 $(LAB_KUBECONFIG)
 
 lab-grafana: ## the lab's Grafana on http://localhost:3000 (admin / lab-only)
 	kubectl --context $(CTX) -n monitoring port-forward svc/kps-grafana 3000:80

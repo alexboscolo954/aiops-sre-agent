@@ -1,0 +1,14 @@
+# The lab's kind cluster on another host (`make lab-remote`), reached over the network:
+# its API server and Prometheus' NodePort listen on LAB_ADDR only, the host's address on
+# a private network (its Tailscale one). Prometheus has no login and the kubeconfig is
+# an admin's: never bind them to an address the internet or a shared LAN can reach.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: lab
+networking:
+  apiServerAddress: LAB_ADDR
+  apiServerPort: 6443
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      - {containerPort: 30090, hostPort: 30090, listenAddress: LAB_ADDR, protocol: TCP}

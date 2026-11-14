@@ -1,0 +1,37 @@
+# The Hub's read-only access to the lab cluster on another host (`make lab-remote`):
+# deploy/base/rbac.yaml's role, bound in namespace lab only, and a token for the
+# kubeconfig that the Contract's SOPS file holds. Never give the Hub kind's own
+# kubeconfig: that one is an admin's.
+#   kubectl --context kind-lab apply -f demo/lab/hub-read.yaml
+apiVersion: v1
+kind: Namespace
+metadata: {name: squero}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: squero, namespace: squero}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: {name: squero-read}
+rules:
+  - apiGroups: [""]
+    resources: [pods, pods/log, events]
+    verbs: [get, list, watch]
+  - apiGroups: ["apps"]
+    resources: [deployments, replicasets]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: squero-read, namespace: lab}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: squero-read}
+subjects: [{kind: ServiceAccount, name: squero, namespace: squero}]
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: squero-token
+  namespace: squero
+  annotations: {kubernetes.io/service-account.name: squero}
+type: kubernetes.io/service-account-token

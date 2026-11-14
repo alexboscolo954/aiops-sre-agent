@@ -1,0 +1,89 @@
+# The lab on a small host (4 CPUs): `make lab LAB=small`. As it is, the lab asks about
+# 8 CPUs of the node, Kubernetes' own included, so its pods would stay Pending there.
+# Here the big Workloads ask and burn about a quarter to a third of the CPU, each in the
+# same proportion, so every shape and every ratio of request to usage is what it was.
+# `weekly` and the small ones are untouched; memory is untouched.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../workloads.yaml
+patches:
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata: {name: web, namespace: lab}
+      spec:
+        template:
+          spec:
+            containers:
+            - name: app
+              env:
+              - {name: CPU, value: '0.13'}
+              resources:
+                requests: {cpu: 170m}
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata: {name: api, namespace: lab}
+      spec:
+        template:
+          spec:
+            containers:
+            - name: app
+              env:
+              - {name: CPU, value: '0.025'}
+              resources:
+                requests: {cpu: 250m}
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata: {name: spiky, namespace: lab}
+      spec:
+        template:
+          spec:
+            containers:
+            - name: app
+              env:
+              - {name: CPU, value: '0.05'}
+              resources:
+                requests: {cpu: 70m}
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata: {name: throttled, namespace: lab}
+      spec:
+        template:
+          spec:
+            containers:
+            - name: app
+              env:
+              - {name: CPU, value: '0.25'}
+              resources:
+                requests: {cpu: 50m}
+                limits: {cpu: 100m}
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata: {name: idle, namespace: lab}
+      spec:
+        template:
+          spec:
+            containers:
+            - name: app
+              resources:
+                requests: {cpu: 250m}
+  - patch: |-
+      apiVersion: batch/v1
+      kind: CronJob
+      metadata: {name: report, namespace: lab}
+      spec:
+        jobTemplate:
+          spec:
+            template:
+              spec:
+                containers:
+                - name: app
+                  env:
+                  - {name: CPU, value: '0.2'}
+                  resources:
+                    requests: {cpu: 250m}
